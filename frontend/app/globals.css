@@ -1,0 +1,337 @@
+:root {
+  --bg: #0e1411;
+  --bg-elevated: rgba(17, 28, 23, 0.78);
+  --panel: rgba(24, 38, 30, 0.86);
+  --panel-border: rgba(215, 196, 124, 0.18);
+  --text: #f8f6f0;
+  --muted: #c2c5b4;
+  --accent: #84f0af;
+  --accent-strong: #d9b85a;
+  --danger: #ff9b7d;
+  --shadow: 0 24px 90px rgba(0, 0, 0, 0.35);
+  --radius-xl: 28px;
+  --radius-lg: 20px;
+  --radius-md: 14px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-height: 100%;
+  background:
+    radial-gradient(circle at top left, rgba(132, 240, 175, 0.14), transparent 32%),
+    radial-gradient(circle at 85% 18%, rgba(217, 184, 90, 0.16), transparent 28%),
+    linear-gradient(160deg, #09100d 0%, #0f1714 44%, #17211d 100%);
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--text);
+  font-family: "Trebuchet MS", "Avenir Next", "Segoe UI", sans-serif;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+
+a {
+  color: inherit;
+}
+
+code,
+pre {
+  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+}
+
+.shell {
+  width: min(1180px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 44px 0 60px;
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr;
+  gap: 24px;
+}
+
+.hero-panel,
+.connection-panel {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-xl);
+  background: linear-gradient(180deg, rgba(19, 30, 24, 0.92), rgba(13, 22, 18, 0.84));
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(18px);
+}
+
+.hero-panel {
+  padding: 44px;
+}
+
+.hero-panel::after,
+.connection-panel::after {
+  content: "";
+  position: absolute;
+  inset: auto -80px -120px auto;
+  width: 240px;
+  height: 240px;
+  border-radius: 999px;
+  background: radial-gradient(circle, rgba(132, 240, 175, 0.18), transparent 68%);
+  pointer-events: none;
+}
+
+.eyebrow,
+.panel-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.hero-panel h1,
+.panel-header h2 {
+  margin: 18px 0 12px;
+  font-family: Georgia, "Times New Roman", serif;
+  line-height: 1.05;
+}
+
+.hero-panel h1 {
+  max-width: 10ch;
+  font-size: clamp(2.8rem, 6vw, 5.4rem);
+}
+
+.panel-header h2 {
+  font-size: clamp(1.9rem, 3vw, 2.5rem);
+}
+
+.hero-copy,
+.status-copy p,
+.qr-placeholder p,
+.error-card p {
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.metric-strip {
+  margin-top: 34px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+
+.metric-card,
+.pairing-card,
+.error-card,
+.qr-card,
+.details-grid > div {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: var(--radius-lg);
+}
+
+.metric-card {
+  padding: 18px;
+}
+
+.metric-label {
+  display: block;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.metric-card strong {
+  display: block;
+  font-size: 1.08rem;
+}
+
+.connection-panel {
+  padding: 34px;
+}
+
+.panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.connect-button {
+  border: 0;
+  border-radius: 999px;
+  padding: 14px 20px;
+  font-size: 0.98rem;
+  font-weight: 700;
+  cursor: pointer;
+  color: #101510;
+  background: linear-gradient(135deg, var(--accent), #f1f3c4);
+  box-shadow: 0 18px 38px rgba(132, 240, 175, 0.18);
+  transition:
+    transform 180ms ease,
+    box-shadow 180ms ease,
+    opacity 180ms ease;
+}
+
+.connect-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 20px 42px rgba(132, 240, 175, 0.24);
+}
+
+.connect-button:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+.qr-card {
+  margin-top: 24px;
+  padding: 24px;
+}
+
+.qr-wrapper,
+.qr-placeholder {
+  display: grid;
+  place-items: center;
+  min-height: 320px;
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02)),
+    linear-gradient(160deg, rgba(132, 240, 175, 0.1), rgba(217, 184, 90, 0.08));
+}
+
+.qr-wrapper svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.qr-placeholder {
+  padding: 18px;
+  text-align: center;
+}
+
+.qr-placeholder span {
+  display: block;
+  margin-bottom: 12px;
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.status-copy {
+  margin-top: 18px;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.status-idle,
+.status-loading,
+.status-waiting {
+  color: #1b2218;
+  background: linear-gradient(135deg, #f0da92, #dbb465);
+}
+
+.status-connected {
+  color: #122116;
+  background: linear-gradient(135deg, #84f0af, #dff6d4);
+}
+
+.status-error {
+  color: #2a0901;
+  background: linear-gradient(135deg, #ffb9a3, #ff8e73);
+}
+
+.pairing-card,
+.error-card {
+  margin-top: 16px;
+  padding: 16px 18px;
+}
+
+.pairing-label {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.pairing-card code {
+  font-size: 1.08rem;
+}
+
+.error-card strong {
+  color: var(--danger);
+}
+
+.details-grid {
+  margin: 22px 0 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.details-grid > div {
+  padding: 16px;
+}
+
+.details-grid dt {
+  color: var(--muted);
+  font-size: 0.78rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.details-grid dd {
+  margin: 10px 0 0;
+  font-size: 1rem;
+}
+
+@media (max-width: 960px) {
+  .shell {
+    grid-template-columns: 1fr;
+  }
+
+  .hero-panel h1 {
+    max-width: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .shell {
+    width: min(100% - 20px, 100%);
+    padding-top: 20px;
+  }
+
+  .hero-panel,
+  .connection-panel {
+    padding: 22px;
+  }
+
+  .panel-header {
+    flex-direction: column;
+  }
+
+  .metric-strip,
+  .details-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .connect-button {
+    width: 100%;
+  }
+}
+
