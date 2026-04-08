@@ -6,6 +6,9 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "AuraCore | Memorias do Observador",
   description: "Dashboard para conectar o WhatsApp observador, analisar mensagens e consolidar memorias.",
+  icons: {
+    icon: "/favicon.svg",
+  },
 };
 
 export default function RootLayout({

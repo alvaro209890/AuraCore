@@ -50,12 +50,15 @@ const API_BASE_URL = (
 );
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers ?? undefined);
+  const hasBody = init?.body !== undefined && init?.body !== null;
+  if (hasBody && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
+    headers,
     cache: "no-store",
   });
 
@@ -95,8 +98,7 @@ export async function getMemorySnapshots(limit = 20): Promise<MemorySnapshot[]> 
 }
 
 export async function analyzeMemory(windowHours: number): Promise<AnalyzeMemoryResponse> {
-  return request<AnalyzeMemoryResponse>("/api/memories/analyze", {
+  return request<AnalyzeMemoryResponse>(`/api/memories/analyze?window_hours=${windowHours}`, {
     method: "POST",
-    body: JSON.stringify({ window_hours: windowHours }),
   });
 }

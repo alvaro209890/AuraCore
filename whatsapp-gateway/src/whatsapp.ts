@@ -177,6 +177,7 @@ export class WhatsAppObserverGateway {
     const epoch = ++this.connectionEpoch;
     this.connected = false;
     this.state = "connecting";
+    await this.cleanupSocket(false);
 
     const { state, saveCreds } = await this.authStore.useAuthState();
 
@@ -231,6 +232,7 @@ export class WhatsAppObserverGateway {
     }
 
     if (update.connection === "open") {
+      this.clearReconnectTimer();
       this.connected = true;
       this.state = "open";
       this.ownerNumber = jidToPhone(this.socket?.user?.id);

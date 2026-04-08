@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Body, Depends, Query
 
 from app.dependencies import get_memory_analysis_service
 from app.schemas import (
@@ -35,10 +35,12 @@ async def get_memory_snapshots(
 
 @router.post("/analyze", response_model=AnalyzeMemoryResponse)
 async def analyze_memory(
-    request: AnalyzeMemoryRequest,
+    request: AnalyzeMemoryRequest | None = Body(default=None),
+    window_hours: int | None = Query(default=None, ge=1),
     memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
 ) -> AnalyzeMemoryResponse:
-    outcome = await memory_service.analyze_window(window_hours=request.window_hours)
+    resolved_window_hours = request.window_hours if request is not None else window_hours or 24
+    outcome = await memory_service.analyze_window(window_hours=resolved_window_hours)
     return AnalyzeMemoryResponse(
         current=_to_persona_response(outcome.persona),
         snapshot=_to_snapshot_response(outcome.snapshot),

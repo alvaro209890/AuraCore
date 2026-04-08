@@ -53,8 +53,8 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
   res.status(500).json({ detail: message });
 });
 
-const server = app.listen(config.port, () => {
-  console.log(`AuraCore WhatsApp gateway listening on port ${config.port}`);
+const server = app.listen(config.port, "127.0.0.1", () => {
+  console.log(`AuraCore WhatsApp gateway listening on 127.0.0.1:${config.port}`);
 });
 
 void gateway.start().catch((error) => {

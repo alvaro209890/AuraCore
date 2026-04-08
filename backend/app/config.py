@@ -22,7 +22,10 @@ class Settings(BaseSettings):
         UUID("00000000-0000-0000-0000-000000000001"),
         alias="DEFAULT_USER_ID",
     )
-    frontend_origins: str = Field("http://localhost:3000", alias="FRONTEND_ORIGINS")
+    frontend_origins: str = Field(
+        "http://localhost:3000,https://auracore-82bf2.web.app",
+        alias="FRONTEND_ORIGINS",
+    )
     whatsapp_gateway_url: str = Field(..., alias="WHATSAPP_GATEWAY_URL")
     internal_api_token: str = Field(..., alias="INTERNAL_API_TOKEN")
     deepseek_api_key: str = Field(..., alias="DEEPSEEK_API_KEY")
