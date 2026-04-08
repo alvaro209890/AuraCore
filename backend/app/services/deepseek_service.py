@@ -33,6 +33,7 @@ class DeepSeekService:
         *,
         transcript: str,
         current_life_summary: str,
+        prior_analyses_context: str,
         window_hours: int,
         window_start: datetime,
         window_end: datetime,
@@ -50,9 +51,10 @@ class DeepSeekService:
                 {
                     "role": "system",
                     "content": (
-                        "You analyze private chat messages to build a memory profile about one user. "
-                        "Return only valid JSON. Never invent facts. If something is uncertain, phrase it as a "
-                        "possible signal in the lists instead of stating it as a certainty in the life summary."
+                        "Voce analisa conversas privadas em portugues para construir uma memoria util sobre o dono "
+                        "do numero. Responda sempre em portugues do Brasil e retorne apenas JSON valido. Nunca "
+                        "invente fatos. Quando algo for incerto, trate como sinal ou hipotese nas listas, sem "
+                        "afirmar como certeza no resumo consolidado."
                     ),
                 },
                 {
@@ -60,6 +62,7 @@ class DeepSeekService:
                     "content": self._build_prompt(
                         transcript=transcript,
                         current_life_summary=current_life_summary,
+                        prior_analyses_context=prior_analyses_context,
                         window_hours=window_hours,
                         window_start=window_start,
                         window_end=window_end,
@@ -94,27 +97,32 @@ class DeepSeekService:
         *,
         transcript: str,
         current_life_summary: str,
+        prior_analyses_context: str,
         window_hours: int,
         window_start: datetime,
         window_end: datetime,
         source_message_count: int,
     ) -> str:
-        previous_summary = current_life_summary.strip() or "(empty memory so far)"
+        previous_summary = current_life_summary.strip() or "(memoria consolidada ainda vazia)"
+        previous_analyses = prior_analyses_context.strip() or "(nenhuma analise anterior relevante)"
         return f"""
-Analyze the following direct-message conversation window and update the user's memory.
+Analise a janela abaixo de conversas diretas e atualize a memoria do usuario.
 
-Window hours: {window_hours}
-Window start (UTC): {window_start.isoformat()}
-Window end (UTC): {window_end.isoformat()}
-Messages included: {source_message_count}
+Janela em horas: {window_hours}
+Inicio da janela (UTC): {window_start.isoformat()}
+Fim da janela (UTC): {window_end.isoformat()}
+Mensagens incluidas: {source_message_count}
 
-Current consolidated life summary:
+Resumo consolidado atual:
 {previous_summary}
 
-Conversation transcript:
+Analises anteriores relevantes:
+{previous_analyses}
+
+Transcricao da conversa:
 {transcript}
 
-Return a JSON object with exactly these fields:
+Retorne um JSON com exatamente estes campos:
 - updated_life_summary: string
 - window_summary: string
 - key_learnings: string[]
@@ -123,12 +131,16 @@ Return a JSON object with exactly these fields:
 - preferences: string[]
 - open_questions: string[]
 
-Rules:
-- updated_life_summary must be cumulative and merge the old summary with this window.
-- Keep updated_life_summary factual, concise, and useful for a future personal assistant.
-- Use the list fields for concrete learnings and uncertain signals.
-- Do not mention that you are an AI.
-- Do not include markdown fences.
+Regras:
+- updated_life_summary deve ser cumulativo e integrar o resumo atual com esta janela.
+- Use as analises anteriores como contexto, mas corrija ou refine o que parecer fraco, incompleto ou contraditorio.
+- Procure entender como o dono do numero age, fala, decide, trabalha, se relaciona e organiza a rotina.
+- Priorize sinais comportamentais do dono do numero, nao apenas um inventario de contatos.
+- Mantenha updated_life_summary factual, claro, conciso e util para um assistente pessoal futuro.
+- Use os campos de lista para aprendizados concretos, padroes de comportamento e sinais incertos.
+- Se a evidencia for fraca, trate como hipotese e nao como fato consolidado.
+- Nao mencione que voce e uma IA.
+- Nao inclua markdown fences.
 """.strip()
 
     def _extract_content(self, payload: dict[str, Any]) -> str:
@@ -193,4 +205,3 @@ Rules:
             if text:
                 items.append(text)
         return items
-

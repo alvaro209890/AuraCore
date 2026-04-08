@@ -26,6 +26,10 @@ services:
         value: "60000"
       - key: MEMORY_ANALYSIS_MAX_WINDOW_HOURS
         value: "168"
+      - key: MEMORY_ANALYSIS_CONTEXT_SNAPSHOTS
+        value: "5"
+      - key: MEMORY_ANALYSIS_SNAPSHOT_CONTEXT_CHARS
+        value: "12000"
       - key: REQUEST_TIMEOUT_SECONDS
         value: "20"
       - key: FRONTEND_ORIGINS

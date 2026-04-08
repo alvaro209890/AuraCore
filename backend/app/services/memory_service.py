@@ -61,9 +61,11 @@ class MemoryAnalysisService:
 
         current_persona = self.store.get_persona(self.settings.default_user_id)
         current_summary = current_persona.life_summary if current_persona else ""
+        prior_analyses_context = self._build_prior_analyses_context()
         deepseek_result = await self.deepseek_service.analyze_memory(
             transcript=transcript,
             current_life_summary=current_summary,
+            prior_analyses_context=prior_analyses_context,
             window_hours=window_hours,
             window_start=window_start,
             window_end=window_end,
@@ -95,6 +97,42 @@ class MemoryAnalysisService:
 
     def list_snapshots(self, *, limit: int = 20) -> list[MemorySnapshotRecord]:
         return self.store.list_memory_snapshots(self.settings.default_user_id, limit=limit)
+
+    def _build_prior_analyses_context(self) -> str:
+        limit = max(0, self.settings.memory_analysis_context_snapshots)
+        if limit == 0:
+            return ""
+
+        snapshots = self.store.list_memory_snapshots(self.settings.default_user_id, limit=limit)
+        if not snapshots:
+            return ""
+
+        sections: list[str] = []
+        current_size = 0
+        char_budget = max(1000, self.settings.memory_analysis_snapshot_context_chars)
+
+        for snapshot in reversed(snapshots):
+            lines = [
+                f"- Analise de {snapshot.window_hours}h em {snapshot.created_at.astimezone(UTC).strftime('%Y-%m-%d %H:%M UTC')}",
+                f"  Resumo da janela: {snapshot.window_summary}",
+            ]
+            if snapshot.key_learnings:
+                lines.append(f"  Aprendizados: {'; '.join(snapshot.key_learnings[:4])}")
+            if snapshot.people_and_relationships:
+                lines.append(f"  Pessoas e relacoes: {'; '.join(snapshot.people_and_relationships[:4])}")
+            if snapshot.routine_signals:
+                lines.append(f"  Rotina: {'; '.join(snapshot.routine_signals[:4])}")
+            if snapshot.preferences:
+                lines.append(f"  Preferencias: {'; '.join(snapshot.preferences[:4])}")
+
+            section = "\n".join(lines)
+            projected_size = current_size + len(section) + 2
+            if sections and projected_size > char_budget:
+                break
+            sections.append(section)
+            current_size = projected_size
+
+        return "\n\n".join(sections)
 
     def _build_snapshot(
         self,

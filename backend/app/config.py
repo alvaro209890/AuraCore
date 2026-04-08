@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     memory_analysis_max_messages: int = Field(250, alias="MEMORY_ANALYSIS_MAX_MESSAGES")
     memory_analysis_max_chars: int = Field(60000, alias="MEMORY_ANALYSIS_MAX_CHARS")
     memory_analysis_max_window_hours: int = Field(168, alias="MEMORY_ANALYSIS_MAX_WINDOW_HOURS")
+    memory_analysis_context_snapshots: int = Field(5, alias="MEMORY_ANALYSIS_CONTEXT_SNAPSHOTS")
+    memory_analysis_snapshot_context_chars: int = Field(12000, alias="MEMORY_ANALYSIS_SNAPSHOT_CONTEXT_CHARS")
     request_timeout_seconds: float = Field(20.0, alias="REQUEST_TIMEOUT_SECONDS")
 
     @property
