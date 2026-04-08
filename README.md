@@ -7,17 +7,19 @@ AuraCore e o segundo cerebro digital centrado em dois numeros de WhatsApp:
 
 ## Estrutura
 
-- [`backend`](/home/acer/Downloads/AuraCore/backend): FastAPI para Evolution API, webhook e persistencia no Supabase.
-- [`frontend`](/home/acer/Downloads/AuraCore/frontend): dashboard Next.js para conectar o WhatsApp observador.
-- [`supabase/migrations`](/home/acer/Downloads/AuraCore/supabase/migrations): schema inicial com `pgvector`.
+- [`backend`](/home/acer/Downloads/AuraCore/backend): FastAPI publico para status do observador, analise DeepSeek e persistencia no Supabase.
+- [`frontend`](/home/acer/Downloads/AuraCore/frontend): dashboard Next.js para conectar o WhatsApp e disparar analises manuais.
+- [`whatsapp-gateway`](/home/acer/Downloads/AuraCore/whatsapp-gateway): microservico Node.js com Baileys, QR Code e ingestao de mensagens.
+- [`supabase/migrations`](/home/acer/Downloads/AuraCore/supabase/migrations): schema inicial e upgrade para snapshots de memoria.
 
-## Fase 1 implementada
+## O que esta implementado
 
-- Criacao e configuracao da instancia observadora na Evolution API.
-- Geracao de QR Code e consulta de status.
-- Webhook por evento para `MESSAGES_UPSERT` e `CONNECTION_UPDATE`.
-- Persistencia de mensagens textuais diretas na tabela `mensagens`.
-- Tabela `persona` criada para a proxima fase.
+- Conexao do WhatsApp observador via Baileys com sessao persistente em disco.
+- QR Code, status e reconexao pelo `whatsapp-gateway`.
+- Ingestao de chats diretos de entrada e saida para a tabela `mensagens`.
+- Analise manual por janela de horas com `deepseek-chat`.
+- Atualizacao de `persona.life_summary` e gravacao de `memory_snapshots`.
+- Dashboard unico com conexao, resumo atual e historico de analises.
 
 ## Como rodar
 
@@ -27,17 +29,29 @@ AuraCore e o segundo cerebro digital centrado em dois numeros de WhatsApp:
 2. Instale dependencias com `pip install -r requirements.txt`.
 3. Inicie com `uvicorn app.main:app --reload --port 8000`.
 
+### WhatsApp Gateway
+
+1. Copie [`whatsapp-gateway/.env.example`](/home/acer/Downloads/AuraCore/whatsapp-gateway/.env.example) para `.env`.
+2. Instale dependencias com `npm install`.
+3. Inicie com `npm run dev`.
+
 ### Frontend
 
 1. Copie [`frontend/.env.example`](/home/acer/Downloads/AuraCore/frontend/.env.example) para `.env.local`.
 2. Instale dependencias com `npm install`.
 3. Inicie com `npm run dev`.
 
+### Supabase
+
+1. Aplique [`20260408190000_initial_schema.sql`](/home/acer/Downloads/AuraCore/supabase/migrations/20260408190000_initial_schema.sql).
+2. Em seguida aplique [`20260408203000_memory_analysis_schema.sql`](/home/acer/Downloads/AuraCore/supabase/migrations/20260408203000_memory_analysis_schema.sql).
+
 ## Deploy
 
-No Render, use `/backend` como root directory do servico Python e configure o comando:
+- Backend Render: use `/backend` com `uvicorn app.main:app --host 0.0.0.0 --port $PORT`.
+- Gateway Render: use `/whatsapp-gateway` com `npm run start` e disco persistente montado em `/var/data`.
+- O arquivo [`render.yaml`](/home/acer/Downloads/AuraCore/render.yaml) ja descreve os dois servicos.
 
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port $PORT
 ```
-

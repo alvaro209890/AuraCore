@@ -8,9 +8,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.dependencies import get_settings
+from app.routers.internal import router as internal_router
+from app.routers.memories import router as memories_router
 from app.routers.observer import router as observer_router
-from app.routers.webhooks import router as webhook_router
-from app.services.evolution_api import EvolutionApiError
+from app.services.deepseek_service import DeepSeekError
+from app.services.memory_service import MemoryAnalysisError
+from app.services.observer_gateway import ObserverGatewayError
 
 
 logging.basicConfig(level=logging.INFO)
@@ -34,7 +37,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(observer_router)
-app.include_router(webhook_router)
+app.include_router(memories_router)
+app.include_router(internal_router)
 
 
 @app.get("/", tags=["meta"])
@@ -51,6 +55,16 @@ async def healthcheck() -> dict[str, str]:
     return {"status": "healthy"}
 
 
-@app.exception_handler(EvolutionApiError)
-async def evolution_api_error_handler(_: Request, exc: EvolutionApiError) -> JSONResponse:
+@app.exception_handler(ObserverGatewayError)
+async def observer_gateway_error_handler(_: Request, exc: ObserverGatewayError) -> JSONResponse:
     return JSONResponse(status_code=502, content={"detail": str(exc)})
+
+
+@app.exception_handler(DeepSeekError)
+async def deepseek_error_handler(_: Request, exc: DeepSeekError) -> JSONResponse:
+    return JSONResponse(status_code=502, content={"detail": str(exc)})
+
+
+@app.exception_handler(MemoryAnalysisError)
+async def memory_analysis_error_handler(_: Request, exc: MemoryAnalysisError) -> JSONResponse:
+    return JSONResponse(status_code=400, content={"detail": str(exc)})

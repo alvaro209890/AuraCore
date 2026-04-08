@@ -1,0 +1,155 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from uuid import uuid4
+
+from app.config import Settings
+from app.services.deepseek_service import DeepSeekMemoryResult, DeepSeekService
+from app.services.supabase_store import (
+    MemorySnapshotRecord,
+    PersonaRecord,
+    StoredMessageRecord,
+    SupabaseStore,
+)
+
+
+class MemoryAnalysisError(RuntimeError):
+    """Raised when a memory analysis request cannot be completed."""
+
+
+@dataclass(slots=True)
+class MemoryAnalysisOutcome:
+    persona: PersonaRecord
+    snapshot: MemorySnapshotRecord
+
+
+class MemoryAnalysisService:
+    def __init__(
+        self,
+        *,
+        settings: Settings,
+        store: SupabaseStore,
+        deepseek_service: DeepSeekService,
+    ) -> None:
+        self.settings = settings
+        self.store = store
+        self.deepseek_service = deepseek_service
+
+    async def analyze_window(self, *, window_hours: int) -> MemoryAnalysisOutcome:
+        if window_hours > self.settings.memory_analysis_max_window_hours:
+            raise MemoryAnalysisError(
+                f"The maximum analysis window is {self.settings.memory_analysis_max_window_hours} hours."
+            )
+
+        window_end = datetime.now(UTC)
+        window_start = window_end - timedelta(hours=window_hours)
+        messages = self.store.list_messages_in_window(
+            user_id=self.settings.default_user_id,
+            window_start=window_start,
+            window_end=window_end,
+        )
+        if not messages:
+            raise MemoryAnalysisError("No messages were found in the selected time window.")
+
+        transcript, included_messages = self._build_transcript(messages)
+        if not transcript.strip() or not included_messages:
+            raise MemoryAnalysisError("The selected time window does not contain analyzable text messages.")
+
+        current_persona = self.store.get_persona(self.settings.default_user_id)
+        current_summary = current_persona.life_summary if current_persona else ""
+        deepseek_result = await self.deepseek_service.analyze_memory(
+            transcript=transcript,
+            current_life_summary=current_summary,
+            window_hours=window_hours,
+            window_start=window_start,
+            window_end=window_end,
+            source_message_count=len(included_messages),
+        )
+
+        snapshot = self._build_snapshot(
+            result=deepseek_result,
+            window_hours=window_hours,
+            window_start=window_start,
+            window_end=window_end,
+            source_message_count=len(included_messages),
+            created_at=window_end,
+        )
+        persona = self.store.persist_memory_analysis(
+            snapshot=snapshot,
+            updated_life_summary=deepseek_result.updated_life_summary,
+            analyzed_at=window_end,
+        )
+        return MemoryAnalysisOutcome(persona=persona, snapshot=snapshot)
+
+    def get_current_persona(self) -> PersonaRecord:
+        return self.store.get_persona(self.settings.default_user_id) or PersonaRecord(
+            user_id=self.settings.default_user_id,
+            life_summary="",
+            last_analyzed_at=None,
+            last_snapshot_id=None,
+        )
+
+    def list_snapshots(self, *, limit: int = 20) -> list[MemorySnapshotRecord]:
+        return self.store.list_memory_snapshots(self.settings.default_user_id, limit=limit)
+
+    def _build_snapshot(
+        self,
+        *,
+        result: DeepSeekMemoryResult,
+        window_hours: int,
+        window_start: datetime,
+        window_end: datetime,
+        source_message_count: int,
+        created_at: datetime,
+    ) -> MemorySnapshotRecord:
+        return MemorySnapshotRecord(
+            id=str(uuid4()),
+            user_id=self.settings.default_user_id,
+            window_hours=window_hours,
+            window_start=window_start,
+            window_end=window_end,
+            source_message_count=source_message_count,
+            window_summary=result.window_summary,
+            key_learnings=result.key_learnings,
+            people_and_relationships=result.people_and_relationships,
+            routine_signals=result.routine_signals,
+            preferences=result.preferences,
+            open_questions=result.open_questions,
+            created_at=created_at,
+        )
+
+    def _build_transcript(self, messages: list[StoredMessageRecord]) -> tuple[str, list[StoredMessageRecord]]:
+        max_messages = max(1, self.settings.memory_analysis_max_messages)
+        selected_messages = messages[-max_messages:]
+
+        lines_reversed: list[str] = []
+        selected_reversed: list[StoredMessageRecord] = []
+        char_budget = max(1000, self.settings.memory_analysis_max_chars)
+        current_size = 0
+
+        for message in reversed(selected_messages):
+            line = self._render_message_line(message)
+            projected_size = current_size + len(line) + 1
+            if lines_reversed and projected_size > char_budget:
+                break
+            lines_reversed.append(line)
+            selected_reversed.append(message)
+            current_size = projected_size
+
+        if not lines_reversed and selected_messages:
+            first_line = self._render_message_line(selected_messages[-1])
+            lines_reversed.append(first_line[:char_budget])
+            selected_reversed.append(selected_messages[-1])
+
+        lines = list(reversed(lines_reversed))
+        selected = list(reversed(selected_reversed))
+        return "\n".join(lines), selected
+
+    def _render_message_line(self, message: StoredMessageRecord) -> str:
+        timestamp = message.timestamp.astimezone(UTC).strftime("%Y-%m-%d %H:%M")
+        speaker = message.contact_name.strip() or message.contact_phone or "Contato"
+        direction = "user->contact" if message.direction == "outbound" else "contact->user"
+        text = " ".join(message.message_text.split())
+        return f"[{timestamp} UTC] {direction} | {speaker}: {text}"
+
