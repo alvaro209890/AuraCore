@@ -16,6 +16,13 @@ async def connect_observer(
     return await gateway.connect_observer()
 
 
+@router.post("/reset", response_model=ObserverStatusResponse)
+async def reset_observer(
+    gateway: ObserverGatewayService = Depends(get_observer_gateway_service),
+) -> ObserverStatusResponse:
+    return await gateway.reset_observer()
+
+
 @router.get("/status", response_model=ObserverStatusResponse)
 async def observer_status(
     refresh_qr: bool = Query(default=False),

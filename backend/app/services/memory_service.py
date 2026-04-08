@@ -39,7 +39,7 @@ class MemoryAnalysisService:
     async def analyze_window(self, *, window_hours: int) -> MemoryAnalysisOutcome:
         if window_hours > self.settings.memory_analysis_max_window_hours:
             raise MemoryAnalysisError(
-                f"The maximum analysis window is {self.settings.memory_analysis_max_window_hours} hours."
+                f"A janela maxima de analise e de {self.settings.memory_analysis_max_window_hours} horas."
             )
 
         window_end = datetime.now(UTC)
@@ -50,11 +50,14 @@ class MemoryAnalysisService:
             window_end=window_end,
         )
         if not messages:
-            raise MemoryAnalysisError("No messages were found in the selected time window.")
+            raise MemoryAnalysisError(
+                "Nenhuma mensagem foi encontrada nessa janela. Se acabou de conectar o WhatsApp, "
+                "use 'Resetar sessao' e leia o QR novamente para puxar o historico inicial."
+            )
 
         transcript, included_messages = self._build_transcript(messages)
         if not transcript.strip() or not included_messages:
-            raise MemoryAnalysisError("The selected time window does not contain analyzable text messages.")
+            raise MemoryAnalysisError("Essa janela nao contem mensagens textuais analisaveis.")
 
         current_persona = self.store.get_persona(self.settings.default_user_id)
         current_summary = current_persona.life_summary if current_persona else ""
@@ -152,4 +155,3 @@ class MemoryAnalysisService:
         direction = "user->contact" if message.direction == "outbound" else "contact->user"
         text = " ".join(message.message_text.split())
         return f"[{timestamp} UTC] {direction} | {speaker}: {text}"
-

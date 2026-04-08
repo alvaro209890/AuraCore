@@ -191,7 +191,15 @@ input {
   gap: 16px;
 }
 
+.connection-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 .connect-button,
+.reset-button,
 .analyze-button,
 .preset-chip {
   border: 0;
@@ -204,6 +212,7 @@ input {
 }
 
 .connect-button,
+.reset-button,
 .analyze-button {
   border-radius: 999px;
   padding: 14px 20px;
@@ -214,18 +223,26 @@ input {
   box-shadow: 0 18px 38px rgba(124, 225, 194, 0.18);
 }
 
+.reset-button {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: none;
+}
+
 .analyze-button {
   background: linear-gradient(135deg, var(--accent-strong), #f0e0a8);
   box-shadow: 0 18px 38px rgba(224, 188, 106, 0.18);
 }
 
 .connect-button:hover:not(:disabled),
+.reset-button:hover:not(:disabled),
 .analyze-button:hover:not(:disabled),
 .preset-chip:hover {
   transform: translateY(-1px);
 }
 
 .connect-button:disabled,
+.reset-button:disabled,
 .analyze-button:disabled {
   opacity: 0.72;
   cursor: default;
@@ -508,6 +525,7 @@ input {
   }
 
   .connect-button,
+  .reset-button,
   .analyze-button {
     width: 100%;
   }

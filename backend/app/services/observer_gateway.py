@@ -20,6 +20,10 @@ class ObserverGatewayService:
         payload = await self._request("POST", "/internal/observer/connect")
         return self._build_status(payload)
 
+    async def reset_observer(self) -> ObserverStatusResponse:
+        payload = await self._request("POST", "/internal/observer/reset")
+        return self._build_status(payload)
+
     async def get_observer_status(self, *, refresh_qr: bool = False) -> ObserverStatusResponse:
         if refresh_qr:
             return await self.connect_observer()
@@ -77,4 +81,3 @@ class ObserverGatewayService:
             return int(value)
         except (TypeError, ValueError):
             return None
-

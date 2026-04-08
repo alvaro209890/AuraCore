@@ -8,6 +8,7 @@ import {
   getCurrentMemory,
   getMemorySnapshots,
   getObserverStatus,
+  resetObserver,
   type MemoryCurrent,
   type MemorySnapshot,
   type ObserverStatus,
@@ -68,6 +69,7 @@ export function ConnectionDashboard() {
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [memoryError, setMemoryError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
   const [isHydrating, setIsHydrating] = useState(true);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [pollingEnabled, setPollingEnabled] = useState(false);
@@ -163,6 +165,26 @@ export function ConnectionDashboard() {
     }
   }
 
+  async function resetConnection(): Promise<void> {
+    setIsResetting(true);
+    setConnectionError(null);
+    setViewState("loading");
+
+    try {
+      const nextStatus = await resetObserver();
+      setStatus(nextStatus);
+      setPollingEnabled(!nextStatus.connected);
+      setViewState(nextStatus.connected ? "connected" : "waiting");
+      lastQrRefreshAtRef.current = Date.now();
+    } catch (error) {
+      setPollingEnabled(false);
+      setViewState("error");
+      setConnectionError(getErrorMessage(error));
+    } finally {
+      setIsResetting(false);
+    }
+  }
+
   async function pollStatus(): Promise<void> {
     try {
       const shouldRefreshQr =
@@ -248,18 +270,28 @@ export function ConnectionDashboard() {
             <span className="panel-kicker">WhatsApp Observador</span>
             <h2>Conectar Numero A</h2>
           </div>
-          <button
-            className="connect-button"
-            onClick={() => void startConnection()}
-            disabled={isSubmitting || viewState === "connected"}
-            type="button"
-          >
-            {viewState === "connected"
-              ? "WhatsApp conectado"
-              : isSubmitting
-                ? "Gerando QR..."
-                : "Conectar Meu WhatsApp"}
-          </button>
+          <div className="connection-actions">
+            <button
+              className="reset-button"
+              onClick={() => void resetConnection()}
+              disabled={isResetting}
+              type="button"
+            >
+              {isResetting ? "Resetando..." : "Resetar sessao"}
+            </button>
+            <button
+              className="connect-button"
+              onClick={() => void startConnection()}
+              disabled={isSubmitting || viewState === "connected"}
+              type="button"
+            >
+              {viewState === "connected"
+                ? "WhatsApp conectado"
+                : isSubmitting
+                  ? "Gerando QR..."
+                  : "Conectar Meu WhatsApp"}
+            </button>
+          </div>
         </div>
 
         <div className="qr-card">

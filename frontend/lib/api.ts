@@ -83,6 +83,10 @@ export async function connectObserver(): Promise<ObserverStatus> {
   return request<ObserverStatus>("/api/observer/connect", { method: "POST" });
 }
 
+export async function resetObserver(): Promise<ObserverStatus> {
+  return request<ObserverStatus>("/api/observer/reset", { method: "POST" });
+}
+
 export async function getObserverStatus(refreshQr = false): Promise<ObserverStatus> {
   const query = refreshQr ? "?refresh_qr=true" : "";
   return request<ObserverStatus>(`/api/observer/status${query}`);
