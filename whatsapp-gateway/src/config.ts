@@ -35,10 +35,10 @@ export const config = {
   port: parseInteger("PORT", 10001),
   nodeEnv: getOptional("NODE_ENV", "development"),
   instanceName: getOptional("INSTANCE_NAME", "observer"),
-  whatsappAuthDir: getOptional("WHATSAPP_AUTH_DIR", "/tmp/auracore-baileys-auth"),
+  supabaseUrl: normalizeUrl(getRequired("SUPABASE_URL")),
+  supabaseServiceRoleKey: getRequired("SUPABASE_SERVICE_ROLE_KEY"),
   auracoreApiBaseUrl: normalizeUrl(getRequired("AURACORE_API_BASE_URL")),
   internalApiToken: getRequired("INTERNAL_API_TOKEN"),
   qrExpiresSeconds: parseInteger("QR_EXPIRES_SECONDS", 60),
   reconnectDelayMs: parseInteger("RECONNECT_DELAY_MS", 5000),
 };
-

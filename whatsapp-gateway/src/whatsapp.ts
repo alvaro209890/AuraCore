@@ -1,18 +1,17 @@
 import makeWASocket, {
   DisconnectReason,
-  extractMessageContent,
   fetchLatestBaileysVersion,
-  useMultiFileAuthState,
+  extractMessageContent,
   type proto,
   type WASocket,
 } from "@whiskeysockets/baileys";
-import { mkdir, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 
 import Pino from "pino";
 import QRCode from "qrcode";
 
 import { config } from "./config";
+import { SupabaseAuthStateStore } from "./supabase-auth-state";
 
 const logger = Pino({ level: config.nodeEnv === "development" ? "debug" : "info" });
 const baileysLogger = Pino({ level: "silent" });
@@ -97,6 +96,12 @@ function asDisconnectCode(error: unknown): number | null {
 }
 
 export class WhatsAppObserverGateway {
+  private readonly authStore = new SupabaseAuthStateStore(
+    config.instanceName,
+    config.supabaseUrl,
+    config.supabaseServiceRoleKey,
+    logger,
+  );
   private socket: WASocket | null = null;
   private state: ObserverState = "connecting";
   private connected = false;
@@ -115,7 +120,6 @@ export class WhatsAppObserverGateway {
   async start(): Promise<void> {
     if (this.running) return;
     this.running = true;
-    await mkdir(config.whatsappAuthDir, { recursive: true });
     await this.connect();
   }
 
@@ -159,8 +163,7 @@ export class WhatsAppObserverGateway {
     this.allowReconnect = false;
     this.clearReconnectTimer();
     await this.cleanupSocket(false);
-    await rm(config.whatsappAuthDir, { recursive: true, force: true });
-    await mkdir(config.whatsappAuthDir, { recursive: true });
+    await this.authStore.clearSession();
     this.clearQr();
     this.connected = false;
     this.state = "connecting";
@@ -175,7 +178,7 @@ export class WhatsAppObserverGateway {
     this.connected = false;
     this.state = "connecting";
 
-    const { state, saveCreds } = await useMultiFileAuthState(config.whatsappAuthDir);
+    const { state, saveCreds } = await this.authStore.useAuthState();
 
     let version: [number, number, number];
     try {

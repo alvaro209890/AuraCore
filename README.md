@@ -14,7 +14,7 @@ AuraCore e o segundo cerebro digital centrado em dois numeros de WhatsApp:
 
 ## O que esta implementado
 
-- Conexao do WhatsApp observador via Baileys com sessao persistente em disco.
+- Conexao do WhatsApp observador via Baileys com sessao persistida no Supabase.
 - QR Code, status e reconexao pelo `whatsapp-gateway`.
 - Ingestao de chats diretos de entrada e saida para a tabela `mensagens`.
 - Analise manual por janela de horas com `deepseek-chat`.
@@ -45,6 +45,7 @@ AuraCore e o segundo cerebro digital centrado em dois numeros de WhatsApp:
 
 1. Aplique [`20260408190000_initial_schema.sql`](/home/acer/Downloads/AuraCore/supabase/migrations/20260408190000_initial_schema.sql).
 2. Em seguida aplique [`20260408203000_memory_analysis_schema.sql`](/home/acer/Downloads/AuraCore/supabase/migrations/20260408203000_memory_analysis_schema.sql).
+3. Por fim aplique [`20260408230000_whatsapp_session_storage.sql`](/home/acer/Downloads/AuraCore/supabase/migrations/20260408230000_whatsapp_session_storage.sql).
 
 ## Deploy
 
@@ -52,8 +53,8 @@ O deploy em producao pode rodar em um unico servico da Render usando Docker:
 
 - o FastAPI fica publico na porta do servico;
 - o gateway Baileys roda no mesmo container em `127.0.0.1:10001`;
-- a sessao do WhatsApp fica em disco persistente montado em `/var/data`.
+- a sessao do WhatsApp fica salva no Supabase, sem precisar de disco persistente.
 
 O arquivo [`render.yaml`](/home/acer/Downloads/AuraCore/render.yaml) ja descreve esse modo single-service.
 
-Para ficar online 24/7 na Render, use um plano pago. Web services gratuitos podem entrar em idle quando ficam sem trafego.
+Se voce optar por Render free, pode manter o servico mais ativo com ping externo em `/health`, mas a Render ainda pode reiniciar o servico. Como a sessao do WhatsApp fica no Supabase, o QR normalmente nao precisa ser lido de novo apos esses restarts.

@@ -24,7 +24,6 @@ RUN chmod +x /app/scripts/start-single-service.sh
 ENV NODE_ENV=production
 ENV INSTANCE_NAME=observer
 ENV WHATSAPP_GATEWAY_PORT=10001
-ENV WHATSAPP_AUTH_DIR=/var/data/baileys-auth
 ENV QR_EXPIRES_SECONDS=60
 ENV RECONNECT_DELAY_MS=5000
 

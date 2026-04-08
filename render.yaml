@@ -2,13 +2,9 @@ services:
   - name: auracore-backend-82bf2
     type: web
     runtime: docker
-    plan: starter
+    plan: free
     healthCheckPath: /health
     autoDeploy: true
-    disk:
-      name: auracore-whatsapp-auth
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
       - key: SUPABASE_URL
         sync: false
@@ -38,8 +34,6 @@ services:
         value: 00000000-0000-0000-0000-000000000001
       - key: INSTANCE_NAME
         value: observer
-      - key: WHATSAPP_AUTH_DIR
-        value: /var/data/baileys-auth
       - key: WHATSAPP_GATEWAY_PORT
         value: "10001"
       - key: QR_EXPIRES_SECONDS
