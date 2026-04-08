@@ -214,6 +214,11 @@ export class WhatsAppObserverGateway {
       if (this.connectionEpoch !== epoch) return;
       void this.handleMessagesUpsert(upsert as { messages: proto.IWebMessageInfo[]; type: string });
     });
+
+    socket.ev.on("messaging-history.set", (historySet) => {
+      if (this.connectionEpoch !== epoch) return;
+      void this.handleHistorySync(historySet as { messages: proto.IWebMessageInfo[]; isLatest?: boolean });
+    });
   }
 
   private async handleConnectionUpdate(update: {
@@ -274,12 +279,26 @@ export class WhatsAppObserverGateway {
     messages: proto.IWebMessageInfo[];
     type: string;
   }): Promise<void> {
-    if (!upsert.messages || upsert.messages.length === 0) {
+    await this.ingestMessages(upsert.messages, "live_upsert");
+  }
+
+  private async handleHistorySync(historySet: {
+    messages: proto.IWebMessageInfo[];
+    isLatest?: boolean;
+  }): Promise<void> {
+    await this.ingestMessages(historySet.messages, historySet.isLatest ? "history_sync_latest" : "history_sync");
+  }
+
+  private async ingestMessages(
+    messages: proto.IWebMessageInfo[] | undefined,
+    sourceEvent: string,
+  ): Promise<void> {
+    if (!messages || messages.length === 0) {
       return;
     }
 
     const batch: IngestMessagePayload[] = [];
-    for (const message of upsert.messages) {
+    for (const message of messages) {
       const normalized = this.normalizeMessage(message);
       if (normalized) {
         batch.push(normalized);
@@ -287,6 +306,7 @@ export class WhatsAppObserverGateway {
     }
 
     if (batch.length === 0) {
+      logger.debug({ sourceEvent, candidateCount: messages.length }, "No analyzable direct text messages in batch.");
       return;
     }
 
@@ -303,15 +323,15 @@ export class WhatsAppObserverGateway {
       if (!response.ok) {
         const detail = await response.text();
         logger.error(
-          { count: batch.length, status: response.status, detail },
+          { sourceEvent, count: batch.length, status: response.status, detail },
           "AuraCore backend rejected the message batch.",
         );
         return;
       }
 
-      logger.debug({ count: batch.length }, "Delivered message batch to AuraCore backend.");
+      logger.info({ sourceEvent, count: batch.length }, "Delivered message batch to AuraCore backend.");
     } catch (error) {
-      logger.error({ error, count: batch.length }, "Failed to deliver messages to AuraCore backend.");
+      logger.error({ error, sourceEvent, count: batch.length }, "Failed to deliver messages to AuraCore backend.");
     }
   }
 
@@ -422,6 +442,7 @@ export class WhatsAppObserverGateway {
       this.socket.ev.removeAllListeners("connection.update");
       this.socket.ev.removeAllListeners("creds.update");
       this.socket.ev.removeAllListeners("messages.upsert");
+      this.socket.ev.removeAllListeners("messaging-history.set");
       (this.socket as unknown as { ws?: { close: () => void } }).ws?.close();
     } catch {
       // Ignore cleanup errors.
