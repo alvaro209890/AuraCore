@@ -20,6 +20,14 @@ services:
         value: https://api.deepseek.com
       - key: DEEPSEEK_TIMEOUT_SECONDS
         value: "60"
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: llama-3.1-8b-instant
+      - key: GROQ_API_BASE_URL
+        value: https://api.groq.com/openai/v1
+      - key: GROQ_TIMEOUT_SECONDS
+        value: "45"
       - key: MEMORY_ANALYSIS_MAX_MESSAGES
         value: "250"
       - key: MEMORY_ANALYSIS_MAX_CHARS
@@ -30,6 +38,16 @@ services:
         value: "5"
       - key: MEMORY_ANALYSIS_SNAPSHOT_CONTEXT_CHARS
         value: "12000"
+      - key: CHAT_MAX_HISTORY_MESSAGES
+        value: "18"
+      - key: CHAT_CONTEXT_SNAPSHOTS
+        value: "5"
+      - key: CHAT_CONTEXT_PROJECTS
+        value: "8"
+      - key: CHAT_CONTEXT_CHARS
+        value: "18000"
+      - key: CHAT_MAX_MESSAGE_CHARS
+        value: "2000"
       - key: REQUEST_TIMEOUT_SECONDS
         value: "20"
       - key: FRONTEND_ORIGINS

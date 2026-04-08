@@ -33,13 +33,42 @@ export type MemorySnapshot = {
   created_at: string;
 };
 
+export type ProjectMemory = {
+  id: string;
+  project_key: string;
+  project_name: string;
+  summary: string;
+  status: string;
+  next_steps: string[];
+  evidence: string[];
+  source_snapshot_id: string | null;
+  last_seen_at: string | null;
+  updated_at: string;
+};
+
+export type ChatMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  created_at: string;
+};
+
 export type AnalyzeMemoryResponse = {
   current: MemoryCurrent;
   snapshot: MemorySnapshot;
+  projects: ProjectMemory[];
 };
 
 export type MemorySnapshotsListResponse = {
   snapshots: MemorySnapshot[];
+};
+
+export type ChatSession = {
+  thread_id: string;
+  title: string;
+  current: MemoryCurrent;
+  projects: ProjectMemory[];
+  messages: ChatMessage[];
 };
 
 const API_BASE_URL = (
@@ -104,5 +133,16 @@ export async function getMemorySnapshots(limit = 20): Promise<MemorySnapshot[]> 
 export async function analyzeMemory(windowHours: number): Promise<AnalyzeMemoryResponse> {
   return request<AnalyzeMemoryResponse>(`/api/memories/analyze?window_hours=${windowHours}`, {
     method: "POST",
+  });
+}
+
+export async function getChatSession(): Promise<ChatSession> {
+  return request<ChatSession>("/api/chat/session");
+}
+
+export async function sendChatMessage(messageText: string): Promise<ChatSession> {
+  return request<ChatSession>("/api/chat/messages", {
+    method: "POST",
+    body: JSON.stringify({ message_text: messageText }),
   });
 }

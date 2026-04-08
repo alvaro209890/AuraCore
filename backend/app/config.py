@@ -32,11 +32,20 @@ class Settings(BaseSettings):
     deepseek_model: str = Field("deepseek-chat", alias="DEEPSEEK_MODEL")
     deepseek_api_base_url: str = Field("https://api.deepseek.com", alias="DEEPSEEK_API_BASE_URL")
     deepseek_timeout_seconds: float = Field(60.0, alias="DEEPSEEK_TIMEOUT_SECONDS")
+    groq_api_key: str | None = Field(default=None, alias="GROQ_API_KEY")
+    groq_model: str = Field("llama-3.1-8b-instant", alias="GROQ_MODEL")
+    groq_api_base_url: str = Field("https://api.groq.com/openai/v1", alias="GROQ_API_BASE_URL")
+    groq_timeout_seconds: float = Field(45.0, alias="GROQ_TIMEOUT_SECONDS")
     memory_analysis_max_messages: int = Field(250, alias="MEMORY_ANALYSIS_MAX_MESSAGES")
     memory_analysis_max_chars: int = Field(60000, alias="MEMORY_ANALYSIS_MAX_CHARS")
     memory_analysis_max_window_hours: int = Field(168, alias="MEMORY_ANALYSIS_MAX_WINDOW_HOURS")
     memory_analysis_context_snapshots: int = Field(5, alias="MEMORY_ANALYSIS_CONTEXT_SNAPSHOTS")
     memory_analysis_snapshot_context_chars: int = Field(12000, alias="MEMORY_ANALYSIS_SNAPSHOT_CONTEXT_CHARS")
+    chat_max_history_messages: int = Field(18, alias="CHAT_MAX_HISTORY_MESSAGES")
+    chat_context_snapshots: int = Field(5, alias="CHAT_CONTEXT_SNAPSHOTS")
+    chat_context_projects: int = Field(8, alias="CHAT_CONTEXT_PROJECTS")
+    chat_context_chars: int = Field(18000, alias="CHAT_CONTEXT_CHARS")
+    chat_max_message_chars: int = Field(2000, alias="CHAT_MAX_MESSAGE_CHARS")
     request_timeout_seconds: float = Field(20.0, alias="REQUEST_TIMEOUT_SECONDS")
 
     @property
@@ -50,3 +59,7 @@ class Settings(BaseSettings):
     @property
     def normalized_deepseek_api_base_url(self) -> str:
         return self.deepseek_api_base_url.rstrip("/")
+
+    @property
+    def normalized_groq_api_base_url(self) -> str:
+        return self.groq_api_base_url.rstrip("/")

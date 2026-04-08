@@ -70,7 +70,8 @@ input {
 
 .hero-panel,
 .connection-panel,
-.memory-panel {
+.memory-panel,
+.chat-panel {
   position: relative;
   overflow: hidden;
   border: 1px solid var(--border);
@@ -82,7 +83,8 @@ input {
 
 .hero-panel::after,
 .connection-panel::after,
-.memory-panel::after {
+.memory-panel::after,
+.chat-panel::after {
   content: "";
   position: absolute;
   inset: auto -90px -120px auto;
@@ -98,7 +100,8 @@ input {
 }
 
 .connection-panel,
-.memory-panel {
+.memory-panel,
+.chat-panel {
   padding: 32px;
 }
 
@@ -351,6 +354,11 @@ input {
   background: linear-gradient(180deg, rgba(18, 24, 26, 0.94), rgba(12, 16, 17, 0.9));
 }
 
+.chat-panel {
+  padding: 32px;
+  background: linear-gradient(180deg, rgba(14, 21, 22, 0.96), rgba(10, 14, 16, 0.94));
+}
+
 .analysis-controls {
   margin-top: 24px;
   display: grid;
@@ -419,8 +427,28 @@ input {
   gap: 18px;
 }
 
+.chat-thread-meta {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  text-align: right;
+}
+
+.chat-thread-meta strong {
+  color: var(--text);
+}
+
+.chat-grid {
+  margin-top: 24px;
+  display: grid;
+  grid-template-columns: minmax(280px, 0.92fr) minmax(0, 1.08fr);
+  gap: 18px;
+}
+
 .summary-card,
-.snapshot-panel {
+.snapshot-panel,
+.project-panel,
+.chat-conversation-panel {
   padding: 24px;
 }
 
@@ -444,13 +472,45 @@ input {
   gap: 14px;
 }
 
+.project-list {
+  margin-top: 18px;
+  display: grid;
+  gap: 14px;
+}
+
 .snapshot-card {
   padding: 18px;
   background: rgba(255, 255, 255, 0.035);
 }
 
+.project-card,
+.chat-bubble,
+.chat-input-card {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.project-card {
+  padding: 18px;
+}
+
 .snapshot-summary {
   margin: 14px 0;
+}
+
+.project-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  color: var(--muted);
+}
+
+.project-status-label {
+  font-size: 0.82rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
 }
 
 .snapshot-meta {
@@ -462,6 +522,89 @@ input {
 .snapshot-empty {
   margin-top: 18px;
   padding: 20px;
+}
+
+.chat-history {
+  margin-top: 18px;
+  display: grid;
+  gap: 12px;
+  max-height: 560px;
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
+.chat-empty {
+  padding: 20px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.chat-empty strong {
+  display: block;
+  margin-bottom: 10px;
+  color: var(--text);
+}
+
+.chat-bubble {
+  padding: 16px 18px;
+}
+
+.chat-bubble-user {
+  background: linear-gradient(145deg, rgba(124, 225, 194, 0.11), rgba(255, 255, 255, 0.03));
+}
+
+.chat-bubble-assistant {
+  background: linear-gradient(145deg, rgba(224, 188, 106, 0.12), rgba(255, 255, 255, 0.03));
+}
+
+.chat-bubble-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.chat-bubble-head span {
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.chat-bubble p {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.chat-composer {
+  margin-top: 18px;
+  display: grid;
+  gap: 14px;
+}
+
+.chat-input-card {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.chat-input-card span {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.chat-input-card textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  background: rgba(6, 10, 10, 0.32);
+  color: var(--text);
+  padding: 12px 14px;
 }
 
 .signal-group {
@@ -490,7 +633,8 @@ input {
 @media (max-width: 1080px) {
   .shell,
   .memory-grid,
-  .analysis-controls {
+  .analysis-controls,
+  .chat-grid {
     grid-template-columns: 1fr;
   }
 
@@ -507,15 +651,18 @@ input {
 
   .hero-panel,
   .connection-panel,
-  .memory-panel {
+  .memory-panel,
+  .chat-panel {
     padding: 22px;
   }
 
   .panel-header,
   .memory-header,
+  .chat-thread-meta,
   .summary-card-head,
   .snapshot-panel-head,
-  .snapshot-topline {
+  .snapshot-topline,
+  .chat-bubble-head {
     flex-direction: column;
   }
 

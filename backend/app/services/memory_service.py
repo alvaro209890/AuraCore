@@ -9,6 +9,8 @@ from app.services.deepseek_service import DeepSeekMemoryResult, DeepSeekService
 from app.services.supabase_store import (
     MemorySnapshotRecord,
     PersonaRecord,
+    ProjectMemoryRecord,
+    ProjectMemorySeed,
     StoredMessageRecord,
     SupabaseStore,
 )
@@ -22,6 +24,7 @@ class MemoryAnalysisError(RuntimeError):
 class MemoryAnalysisOutcome:
     persona: PersonaRecord
     snapshot: MemorySnapshotRecord
+    projects: list[ProjectMemoryRecord]
 
 
 class MemoryAnalysisService:
@@ -85,7 +88,22 @@ class MemoryAnalysisService:
             updated_life_summary=deepseek_result.updated_life_summary,
             analyzed_at=window_end,
         )
-        return MemoryAnalysisOutcome(persona=persona, snapshot=snapshot)
+        projects = self.store.upsert_project_memories(
+            user_id=self.settings.default_user_id,
+            source_snapshot_id=snapshot.id,
+            projects=[
+                ProjectMemorySeed(
+                    project_name=project.name,
+                    summary=project.summary,
+                    status=project.status,
+                    next_steps=project.next_steps,
+                    evidence=project.evidence,
+                )
+                for project in deepseek_result.active_projects
+            ],
+            observed_at=window_end,
+        )
+        return MemoryAnalysisOutcome(persona=persona, snapshot=snapshot, projects=projects)
 
     def get_current_persona(self) -> PersonaRecord:
         return self.store.get_persona(self.settings.default_user_id) or PersonaRecord(
@@ -97,6 +115,9 @@ class MemoryAnalysisService:
 
     def list_snapshots(self, *, limit: int = 20) -> list[MemorySnapshotRecord]:
         return self.store.list_memory_snapshots(self.settings.default_user_id, limit=limit)
+
+    def list_projects(self, *, limit: int = 8) -> list[ProjectMemoryRecord]:
+        return self.store.list_project_memories(self.settings.default_user_id, limit=limit)
 
     def _build_prior_analyses_context(self) -> str:
         limit = max(0, self.settings.memory_analysis_context_snapshots)

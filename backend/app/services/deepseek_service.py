@@ -14,6 +14,14 @@ class DeepSeekError(RuntimeError):
     """Raised when DeepSeek cannot complete or return a valid analysis."""
 
 
+class DeepSeekProjectMemory(BaseModel):
+    name: str
+    summary: str
+    status: str = ""
+    next_steps: list[str] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+
+
 class DeepSeekMemoryResult(BaseModel):
     updated_life_summary: str
     window_summary: str
@@ -22,6 +30,7 @@ class DeepSeekMemoryResult(BaseModel):
     routine_signals: list[str] = Field(default_factory=list)
     preferences: list[str] = Field(default_factory=list)
     open_questions: list[str] = Field(default_factory=list)
+    active_projects: list[DeepSeekProjectMemory] = Field(default_factory=list)
 
 
 class DeepSeekService:
@@ -130,12 +139,15 @@ Retorne um JSON com exatamente estes campos:
 - routine_signals: string[]
 - preferences: string[]
 - open_questions: string[]
+- active_projects: {{ name: string, summary: string, status: string, next_steps: string[], evidence: string[] }}[]
 
 Regras:
 - updated_life_summary deve ser cumulativo e integrar o resumo atual com esta janela.
 - Use as analises anteriores como contexto, mas corrija ou refine o que parecer fraco, incompleto ou contraditorio.
 - Procure entender como o dono do numero age, fala, decide, trabalha, se relaciona e organiza a rotina.
 - Priorize sinais comportamentais do dono do numero, nao apenas um inventario de contatos.
+- Preencha active_projects apenas com projetos, trabalhos, produtos, operacoes ou frentes reais que parecam recorrentes ou importantes para o dono.
+- Em active_projects, use no maximo 6 itens e descarte assuntos soltos sem continuidade.
 - Mantenha updated_life_summary factual, claro, conciso e util para um assistente pessoal futuro.
 - Use os campos de lista para aprendizados concretos, padroes de comportamento e sinais incertos.
 - Se a evidencia for fraca, trate como hipotese e nao como fato consolidado.
@@ -181,6 +193,7 @@ Regras:
             routine_signals=self._as_string_list(raw.get("routine_signals")),
             preferences=self._as_string_list(raw.get("preferences")),
             open_questions=self._as_string_list(raw.get("open_questions")),
+            active_projects=self._as_projects(raw.get("active_projects")),
         )
 
     def _as_text(self, value: Any) -> str:
@@ -205,3 +218,22 @@ Regras:
             if text:
                 items.append(text)
         return items
+
+    def _as_projects(self, value: Any) -> list[DeepSeekProjectMemory]:
+        if not isinstance(value, list):
+            return []
+
+        projects: list[DeepSeekProjectMemory] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            project = DeepSeekProjectMemory(
+                name=self._as_text(item.get("name")),
+                summary=self._as_text(item.get("summary")),
+                status=self._as_text(item.get("status")),
+                next_steps=self._as_string_list(item.get("next_steps")),
+                evidence=self._as_string_list(item.get("evidence")),
+            )
+            if project.name and project.summary:
+                projects.append(project)
+        return projects[:6]

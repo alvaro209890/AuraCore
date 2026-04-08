@@ -5,13 +5,17 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   analyzeMemory,
   connectObserver,
+  getChatSession,
   getCurrentMemory,
   getMemorySnapshots,
   getObserverStatus,
   resetObserver,
+  sendChatMessage,
+  type ChatMessage,
   type MemoryCurrent,
   type MemorySnapshot,
   type ObserverStatus,
+  type ProjectMemory,
 } from "@/lib/api";
 
 type ViewState = "idle" | "loading" | "waiting" | "connected" | "error";
@@ -68,15 +72,22 @@ export function ConnectionDashboard() {
   const [viewState, setViewState] = useState<ViewState>("idle");
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [memoryError, setMemoryError] = useState<string | null>(null);
+  const [chatError, setChatError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
   const [isHydrating, setIsHydrating] = useState(true);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isSendingChat, setIsSendingChat] = useState(false);
   const [pollingEnabled, setPollingEnabled] = useState(false);
   const [memory, setMemory] = useState<MemoryCurrent | null>(null);
   const [snapshots, setSnapshots] = useState<MemorySnapshot[]>([]);
+  const [projects, setProjects] = useState<ProjectMemory[]>([]);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatThreadTitle, setChatThreadTitle] = useState("Conversa principal");
+  const [chatDraft, setChatDraft] = useState("");
   const [windowHoursInput, setWindowHoursInput] = useState("24");
   const lastQrRefreshAtRef = useRef<number | null>(null);
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
 
   const selectedWindowHours = useMemo(() => {
     const parsed = Number.parseInt(windowHoursInput, 10);
@@ -106,13 +117,21 @@ export function ConnectionDashboard() {
     return () => window.clearInterval(intervalId);
   }, [pollingEnabled, status?.connected]);
 
+  useEffect(() => {
+    if (!chatScrollRef.current) {
+      return;
+    }
+    chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+  }, [chatMessages]);
+
   async function hydrateDashboard(): Promise<void> {
     setIsHydrating(true);
 
-    const [statusResult, memoryResult, snapshotsResult] = await Promise.allSettled([
+    const [statusResult, memoryResult, snapshotsResult, chatResult] = await Promise.allSettled([
       getObserverStatus(false),
       getCurrentMemory(),
       getMemorySnapshots(),
+      getChatSession(),
     ]);
 
     if (statusResult.status === "fulfilled") {
@@ -140,6 +159,18 @@ export function ConnectionDashboard() {
       }
     } else {
       setMemoryError(getErrorMessage(snapshotsResult.reason));
+    }
+
+    if (chatResult.status === "fulfilled") {
+      setChatThreadTitle(chatResult.value.title);
+      setChatMessages(chatResult.value.messages);
+      setProjects(chatResult.value.projects);
+      if (memoryResult.status !== "fulfilled") {
+        setMemory(chatResult.value.current);
+      }
+      setChatError(null);
+    } else {
+      setChatError(getErrorMessage(chatResult.reason));
     }
 
     setIsHydrating(false);
@@ -226,6 +257,7 @@ export function ConnectionDashboard() {
     try {
       const response = await analyzeMemory(selectedWindowHours);
       setMemory(response.current);
+      setProjects(response.projects);
       setSnapshots((previous) => {
         const remaining = previous.filter((snapshot) => snapshot.id !== response.snapshot.id);
         return [response.snapshot, ...remaining];
@@ -237,15 +269,39 @@ export function ConnectionDashboard() {
     }
   }
 
+  async function submitChatMessage(): Promise<void> {
+    const normalized = chatDraft.trim();
+    if (!normalized) {
+      setChatError("Escreva uma mensagem para conversar com a IA.");
+      return;
+    }
+
+    setIsSendingChat(true);
+    setChatError(null);
+
+    try {
+      const session = await sendChatMessage(normalized);
+      setChatMessages(session.messages);
+      setProjects(session.projects);
+      setMemory(session.current);
+      setChatThreadTitle(session.title);
+      setChatDraft("");
+    } catch (error) {
+      setChatError(getErrorMessage(error));
+    } finally {
+      setIsSendingChat(false);
+    }
+  }
+
   return (
     <main className="shell">
       <section className="hero-panel">
         <div className="eyebrow">AuraCore / Memoria Observadora</div>
-        <h1>Leia o WhatsApp, consolide sinais e gere memorias sob demanda.</h1>
+        <h1>Leia o WhatsApp, consolide sinais e converse com uma IA personalizada.</h1>
         <p className="hero-copy">
-          O gateway Baileys observa chats diretos do Numero A, o backend persiste as
-          mensagens no Supabase e a analise com DeepSeek so acontece quando voce
-          pedir. Cada rodada cria um snapshot do que foi aprendido naquela janela.
+          O gateway Baileys observa chats diretos do Numero A, o backend persiste as mensagens no
+          Supabase, o DeepSeek transforma janelas de conversa em memoria e projetos, e o Groq usa
+          esse contexto para responder como um segundo cerebro pessoal.
         </p>
 
         <div className="metric-strip">
@@ -470,6 +526,115 @@ export function ConnectionDashboard() {
                 ))}
               </div>
             )}
+          </article>
+        </div>
+      </section>
+
+      <section className="chat-panel panel-span">
+        <div className="memory-header">
+          <div>
+            <span className="panel-kicker">Chat Personalizado</span>
+            <h2>Converse com a IA do dono</h2>
+          </div>
+          <div className="chat-thread-meta">
+            <span>{chatThreadTitle}</span>
+            <strong>{projects.length} projetos mapeados</strong>
+          </div>
+        </div>
+
+        <div className="chat-grid">
+          <article className="project-panel">
+            <div className="snapshot-panel-head">
+              <span className="card-kicker">Projetos e frentes</span>
+              <span className="summary-meta">Atualizados pelas analises</span>
+            </div>
+
+            {projects.length === 0 ? (
+              <div className="snapshot-empty">
+                <strong>Nenhum projeto consolidado ainda</strong>
+                <p>As proximas analises vao extrair projetos, operacoes e frentes importantes do dono.</p>
+              </div>
+            ) : (
+              <div className="project-list">
+                {projects.map((project) => (
+                  <article key={project.id} className="project-card">
+                    <div className="snapshot-topline">
+                      <strong>{project.project_name}</strong>
+                      <span>{project.last_seen_at ? formatDateTime(project.last_seen_at) : "Sem data"}</span>
+                    </div>
+                    <p className="snapshot-summary">{project.summary}</p>
+                    {project.status ? (
+                      <div className="project-status-row">
+                        <span className="project-status-label">Status</span>
+                        <strong>{project.status}</strong>
+                      </div>
+                    ) : null}
+                    <SignalGroup title="Proximos passos" items={project.next_steps} />
+                    <SignalGroup title="Evidencias" items={project.evidence} />
+                  </article>
+                ))}
+              </div>
+            )}
+          </article>
+
+          <article className="chat-conversation-panel">
+            <div className="snapshot-panel-head">
+              <span className="card-kicker">Conversa com Groq</span>
+              <span className="summary-meta">Respostas personalizadas com memoria + projetos</span>
+            </div>
+
+            {chatError ? (
+              <div className="error-card memory-error">
+                <strong>Falha no chat</strong>
+                <p>{chatError}</p>
+              </div>
+            ) : null}
+
+            <div ref={chatScrollRef} className="chat-history">
+              {chatMessages.length === 0 ? (
+                <div className="chat-empty">
+                  <strong>Sem conversa ainda</strong>
+                  <p>
+                    Assim que voce enviar a primeira mensagem, o AuraCore responde usando o resumo do dono,
+                    os snapshots recentes e os projetos consolidados.
+                  </p>
+                </div>
+              ) : (
+                chatMessages.map((message) => (
+                  <article
+                    key={message.id}
+                    className={`chat-bubble${message.role === "assistant" ? " chat-bubble-assistant" : " chat-bubble-user"}`}
+                  >
+                    <div className="chat-bubble-head">
+                      <strong>{message.role === "assistant" ? "AuraCore" : "Voce"}</strong>
+                      <span>{formatDateTime(message.created_at)}</span>
+                    </div>
+                    <p>{message.content}</p>
+                  </article>
+                ))
+              )}
+            </div>
+
+            <div className="chat-composer">
+              <label className="chat-input-card">
+                <span>Mensagem para a IA</span>
+                <textarea
+                  value={chatDraft}
+                  onChange={(event) => setChatDraft(event.target.value)}
+                  rows={4}
+                  placeholder="Ex.: O que voce entendeu sobre meus projetos esta semana?"
+                />
+              </label>
+
+              <button
+                className="connect-button"
+                onClick={() => void submitChatMessage()}
+                disabled={isSendingChat}
+                type="button"
+              >
+                {isSendingChat ? "Respondendo..." : "Enviar para a IA"}
+              </button>
+            </div>
           </article>
         </div>
       </section>

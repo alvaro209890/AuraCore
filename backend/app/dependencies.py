@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from app.services.chat_service import ChatAssistantService
 from app.config import Settings
 from app.services.deepseek_service import DeepSeekService
+from app.services.groq_service import GroqChatService
 from app.services.memory_service import MemoryAnalysisService
 from app.services.observer_gateway import ObserverGatewayService
 from app.services.supabase_store import SupabaseStore
@@ -35,9 +37,23 @@ def get_deepseek_service() -> DeepSeekService:
 
 
 @lru_cache
+def get_groq_service() -> GroqChatService:
+    return GroqChatService(settings=get_settings())
+
+
+@lru_cache
 def get_memory_analysis_service() -> MemoryAnalysisService:
     return MemoryAnalysisService(
         settings=get_settings(),
         store=get_supabase_store(),
         deepseek_service=get_deepseek_service(),
+    )
+
+
+@lru_cache
+def get_chat_assistant_service() -> ChatAssistantService:
+    return ChatAssistantService(
+        settings=get_settings(),
+        store=get_supabase_store(),
+        groq_service=get_groq_service(),
     )

@@ -67,11 +67,43 @@ class MemorySnapshotResponse(BaseModel):
     created_at: datetime
 
 
+class ProjectMemoryResponse(BaseModel):
+    id: str
+    project_key: str
+    project_name: str
+    summary: str
+    status: str = ""
+    next_steps: list[str] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+    source_snapshot_id: str | None = None
+    last_seen_at: datetime | None = None
+    updated_at: datetime
+
+
 class AnalyzeMemoryResponse(BaseModel):
     current: MemoryCurrentResponse
     snapshot: MemorySnapshotResponse
+    projects: list[ProjectMemoryResponse] = Field(default_factory=list)
 
 
 class MemorySnapshotsListResponse(BaseModel):
     snapshots: list[MemorySnapshotResponse] = Field(default_factory=list)
 
+
+class ChatMessageResponse(BaseModel):
+    id: str
+    role: Literal["user", "assistant"]
+    content: str
+    created_at: datetime
+
+
+class ChatSessionResponse(BaseModel):
+    thread_id: str
+    title: str
+    current: MemoryCurrentResponse
+    projects: list[ProjectMemoryResponse] = Field(default_factory=list)
+    messages: list[ChatMessageResponse] = Field(default_factory=list)
+
+
+class SendChatMessageRequest(BaseModel):
+    message_text: str = Field(min_length=1, max_length=4000)

@@ -9,9 +9,10 @@ from app.schemas import (
     MemoryCurrentResponse,
     MemorySnapshotResponse,
     MemorySnapshotsListResponse,
+    ProjectMemoryResponse,
 )
 from app.services.memory_service import MemoryAnalysisService
-from app.services.supabase_store import MemorySnapshotRecord, PersonaRecord
+from app.services.supabase_store import MemorySnapshotRecord, PersonaRecord, ProjectMemoryRecord
 
 router = APIRouter(prefix="/api/memories", tags=["memories"])
 
@@ -44,6 +45,7 @@ async def analyze_memory(
     return AnalyzeMemoryResponse(
         current=_to_persona_response(outcome.persona),
         snapshot=_to_snapshot_response(outcome.snapshot),
+        projects=[_to_project_response(project) for project in outcome.projects],
     )
 
 
@@ -70,4 +72,19 @@ def _to_snapshot_response(snapshot: MemorySnapshotRecord) -> MemorySnapshotRespo
         preferences=snapshot.preferences,
         open_questions=snapshot.open_questions,
         created_at=snapshot.created_at,
+    )
+
+
+def _to_project_response(project: ProjectMemoryRecord) -> ProjectMemoryResponse:
+    return ProjectMemoryResponse(
+        id=project.id,
+        project_key=project.project_key,
+        project_name=project.project_name,
+        summary=project.summary,
+        status=project.status,
+        next_steps=project.next_steps,
+        evidence=project.evidence,
+        source_snapshot_id=project.source_snapshot_id,
+        last_seen_at=project.last_seen_at,
+        updated_at=project.updated_at,
     )

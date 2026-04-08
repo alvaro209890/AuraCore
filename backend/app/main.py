@@ -7,11 +7,14 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.routers.chat import router as chat_router
 from app.dependencies import get_settings
 from app.routers.internal import router as internal_router
 from app.routers.memories import router as memories_router
 from app.routers.observer import router as observer_router
+from app.services.chat_service import ChatServiceError
 from app.services.deepseek_service import DeepSeekError
+from app.services.groq_service import GroqChatError
 from app.services.memory_service import MemoryAnalysisError
 from app.services.observer_gateway import ObserverGatewayError
 
@@ -38,6 +41,7 @@ app.add_middleware(
 )
 app.include_router(observer_router)
 app.include_router(memories_router)
+app.include_router(chat_router)
 app.include_router(internal_router)
 
 
@@ -68,3 +72,13 @@ async def deepseek_error_handler(_: Request, exc: DeepSeekError) -> JSONResponse
 @app.exception_handler(MemoryAnalysisError)
 async def memory_analysis_error_handler(_: Request, exc: MemoryAnalysisError) -> JSONResponse:
     return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@app.exception_handler(ChatServiceError)
+async def chat_service_error_handler(_: Request, exc: ChatServiceError) -> JSONResponse:
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@app.exception_handler(GroqChatError)
+async def groq_chat_error_handler(_: Request, exc: GroqChatError) -> JSONResponse:
+    return JSONResponse(status_code=502, content={"detail": str(exc)})

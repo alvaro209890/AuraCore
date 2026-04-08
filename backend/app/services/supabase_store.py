@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Sequence
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from supabase import Client, create_client
 
@@ -54,6 +54,49 @@ class MemorySnapshotRecord:
     routine_signals: list[str]
     preferences: list[str]
     open_questions: list[str]
+    created_at: datetime
+
+
+@dataclass(slots=True)
+class ProjectMemorySeed:
+    project_name: str
+    summary: str
+    status: str
+    next_steps: list[str]
+    evidence: list[str]
+
+
+@dataclass(slots=True)
+class ProjectMemoryRecord:
+    id: str
+    user_id: UUID
+    project_key: str
+    project_name: str
+    summary: str
+    status: str
+    next_steps: list[str]
+    evidence: list[str]
+    source_snapshot_id: str | None
+    last_seen_at: datetime | None
+    updated_at: datetime
+
+
+@dataclass(slots=True)
+class ChatThreadRecord:
+    id: str
+    user_id: UUID
+    thread_key: str
+    title: str
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(slots=True)
+class ChatMessageRecord:
+    id: str
+    thread_id: str
+    role: str
+    content: str
     created_at: datetime
 
 
@@ -211,6 +254,179 @@ class SupabaseStore:
             )
         return snapshots
 
+    def upsert_project_memories(
+        self,
+        *,
+        user_id: UUID,
+        source_snapshot_id: str,
+        projects: Sequence[ProjectMemorySeed],
+        observed_at: datetime,
+    ) -> list[ProjectMemoryRecord]:
+        records: list[dict[str, Any]] = []
+        seen_keys: set[str] = set()
+
+        for project in projects:
+            project_name = project.project_name.strip()
+            summary = project.summary.strip()
+            if not project_name or not summary:
+                continue
+
+            project_key = self._normalize_project_key(project_name)
+            if not project_key or project_key in seen_keys:
+                continue
+
+            seen_keys.add(project_key)
+            records.append(
+                {
+                    "id": str(uuid4()),
+                    "user_id": str(user_id),
+                    "project_key": project_key,
+                    "project_name": project_name,
+                    "summary": summary,
+                    "status": project.status.strip(),
+                    "next_steps": self._clean_string_list(project.next_steps),
+                    "evidence": self._clean_string_list(project.evidence),
+                    "source_snapshot_id": source_snapshot_id,
+                    "last_seen_at": observed_at.isoformat(),
+                    "updated_at": observed_at.isoformat(),
+                }
+            )
+
+        if not records:
+            return self.list_project_memories(user_id, limit=8)
+
+        self.client.table("project_memories").upsert(records, on_conflict="user_id,project_key").execute()
+        return self.list_project_memories(user_id, limit=max(8, len(records)))
+
+    def list_project_memories(self, user_id: UUID, *, limit: int = 8) -> list[ProjectMemoryRecord]:
+        response = (
+            self.client.table("project_memories")
+            .select(
+                "id,user_id,project_key,project_name,summary,status,next_steps,evidence,"
+                "source_snapshot_id,last_seen_at,updated_at"
+            )
+            .eq("user_id", str(user_id))
+            .order("last_seen_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+
+        rows = response.data or []
+        projects: list[ProjectMemoryRecord] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            projects.append(
+                ProjectMemoryRecord(
+                    id=str(row.get("id") or ""),
+                    user_id=self._parse_uuid(row.get("user_id")) or user_id,
+                    project_key=str(row.get("project_key") or ""),
+                    project_name=str(row.get("project_name") or ""),
+                    summary=str(row.get("summary") or ""),
+                    status=str(row.get("status") or ""),
+                    next_steps=self._parse_string_list(row.get("next_steps")),
+                    evidence=self._parse_string_list(row.get("evidence")),
+                    source_snapshot_id=self._optional_text(row.get("source_snapshot_id")),
+                    last_seen_at=self._parse_datetime(row.get("last_seen_at")),
+                    updated_at=self._parse_datetime(row.get("updated_at")) or datetime.now(UTC),
+                )
+            )
+        return projects
+
+    def get_or_create_chat_thread(
+        self,
+        *,
+        user_id: UUID,
+        thread_key: str = "default",
+        title: str = "Conversa principal",
+    ) -> ChatThreadRecord:
+        response = (
+            self.client.table("chat_threads")
+            .select("id,user_id,thread_key,title,created_at,updated_at")
+            .eq("user_id", str(user_id))
+            .eq("thread_key", thread_key)
+            .limit(1)
+            .execute()
+        )
+
+        rows = response.data or []
+        if rows:
+            parsed = self._parse_chat_thread(rows[0], fallback_user_id=user_id)
+            if parsed is not None:
+                return parsed
+
+        created_at = datetime.now(UTC)
+        record = {
+            "id": str(uuid4()),
+            "user_id": str(user_id),
+            "thread_key": thread_key,
+            "title": title,
+            "created_at": created_at.isoformat(),
+            "updated_at": created_at.isoformat(),
+        }
+        self.client.table("chat_threads").upsert(record, on_conflict="user_id,thread_key").execute()
+
+        response = (
+            self.client.table("chat_threads")
+            .select("id,user_id,thread_key,title,created_at,updated_at")
+            .eq("user_id", str(user_id))
+            .eq("thread_key", thread_key)
+            .limit(1)
+            .execute()
+        )
+        rows = response.data or []
+        if not rows:
+            raise RuntimeError("Default chat thread could not be created.")
+
+        parsed = self._parse_chat_thread(rows[0], fallback_user_id=user_id)
+        if parsed is None:
+            raise RuntimeError("Default chat thread returned an invalid payload.")
+        return parsed
+
+    def list_chat_messages(self, thread_id: str, *, limit: int = 30) -> list[ChatMessageRecord]:
+        response = (
+            self.client.table("chat_messages")
+            .select("id,thread_id,role,content,created_at")
+            .eq("thread_id", thread_id)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+
+        rows = response.data or []
+        messages: list[ChatMessageRecord] = []
+        for row in reversed(rows):
+            parsed = self._parse_chat_message(row, fallback_thread_id=thread_id)
+            if parsed is not None:
+                messages.append(parsed)
+        return messages
+
+    def append_chat_message(
+        self,
+        *,
+        thread_id: str,
+        role: str,
+        content: str,
+        created_at: datetime,
+    ) -> ChatMessageRecord:
+        message_id = str(uuid4())
+        record = {
+            "id": message_id,
+            "thread_id": thread_id,
+            "role": role,
+            "content": content,
+            "created_at": created_at.isoformat(),
+        }
+        self.client.table("chat_messages").insert(record).execute()
+        self.client.table("chat_threads").update({"updated_at": created_at.isoformat()}).eq("id", thread_id).execute()
+        return ChatMessageRecord(
+            id=message_id,
+            thread_id=thread_id,
+            role=role,
+            content=content,
+            created_at=created_at,
+        )
+
     def _insert_memory_snapshot(self, snapshot: MemorySnapshotRecord) -> None:
         record = {
             "id": snapshot.id,
@@ -269,3 +485,52 @@ class SupabaseStore:
             if text:
                 items.append(text)
         return items
+
+    def _clean_string_list(self, items: Sequence[Any]) -> list[str]:
+        cleaned: list[str] = []
+        for item in items:
+            if item is None:
+                continue
+            text = str(item).strip()
+            if text:
+                cleaned.append(text)
+        return cleaned
+
+    def _normalize_project_key(self, value: str) -> str:
+        normalized_chars = [
+            char.lower() if char.isalnum() else "-"
+            for char in value.strip()
+        ]
+        collapsed = "".join(normalized_chars)
+        while "--" in collapsed:
+            collapsed = collapsed.replace("--", "-")
+        return collapsed.strip("-")
+
+    def _parse_chat_thread(self, value: Any, *, fallback_user_id: UUID) -> ChatThreadRecord | None:
+        if not isinstance(value, dict):
+            return None
+        return ChatThreadRecord(
+            id=str(value.get("id") or ""),
+            user_id=self._parse_uuid(value.get("user_id")) or fallback_user_id,
+            thread_key=str(value.get("thread_key") or "default"),
+            title=str(value.get("title") or "Conversa principal"),
+            created_at=self._parse_datetime(value.get("created_at")) or datetime.now(UTC),
+            updated_at=self._parse_datetime(value.get("updated_at")) or datetime.now(UTC),
+        )
+
+    def _parse_chat_message(self, value: Any, *, fallback_thread_id: str) -> ChatMessageRecord | None:
+        if not isinstance(value, dict):
+            return None
+        role = str(value.get("role") or "").strip()
+        if role not in {"user", "assistant"}:
+            return None
+        content = str(value.get("content") or "").strip()
+        if not content:
+            return None
+        return ChatMessageRecord(
+            id=str(value.get("id") or ""),
+            thread_id=str(value.get("thread_id") or fallback_thread_id),
+            role=role,
+            content=content,
+            created_at=self._parse_datetime(value.get("created_at")) or datetime.now(UTC),
+        )
