@@ -48,10 +48,12 @@ AuraCore e o segundo cerebro digital centrado em dois numeros de WhatsApp:
 
 ## Deploy
 
-- Backend Render: use `/backend` com `uvicorn app.main:app --host 0.0.0.0 --port $PORT`.
-- Gateway Render: use `/whatsapp-gateway` com `npm run start` e disco persistente montado em `/var/data`.
-- O arquivo [`render.yaml`](/home/acer/Downloads/AuraCore/render.yaml) ja descreve os dois servicos.
+O deploy em producao pode rodar em um unico servico da Render usando Docker:
 
-```bash
-uvicorn app.main:app --host 0.0.0.0 --port $PORT
-```
+- o FastAPI fica publico na porta do servico;
+- o gateway Baileys roda no mesmo container em `127.0.0.1:10001`;
+- a sessao do WhatsApp fica em disco persistente montado em `/var/data`.
+
+O arquivo [`render.yaml`](/home/acer/Downloads/AuraCore/render.yaml) ja descreve esse modo single-service.
+
+Para ficar online 24/7 na Render, use um plano pago. Web services gratuitos podem entrar em idle quando ficam sem trafego.

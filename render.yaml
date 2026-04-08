@@ -1,20 +1,19 @@
 services:
   - name: auracore-backend-82bf2
     type: web
-    runtime: python
+    runtime: docker
     plan: starter
-    rootDir: backend
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     autoDeploy: true
+    disk:
+      name: auracore-whatsapp-auth
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
-      - key: WHATSAPP_GATEWAY_URL
-        value: https://auracore-whatsapp-gateway-82bf2.onrender.com
       - key: INTERNAL_API_TOKEN
         sync: false
       - key: DEEPSEEK_API_KEY
@@ -37,29 +36,15 @@ services:
         value: https://auracore-82bf2.web.app
       - key: DEFAULT_USER_ID
         value: 00000000-0000-0000-0000-000000000001
-  - name: auracore-whatsapp-gateway-82bf2
-    type: web
-    runtime: node
-    plan: starter
-    rootDir: whatsapp-gateway
-    buildCommand: npm install && npm run build
-    startCommand: npm run start
-    healthCheckPath: /health
-    autoDeploy: true
-    disk:
-      name: auracore-whatsapp-auth
-      mountPath: /var/data
-      sizeGB: 1
-    envVars:
-      - key: AURACORE_API_BASE_URL
-        value: https://auracore-backend-82bf2.onrender.com
-      - key: INTERNAL_API_TOKEN
-        sync: false
       - key: INSTANCE_NAME
         value: observer
       - key: WHATSAPP_AUTH_DIR
         value: /var/data/baileys-auth
+      - key: WHATSAPP_GATEWAY_PORT
+        value: "10001"
       - key: QR_EXPIRES_SECONDS
         value: "60"
       - key: RECONNECT_DELAY_MS
         value: "5000"
+      - key: NODE_ENV
+        value: production
