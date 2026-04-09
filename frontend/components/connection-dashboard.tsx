@@ -1424,13 +1424,20 @@ export function ConnectionDashboard() {
       setAutomationError(null);
       setAutomationDraft((previous) => previous ?? toAutomationDraft(snap.settings));
 
+      // Sincroniza o estado da fila local com o servidor (útil após refresh)
+      const pendingJob = snap.jobs.find(j => j.status === "queued" || j.status === "running");
+      if (!queuedJobId && pendingJob) {
+        setQueuedJobId(pendingJob.id);
+        pushAgentLog("info", `Detectada análise em andamento (Fila: ${pendingJob.id.slice(0, 8)}). Sincronizando painel...`);
+      }
+
       // Se temos um job em fila, verifica se ele terminou
       if (queuedJobId) {
         const matchingJob = snap.jobs.find(j => j.id === queuedJobId);
         if (matchingJob) {
           if (matchingJob.status === "succeeded") {
             setQueuedJobId(null);
-            const intent = agentState.intent || "first_analysis";
+            const intent = agentState.intent || (matchingJob.intent as AgentIntent) || "first_analysis";
             
             // Recarrega os dados agora que o processo terminou
             getCurrentMemory().then(setMemory);
@@ -1448,8 +1455,11 @@ export function ConnectionDashboard() {
             );
           } else if (matchingJob.status === "failed") {
             setQueuedJobId(null);
-            finishAgentRunError(agentState.intent || "first_analysis", matchingJob.error_text || "Ocorreu um erro desconhecido durante a análise.");
+            finishAgentRunError(agentState.intent || (matchingJob.intent as AgentIntent) || "first_analysis", matchingJob.error_text || "Ocorreu um erro desconhecido durante a análise.");
           }
+        } else if (!pendingJob) {
+           // Se o job que estávamos rastreando sumiu e não há nenhum outro pendente, resetamos
+           setQueuedJobId(null);
         }
       }
     } else {
@@ -1782,6 +1792,10 @@ export function ConnectionDashboard() {
   }
 
   async function runMemoryJob(intent: AgentIntent): Promise<void> {
+    if (agentState.running || !!queuedJobId) {
+       console.log("Análise já em andamento. Ignorando clique duplicado.");
+       return;
+    }
     setMemoryError(null);
     startAgentRun(intent);
 

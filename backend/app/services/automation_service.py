@@ -472,8 +472,7 @@ class AutomationService:
         
         if pending_jobs:
             raise MemoryAnalysisError(
-                "Ja existe uma leitura em andamento ou recentemente agendada. "
-                "Aguarde a conclusao ou tente novamente em alguns minutos."
+                "Já existe uma análise em fila ou em processamento. Por favor, aguarde alguns instantes até que ela seja concluída."
             )
 
     async def _execute_analysis_job(
