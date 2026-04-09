@@ -96,6 +96,8 @@ class GroqChatService:
         new_message_count: int,
         replaced_message_count: int,
         estimated_total_tokens: int,
+        stack_max_message_capacity: int,
+        estimated_cost_total_ceiling_usd: float,
         fallback_score: int,
         fallback_label: str,
     ) -> GroqPreviewDecision:
@@ -131,6 +133,8 @@ class GroqChatService:
                         f"Disponiveis: {available_message_count}. Selecionadas: {selected_message_count}. "
                         f"Novas desde a ultima analise: {new_message_count}. Substituidas pela retencao: {replaced_message_count}. "
                         f"Tokens estimados do DeepSeek: {estimated_total_tokens}. "
+                        f"Teto real desta stack no perfil atual: {stack_max_message_capacity} mensagens. "
+                        f"Custo estimado mais conservador desta leitura: ate US$ {estimated_cost_total_ceiling_usd:.4f}. "
                         "Regras de decisao: "
                         "score alto quando houver volume relevante de mensagens novas, substituicoes pela retencao, boa cobertura e custo aceitavel; "
                         "score baixo quando houver pouco material novo ou ganho fraco. "

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, TypeVar
 
@@ -43,6 +44,28 @@ class DeepSeekMemoryRefinementResult(BaseModel):
 ParsedResultT = TypeVar("ParsedResultT")
 
 
+@dataclass(slots=True)
+class DeepSeekPromptPreview:
+    system_prompt: str
+    user_prompt: str
+
+
+@dataclass(slots=True)
+class DeepSeekPlanningProfile:
+    model_name: str
+    context_limit_floor_tokens: int
+    context_limit_ceiling_tokens: int
+    default_output_tokens: int
+    maximum_output_tokens: int
+    request_output_reserve_tokens: int
+    cache_miss_input_price_floor_per_million: float
+    cache_miss_input_price_ceiling_per_million: float
+    output_price_floor_per_million: float
+    output_price_ceiling_per_million: float
+    context_note: str
+    pricing_note: str
+
+
 class DeepSeekService:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -60,7 +83,69 @@ class DeepSeekService:
         window_end: datetime,
         source_message_count: int,
     ) -> DeepSeekMemoryResult:
+        prompt_preview = self.build_analysis_prompt_preview(
+            transcript=transcript,
+            current_life_summary=current_life_summary,
+            prior_analyses_context=prior_analyses_context,
+            project_context=project_context,
+            chat_context=chat_context,
+            window_hours=window_hours,
+            window_start=window_start,
+            window_end=window_end,
+            source_message_count=source_message_count,
+        )
         payload = self._build_completion_payload(
+            system_prompt=prompt_preview.system_prompt,
+            user_prompt=prompt_preview.user_prompt,
+            max_tokens=self._analysis_max_output_tokens(),
+        )
+
+        return await self._request_parsed_completion(
+            payload=payload,
+            parser=self._parse_result,
+            validator=self._validate_analysis_result,
+        )
+
+    async def refine_saved_memory(
+        self,
+        *,
+        current_life_summary: str,
+        prior_analyses_context: str,
+        project_context: str,
+        chat_context: str,
+    ) -> DeepSeekMemoryRefinementResult:
+        prompt_preview = self.build_refinement_prompt_preview(
+            current_life_summary=current_life_summary,
+            prior_analyses_context=prior_analyses_context,
+            project_context=project_context,
+            chat_context=chat_context,
+        )
+        payload = self._build_completion_payload(
+            system_prompt=prompt_preview.system_prompt,
+            user_prompt=prompt_preview.user_prompt,
+            max_tokens=self._refinement_max_output_tokens(),
+        )
+
+        return await self._request_parsed_completion(
+            payload=payload,
+            parser=self._parse_refinement_result,
+            validator=self._validate_refinement_result,
+        )
+
+    def build_analysis_prompt_preview(
+        self,
+        *,
+        transcript: str,
+        current_life_summary: str,
+        prior_analyses_context: str,
+        project_context: str,
+        chat_context: str,
+        window_hours: int,
+        window_start: datetime,
+        window_end: datetime,
+        source_message_count: int,
+    ) -> DeepSeekPromptPreview:
+        return DeepSeekPromptPreview(
             system_prompt=(
                 "Voce e o analista principal de memoria do AuraCore. Sua funcao e transformar conversas "
                 "privadas em portugues do Brasil em uma memoria altamente util sobre o dono do numero. "
@@ -80,24 +165,17 @@ class DeepSeekService:
                 window_end=window_end,
                 source_message_count=source_message_count,
             ),
-            max_tokens=self._analysis_max_output_tokens(),
         )
 
-        return await self._request_parsed_completion(
-            payload=payload,
-            parser=self._parse_result,
-            validator=self._validate_analysis_result,
-        )
-
-    async def refine_saved_memory(
+    def build_refinement_prompt_preview(
         self,
         *,
         current_life_summary: str,
         prior_analyses_context: str,
         project_context: str,
         chat_context: str,
-    ) -> DeepSeekMemoryRefinementResult:
-        payload = self._build_completion_payload(
+    ) -> DeepSeekPromptPreview:
+        return DeepSeekPromptPreview(
             system_prompt=(
                 "Voce revisa memorias privadas em portugues para melhorar a qualidade do perfil salvo do "
                 "dono do numero. Retorne apenas JSON valido e estritamente aderente ao schema pedido. "
@@ -110,13 +188,44 @@ class DeepSeekService:
                 project_context=project_context,
                 chat_context=chat_context,
             ),
-            max_tokens=self._refinement_max_output_tokens(),
         )
 
-        return await self._request_parsed_completion(
-            payload=payload,
-            parser=self._parse_refinement_result,
-            validator=self._validate_refinement_result,
+    def get_planning_profile(self) -> DeepSeekPlanningProfile:
+        if self._is_reasoning_model():
+            return DeepSeekPlanningProfile(
+                model_name=self.settings.deepseek_model,
+                context_limit_floor_tokens=64000,
+                context_limit_ceiling_tokens=128000,
+                default_output_tokens=32000,
+                maximum_output_tokens=64000,
+                request_output_reserve_tokens=self._analysis_max_output_tokens(),
+                cache_miss_input_price_floor_per_million=0.28,
+                cache_miss_input_price_ceiling_per_million=0.55,
+                output_price_floor_per_million=0.42,
+                output_price_ceiling_per_million=2.19,
+                context_note=(
+                    "Planner usa piso conservador de 64K de contexto por causa de divergencia entre paginas "
+                    "oficiais do DeepSeek; a tela tambem mostra o teto de 128K citado em Models & Pricing."
+                ),
+                pricing_note=(
+                    "Faixa de custo usa cache miss e combina os dois precos oficiais visiveis hoje para "
+                    "deepseek-reasoner: Models & Pricing e pricing-details-usd."
+                ),
+            )
+
+        return DeepSeekPlanningProfile(
+            model_name=self.settings.deepseek_model,
+            context_limit_floor_tokens=64000,
+            context_limit_ceiling_tokens=128000,
+            default_output_tokens=4000,
+            maximum_output_tokens=8000,
+            request_output_reserve_tokens=self._analysis_max_output_tokens(),
+            cache_miss_input_price_floor_per_million=0.28,
+            cache_miss_input_price_ceiling_per_million=0.55,
+            output_price_floor_per_million=0.42,
+            output_price_ceiling_per_million=2.19,
+            context_note="Planner usa a mesma faixa conservadora de contexto para nao superestimar capacidade.",
+            pricing_note="Faixa de custo segue os precos oficiais visiveis na documentacao atual do DeepSeek.",
         )
 
     def _build_prompt(

@@ -57,6 +57,7 @@ import {
 
 type ViewState = "idle" | "loading" | "waiting" | "connected" | "error";
 type AgentMode = "idle" | "analyze" | "refine";
+type AgentIntent = "first_analysis" | "improve_memory" | "refine_saved";
 type TabId = "overview" | "observer" | "memory" | "projects" | "chat" | "activity";
 type LogTone = "info" | "success" | "error";
 
@@ -75,6 +76,7 @@ type AgentLog = {
 
 type AgentState = {
   mode: AgentMode;
+  intent: AgentIntent | null;
   running: boolean;
   progress: number;
   status: string;
@@ -103,17 +105,17 @@ type NavItem = {
 
 const POLL_INTERVAL_MS = 5000;
 const QR_REFRESH_INTERVAL_MS = 25000;
-const MESSAGE_TARGET_PRESETS = [120, 200, 280, 360];
-const LOOKBACK_PRESETS = [24, 72, 168, 336];
+const MESSAGE_TARGET_PRESETS = [80, 140, 200, 250];
+const LOOKBACK_PRESETS = [24, 72, 168];
 const DETAIL_OPTIONS: Array<{
   value: MemoryAnalysisDetailMode;
   label: string;
   description: string;
   badge: string;
 }> = [
-  { value: "light", label: "Rápida", description: "Sincroniza sinais novos com pouco custo e boa frequência.", badge: "baixo custo" },
-  { value: "balanced", label: "Padrão", description: "Melhor equilíbrio para perfil, rotina, decisões e projetos.", badge: "recomendada" },
-  { value: "deep", label: "Profunda", description: "Puxa mais contexto quando houve mudanças importantes ou atraso de leitura.", badge: "alto contexto" },
+  { value: "light", label: "Rápida", description: "Leitura leve para checar mudança recente sem empurrar muito contexto.", badge: "~18k chars" },
+  { value: "balanced", label: "Padrão", description: "Equilíbrio entre custo, cobertura do histórico recente e qualidade do retrato.", badge: "~36k chars" },
+  { value: "deep", label: "Profunda", description: "Usa o teto atual da stack quando houve muita novidade ou atraso de consolidação.", badge: "~60k chars" },
 ];
 
 const NAV_ITEMS: NavItem[] = [
@@ -234,6 +236,83 @@ function formatHoursLabel(hours: number): string {
 
 function formatTokenCount(value: number): string {
   return new Intl.NumberFormat("pt-BR").format(value);
+}
+
+function formatUsd(value: number): string {
+  const digits = value < 0.01 ? 4 : 2;
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  }).format(value);
+}
+
+function hasEstablishedMemory(memory: MemoryCurrent | null, latestSnapshot: MemorySnapshot | null): boolean {
+  return Boolean(memory?.last_analyzed_at || latestSnapshot?.id);
+}
+
+function getIntentTitle(intent: AgentIntent | null): string {
+  switch (intent) {
+    case "first_analysis":
+      return "Fazer Primeira Análise";
+    case "improve_memory":
+      return "Ler Novas Mensagens e Melhorar Memória";
+    case "refine_saved":
+      return "Refinar Memória Já Salva";
+    default:
+      return "Aguardando nova ação";
+  }
+}
+
+function buildActivityThinking(args: {
+  preview: MemoryAnalysisPreview | null;
+  intent: AgentIntent | null;
+  hasMemory: boolean;
+  projectsCount: number;
+  snapshotsCount: number;
+}): string[] {
+  const { preview, intent, hasMemory, projectsCount, snapshotsCount } = args;
+  const resolvedIntent = intent ?? (hasMemory ? "improve_memory" : "first_analysis");
+  const lines: string[] = [];
+
+  if (resolvedIntent === "first_analysis") {
+    lines.push(
+      "Esta rota cria a primeira base consolidada do dono; ainda nao existe memoria forte para cruzar, entao o foco e montar o primeiro retrato util.",
+    );
+  } else if (resolvedIntent === "improve_memory") {
+    lines.push(
+      "Esta rota compara mensagens diretas recentes com a memoria ja consolidada para reforcar o que mudou sem perder continuidade do perfil.",
+    );
+  } else {
+    lines.push(
+      "Esta rota nao reler o WhatsApp; ela limpa e reorganiza somente o que ja esta salvo no Supabase para reduzir ruido.",
+    );
+  }
+
+  if (preview) {
+    lines.push(
+      `A leitura atual consegue encaixar ${preview.selected_message_count} de ${preview.available_message_count} mensagens diretas na janela, respeitando o teto operacional de ${preview.stack_max_message_capacity} mensagens desta stack.`,
+    );
+    lines.push(
+      `O pacote enviado ao ${preview.deepseek_model} usa cerca de ${formatTokenCount(preview.estimated_input_tokens)} tokens de entrada e reserva ${formatTokenCount(preview.request_output_reserve_tokens)} de saida; o custo previsto fica em ${formatUsd(preview.estimated_cost_total_floor_usd)} a ${formatUsd(preview.estimated_cost_total_ceiling_usd)}.`,
+    );
+    lines.push(
+      `Hoje existem ${preview.new_message_count} mensagens novas e ${preview.replaced_message_count} ja ficaram para tras pela retencao; isso ajuda a explicar o score atual de ${preview.recommendation_score}/100.`,
+    );
+  } else {
+    lines.push("Sem preview carregado, o painel mostra apenas o fluxo do agente e aguarda um novo calculo da leitura.");
+  }
+
+  if (hasMemory) {
+    lines.push(
+      `O agente ainda cruza a janela nova com ${snapshotsCount} snapshots, ${projectsCount} projetos consolidados e o chat pessoal salvo para manter continuidade entre leituras.`,
+    );
+  } else {
+    lines.push("Como ainda nao existe base consolidada, o modelo usa principalmente a janela atual de mensagens diretas para montar a primeira memoria util.");
+  }
+
+  return lines;
 }
 
 function getErrorMessage(error: unknown): string {
@@ -465,6 +544,7 @@ export function ConnectionDashboard() {
   const [pollingEnabled, setPollingEnabled] = useState(false);
   const [agentState, setAgentState] = useState<AgentState>({
     mode: "idle",
+    intent: null,
     running: false,
     progress: 0,
     status: IDLE_AGENT_STATUS,
@@ -482,6 +562,7 @@ export function ConnectionDashboard() {
   const messageRefreshTimerRef = useRef<number | null>(null);
 
   const latestSnapshot = snapshots[0] ?? null;
+  const memoryIsEstablished = hasEstablishedMemory(memory, latestSnapshot);
 
   const statusLabel = useMemo(() => {
     if (!status) {
@@ -608,7 +689,8 @@ export function ConnectionDashboard() {
     setAgentLogs((previous) => [makeLog(tone, message), ...previous].slice(0, 28));
   }
 
-  function startAgentRun(mode: Exclude<AgentMode, "idle">): void {
+  function startAgentRun(intent: AgentIntent): void {
+    const mode: Exclude<AgentMode, "idle"> = intent === "refine_saved" ? "refine" : "analyze";
     if (agentTimerRef.current) {
       window.clearInterval(agentTimerRef.current);
     }
@@ -617,6 +699,7 @@ export function ConnectionDashboard() {
     setActiveTab("activity");
     setAgentState({
       mode,
+      intent,
       running: true,
       progress: 4,
       status: getRunningStatus(mode, 4),
@@ -626,9 +709,11 @@ export function ConnectionDashboard() {
 
     pushAgentLog(
       "info",
-      mode === "analyze"
-        ? "Nova leitura iniciada. O agente vai combinar mensagens diretas, snapshots, projetos e histórico do chat."
-        : "Refinamento iniciado. O agente vai limpar a memória consolidada e reforçar padrões mais estáveis.",
+      intent === "first_analysis"
+        ? "Primeira analise iniciada. O agente vai criar a base inicial do dono usando mensagens diretas recentes."
+        : intent === "improve_memory"
+          ? "Atualizacao incremental iniciada. O agente vai combinar mensagens novas com snapshots, projetos e chat pessoal."
+          : "Refinamento iniciado. O agente vai limpar a memoria consolidada e reforcar padroes mais estaveis.",
     );
 
     agentTimerRef.current = window.setInterval(() => {
@@ -654,12 +739,14 @@ export function ConnectionDashboard() {
     }, 520);
   }
 
-  function finishAgentRunSuccess(mode: Exclude<AgentMode, "idle">, message: string): void {
+  function finishAgentRunSuccess(intent: AgentIntent, message: string): void {
+    const mode: Exclude<AgentMode, "idle"> = intent === "refine_saved" ? "refine" : "analyze";
     if (agentTimerRef.current) {
       window.clearInterval(agentTimerRef.current);
     }
     setAgentState({
       mode,
+      intent,
       running: false,
       progress: 100,
       status: message,
@@ -669,12 +756,14 @@ export function ConnectionDashboard() {
     pushAgentLog("success", message);
   }
 
-  function finishAgentRunError(mode: Exclude<AgentMode, "idle">, message: string): void {
+  function finishAgentRunError(intent: AgentIntent, message: string): void {
+    const mode: Exclude<AgentMode, "idle"> = intent === "refine_saved" ? "refine" : "analyze";
     if (agentTimerRef.current) {
       window.clearInterval(agentTimerRef.current);
     }
     setAgentState({
       mode,
+      intent,
       running: false,
       progress: 0,
       status: "A atualização falhou antes de concluir.",
@@ -784,12 +873,12 @@ export function ConnectionDashboard() {
     }
   }
 
-  async function runMemoryJob(mode: Exclude<AgentMode, "idle">): Promise<void> {
+  async function runMemoryJob(intent: AgentIntent): Promise<void> {
     setMemoryError(null);
-    startAgentRun(mode);
+    startAgentRun(intent);
 
     try {
-      if (mode === "analyze") {
+      if (intent !== "refine_saved") {
         const response = await analyzeMemoryWithFilters({
           target_message_count: filters.targetMessageCount,
           max_lookback_hours: filters.maxLookbackHours,
@@ -798,19 +887,24 @@ export function ConnectionDashboard() {
         setMemory(response.current);
         setProjects(response.projects);
         setSnapshots((previous) => [response.snapshot, ...previous.filter((snapshot) => snapshot.id !== response.snapshot.id)].slice(0, 6));
-        finishAgentRunSuccess("analyze", "Leitura concluída. Perfil, sinais e projetos foram atualizados.");
+        finishAgentRunSuccess(
+          intent,
+          intent === "first_analysis"
+            ? "Primeira analise concluida. A base inicial do dono foi criada."
+            : "Leitura concluida. As mensagens novas foram cruzadas com a memoria existente e o perfil foi melhorado.",
+        );
       } else {
         const response = await refineMemory();
         setMemory(response.current);
         setProjects(response.projects);
-        finishAgentRunSuccess("refine", "Refinamento concluído. A memória consolidada ficou mais precisa.");
+        finishAgentRunSuccess("refine_saved", "Refinamento concluido. A memoria consolidada ficou mais precisa.");
       }
 
       await refreshPreview();
     } catch (error) {
       const message = getErrorMessage(error);
       setMemoryError(message);
-      finishAgentRunError(mode, message);
+      finishAgentRunError(intent, message);
     }
   }
 
@@ -899,7 +993,7 @@ export function ConnectionDashboard() {
             <strong>{preview ? `${preview.retained_message_count}/${preview.retention_limit}` : "..."}</strong>
           </div>
           <div className="ac-quick-status">
-            <span>Tokens úteis</span>
+            <span>Tokens previstos</span>
             <strong>{preview ? formatTokenCount(preview.estimated_total_tokens) : "..."}</strong>
           </div>
         </div>
@@ -926,9 +1020,18 @@ export function ConnectionDashboard() {
             <button className="ac-icon-button" onClick={() => void hydrateDashboard("manual")} disabled={isRefreshing} type="button">
               <RefreshCw size={16} className={isRefreshing ? "spin" : ""} />
             </button>
-            <button className="ac-primary-button" onClick={() => void runMemoryJob("analyze")} disabled={agentState.running} type="button">
+            <button
+              className="ac-primary-button"
+              onClick={() => void runMemoryJob(memoryIsEstablished ? "improve_memory" : "first_analysis")}
+              disabled={agentState.running}
+              type="button"
+            >
               <Play size={15} />
-              {agentState.running && agentState.mode === "analyze" ? "Lendo..." : "Nova Leitura"}
+              {agentState.running && agentState.mode === "analyze"
+                ? "Lendo..."
+                : memoryIsEstablished
+                  ? "Melhorar Memória"
+                  : "Primeira Análise"}
             </button>
           </div>
         </header>
@@ -988,8 +1091,9 @@ export function ConnectionDashboard() {
                   onLookbackChange={(maxLookbackHours) => setFilters((previous) => ({ ...previous, maxLookbackHours }))}
                   onDetailChange={(detailMode) => setFilters((previous) => ({ ...previous, detailMode }))}
                   onRefreshMessages={() => void requestMessageRefresh()}
-                  onAnalyze={() => void runMemoryJob("analyze")}
-                  onRefine={() => void runMemoryJob("refine")}
+                  onInitialAnalysis={() => void runMemoryJob("first_analysis")}
+                  onImproveMemory={() => void runMemoryJob("improve_memory")}
+                  onRefineSaved={() => void runMemoryJob("refine_saved")}
                 />
               ) : null}
 
@@ -1013,6 +1117,11 @@ export function ConnectionDashboard() {
                   agentState={agentState}
                   steps={currentSteps}
                   logs={agentLogs}
+                  preview={preview}
+                  memory={memory}
+                  latestSnapshot={latestSnapshot}
+                  projectsCount={projects.length}
+                  snapshotsCount={snapshots.length}
                 />
               ) : null}
             </>
@@ -1302,8 +1411,9 @@ function MemoryTab({
   onLookbackChange,
   onDetailChange,
   onRefreshMessages,
-  onAnalyze,
-  onRefine,
+  onInitialAnalysis,
+  onImproveMemory,
+  onRefineSaved,
 }: {
   memory: MemoryCurrent | null;
   latestSnapshot: MemorySnapshot | null;
@@ -1319,25 +1429,65 @@ function MemoryTab({
   onLookbackChange: (value: number) => void;
   onDetailChange: (value: MemoryAnalysisDetailMode) => void;
   onRefreshMessages: () => void;
-  onAnalyze: () => void;
-  onRefine: () => void;
+  onInitialAnalysis: () => void;
+  onImproveMemory: () => void;
+  onRefineSaved: () => void;
 }) {
-  const gaugeSize = 220;
   const gaugeRadius = 92;
   const gaugeCircumference = 2 * Math.PI * gaugeRadius;
   const previewScore = preview?.recommendation_score ?? 0;
   const dashOffset = gaugeCircumference - (gaugeCircumference * previewScore) / 100;
   const previewTone = getPreviewTone(previewScore);
+  const memoryReady = hasEstablishedMemory(memory, latestSnapshot);
+  const missingFromTarget = preview ? Math.max(0, preview.target_message_count - preview.selected_message_count) : 0;
+  const costRangeLabel = preview
+    ? `${formatUsd(preview.estimated_cost_total_floor_usd)}-${formatUsd(preview.estimated_cost_total_ceiling_usd)}`
+    : "...";
+  const modelRangeLabel = preview
+    ? `${formatTokenCount(preview.model_message_capacity_floor)}-${formatTokenCount(preview.model_message_capacity_ceiling)} msgs`
+    : "...";
 
   return (
     <div className="page-stack">
       <div className="memory-top-grid">
         <Card className="memory-planner-card">
           <SectionTitle
-            title="Configuração da Leitura"
-            icon={Settings}
-            action={<span className="micro-badge">Simulação estratégica</span>}
+            title="Planejador Real do Reasoner"
+            icon={Cpu}
+            action={<span className="micro-badge">{preview?.deepseek_model ?? "deepseek-reasoner"}</span>}
           />
+
+          <p className="memory-deck-copy">
+            O planner cruza o transcript real da janela, a memória já salva, o prompt estrutural e a reserva de saída
+            do AuraCore para mostrar o que de fato cabe antes de rodar a análise.
+          </p>
+
+          <div className="memory-capacity-grid">
+            <MemorySignalCard
+              label="Cabem agora"
+              value={preview ? `${formatTokenCount(preview.selected_message_count)} msgs` : "..."}
+              meta={preview ? `de ${formatTokenCount(preview.target_message_count)} pedidas` : "Aguardando preview"}
+              accent
+            />
+            <MemorySignalCard
+              label="Modo atual aguenta"
+              value={preview ? `${formatTokenCount(preview.planner_message_capacity)} msgs` : "..."}
+              meta={preview ? `${formatTokenCount(preview.current_char_budget)} chars de transcript` : "Aguardando preview"}
+              tone="indigo"
+            />
+            <MemorySignalCard
+              label="Teto desta stack"
+              value={preview ? `${formatTokenCount(preview.stack_max_message_capacity)} msgs` : "..."}
+              meta="Cap interno atual: 250 msgs e 60k chars"
+              tone="amber"
+            />
+            <MemorySignalCard
+              label="Teto do reasoner"
+              value={modelRangeLabel}
+              meta="Faixa por mensagem media desta janela"
+              tone="emerald"
+            />
+          </div>
 
           <div className="memory-controls-stack">
             <div className="control-block">
@@ -1391,26 +1541,90 @@ function MemoryTab({
                   );
                 })}
               </div>
+              <div className="depth-reality-strip">
+                <strong>Profundidade real do modo selecionado</strong>
+                <p>
+                  {preview
+                    ? `Este modo libera ${formatTokenCount(preview.current_char_budget)} chars de transcript, comporta ate ${formatTokenCount(preview.planner_message_capacity)} mensagens nesta janela, usa um piso seguro de ${formatTokenCount(preview.safe_input_budget_floor_tokens)} tokens de entrada e reserva ${formatTokenCount(preview.request_output_reserve_tokens)} tokens de saida.`
+                    : "Assim que o preview carregar, este bloco mostra o budget real de transcript, input seguro e saida reservada do modo escolhido."}
+                </p>
+              </div>
             </div>
           </div>
 
-          <div className="memory-metrics-grid">
-            <MetricTile label="Disponíveis (janela)" value={preview ? String(preview.available_message_count) : "..."} />
-            <MetricTile label="Entram na leitura" value={preview ? String(preview.selected_message_count) : "..."} accent />
-            <MetricTile label="Novas desde a última" value={preview ? String(preview.new_message_count) : "..."} tone="emerald" />
-            <MetricTile label="Substituídas pela retenção" value={preview ? String(preview.replaced_message_count) : "..."} tone="amber" />
-            <MetricTile label="Tokens de entrada" value={preview ? `~${formatTokenCount(preview.estimated_input_tokens)}` : "..."} />
-            <MetricTile label="Tokens totais previstos" value={preview ? `~${formatTokenCount(preview.estimated_total_tokens)}` : "..."} />
-            <MetricTile
-              label="Mensagens salvas no Supabase"
-              value={preview ? `${preview.retained_message_count}/${preview.retention_limit}` : "..."}
+          <div className="memory-capacity-rails">
+            <CapacityRail
+              label="Meta atendida pela leitura atual"
+              helper={preview ? `${formatTokenCount(missingFromTarget)} ainda ficam fora do alvo escolhido` : "Aguardando preview"}
+              current={preview?.selected_message_count ?? 0}
+              max={preview?.target_message_count ?? 1}
               tone="indigo"
+            />
+            <CapacityRail
+              label="Uso do piso conservador de contexto"
+              helper={
+                preview
+                  ? `${formatTokenCount(preview.remaining_input_headroom_floor_tokens)} tokens ainda livres antes do limite seguro`
+                  : "Aguardando preview"
+              }
+              current={preview?.estimated_input_tokens ?? 0}
+              max={preview?.safe_input_budget_floor_tokens ?? 1}
+              tone="amber"
+            />
+            <CapacityRail
+              label="Uso do teto real desta stack"
+              helper={
+                preview
+                  ? `${formatTokenCount(preview.stack_max_message_capacity)} mensagens e o maximo plausivel com este perfil`
+                  : "Aguardando preview"
+              }
+              current={preview?.selected_message_count ?? 0}
+              max={preview?.stack_max_message_capacity ?? 1}
+              tone="emerald"
+            />
+          </div>
+
+          <div className="memory-economics-grid">
+            <MetricTile label="Tokens do transcript" value={preview ? `~${formatTokenCount(preview.selected_transcript_tokens)}` : "..."} accent />
+            <MetricTile label="Tokens do contexto salvo" value={preview ? `~${formatTokenCount(preview.estimated_prompt_context_tokens)}` : "..."} tone="indigo" />
+            <MetricTile label="Reasoning previsto" value={preview ? `~${formatTokenCount(preview.estimated_reasoning_tokens)}` : "..."} tone="amber" />
+            <MetricTile label="Saída reservada" value={preview ? `~${formatTokenCount(preview.request_output_reserve_tokens)}` : "..."} tone="emerald" />
+            <MetricTile label="Custo estimado" value={costRangeLabel} />
+            <MetricTile
+              label="Média por mensagem"
+              value={preview ? `${formatTokenCount(preview.average_selected_message_tokens)} tk` : "..."}
+              tone="zinc"
+            />
+          </div>
+
+          <div className="memory-doc-grid">
+            <MiniPanel
+              title="Contexto"
+              tone="amber"
+              icon={BarChart3}
+              content={
+                preview?.documentation_context_note ??
+                "O planner usa um piso conservador da documentacao para nao inflar o alcance visivel."
+              }
+            />
+            <MiniPanel
+              title="Custo"
+              tone="emerald"
+              icon={Terminal}
+              content={
+                preview?.documentation_pricing_note ??
+                "A faixa de custo combina o gasto de entrada e saida com base nos precos oficiais atuais do DeepSeek."
+              }
             />
           </div>
         </Card>
 
         <Card className="memory-score-card">
-          <SectionTitle title="Compensa analisar agora?" icon={Zap} />
+          <SectionTitle
+            title="Compensa analisar agora?"
+            icon={Zap}
+            action={preview ? <span className={`micro-badge micro-badge-${previewTone}`}>{preview.recommendation_label}</span> : null}
+          />
 
           <div className="score-gauge-wrap">
             <svg className="score-gauge" viewBox="0 0 220 220">
@@ -1446,6 +1660,31 @@ function MemoryTab({
               <span>Perdidas pela retenção</span>
               <strong>{preview ? preview.replaced_message_count : "--"}</strong>
             </div>
+            <div>
+              <span>Headroom seguro</span>
+              <strong>{preview ? `~${formatTokenCount(preview.remaining_input_headroom_floor_tokens)}` : "--"}</strong>
+            </div>
+          </div>
+
+          <div className="memory-score-metrics">
+            <MemorySignalCard
+              label="Input real"
+              value={preview ? `~${formatTokenCount(preview.estimated_input_tokens)} tk` : "..."}
+              meta="prompt estrutural + contexto salvo + transcript"
+              tone="indigo"
+            />
+            <MemorySignalCard
+              label="Output esperado"
+              value={preview ? `~${formatTokenCount(preview.estimated_output_tokens)} tk` : "..."}
+              meta={preview ? `de ate ${formatTokenCount(preview.request_output_reserve_tokens)} reservados` : "Aguardando preview"}
+              tone="emerald"
+            />
+            <MemorySignalCard
+              label="Faixa de custo"
+              value={costRangeLabel}
+              meta="Cache miss e faixas oficiais do DeepSeek"
+              tone="amber"
+            />
           </div>
 
           <div className="memory-action-stack">
@@ -1456,19 +1695,77 @@ function MemoryTab({
               type="button"
             >
               <RefreshCw size={15} className={isRefreshingMessages ? "spin" : ""} />
-              {isRefreshingMessages ? "Relendo WhatsApp..." : "Refazer Leitura do WhatsApp"}
+              {isRefreshingMessages ? "Puxando mensagens..." : "Puxar Novas Mensagens do WhatsApp"}
             </button>
-            <button className="ac-success-button" onClick={onAnalyze} disabled={agentState.running || !preview?.selected_message_count} type="button">
+            <button
+              className="ac-success-button"
+              onClick={onInitialAnalysis}
+              disabled={agentState.running || memoryReady || !preview?.selected_message_count}
+              type="button"
+            >
               <Play size={15} />
-              {agentState.running && agentState.mode === "analyze" ? "Executando..." : "Executar Leitura"}
+              {agentState.running && agentState.intent === "first_analysis" ? "Executando..." : "Fazer Primeira Análise"}
             </button>
-            <button className="ac-secondary-button" onClick={onRefine} disabled={agentState.running} type="button">
+            <button
+              className="ac-primary-button"
+              onClick={onImproveMemory}
+              disabled={agentState.running || !memoryReady || !preview?.selected_message_count}
+              type="button"
+            >
               <Sparkles size={15} />
-              {agentState.running && agentState.mode === "refine" ? "Refinando..." : "Refinar Memória Salva"}
+              {agentState.running && agentState.intent === "improve_memory" ? "Melhorando..." : "Ler Novas Mensagens e Melhorar Memória"}
             </button>
+          </div>
+
+          <div className="memory-action-guides">
+            <div>
+              <strong>Puxar novas mensagens</strong>
+              <p>Reler o historico direto do WhatsApp, ignorar grupos e manter no Supabase so o volume operacional da memoria.</p>
+            </div>
+            <div>
+              <strong>Fazer primeira analise</strong>
+              <p>Criar a primeira base consolidada do dono quando ainda nao existe memoria forte salva.</p>
+            </div>
+            <div>
+              <strong>Melhorar memoria</strong>
+              <p>Usar mensagens novas junto com snapshots, projetos e chat pessoal para atualizar o que a IA ja sabe.</p>
+            </div>
           </div>
         </Card>
       </div>
+
+      <Card>
+        <SectionTitle title="Janela Atual e Alcance Máximo" icon={MessageSquare} />
+        <div className="memory-breakdown-grid">
+          <MemorySignalCard
+            label="Mensagens disponíveis na janela"
+            value={preview ? formatTokenCount(preview.available_message_count) : "..."}
+            meta={preview ? `alcance configurado em ${formatHoursLabel(preview.max_lookback_hours)}` : "Aguardando preview"}
+          />
+          <MemorySignalCard
+            label="Transcript que entra agora"
+            value={preview ? `${formatTokenCount(preview.selected_transcript_chars)} chars` : "..."}
+            meta={preview ? `media de ${formatTokenCount(preview.average_selected_message_chars)} chars por mensagem` : "Aguardando preview"}
+            tone="indigo"
+          />
+          <MemorySignalCard
+            label="Contexto seguro do reasoner"
+            value={preview ? `${formatTokenCount(preview.safe_input_budget_floor_tokens)} tk` : "..."}
+            meta={
+              preview
+                ? `saida docs ${formatTokenCount(preview.model_default_output_tokens)}/${formatTokenCount(preview.model_max_output_tokens)} e reserva atual ${formatTokenCount(preview.request_output_reserve_tokens)}`
+                : "Aguardando preview"
+            }
+            tone="amber"
+          />
+          <MemorySignalCard
+            label="Mensagens retidas no Supabase"
+            value={preview ? `${formatTokenCount(preview.retained_message_count)}/${formatTokenCount(preview.retention_limit)}` : "..."}
+            meta={preview ? `${formatTokenCount(preview.new_message_count)} novas ainda nao consolidadas` : "Aguardando preview"}
+            tone="emerald"
+          />
+        </div>
+      </Card>
 
       <Card>
         <SectionTitle title="Snapshot Consolidado Atual" icon={FileText} />
@@ -1489,6 +1786,21 @@ function MemoryTab({
             <p>Sem snapshot ainda. A primeira leitura cria a base consolidada do dono.</p>
           </div>
         )}
+      </Card>
+
+      <Card>
+        <SectionTitle
+          title="Ajuste Fino da Memória Salva"
+          icon={Sparkles}
+          action={<span className="micro-badge">sem reler WhatsApp</span>}
+        />
+        <p className="support-copy">
+          Este ajuste opcional reescreve a memoria consolidada usando apenas o que ja esta salvo no Supabase. Ele nao puxa mensagens novas.
+        </p>
+        <button className="ac-secondary-button" onClick={onRefineSaved} disabled={agentState.running || !memoryReady} type="button">
+          <Sparkles size={15} />
+          {agentState.running && agentState.intent === "refine_saved" ? "Refinando..." : "Refinar Memória Já Salva"}
+        </button>
       </Card>
 
       <Card>
@@ -1520,7 +1832,7 @@ function ProjectsTab({ projects }: { projects: ProjectMemory[] }) {
               </div>
               <div className={`micro-status micro-status-${index === 0 ? "emerald" : "amber"}`}>{project.status || "Em progresso"}</div>
             </div>
-            <ProgressBar value={getProjectStrength(project)} tone={index === 0 ? "indigo" : "zinc"} label="Maturidade da frente" />
+            <ProgressBar value={getProjectStrength(project)} tone={index === 0 ? "indigo" : "zinc"} label="Densidade de sinal da frente" />
             <p>{project.summary}</p>
           </Card>
         ))}
@@ -1698,11 +2010,34 @@ function ActivityTab({
   agentState,
   steps,
   logs,
+  preview,
+  memory,
+  latestSnapshot,
+  projectsCount,
+  snapshotsCount,
 }: {
   agentState: AgentState;
   steps: AgentStep[];
   logs: AgentLog[];
+  preview: MemoryAnalysisPreview | null;
+  memory: MemoryCurrent | null;
+  latestSnapshot: MemorySnapshot | null;
+  projectsCount: number;
+  snapshotsCount: number;
 }) {
+  const memoryReady = hasEstablishedMemory(memory, latestSnapshot);
+  const resolvedIntent = agentState.intent ?? (memoryReady ? "improve_memory" : "first_analysis");
+  const thinkingLines = buildActivityThinking({
+    preview,
+    intent: resolvedIntent,
+    hasMemory: memoryReady,
+    projectsCount,
+    snapshotsCount,
+  });
+  const costRangeLabel = preview
+    ? `${formatUsd(preview.estimated_cost_total_floor_usd)}-${formatUsd(preview.estimated_cost_total_ceiling_usd)}`
+    : "...";
+
   return (
     <div className="page-stack narrow-stack">
       <Card className="activity-hero-card">
@@ -1725,7 +2060,7 @@ function ActivityTab({
           <div className="activity-hero-head">
             <h3>
               <Terminal size={18} />
-              Agente Trabalhador
+              {getIntentTitle(resolvedIntent)}
             </h3>
             <span className={`micro-status micro-status-${agentState.running ? "indigo" : "emerald"}`}>
               {agentState.running ? "Processando" : "Ocioso"}
@@ -1753,12 +2088,54 @@ function ActivityTab({
         </div>
       </Card>
 
+      <div className="activity-insight-grid">
+        <MemorySignalCard
+          label="Ação atual"
+          value={getIntentTitle(resolvedIntent)}
+          meta={memoryReady ? "Memória base já existe" : "Ainda sem base consolidada"}
+          accent
+        />
+        <MemorySignalCard
+          label="Janela útil"
+          value={preview ? `${formatTokenCount(preview.selected_message_count)}/${formatTokenCount(preview.available_message_count)} msgs` : "..."}
+          meta={preview ? `teto operacional de ${formatTokenCount(preview.stack_max_message_capacity)} msgs` : "Aguardando preview"}
+          tone="indigo"
+        />
+        <MemorySignalCard
+          label="Base já conhecida"
+          value={`${formatTokenCount(snapshotsCount)} snapshots / ${formatTokenCount(projectsCount)} projetos`}
+          meta={memoryReady ? "Tambem cruza com o chat pessoal salvo" : "Primeira base ainda sera criada"}
+          tone="emerald"
+        />
+        <MemorySignalCard
+          label="Custo previsto"
+          value={costRangeLabel}
+          meta={preview ? `~${formatTokenCount(preview.estimated_total_tokens)} tokens totais` : "Aguardando preview"}
+          tone="amber"
+        />
+      </div>
+
+      <Card className="activity-thinking-card">
+        <SectionTitle title="Resumo do Pensamento" icon={Brain} action={<span className="micro-badge">sem CoT bruto</span>} />
+        <p className="support-copy">
+          O painel mostra o raciocinio operacional da execucao e o que o modelo vai considerar. A cadeia de pensamento bruta do `deepseek-reasoner` nao e exposta.
+        </p>
+        <div className="activity-thinking-list">
+          {thinkingLines.map((line, index) => (
+            <div key={`${line.slice(0, 20)}-${index}`} className="activity-thinking-item">
+              <span>{index + 1}</span>
+              <p>{line}</p>
+            </div>
+          ))}
+        </div>
+      </Card>
+
       <div className="terminal-shell">
         <div className="terminal-header">
           <span className="terminal-dot terminal-dot-red" />
           <span className="terminal-dot terminal-dot-yellow" />
           <span className="terminal-dot terminal-dot-green" />
-          <span className="terminal-title">system.log</span>
+          <span className="terminal-title">execution.log</span>
         </div>
         <div className="terminal-body">
           {logs.map((log) => (
@@ -1861,6 +2238,62 @@ function MetricTile({
     <div className={`metric-tile${accent ? " metric-tile-accent" : ""}${tone !== "zinc" ? ` metric-tile-${tone}` : ""}`}>
       <span>{label}</span>
       <strong>{value}</strong>
+    </div>
+  );
+}
+
+function MemorySignalCard({
+  label,
+  value,
+  meta,
+  accent = false,
+  tone = "zinc",
+}: {
+  label: string;
+  value: string;
+  meta: string;
+  accent?: boolean;
+  tone?: "emerald" | "amber" | "indigo" | "zinc";
+}) {
+  return (
+    <div className={`memory-signal-card${accent ? " memory-signal-card-accent" : ""}${tone !== "zinc" ? ` memory-signal-card-${tone}` : ""}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <p>{meta}</p>
+    </div>
+  );
+}
+
+function CapacityRail({
+  label,
+  helper,
+  current,
+  max,
+  tone,
+}: {
+  label: string;
+  helper: string;
+  current: number;
+  max: number;
+  tone: "emerald" | "amber" | "indigo" | "rose" | "zinc";
+}) {
+  const resolvedMax = Math.max(1, max);
+  const width = `${Math.max(0, Math.min(100, (current / resolvedMax) * 100))}%`;
+
+  return (
+    <div className="capacity-rail">
+      <div className="capacity-rail-head">
+        <div>
+          <strong>{label}</strong>
+          <span>{helper}</span>
+        </div>
+        <b>
+          {formatTokenCount(current)} / {formatTokenCount(resolvedMax)}
+        </b>
+      </div>
+      <div className="mini-progress-track">
+        <div className={`mini-progress-fill tone-${tone}`} style={{ width }} />
+      </div>
     </div>
   );
 }

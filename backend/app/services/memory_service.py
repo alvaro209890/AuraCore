@@ -42,15 +42,44 @@ class MemoryAnalysisPreview:
     target_message_count: int
     max_lookback_hours: int
     detail_mode: Literal["light", "balanced", "deep"]
+    deepseek_model: str
     available_message_count: int
     selected_message_count: int
     new_message_count: int
     replaced_message_count: int
     retained_message_count: int
     retention_limit: int
+    current_char_budget: int
+    selected_transcript_chars: int
+    selected_transcript_tokens: int
+    average_selected_message_chars: int
+    average_selected_message_tokens: int
+    estimated_prompt_context_tokens: int
+    model_context_limit_floor_tokens: int
+    model_context_limit_ceiling_tokens: int
+    safe_input_budget_floor_tokens: int
+    safe_input_budget_ceiling_tokens: int
+    remaining_input_headroom_floor_tokens: int
+    remaining_input_headroom_ceiling_tokens: int
+    model_default_output_tokens: int
+    model_max_output_tokens: int
+    request_output_reserve_tokens: int
+    estimated_reasoning_tokens: int
+    planner_message_capacity: int
+    stack_max_message_capacity: int
+    model_message_capacity_floor: int
+    model_message_capacity_ceiling: int
     estimated_input_tokens: int
     estimated_output_tokens: int
     estimated_total_tokens: int
+    estimated_cost_input_floor_usd: float
+    estimated_cost_input_ceiling_usd: float
+    estimated_cost_output_floor_usd: float
+    estimated_cost_output_ceiling_usd: float
+    estimated_cost_total_floor_usd: float
+    estimated_cost_total_ceiling_usd: float
+    documentation_context_note: str
+    documentation_pricing_note: str
     recommendation_score: int
     recommendation_label: str
     recommendation_summary: str
@@ -254,13 +283,13 @@ class MemoryAnalysisService:
         resolved_char_budget = self._resolve_char_budget(detail_mode)
         window_end = datetime.now(UTC)
         window_start = window_end - timedelta(hours=max_lookback_hours)
-        available_message_count = self.store.count_messages_in_window(
+        messages = self.store.list_messages_in_window(
             user_id=self.settings.default_user_id,
             window_start=window_start,
             window_end=window_end,
         )
+        available_message_count = len(messages)
         retained_message_count = self.store.count_messages(self.settings.default_user_id)
-        selected_message_count = min(resolved_target_count, available_message_count)
         current_persona = self.get_current_persona()
         retention_state = self.store.get_message_retention_state(self.settings.default_user_id)
 
@@ -268,11 +297,81 @@ class MemoryAnalysisService:
         baseline_pruned = current_persona.last_analyzed_pruned_count or 0
         new_message_count = max(0, retention_state.total_direct_ingested_count - baseline_ingested)
         replaced_message_count = max(0, retention_state.total_direct_pruned_count - baseline_pruned)
-        estimated_input_tokens, estimated_output_tokens, estimated_total_tokens = self._estimate_token_usage(
-            selected_message_count=selected_message_count,
+        transcript, included_messages = self._build_transcript(
+            messages,
+            max_messages=resolved_target_count,
             char_budget=resolved_char_budget,
-            detail_mode=detail_mode,
         )
+        selected_message_count = len(included_messages)
+        selected_transcript_chars = len(transcript)
+        selected_transcript_tokens = self._estimate_text_tokens(transcript)
+        average_selected_message_chars = round(selected_transcript_chars / selected_message_count) if selected_message_count else 0
+        average_selected_message_tokens = round(selected_transcript_tokens / selected_message_count) if selected_message_count else 0
+
+        prior_analyses_context = self._build_prior_analyses_context()
+        project_context = self._build_project_context(
+            self.store.list_project_memories(
+                self.settings.default_user_id,
+                limit=max(1, self.settings.chat_context_projects),
+            )
+        )
+        chat_context = self._build_chat_context()
+        prompt_preview = self.deepseek_service.build_analysis_prompt_preview(
+            transcript=transcript,
+            current_life_summary=current_persona.life_summary,
+            prior_analyses_context=prior_analyses_context,
+            project_context=project_context,
+            chat_context=chat_context,
+            window_hours=max_lookback_hours,
+            window_start=window_start,
+            window_end=window_end,
+            source_message_count=selected_message_count,
+        )
+        estimated_input_tokens = self._estimate_text_tokens(prompt_preview.system_prompt) + self._estimate_text_tokens(prompt_preview.user_prompt)
+        estimated_prompt_context_tokens = max(0, estimated_input_tokens - selected_transcript_tokens)
+        planning_profile = self.deepseek_service.get_planning_profile()
+        safe_input_budget_floor_tokens = max(
+            0,
+            planning_profile.context_limit_floor_tokens - planning_profile.request_output_reserve_tokens,
+        )
+        safe_input_budget_ceiling_tokens = max(
+            0,
+            planning_profile.context_limit_ceiling_tokens - planning_profile.request_output_reserve_tokens,
+        )
+        remaining_input_headroom_floor_tokens = max(0, safe_input_budget_floor_tokens - estimated_input_tokens)
+        remaining_input_headroom_ceiling_tokens = max(0, safe_input_budget_ceiling_tokens - estimated_input_tokens)
+        model_message_capacity_floor, model_message_capacity_ceiling = self._estimate_model_message_capacities(
+            average_message_tokens=average_selected_message_tokens,
+            estimated_prompt_context_tokens=estimated_prompt_context_tokens,
+            safe_input_budget_floor_tokens=safe_input_budget_floor_tokens,
+            safe_input_budget_ceiling_tokens=safe_input_budget_ceiling_tokens,
+        )
+        planner_message_capacity, stack_max_message_capacity = self._estimate_stack_message_capacities(
+            average_message_chars=average_selected_message_chars,
+            model_message_capacity_floor=model_message_capacity_floor,
+            current_char_budget=resolved_char_budget,
+        )
+        estimated_reasoning_tokens, estimated_output_tokens = self._estimate_output_usage(
+            estimated_input_tokens=estimated_input_tokens,
+            detail_mode=detail_mode,
+            output_reserve_tokens=planning_profile.request_output_reserve_tokens,
+        )
+        (
+            estimated_cost_input_floor_usd,
+            estimated_cost_input_ceiling_usd,
+            estimated_cost_output_floor_usd,
+            estimated_cost_output_ceiling_usd,
+            estimated_cost_total_floor_usd,
+            estimated_cost_total_ceiling_usd,
+        ) = self._estimate_cost_range_usd(
+            input_tokens=estimated_input_tokens,
+            output_tokens=estimated_output_tokens,
+            input_price_floor_per_million=planning_profile.cache_miss_input_price_floor_per_million,
+            input_price_ceiling_per_million=planning_profile.cache_miss_input_price_ceiling_per_million,
+            output_price_floor_per_million=planning_profile.output_price_floor_per_million,
+            output_price_ceiling_per_million=planning_profile.output_price_ceiling_per_million,
+        )
+        estimated_total_tokens = estimated_input_tokens + estimated_output_tokens
         fallback_score = self._score_analysis_opportunity(
             persona=current_persona,
             available_message_count=available_message_count,
@@ -296,6 +395,8 @@ class MemoryAnalysisService:
             new_message_count=new_message_count,
             replaced_message_count=replaced_message_count,
             estimated_total_tokens=estimated_total_tokens,
+            stack_max_message_capacity=stack_max_message_capacity,
+            estimated_cost_total_ceiling_usd=estimated_cost_total_ceiling_usd,
             fallback_score=fallback_score,
             fallback_label=fallback_label,
         )
@@ -304,15 +405,44 @@ class MemoryAnalysisService:
             target_message_count=resolved_target_count,
             max_lookback_hours=max_lookback_hours,
             detail_mode=detail_mode,
+            deepseek_model=planning_profile.model_name,
             available_message_count=available_message_count,
             selected_message_count=selected_message_count,
             new_message_count=new_message_count,
             replaced_message_count=replaced_message_count,
             retained_message_count=retained_message_count,
             retention_limit=self.settings.message_retention_max_rows,
+            current_char_budget=resolved_char_budget,
+            selected_transcript_chars=selected_transcript_chars,
+            selected_transcript_tokens=selected_transcript_tokens,
+            average_selected_message_chars=average_selected_message_chars,
+            average_selected_message_tokens=average_selected_message_tokens,
+            estimated_prompt_context_tokens=estimated_prompt_context_tokens,
+            model_context_limit_floor_tokens=planning_profile.context_limit_floor_tokens,
+            model_context_limit_ceiling_tokens=planning_profile.context_limit_ceiling_tokens,
+            safe_input_budget_floor_tokens=safe_input_budget_floor_tokens,
+            safe_input_budget_ceiling_tokens=safe_input_budget_ceiling_tokens,
+            remaining_input_headroom_floor_tokens=remaining_input_headroom_floor_tokens,
+            remaining_input_headroom_ceiling_tokens=remaining_input_headroom_ceiling_tokens,
+            model_default_output_tokens=planning_profile.default_output_tokens,
+            model_max_output_tokens=planning_profile.maximum_output_tokens,
+            request_output_reserve_tokens=planning_profile.request_output_reserve_tokens,
+            estimated_reasoning_tokens=estimated_reasoning_tokens,
+            planner_message_capacity=planner_message_capacity,
+            stack_max_message_capacity=stack_max_message_capacity,
+            model_message_capacity_floor=model_message_capacity_floor,
+            model_message_capacity_ceiling=model_message_capacity_ceiling,
             estimated_input_tokens=estimated_input_tokens,
             estimated_output_tokens=estimated_output_tokens,
             estimated_total_tokens=estimated_total_tokens,
+            estimated_cost_input_floor_usd=estimated_cost_input_floor_usd,
+            estimated_cost_input_ceiling_usd=estimated_cost_input_ceiling_usd,
+            estimated_cost_output_floor_usd=estimated_cost_output_floor_usd,
+            estimated_cost_output_ceiling_usd=estimated_cost_output_ceiling_usd,
+            estimated_cost_total_floor_usd=estimated_cost_total_floor_usd,
+            estimated_cost_total_ceiling_usd=estimated_cost_total_ceiling_usd,
+            documentation_context_note=planning_profile.context_note,
+            documentation_pricing_note=planning_profile.pricing_note,
             recommendation_score=recommendation_score,
             recommendation_label=recommendation_label,
             recommendation_summary=recommendation_summary,
@@ -576,6 +706,121 @@ class MemoryAnalysisService:
         }[detail_mode]
         return estimated_input_tokens, estimated_output_tokens, estimated_input_tokens + estimated_output_tokens
 
+    def _estimate_text_tokens(self, text: str) -> int:
+        if not text:
+            return 0
+
+        estimated_tokens = 0.0
+        for char in text:
+            codepoint = ord(char)
+            if 0x3400 <= codepoint <= 0x9FFF:
+                estimated_tokens += 0.6
+            else:
+                estimated_tokens += 0.3
+        return max(1, round(estimated_tokens))
+
+    def _estimate_model_message_capacities(
+        self,
+        *,
+        average_message_tokens: int,
+        estimated_prompt_context_tokens: int,
+        safe_input_budget_floor_tokens: int,
+        safe_input_budget_ceiling_tokens: int,
+    ) -> tuple[int, int]:
+        if average_message_tokens <= 0:
+            return 0, 0
+
+        usable_floor_tokens = max(0, safe_input_budget_floor_tokens - estimated_prompt_context_tokens)
+        usable_ceiling_tokens = max(0, safe_input_budget_ceiling_tokens - estimated_prompt_context_tokens)
+        return (
+            usable_floor_tokens // average_message_tokens,
+            usable_ceiling_tokens // average_message_tokens,
+        )
+
+    def _estimate_stack_message_capacities(
+        self,
+        *,
+        average_message_chars: int,
+        model_message_capacity_floor: int,
+        current_char_budget: int,
+    ) -> tuple[int, int]:
+        if average_message_chars <= 0:
+            return 0, 0
+
+        planner_char_capacity = current_char_budget // average_message_chars
+        stack_char_capacity = self.settings.memory_analysis_max_chars // average_message_chars
+        planner_message_capacity = min(
+            self.settings.memory_analysis_max_messages,
+            planner_char_capacity,
+            model_message_capacity_floor,
+        )
+        stack_max_message_capacity = min(
+            self.settings.memory_analysis_max_messages,
+            stack_char_capacity,
+            model_message_capacity_floor,
+        )
+        return planner_message_capacity, stack_max_message_capacity
+
+    def _estimate_output_usage(
+        self,
+        *,
+        estimated_input_tokens: int,
+        detail_mode: Literal["light", "balanced", "deep"],
+        output_reserve_tokens: int,
+    ) -> tuple[int, int]:
+        final_answer_tokens = {
+            "light": 760,
+            "balanced": 1080,
+            "deep": 1460,
+        }[detail_mode]
+        reasoning_multiplier = {
+            "light": 0.24,
+            "balanced": 0.38,
+            "deep": 0.52,
+        }[detail_mode]
+        reasoning_floor = {
+            "light": 900,
+            "balanced": 1450,
+            "deep": 2200,
+        }[detail_mode]
+
+        resolved_final_answer_tokens = min(output_reserve_tokens, final_answer_tokens)
+        reasoning_cap = max(0, output_reserve_tokens - resolved_final_answer_tokens)
+        estimated_reasoning_tokens = min(
+            reasoning_cap,
+            max(reasoning_floor, round(estimated_input_tokens * reasoning_multiplier)),
+        )
+        estimated_output_tokens = min(
+            output_reserve_tokens,
+            resolved_final_answer_tokens + estimated_reasoning_tokens,
+        )
+        return estimated_reasoning_tokens, estimated_output_tokens
+
+    def _estimate_cost_range_usd(
+        self,
+        *,
+        input_tokens: int,
+        output_tokens: int,
+        input_price_floor_per_million: float,
+        input_price_ceiling_per_million: float,
+        output_price_floor_per_million: float,
+        output_price_ceiling_per_million: float,
+    ) -> tuple[float, float, float, float, float, float]:
+        input_cost_floor = round((input_tokens / 1_000_000) * input_price_floor_per_million, 6)
+        input_cost_ceiling = round((input_tokens / 1_000_000) * input_price_ceiling_per_million, 6)
+        output_cost_floor = round((output_tokens / 1_000_000) * output_price_floor_per_million, 6)
+        output_cost_ceiling = round((output_tokens / 1_000_000) * output_price_ceiling_per_million, 6)
+        total_cost_floor = round(input_cost_floor + output_cost_floor, 6)
+        total_cost_ceiling = round(input_cost_ceiling + output_cost_ceiling, 6)
+        return (
+            input_cost_floor,
+            input_cost_ceiling,
+            output_cost_floor,
+            output_cost_ceiling,
+            total_cost_floor,
+            total_cost_ceiling,
+        )
+
     def _score_analysis_opportunity(
         self,
         *,
@@ -637,6 +882,8 @@ class MemoryAnalysisService:
         new_message_count: int,
         replaced_message_count: int,
         estimated_total_tokens: int,
+        stack_max_message_capacity: int,
+        estimated_cost_total_ceiling_usd: float,
         fallback_score: int,
         fallback_label: str,
     ) -> tuple[int, str, bool, str]:
@@ -645,6 +892,8 @@ class MemoryAnalysisService:
             selected_message_count=selected_message_count,
             new_message_count=new_message_count,
             replaced_message_count=replaced_message_count,
+            stack_max_message_capacity=stack_max_message_capacity,
+            estimated_cost_total_ceiling_usd=estimated_cost_total_ceiling_usd,
             recommendation_label=fallback_label,
         )
         if self.groq_service is None:
@@ -665,6 +914,8 @@ class MemoryAnalysisService:
                 new_message_count=new_message_count,
                 replaced_message_count=replaced_message_count,
                 estimated_total_tokens=estimated_total_tokens,
+                stack_max_message_capacity=stack_max_message_capacity,
+                estimated_cost_total_ceiling_usd=estimated_cost_total_ceiling_usd,
                 fallback_score=fallback_score,
                 fallback_label=fallback_label,
             )
@@ -688,9 +939,12 @@ class MemoryAnalysisService:
         selected_message_count: int,
         new_message_count: int,
         replaced_message_count: int,
+        stack_max_message_capacity: int,
+        estimated_cost_total_ceiling_usd: float,
         recommendation_label: str,
     ) -> str:
         return (
             f"{recommendation_label}: esta leitura usaria cerca de {selected_message_count} mensagens, "
-            f"com {new_message_count} novas desde a ultima consolidacao e {replaced_message_count} ja substituidas pela retencao."
+            f"com {new_message_count} novas, {replaced_message_count} ja substituidas pela retencao, "
+            f"teto real de {stack_max_message_capacity} mensagens nesta stack e custo estimado ate US$ {estimated_cost_total_ceiling_usd:.4f}."
         )

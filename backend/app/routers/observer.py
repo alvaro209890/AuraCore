@@ -32,7 +32,7 @@ async def refresh_observer_messages(
         status=status,
         message=(
             "Nova sincronizacao do WhatsApp iniciada. O AuraCore vai reler apenas chats diretos "
-            "e manter no Supabase somente as mensagens mais novas dentro da retencao."
+            "e manter no Supabase somente as mensagens mais novas dentro do limite operacional da memoria."
         ),
     )
 
