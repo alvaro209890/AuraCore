@@ -1786,6 +1786,7 @@ export function ConnectionDashboard() {
     startAgentRun(intent);
 
     try {
+      if (intent === "first_analysis" || intent === "improve_memory") {
         const response = intent === "first_analysis"
           ? await runFirstMemoryAnalysis()
           : await runNextMemoryBatch();
@@ -2134,6 +2135,7 @@ export function ConnectionDashboard() {
                   agentState={agentState}
                   onInitialAnalysis={() => void runMemoryJob("first_analysis")}
                   onImproveMemory={() => void runMemoryJob("improve_memory")}
+                  queuedJobId={queuedJobId}
                 />
               ) : null}
 
@@ -3059,6 +3061,7 @@ function MemoryTab({
   latestSnapshot,
   memoryError,
   agentState,
+  queuedJobId,
   onInitialAnalysis,
   onImproveMemory,
 }: {
@@ -3067,6 +3070,7 @@ function MemoryTab({
   latestSnapshot: MemorySnapshot | null;
   memoryError: string | null;
   agentState: AgentState;
+  queuedJobId: string | null;
   onInitialAnalysis: () => void;
   onImproveMemory: () => void;
 }) {
