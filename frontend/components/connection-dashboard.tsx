@@ -121,6 +121,11 @@ type InsightMetric = {
   color: "emerald" | "amber" | "indigo" | "zinc";
 };
 
+type NavGroup = {
+  title: string;
+  items: NavItem[];
+};
+
 type NavItem = {
   id: TabId;
   label: string;
@@ -142,17 +147,39 @@ const DETAIL_OPTIONS: Array<{
   { value: "deep", label: "Profunda", description: "Usa o teto atual da stack quando houve muita novidade ou atraso de consolidação.", badge: "~60k chars" },
 ];
 
-const NAV_ITEMS: NavItem[] = [
-  { id: "overview", label: "Visão Geral", icon: Brain },
-  { id: "observer", label: "Observador", icon: Eye },
-  { id: "memory", label: "Memória", icon: Database },
-  { id: "important", label: "Importantes", icon: Archive },
-  { id: "projects", label: "Projetos", icon: FolderGit2 },
-  { id: "chat", label: "Chat Pessoal", icon: MessageSquare },
-  { id: "activity", label: "Atividade", icon: Activity },
-  { id: "automation", label: "Automação", icon: Settings },
-  { id: "manual", label: "Manual", icon: FileText },
+const NAV_GROUPS: NavGroup[] = [
+  {
+    title: "Painel Principal",
+    items: [
+      { id: "overview", label: "Visão Geral", icon: Brain },
+    ],
+  },
+  {
+    title: "Inteligência",
+    items: [
+      { id: "observer", label: "Observador", icon: Eye },
+      { id: "memory", label: "Memória", icon: Database },
+      { id: "important", label: "Importantes", icon: Archive },
+    ],
+  },
+  {
+    title: "Operações",
+    items: [
+      { id: "projects", label: "Projetos", icon: FolderGit2 },
+      { id: "chat", label: "Chat Pessoal", icon: MessageSquare },
+    ],
+  },
+  {
+    title: "Sistema",
+    items: [
+      { id: "activity", label: "Atividade", icon: Activity },
+      { id: "automation", label: "Automação", icon: Settings },
+      { id: "manual", label: "Manual", icon: FileText },
+    ],
+  },
 ];
+
+const NAV_ITEMS: NavItem[] = NAV_GROUPS.flatMap((g) => g.items);
 
 const IDLE_AGENT_STATUS = "Nenhuma atualização em andamento.";
 
@@ -1246,24 +1273,31 @@ export function ConnectionDashboard() {
         </div>
 
         <nav className="ac-sidebar-nav" aria-label="Navegação principal">
-          {NAV_ITEMS.map((item) => {
-            const Icon = item.icon;
-            const active = activeTab === item.id;
-            return (
-              <button
-                key={item.id}
-                className={`ac-nav-item${active ? " ac-nav-item-active" : ""}`}
-                onClick={() => {
-                  setActiveTab(item.id);
-                  setSidebarOpen(false);
-                }}
-                type="button"
-              >
-                <Icon size={18} />
-                <span>{item.label}</span>
-              </button>
-            );
-          })}
+          {NAV_GROUPS.map((group) => (
+            <div key={group.title} className="ac-nav-group">
+              <h4 className="ac-nav-group-title">{group.title}</h4>
+              <div className="ac-nav-group-items">
+                {group.items.map((item) => {
+                  const Icon = item.icon;
+                  const active = activeTab === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      className={`ac-nav-item${active ? " ac-nav-item-active" : ""}`}
+                      onClick={() => {
+                        setActiveTab(item.id);
+                        setSidebarOpen(false);
+                      }}
+                      type="button"
+                    >
+                      <Icon size={16} />
+                      <span>{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </nav>
 
         <div className="ac-sidebar-footer">
