@@ -30,6 +30,7 @@ DecisionReasonCode = Literal[
     "pruned_messages",
     "new_messages_threshold",
     "stale_memory",
+    "manual_refresh",
     "low_change",
     "auto_analyze_disabled",
     "daily_budget_reached",
@@ -118,10 +119,32 @@ class AutomationService:
             await self.evaluate_and_schedule(sync_run_id=sync_run.id)
         return finalized_runs
 
+    async def finalize_manual_sync_and_queue_refresh(
+        self,
+        *,
+        sync_run_id: str,
+    ) -> tuple[WhatsAppSyncRunRecord | None, AnalysisJobRecord | None]:
+        finalized_run = self.store.finalize_whatsapp_sync_run(
+            user_id=self.settings.default_user_id,
+            sync_run_id=sync_run_id,
+            finished_at=datetime.now(UTC),
+        )
+        if finalized_run is None:
+            return None, None
+
+        _decision, job = await self.evaluate_and_schedule(
+            sync_run_id=sync_run_id,
+            force_analysis=finalized_run.trigger == "manual",
+            trigger_source="manual_sync" if finalized_run.trigger == "manual" else "automation",
+        )
+        return finalized_run, job
+
     async def evaluate_and_schedule(
         self,
         *,
         sync_run_id: str | None = None,
+        force_analysis: bool = False,
+        trigger_source: str = "automation",
     ) -> tuple[AutomationDecisionRecord, AnalysisJobRecord | None]:
         automation_settings = self.store.get_automation_settings(self.settings.default_user_id)
         persona = self.memory_service.get_current_persona()
@@ -161,11 +184,24 @@ class AutomationService:
             job.trigger_source == "automation" and job.status in {"queued", "running"}
             for job in recent_jobs
         )
+        has_pending_job = any(job.status in {"queued", "running"} for job in recent_jobs)
 
         action = "queue"
         should_analyze = preview.should_analyze
         explanation = preview.recommendation_summary
-        if not automation_settings.auto_analyze_enabled:
+        if force_analysis and has_pending_job:
+            action = "skip"
+            should_analyze = False
+            reason_code = "job_already_pending"
+            explanation = "Ja existe uma leitura em andamento ou na fila; a releitura manual nao abriu outra em paralelo."
+        elif force_analysis and preview.selected_message_count > 0:
+            action = "queue"
+            should_analyze = True
+            reason_code = "manual_refresh"
+            explanation = (
+                "A releitura manual do WhatsApp pediu uma atualizacao imediata da memoria; o resumo do dono foi priorizado para esta rodada."
+            )
+        elif not automation_settings.auto_analyze_enabled:
             action = "skip"
             should_analyze = False
             reason_code = "auto_analyze_disabled"
@@ -215,7 +251,7 @@ class AutomationService:
             user_id=self.settings.default_user_id,
             intent=intent,
             status="queued",
-            trigger_source="automation",
+            trigger_source=trigger_source,
             decision_id=decision.id,
             sync_run_id=sync_run_id,
             target_message_count=config["target_message_count"],

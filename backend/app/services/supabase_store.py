@@ -1521,6 +1521,74 @@ class SupabaseStore:
             self._compat_sync_runs[sync_run_id] = updated
             return updated
 
+    def finalize_whatsapp_sync_run(self, *, user_id: UUID, sync_run_id: str, finished_at: datetime) -> WhatsAppSyncRunRecord | None:
+        try:
+            response = (
+                self.client.table("wa_sync_runs")
+                .select(
+                    "id,user_id,trigger,status,messages_seen_count,messages_saved_count,messages_ignored_count,"
+                    "messages_pruned_count,oldest_message_at,newest_message_at,error_text,started_at,finished_at,"
+                    "last_activity_at,baseline_ingested_count,baseline_pruned_count"
+                )
+                .eq("user_id", str(user_id))
+                .eq("id", sync_run_id)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "wa_sync_runs"):
+                raise
+            current = self._compat_sync_runs.get(sync_run_id)
+            if current is None or current.user_id != user_id:
+                return None
+            if current.status != "running":
+                return current
+            retention_state = self.get_message_retention_state(user_id)
+            last_activity = current.last_activity_at or current.started_at
+            updated = WhatsAppSyncRunRecord(
+                id=current.id,
+                user_id=current.user_id,
+                trigger=current.trigger,
+                status="succeeded",
+                messages_seen_count=current.messages_seen_count,
+                messages_saved_count=max(current.messages_saved_count, retention_state.total_direct_ingested_count),
+                messages_ignored_count=current.messages_ignored_count,
+                messages_pruned_count=max(current.messages_pruned_count, retention_state.total_direct_pruned_count),
+                oldest_message_at=current.oldest_message_at,
+                newest_message_at=current.newest_message_at,
+                error_text=current.error_text,
+                started_at=current.started_at,
+                finished_at=finished_at,
+                last_activity_at=last_activity,
+            )
+            self._compat_sync_runs[sync_run_id] = updated
+            return updated
+
+        rows = response.data or []
+        if not rows or not isinstance(rows[0], dict):
+            return None
+        row = rows[0]
+        if str(row.get("status") or "") != "running":
+            return self.get_whatsapp_sync_run(sync_run_id)
+
+        retention_state = self.get_message_retention_state(user_id)
+        baseline_ingested_count = self._parse_int(row.get("baseline_ingested_count")) or 0
+        baseline_pruned_count = self._parse_int(row.get("baseline_pruned_count")) or 0
+        saved_from_retention = max(0, retention_state.total_direct_ingested_count - baseline_ingested_count)
+        pruned_from_retention = max(0, retention_state.total_direct_pruned_count - baseline_pruned_count)
+        last_activity_at = self._parse_datetime(row.get("last_activity_at")) or self._parse_datetime(row.get("started_at")) or finished_at
+
+        self.client.table("wa_sync_runs").update(
+            {
+                "status": "succeeded",
+                "messages_saved_count": max(self._parse_int(row.get("messages_saved_count")) or 0, saved_from_retention),
+                "messages_pruned_count": max(self._parse_int(row.get("messages_pruned_count")) or 0, pruned_from_retention),
+                "finished_at": finished_at.isoformat(),
+                "last_activity_at": last_activity_at.isoformat(),
+            }
+        ).eq("id", sync_run_id).execute()
+        return self.get_whatsapp_sync_run(sync_run_id)
+
     def finalize_idle_sync_runs(self, *, user_id: UUID, idle_before: datetime) -> list[WhatsAppSyncRunRecord]:
         try:
             response = (

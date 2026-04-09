@@ -33,6 +33,7 @@ class GroqChatService:
         recent_snapshots_context: str,
         recent_projects_context: str,
         recent_chat_context: str,
+        interaction_mode: str = "contextual",
     ) -> str:
         if not self.settings.groq_api_key:
             raise GroqChatError("GROQ_API_KEY nao configurada na Render.")
@@ -53,7 +54,10 @@ class GroqChatService:
                         "persistido sobre sua rotina, seus projetos, suas preferencias e sua forma de agir. "
                         "Se faltar contexto, diga isso com clareza em vez de inventar. Seja direto, pessoal e "
                         "pratico, sem soar generico. Responda como uma IA que ja conhece o dono, seus padroes de "
-                        "decisao e suas frentes ativas, mas sem fingir certeza quando a memoria estiver incompleta."
+                        "decisao e suas frentes ativas, mas sem fingir certeza quando a memoria estiver incompleta. "
+                        "Nao transforme cumprimentos simples em um relatorio sobre a vida do dono. "
+                        "Nao abra a resposta listando fatos antigos, projetos, gastos ou historicos que nao foram pedidos. "
+                        "Use a memoria como apoio silencioso: so traga lembrancas quando elas ajudarem diretamente a resposta atual."
                     ),
                 },
                 {
@@ -64,6 +68,7 @@ class GroqChatService:
                         recent_snapshots_context=recent_snapshots_context,
                         recent_projects_context=recent_projects_context,
                         recent_chat_context=recent_chat_context,
+                        interaction_mode=interaction_mode,
                     ),
                 },
             ],
@@ -173,6 +178,7 @@ class GroqChatService:
         recent_snapshots_context: str,
         recent_projects_context: str,
         recent_chat_context: str,
+        interaction_mode: str,
     ) -> str:
         return f"""
 Contexto consolidado do dono:
@@ -190,13 +196,20 @@ Historico recente desta conversa:
 Mensagem atual do dono:
 {user_message.strip()}
 
+Modo de interacao:
+{interaction_mode}
+
 Regras:
+- Responda primeiro ao que o dono acabou de dizer, de forma natural.
 - Responda como uma IA pessoal que ja conhece o dono e seus projetos.
 - Use o resumo consolidado para adaptar tom, prioridade e praticidade da resposta.
-- Priorize contexto pessoal e de trabalho realmente presente no material acima.
+- Priorize contexto pessoal e de trabalho realmente presente no material acima, mas so mencione isso quando for relevante.
 - Se a pergunta tocar em um projeto conhecido, conecte a resposta ao estado atual desse projeto.
 - Se o dono estiver pedindo ajuda operacional, priorize a resposta mais acionavel e mais curta primeiro.
 - Se houver incerteza ou memoria incompleta, assuma isso explicitamente.
+- Em cumprimentos, mensagens curtas ou aberturas vagas, responda em 1 ou 2 frases curtas e pergunte como ajudar.
+- Nao enumere fatos antigos sem convite explicito.
+- Evite hiperfoco em um unico tema so porque ele apareceu na memoria.
 - Evite respostas genéricas, longas demais ou com floreio.
 - Nao use markdown fences.
 """.strip()

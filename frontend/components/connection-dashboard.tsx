@@ -697,7 +697,6 @@ export function ConnectionDashboard() {
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const agentTimerRef = useRef<number | null>(null);
   const agentStepIndexRef = useRef(0);
-  const messageRefreshTimerRef = useRef<number | null>(null);
 
   const latestSnapshot = snapshots[0] ?? null;
   const memoryIsEstablished = hasEstablishedMemory(memory, latestSnapshot);
@@ -751,9 +750,6 @@ export function ConnectionDashboard() {
     return () => {
       if (agentTimerRef.current) {
         window.clearInterval(agentTimerRef.current);
-      }
-      if (messageRefreshTimerRef.current) {
-        window.clearTimeout(messageRefreshTimerRef.current);
       }
     };
   }, []);
@@ -1053,14 +1049,18 @@ export function ConnectionDashboard() {
         "info",
         response.sync_run_id ? `${response.message} Sync ${response.sync_run_id.slice(0, 8)} aberto.` : response.message,
       );
+      pushAgentLog("info", "Releitura concluída. Vou processar a fila agora para atualizar o resumo do dono.");
 
-      if (messageRefreshTimerRef.current) {
-        window.clearTimeout(messageRefreshTimerRef.current);
+      try {
+        const snapshot = await runAutomationTick();
+        setAutomationStatus(snapshot);
+        setAutomationDraft((previous) => previous ?? toAutomationDraft(snapshot.settings));
+        pushAgentLog("success", "Fila processada após a releitura. O resumo e a memória já foram recalculados quando havia mensagens válidas.");
+      } catch (tickError) {
+        pushAgentLog("error", `A releitura terminou, mas o tick automático falhou: ${getErrorMessage(tickError)}`);
       }
-      messageRefreshTimerRef.current = window.setTimeout(() => {
-        void hydrateDashboard("manual");
-        messageRefreshTimerRef.current = null;
-      }, 4500);
+
+      await hydrateDashboard("manual");
     } catch (error) {
       const message = getErrorMessage(error);
       setMessageRefreshError(message);

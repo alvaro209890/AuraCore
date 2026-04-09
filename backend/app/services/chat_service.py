@@ -101,13 +101,16 @@ class ChatAssistantService:
 
         session = self._build_session_state(thread=thread)
         prior_messages = session.messages[:-1] if session.messages and session.messages[-1].role == "user" else session.messages
+        interaction_mode = self._resolve_interaction_mode(normalized_text)
+        use_light_touch_context = interaction_mode == "light_touch"
 
         assistant_reply = await self.groq_service.generate_reply(
             user_message=normalized_text,
-            current_life_summary=session.persona.life_summary,
-            recent_snapshots_context=self._build_snapshot_context(),
-            recent_projects_context=self._build_project_context(session.projects),
-            recent_chat_context=self._build_chat_context(prior_messages),
+            current_life_summary="" if use_light_touch_context else session.persona.life_summary,
+            recent_snapshots_context="" if use_light_touch_context else self._build_snapshot_context(),
+            recent_projects_context="" if use_light_touch_context else self._build_project_context(session.projects),
+            recent_chat_context="" if use_light_touch_context else self._build_chat_context(prior_messages),
+            interaction_mode=interaction_mode,
         )
         self.store.append_chat_message(
             thread_id=thread.id,
@@ -217,6 +220,29 @@ class ChatAssistantService:
         if len(normalized) <= 84:
             return normalized
         return f"{normalized[:81].rstrip()}..."
+
+    def _resolve_interaction_mode(self, message_text: str) -> str:
+        normalized = " ".join(message_text.lower().split()).strip()
+        if not normalized:
+            return "light_touch"
+        if len(normalized) <= 24 and normalized in {
+            "oi",
+            "ola",
+            "olá",
+            "opa",
+            "bom dia",
+            "boa tarde",
+            "boa noite",
+            "e ai",
+            "e aí",
+            "salve",
+            "fala",
+            "oii",
+        }:
+            return "light_touch"
+        if len(normalized) <= 18 and normalized.rstrip("!?.,") in {"oi", "ola", "olá", "opa", "fala"}:
+            return "light_touch"
+        return "contextual"
 
     def _build_snapshot_context(self) -> str:
         limit = max(0, self.settings.chat_context_snapshots)

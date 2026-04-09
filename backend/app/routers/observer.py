@@ -35,11 +35,13 @@ async def refresh_observer_messages(
     except Exception as error:
         automation_service.mark_sync_failed(sync_run_id=sync_run.id, error_text=str(error))
         raise
+    await automation_service.finalize_manual_sync_and_queue_refresh(sync_run_id=sync_run.id)
     return ObserverMessageRefreshResponse(
         status=status,
         message=(
             "Nova sincronizacao do WhatsApp iniciada. O AuraCore vai reler apenas chats diretos "
-            "e manter no Supabase somente as mensagens mais novas dentro do limite operacional da memoria."
+            "e manter no Supabase somente as mensagens mais novas dentro do limite operacional da memoria. "
+            "Depois disso, a atualizacao do resumo do dono entra automaticamente na fila."
         ),
         sync_run_id=sync_run.id,
     )
