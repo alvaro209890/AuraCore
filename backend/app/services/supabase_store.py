@@ -430,6 +430,59 @@ class SupabaseStore:
             )
         return messages
 
+    def list_pending_messages(
+        self,
+        *,
+        user_id: UUID,
+        limit: int,
+        newest_first: bool = False,
+    ) -> list[StoredMessageRecord]:
+        resolved_limit = max(1, min(limit, self.message_retention_max_rows))
+        try:
+            response = (
+                self.client.table("mensagens")
+                .select("id,user_id,contact_name,chat_jid,contact_phone,direction,message_text,timestamp,source")
+                .eq("user_id", str(user_id))
+                .order("timestamp", desc=newest_first)
+                .limit(resolved_limit)
+                .execute()
+            )
+        except Exception as exc:
+            if not self._is_missing_column_error(exc, column_name="chat_jid", table_name="mensagens"):
+                raise
+            response = (
+                self.client.table("mensagens")
+                .select("id,user_id,contact_name,contact_phone,direction,message_text,timestamp,source")
+                .eq("user_id", str(user_id))
+                .order("timestamp", desc=newest_first)
+                .limit(resolved_limit)
+                .execute()
+            )
+
+        rows = response.data or []
+        messages: list[StoredMessageRecord] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            message_text = str(row.get("message_text") or "").strip()
+            contact_phone = self._optional_text(row.get("contact_phone"))
+            if not message_text or not self.is_normal_contact_phone(contact_phone):
+                continue
+            messages.append(
+                StoredMessageRecord(
+                    message_id=str(row.get("id") or ""),
+                    user_id=self._parse_uuid(row.get("user_id")) or user_id,
+                    direction=str(row.get("direction") or "inbound"),
+                    contact_name=str(row.get("contact_name") or row.get("contact_phone") or "Contato"),
+                    chat_jid=self._optional_text(row.get("chat_jid")),
+                    contact_phone=contact_phone,
+                    message_text=message_text,
+                    timestamp=self._parse_datetime(row.get("timestamp")) or datetime.now(UTC),
+                    source=str(row.get("source") or "unknown"),
+                )
+            )
+        return messages
+
     def prune_non_direct_messages(self, user_id: UUID) -> int:
         deleted_total = 0
         while True:

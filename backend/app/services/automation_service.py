@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 from app.config import Settings
 from app.services.memory_service import (
+    FixedAnalysisPlan,
     MemoryAnalysisError,
     MemoryAnalysisOutcome,
     MemoryAnalysisPreview,
@@ -27,6 +28,9 @@ AnalysisIntent = Literal["first_analysis", "improve_memory", "refine_saved"]
 DecisionReasonCode = Literal[
     "first_analysis_ready",
     "first_analysis_more_signal",
+    "awaiting_first_analysis",
+    "batch_ready",
+    "awaiting_next_batch",
     "pruned_messages",
     "new_messages_threshold",
     "stale_memory",
@@ -147,36 +151,8 @@ class AutomationService:
         trigger_source: str = "automation",
     ) -> tuple[AutomationDecisionRecord, AnalysisJobRecord | None]:
         automation_settings = self.store.get_automation_settings(self.settings.default_user_id)
-        persona = self.memory_service.get_current_persona()
-        has_memory = bool(persona.last_analyzed_at or persona.last_snapshot_id)
-        intent: AnalysisIntent = "improve_memory" if has_memory else "first_analysis"
-
-        config = self._resolve_config_for_intent(intent=intent, automation_settings=automation_settings)
-        preview = await self.memory_service.get_analysis_preview(
-            target_message_count=config["target_message_count"],
-            max_lookback_hours=config["max_lookback_hours"],
-            detail_mode=config["detail_mode"],
-        )
-
-        if (
-            intent == "improve_memory"
-            and preview.should_analyze
-            and config["detail_mode"] != "deep"
-            and (preview.replaced_message_count > 0 or preview.recommendation_score >= 80)
-        ):
-            config = {**config, "detail_mode": "deep"}
-            preview = await self.memory_service.get_analysis_preview(
-                target_message_count=config["target_message_count"],
-                max_lookback_hours=config["max_lookback_hours"],
-                detail_mode=config["detail_mode"],
-            )
-
-        reason_code = self._determine_reason_code(
-            preview=preview,
-            has_memory=has_memory,
-            automation_settings=automation_settings,
-            last_analyzed_at=persona.last_analyzed_at,
-        )
+        memory_status = self.memory_service.get_memory_status()
+        intent: AnalysisIntent = "improve_memory" if memory_status.has_initial_analysis else "first_analysis"
         daily_cost_usd = self._get_daily_cost_usd()
         daily_auto_jobs_count = self._get_daily_auto_jobs_count()
         recent_jobs = self.store.list_analysis_jobs(user_id=self.settings.default_user_id, limit=20)
@@ -186,45 +162,52 @@ class AutomationService:
         )
         has_pending_job = any(job.status in {"queued", "running"} for job in recent_jobs)
 
-        action = "queue"
-        should_analyze = preview.should_analyze
-        explanation = preview.recommendation_summary
-        if force_analysis and has_pending_job:
-            action = "skip"
-            should_analyze = False
-            reason_code = "job_already_pending"
-            explanation = "Ja existe uma leitura em andamento ou na fila; a releitura manual nao abriu outra em paralelo."
-        elif force_analysis and preview.selected_message_count > 0:
-            action = "queue"
-            should_analyze = True
-            reason_code = "manual_refresh"
+        action = "skip"
+        should_analyze = False
+        reason_code: DecisionReasonCode = "awaiting_first_analysis"
+        explanation = "A memoria base ainda nao existe. A primeira analise continua sendo um passo manual unico."
+        selected_message_count = memory_status.next_process_message_count
+        estimated_total_tokens = 0
+        estimated_cost_ceiling_usd = 0.0
+        job_plan: FixedAnalysisPlan | None = None
+
+        if memory_status.has_initial_analysis and memory_status.pending_new_message_count >= 10:
+            job_plan = self.memory_service.plan_next_batch()
+            selected_message_count = len(job_plan.source_messages)
+            estimated_total_tokens = job_plan.estimated_input_tokens + job_plan.estimated_output_tokens
+            estimated_cost_ceiling_usd = job_plan.estimated_cost_ceiling_usd
+
+            if force_analysis and has_pending_job:
+                reason_code = "job_already_pending"
+                explanation = "Ja existe uma leitura em andamento ou na fila; a sincronizacao manual nao abriu outro lote em paralelo."
+            elif not automation_settings.auto_analyze_enabled:
+                reason_code = "auto_analyze_disabled"
+                explanation = "A automacao de analise esta desligada; o backend registrou o lote disponivel, mas nao o enfileirou."
+            elif daily_cost_usd >= automation_settings.daily_budget_usd:
+                reason_code = "daily_budget_reached"
+                explanation = (
+                    f"O custo estimado acumulado hoje ja chegou a US$ {daily_cost_usd:.4f}, acima do teto automatico configurado."
+                )
+            elif daily_auto_jobs_count >= automation_settings.max_auto_jobs_per_day:
+                reason_code = "max_auto_jobs_reached"
+                explanation = "O limite diario de jobs automaticos ja foi atingido; este lote ficou aguardando acao manual."
+            elif has_pending_auto_job:
+                reason_code = "job_already_pending"
+                explanation = "Ja existe um job automatico em andamento ou na fila; o sistema nao empilha outro lote em paralelo."
+            else:
+                action = "queue"
+                should_analyze = True
+                reason_code = "batch_ready"
+                explanation = (
+                    f"Existem {memory_status.pending_new_message_count} mensagens novas pendentes. "
+                    "O backend vai processar automaticamente o proximo lote economico de 10 mensagens."
+                )
+        elif memory_status.has_initial_analysis:
+            reason_code = "awaiting_next_batch"
             explanation = (
-                "A releitura manual do WhatsApp pediu uma atualizacao imediata da memoria; o resumo do dono foi priorizado para esta rodada."
+                f"Ainda existem {memory_status.pending_new_message_count} mensagens novas pendentes. "
+                "O proximo processamento automatico so dispara quando a fila chegar a 10."
             )
-        elif not automation_settings.auto_analyze_enabled:
-            action = "skip"
-            should_analyze = False
-            reason_code = "auto_analyze_disabled"
-            explanation = "A automacao de analise esta desligada; o sistema registrou a oportunidade, mas nao enfileirou job."
-        elif daily_cost_usd >= automation_settings.daily_budget_usd:
-            action = "skip"
-            should_analyze = False
-            reason_code = "daily_budget_reached"
-            explanation = (
-                f"O custo estimado acumulado hoje ja chegou a US$ {daily_cost_usd:.4f}, acima do teto automatico configurado."
-            )
-        elif daily_auto_jobs_count >= automation_settings.max_auto_jobs_per_day:
-            action = "skip"
-            should_analyze = False
-            reason_code = "max_auto_jobs_reached"
-            explanation = "O limite diario de jobs automaticos ja foi atingido; a oportunidade ficou registrada para auditoria."
-        elif has_pending_auto_job:
-            action = "skip"
-            should_analyze = False
-            reason_code = "job_already_pending"
-            explanation = "Ja existe um job automatico em andamento ou na fila; o sistema nao empilha outro em paralelo."
-        elif not preview.should_analyze:
-            action = "skip"
 
         decision = self.store.create_automation_decision(
             user_id=self.settings.default_user_id,
@@ -232,14 +215,14 @@ class AutomationService:
             intent=intent,
             action=action,
             reason_code=reason_code,
-            score=preview.recommendation_score,
+            score=100 if action == "queue" else min(90, memory_status.pending_new_message_count * 10),
             should_analyze=should_analyze,
-            available_message_count=preview.available_message_count,
-            selected_message_count=preview.selected_message_count,
-            new_message_count=preview.new_message_count,
-            replaced_message_count=preview.replaced_message_count,
-            estimated_total_tokens=preview.estimated_total_tokens,
-            estimated_cost_ceiling_usd=preview.estimated_cost_total_ceiling_usd,
+            available_message_count=memory_status.pending_new_message_count,
+            selected_message_count=selected_message_count,
+            new_message_count=memory_status.pending_new_message_count,
+            replaced_message_count=0,
+            estimated_total_tokens=estimated_total_tokens,
+            estimated_cost_ceiling_usd=estimated_cost_ceiling_usd,
             explanation=explanation,
             created_at=datetime.now(UTC),
         )
@@ -247,25 +230,86 @@ class AutomationService:
         if action != "queue":
             return decision, None
 
+        if job_plan is None:
+            return decision, None
+
         job = self.store.create_analysis_job(
             user_id=self.settings.default_user_id,
-            intent=intent,
+            intent=job_plan.intent,
             status="queued",
             trigger_source=trigger_source,
             decision_id=decision.id,
             sync_run_id=sync_run_id,
-            target_message_count=config["target_message_count"],
-            max_lookback_hours=config["max_lookback_hours"],
-            detail_mode=config["detail_mode"],
-            selected_message_count=preview.selected_message_count,
-            selected_transcript_chars=preview.selected_transcript_chars,
-            estimated_input_tokens=preview.estimated_input_tokens,
-            estimated_output_tokens=preview.estimated_output_tokens,
-            estimated_cost_floor_usd=preview.estimated_cost_total_floor_usd,
-            estimated_cost_ceiling_usd=preview.estimated_cost_total_ceiling_usd,
+            target_message_count=len(job_plan.source_messages),
+            max_lookback_hours=0,
+            detail_mode="balanced",
+            selected_message_count=len(job_plan.source_messages),
+            selected_transcript_chars=job_plan.selected_transcript_chars,
+            estimated_input_tokens=job_plan.estimated_input_tokens,
+            estimated_output_tokens=job_plan.estimated_output_tokens,
+            estimated_cost_floor_usd=job_plan.estimated_cost_floor_usd,
+            estimated_cost_ceiling_usd=job_plan.estimated_cost_ceiling_usd,
             created_at=datetime.now(UTC),
         )
         return decision, job
+
+    async def run_manual_first_analysis(self) -> tuple[AnalysisJobRecord, MemoryAnalysisOutcome]:
+        self._ensure_no_pending_job()
+        plan = self.memory_service.plan_first_analysis()
+        started_at = datetime.now(UTC)
+        job = self.store.create_analysis_job(
+            user_id=self.settings.default_user_id,
+            intent="first_analysis",
+            status="running",
+            trigger_source="manual",
+            decision_id=None,
+            sync_run_id=None,
+            target_message_count=len(plan.source_messages),
+            max_lookback_hours=0,
+            detail_mode="deep",
+            selected_message_count=len(plan.source_messages),
+            selected_transcript_chars=plan.selected_transcript_chars,
+            estimated_input_tokens=plan.estimated_input_tokens,
+            estimated_output_tokens=plan.estimated_output_tokens,
+            estimated_cost_floor_usd=plan.estimated_cost_floor_usd,
+            estimated_cost_ceiling_usd=plan.estimated_cost_ceiling_usd,
+            started_at=started_at,
+            created_at=started_at,
+        )
+        outcome = await self._execute_fixed_analysis_job(job=job, plan=plan)
+        updated_job = self.store.get_analysis_job(job.id)
+        if updated_job is None:
+            raise RuntimeError("Manual first analysis job disappeared after execution.")
+        return updated_job, outcome
+
+    async def run_manual_next_batch(self) -> tuple[AnalysisJobRecord, MemoryAnalysisOutcome]:
+        self._ensure_no_pending_job()
+        plan = self.memory_service.plan_next_batch()
+        started_at = datetime.now(UTC)
+        job = self.store.create_analysis_job(
+            user_id=self.settings.default_user_id,
+            intent="improve_memory",
+            status="running",
+            trigger_source="manual",
+            decision_id=None,
+            sync_run_id=None,
+            target_message_count=len(plan.source_messages),
+            max_lookback_hours=0,
+            detail_mode="balanced",
+            selected_message_count=len(plan.source_messages),
+            selected_transcript_chars=plan.selected_transcript_chars,
+            estimated_input_tokens=plan.estimated_input_tokens,
+            estimated_output_tokens=plan.estimated_output_tokens,
+            estimated_cost_floor_usd=plan.estimated_cost_floor_usd,
+            estimated_cost_ceiling_usd=plan.estimated_cost_ceiling_usd,
+            started_at=started_at,
+            created_at=started_at,
+        )
+        outcome = await self._execute_fixed_analysis_job(job=job, plan=plan)
+        updated_job = self.store.get_analysis_job(job.id)
+        if updated_job is None:
+            raise RuntimeError("Manual next batch job disappeared after execution.")
+        return updated_job, outcome
 
     async def run_manual_analysis(
         self,
@@ -381,6 +425,15 @@ class AutomationService:
         if job is None:
             return None
 
+        if job.max_lookback_hours == 0 and job.intent in {"first_analysis", "improve_memory"}:
+            plan = (
+                self.memory_service.plan_first_analysis()
+                if job.intent == "first_analysis"
+                else self.memory_service.plan_next_batch()
+            )
+            await self._execute_fixed_analysis_job(job=job, plan=plan)
+            return self.store.get_analysis_job(job.id)
+
         preview = await self.memory_service.get_analysis_preview(
             target_message_count=job.target_message_count,
             max_lookback_hours=job.max_lookback_hours,
@@ -415,46 +468,11 @@ class AutomationService:
             running_job_id=running_job.id if running_job else None,
         )
 
-    def _resolve_config_for_intent(
-        self,
-        *,
-        intent: AnalysisIntent,
-        automation_settings: AutomationSettingsRecord,
-    ) -> dict[str, int | str]:
-        if intent == "first_analysis":
-            return {
-                "target_message_count": min(self.settings.memory_analysis_max_messages, 250),
-                "max_lookback_hours": min(self.settings.memory_analysis_max_window_hours, 168),
-                "detail_mode": "deep",
-            }
-        return {
-            "target_message_count": min(self.settings.memory_analysis_max_messages, automation_settings.default_target_message_count),
-            "max_lookback_hours": min(self.settings.memory_analysis_max_window_hours, automation_settings.default_lookback_hours),
-            "detail_mode": automation_settings.default_detail_mode,
-        }
-
-    def _determine_reason_code(
-        self,
-        *,
-        preview: MemoryAnalysisPreview,
-        has_memory: bool,
-        automation_settings: AutomationSettingsRecord,
-        last_analyzed_at: datetime | None,
-    ) -> DecisionReasonCode:
-        if not has_memory:
-            return "first_analysis_ready" if preview.selected_message_count >= 40 else "first_analysis_more_signal"
-        if preview.replaced_message_count >= automation_settings.pruned_messages_threshold:
-            return "pruned_messages"
-        if preview.new_message_count >= automation_settings.min_new_messages_threshold:
-            return "new_messages_threshold"
-        if last_analyzed_at is not None:
-            hours_since_last_analysis = max(
-                0.0,
-                (datetime.now(UTC) - last_analyzed_at).total_seconds() / 3600,
-            )
-            if hours_since_last_analysis >= automation_settings.stale_hours_threshold and preview.selected_message_count >= 30:
-                return "stale_memory"
-        return "low_change"
+    def _ensure_no_pending_job(self) -> None:
+        recent_jobs = self.store.list_analysis_jobs(user_id=self.settings.default_user_id, limit=20)
+        has_pending_job = any(job.status in {"queued", "running"} for job in recent_jobs)
+        if has_pending_job:
+            raise MemoryAnalysisError("Ja existe uma leitura em andamento ou na fila. Aguarde a conclusao antes de iniciar outra.")
 
     async def _execute_analysis_job(
         self,
@@ -565,6 +583,116 @@ class AutomationService:
             output_tokens=preview.estimated_output_tokens,
             reasoning_tokens=preview.estimated_reasoning_tokens,
             estimated_cost_usd=preview.estimated_cost_total_ceiling_usd,
+            error_text=None,
+            created_at=datetime.now(UTC),
+        )
+        return outcome
+
+    async def _execute_fixed_analysis_job(
+        self,
+        *,
+        job: AnalysisJobRecord,
+        plan: FixedAnalysisPlan,
+    ) -> MemoryAnalysisOutcome:
+        start_clock = perf_counter()
+        try:
+            outcome = await self.memory_service.execute_fixed_analysis_plan(plan)
+        except Exception as error:
+            latency_ms = round((perf_counter() - start_clock) * 1000)
+            self.store.update_analysis_job(
+                job_id=job.id,
+                status="failed",
+                error_text=str(error),
+                finished_at=datetime.now(UTC),
+            )
+            self.store.create_model_run(
+                user_id=self.settings.default_user_id,
+                job_id=job.id,
+                provider="deepseek",
+                model_name=self.settings.deepseek_model,
+                run_type="memory_analyze",
+                success=False,
+                latency_ms=latency_ms,
+                input_tokens=plan.estimated_input_tokens,
+                output_tokens=plan.estimated_output_tokens,
+                reasoning_tokens=plan.estimated_reasoning_tokens,
+                estimated_cost_usd=plan.estimated_cost_ceiling_usd,
+                error_text=str(error),
+                created_at=datetime.now(UTC),
+            )
+            raise
+
+        latency_ms = round((perf_counter() - start_clock) * 1000)
+        self.store.update_analysis_job(
+            job_id=job.id,
+            status="succeeded",
+            selected_message_count=len(outcome.source_message_ids) or len(plan.source_messages),
+            selected_transcript_chars=outcome.selected_transcript_chars or plan.selected_transcript_chars,
+            snapshot_id=outcome.snapshot.id,
+            finished_at=datetime.now(UTC),
+        )
+        self.store.save_analysis_job_messages(job_id=job.id, message_ids=outcome.source_message_ids)
+        if outcome.source_messages:
+            extract_start = perf_counter()
+            try:
+                await self.memory_service.extract_and_store_important_messages(
+                    messages=outcome.source_messages,
+                    analyzed_at=datetime.now(UTC),
+                )
+                extract_latency_ms = round((perf_counter() - extract_start) * 1000)
+                self.store.create_model_run(
+                    user_id=self.settings.default_user_id,
+                    job_id=job.id,
+                    provider="deepseek",
+                    model_name=self.settings.deepseek_model,
+                    run_type="important_message_extract",
+                    success=True,
+                    latency_ms=extract_latency_ms,
+                    input_tokens=None,
+                    output_tokens=None,
+                    reasoning_tokens=None,
+                    estimated_cost_usd=None,
+                    error_text=None,
+                    created_at=datetime.now(UTC),
+                )
+            except Exception as error:
+                extract_latency_ms = round((perf_counter() - extract_start) * 1000)
+                self.store.create_model_run(
+                    user_id=self.settings.default_user_id,
+                    job_id=job.id,
+                    provider="deepseek",
+                    model_name=self.settings.deepseek_model,
+                    run_type="important_message_extract",
+                    success=False,
+                    latency_ms=extract_latency_ms,
+                    input_tokens=None,
+                    output_tokens=None,
+                    reasoning_tokens=None,
+                    estimated_cost_usd=None,
+                    error_text=str(error),
+                    created_at=datetime.now(UTC),
+                )
+        if outcome.source_message_ids:
+            processed_at = datetime.now(UTC)
+            marked_count = self.store.mark_messages_processed(
+                user_id=self.settings.default_user_id,
+                message_ids=outcome.source_message_ids,
+                processed_at=processed_at,
+            )
+            if marked_count > 0:
+                self.store.delete_messages_by_ids(message_ids=outcome.source_message_ids)
+        self.store.create_model_run(
+            user_id=self.settings.default_user_id,
+            job_id=job.id,
+            provider="deepseek",
+            model_name=self.settings.deepseek_model,
+            run_type="memory_analyze",
+            success=True,
+            latency_ms=latency_ms,
+            input_tokens=plan.estimated_input_tokens,
+            output_tokens=plan.estimated_output_tokens,
+            reasoning_tokens=plan.estimated_reasoning_tokens,
+            estimated_cost_usd=plan.estimated_cost_ceiling_usd,
             error_text=None,
             created_at=datetime.now(UTC),
         )

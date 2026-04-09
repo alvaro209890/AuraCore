@@ -10,6 +10,7 @@ from app.schemas import (
     ImportantMessagesListResponse,
     MemoryAnalysisPreviewResponse,
     MemoryCurrentResponse,
+    MemoryStatusResponse,
     MemorySnapshotResponse,
     MemorySnapshotsListResponse,
     ProjectMemoryResponse,
@@ -29,6 +30,22 @@ async def get_current_memory(
 ) -> MemoryCurrentResponse:
     persona = memory_service.get_current_persona()
     return _to_persona_response(persona)
+
+
+@router.get("/status", response_model=MemoryStatusResponse)
+async def get_memory_status(
+    memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
+) -> MemoryStatusResponse:
+    status = memory_service.get_memory_status()
+    return MemoryStatusResponse(
+        has_initial_analysis=status.has_initial_analysis,
+        last_analyzed_at=status.last_analyzed_at,
+        pending_new_message_count=status.pending_new_message_count,
+        next_process_message_count=status.next_process_message_count,
+        messages_until_auto_process=status.messages_until_auto_process,
+        can_run_first_analysis=status.can_run_first_analysis,
+        can_run_next_batch=status.can_run_next_batch,
+    )
 
 
 @router.get("/snapshots", response_model=MemorySnapshotsListResponse)
@@ -85,6 +102,32 @@ async def analyze_memory(
             max_lookback_hours=resolved_window_hours,
             detail_mode=request.detail_mode if request is not None else "balanced",
         )
+    return AnalyzeMemoryResponse(
+        current=_to_persona_response(outcome.persona),
+        snapshot=_to_snapshot_response(outcome.snapshot),
+        projects=[_to_project_response(project) for project in outcome.projects],
+        job=_to_job_response(job),
+    )
+
+
+@router.post("/first-analysis", response_model=AnalyzeMemoryResponse)
+async def run_first_memory_analysis(
+    automation_service: AutomationService = Depends(get_automation_service),
+) -> AnalyzeMemoryResponse:
+    job, outcome = await automation_service.run_manual_first_analysis()
+    return AnalyzeMemoryResponse(
+        current=_to_persona_response(outcome.persona),
+        snapshot=_to_snapshot_response(outcome.snapshot),
+        projects=[_to_project_response(project) for project in outcome.projects],
+        job=_to_job_response(job),
+    )
+
+
+@router.post("/process-next-batch", response_model=AnalyzeMemoryResponse)
+async def run_next_memory_batch(
+    automation_service: AutomationService = Depends(get_automation_service),
+) -> AnalyzeMemoryResponse:
+    job, outcome = await automation_service.run_manual_next_batch()
     return AnalyzeMemoryResponse(
         current=_to_persona_response(outcome.persona),
         snapshot=_to_snapshot_response(outcome.snapshot),

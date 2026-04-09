@@ -96,6 +96,7 @@ class DeepSeekService:
         self,
         *,
         transcript: str,
+        conversation_context: str,
         current_life_summary: str,
         prior_analyses_context: str,
         project_context: str,
@@ -108,6 +109,7 @@ class DeepSeekService:
     ) -> DeepSeekMemoryResult:
         prompt_preview = self.build_analysis_prompt_preview(
             transcript=transcript,
+            conversation_context=conversation_context,
             current_life_summary=current_life_summary,
             prior_analyses_context=prior_analyses_context,
             project_context=project_context,
@@ -214,6 +216,7 @@ class DeepSeekService:
         self,
         *,
         transcript: str,
+        conversation_context: str,
         current_life_summary: str,
         prior_analyses_context: str,
         project_context: str,
@@ -234,6 +237,7 @@ class DeepSeekService:
             ),
             user_prompt=self._build_prompt(
                 transcript=transcript,
+                conversation_context=conversation_context,
                 current_life_summary=current_life_summary,
                 prior_analyses_context=prior_analyses_context,
                 project_context=project_context,
@@ -311,6 +315,7 @@ class DeepSeekService:
         self,
         *,
         transcript: str,
+        conversation_context: str,
         current_life_summary: str,
         prior_analyses_context: str,
         project_context: str,
@@ -342,6 +347,9 @@ Projetos e frentes ja consolidados:
 
 Conversas recentes com a IA pessoal:
 {recent_chat_context}
+
+Contexto por conversa do WhatsApp:
+{conversation_context.strip() or "(nenhum agrupamento adicional de conversa disponivel)"}
 
 Transcricao da conversa:
 {transcript}
@@ -384,8 +392,12 @@ Regras:
 - Use as analises anteriores como contexto, mas corrija ou refine o que parecer fraco, incompleto ou contraditorio.
 - Use tambem os projetos ja salvos para manter continuidade entre leituras e evitar perder o fio de frentes recorrentes.
 - Considere tambem o que o dono conversou com a IA no chat para entender melhor prioridades, projetos e como ele pensa.
+- Leia primeiro o bloco de contexto por conversa para entender quem e cada contato, o peso de cada conversa e a relacao mais provavel com o dono.
+- Diferencie sinais sobre o dono dos fatos que pertencem ao contato; nao transforme caracteristicas do contato em caracteristicas do dono.
+- Use a direcao das mensagens para separar o que o dono afirma, pede, decide ou promete do que esta sendo dito pelos contatos.
 - Procure entender como o dono do numero age, fala, decide, trabalha, se relaciona e organiza a rotina.
 - Priorize sinais comportamentais e estruturais do dono do numero, nao apenas um inventario de contatos.
+- Ao citar pessoas e relacoes, infira quem parece ser cada conversa no contexto da vida do dono, sem inventar vinculos que nao tenham apoio no historico.
 - Preencha active_projects apenas com projetos, trabalhos, produtos, operacoes ou frentes reais que parecam recorrentes ou importantes para o dono.
 - Em cada item de active_projects, explicite o que esta sendo desenvolvido e para quem a entrega, sistema ou servico parece ser direcionado.
 - Em active_projects, use no maximo 6 itens e descarte assuntos soltos sem continuidade.

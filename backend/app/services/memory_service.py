@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from math import ceil
 from typing import Literal
 from uuid import uuid4
 
@@ -101,6 +102,34 @@ class MemoryAnalysisPreview:
     should_analyze: bool
 
 
+@dataclass(slots=True)
+class MemoryStatus:
+    has_initial_analysis: bool
+    last_analyzed_at: datetime | None
+    pending_new_message_count: int
+    next_process_message_count: int
+    messages_until_auto_process: int
+    can_run_first_analysis: bool
+    can_run_next_batch: bool
+
+
+@dataclass(slots=True)
+class FixedAnalysisPlan:
+    intent: Literal["first_analysis", "improve_memory"]
+    source_messages: list[StoredMessageRecord]
+    transcript: str
+    conversation_context: str
+    window_hours: int
+    window_start: datetime
+    window_end: datetime
+    selected_transcript_chars: int
+    estimated_input_tokens: int
+    estimated_output_tokens: int
+    estimated_reasoning_tokens: int
+    estimated_cost_floor_usd: float
+    estimated_cost_ceiling_usd: float
+
+
 class MemoryAnalysisService:
     def __init__(
         self,
@@ -114,6 +143,45 @@ class MemoryAnalysisService:
         self.store = store
         self.deepseek_service = deepseek_service
         self.groq_service = groq_service
+
+    def get_memory_status(self) -> MemoryStatus:
+        persona = self.get_current_persona()
+        has_initial_analysis = bool(persona.last_analyzed_at or persona.last_snapshot_id)
+        pending_new_message_count = self.store.count_messages(self.settings.default_user_id)
+        next_process_message_count = (
+            min(250, pending_new_message_count)
+            if not has_initial_analysis
+            else 10 if pending_new_message_count >= 10 else 0
+        )
+        messages_until_auto_process = (
+            0 if not has_initial_analysis else max(0, 10 - pending_new_message_count)
+        )
+        return MemoryStatus(
+            has_initial_analysis=has_initial_analysis,
+            last_analyzed_at=persona.last_analyzed_at,
+            pending_new_message_count=pending_new_message_count,
+            next_process_message_count=next_process_message_count,
+            messages_until_auto_process=messages_until_auto_process,
+            can_run_first_analysis=not has_initial_analysis and pending_new_message_count > 0,
+            can_run_next_batch=has_initial_analysis and pending_new_message_count >= 10,
+        )
+
+    def plan_first_analysis(self) -> FixedAnalysisPlan:
+        return self._build_fixed_analysis_plan(mode="first_analysis")
+
+    def plan_next_batch(self) -> FixedAnalysisPlan:
+        return self._build_fixed_analysis_plan(mode="incremental_batch")
+
+    async def analyze_first_pending_messages(self) -> tuple[FixedAnalysisPlan, MemoryAnalysisOutcome]:
+        plan = self.plan_first_analysis()
+        return plan, await self._analyze_fixed_plan(plan)
+
+    async def analyze_next_pending_batch(self) -> tuple[FixedAnalysisPlan, MemoryAnalysisOutcome]:
+        plan = self.plan_next_batch()
+        return plan, await self._analyze_fixed_plan(plan)
+
+    async def execute_fixed_analysis_plan(self, plan: FixedAnalysisPlan) -> MemoryAnalysisOutcome:
+        return await self._analyze_fixed_plan(plan)
 
     async def analyze_window(self, *, window_hours: int) -> MemoryAnalysisOutcome:
         if window_hours > self.settings.memory_analysis_max_window_hours:
@@ -148,8 +216,10 @@ class MemoryAnalysisService:
             )
         )
         chat_context = self._build_chat_context()
+        conversation_context = self._build_conversation_context(included_messages)
         deepseek_result = await self.deepseek_service.analyze_memory(
             transcript=transcript,
+            conversation_context=conversation_context,
             current_life_summary=current_summary,
             prior_analyses_context=prior_analyses_context,
             project_context=project_context,
@@ -246,8 +316,10 @@ class MemoryAnalysisService:
             )
         )
         chat_context = self._build_chat_context()
+        conversation_context = self._build_conversation_context(included_messages)
         deepseek_result = await self.deepseek_service.analyze_memory(
             transcript=transcript,
+            conversation_context=conversation_context,
             current_life_summary=current_summary,
             prior_analyses_context=prior_analyses_context,
             project_context=project_context,
@@ -350,8 +422,10 @@ class MemoryAnalysisService:
             )
         )
         chat_context = self._build_chat_context()
+        conversation_context = self._build_conversation_context(included_messages)
         prompt_preview = self.deepseek_service.build_analysis_prompt_preview(
             transcript=transcript,
+            conversation_context=conversation_context,
             current_life_summary=current_persona.life_summary,
             prior_analyses_context=prior_analyses_context,
             project_context=project_context,
@@ -491,6 +565,172 @@ class MemoryAnalysisService:
             last_snapshot_id=None,
             last_analyzed_ingested_count=None,
             last_analyzed_pruned_count=None,
+        )
+
+    def _build_fixed_analysis_plan(
+        self,
+        *,
+        mode: Literal["first_analysis", "incremental_batch"],
+    ) -> FixedAnalysisPlan:
+        status = self.get_memory_status()
+        pending_count = status.pending_new_message_count
+
+        if mode == "first_analysis":
+            if status.has_initial_analysis:
+                raise MemoryAnalysisError("A primeira analise ja foi concluida. Use o processamento por lotes daqui para frente.")
+            if pending_count <= 0:
+                raise MemoryAnalysisError("Ainda nao ha mensagens novas para a primeira analise.")
+            selected_messages = self.store.list_pending_messages(
+                user_id=self.settings.default_user_id,
+                limit=min(250, pending_count),
+                newest_first=True,
+            )
+            selected_messages = list(reversed(selected_messages))
+            intent: Literal["first_analysis", "improve_memory"] = "first_analysis"
+            detail_mode: Literal["light", "balanced", "deep"] = "deep"
+        else:
+            if not status.has_initial_analysis:
+                raise MemoryAnalysisError("A primeira analise ainda nao foi feita. Rode-a antes de processar lotes incrementais.")
+            if pending_count < 10:
+                raise MemoryAnalysisError("Ainda nao existem 10 mensagens novas pendentes para o proximo processamento.")
+            selected_messages = self.store.list_pending_messages(
+                user_id=self.settings.default_user_id,
+                limit=10,
+                newest_first=False,
+            )
+            intent = "improve_memory"
+            detail_mode = "balanced"
+
+        selected_messages = [message for message in selected_messages if message.message_text.strip()]
+        if not selected_messages:
+            raise MemoryAnalysisError("Nao encontrei mensagens textuais analisaveis na fila operacional.")
+
+        transcript = self._build_full_transcript(selected_messages)
+        conversation_context = self._build_conversation_context(selected_messages)
+        window_start = selected_messages[0].timestamp
+        window_end = selected_messages[-1].timestamp
+        window_hours = max(1, ceil(max(0.0, (window_end - window_start).total_seconds()) / 3600))
+        current_persona = self.get_current_persona()
+        prior_analyses_context = self._build_prior_analyses_context()
+        project_context = self._build_project_context(
+            self.store.list_project_memories(
+                self.settings.default_user_id,
+                limit=max(1, self.settings.chat_context_projects),
+            )
+        )
+        chat_context = self._build_chat_context()
+        prompt_preview = self.deepseek_service.build_analysis_prompt_preview(
+            transcript=transcript,
+            conversation_context=conversation_context,
+            current_life_summary=current_persona.life_summary,
+            prior_analyses_context=prior_analyses_context,
+            project_context=project_context,
+            chat_context=chat_context,
+            window_hours=window_hours,
+            window_start=window_start,
+            window_end=window_end,
+            source_message_count=len(selected_messages),
+        )
+        estimated_input_tokens = self._estimate_text_tokens(prompt_preview.system_prompt) + self._estimate_text_tokens(prompt_preview.user_prompt)
+        planning_profile = self.deepseek_service.get_planning_profile(intent=intent)
+        estimated_reasoning_tokens, estimated_output_tokens = self._estimate_output_usage(
+            estimated_input_tokens=estimated_input_tokens,
+            detail_mode=detail_mode,
+            output_reserve_tokens=planning_profile.request_output_reserve_tokens,
+        )
+        (
+            _estimated_cost_input_floor_usd,
+            _estimated_cost_input_ceiling_usd,
+            _estimated_cost_output_floor_usd,
+            _estimated_cost_output_ceiling_usd,
+            estimated_cost_total_floor_usd,
+            estimated_cost_total_ceiling_usd,
+        ) = self._estimate_cost_range_usd(
+            input_tokens=estimated_input_tokens,
+            output_tokens=estimated_output_tokens,
+            input_price_floor_per_million=planning_profile.cache_miss_input_price_floor_per_million,
+            input_price_ceiling_per_million=planning_profile.cache_miss_input_price_ceiling_per_million,
+            output_price_floor_per_million=planning_profile.output_price_floor_per_million,
+            output_price_ceiling_per_million=planning_profile.output_price_ceiling_per_million,
+        )
+        return FixedAnalysisPlan(
+            intent=intent,
+            source_messages=selected_messages,
+            transcript=transcript,
+            conversation_context=conversation_context,
+            window_hours=window_hours,
+            window_start=window_start,
+            window_end=window_end,
+            selected_transcript_chars=len(transcript),
+            estimated_input_tokens=estimated_input_tokens,
+            estimated_output_tokens=estimated_output_tokens,
+            estimated_reasoning_tokens=estimated_reasoning_tokens,
+            estimated_cost_floor_usd=estimated_cost_total_floor_usd,
+            estimated_cost_ceiling_usd=estimated_cost_total_ceiling_usd,
+        )
+
+    async def _analyze_fixed_plan(self, plan: FixedAnalysisPlan) -> MemoryAnalysisOutcome:
+        current_persona = self.get_current_persona()
+        prior_analyses_context = self._build_prior_analyses_context()
+        project_context = self._build_project_context(
+            self.store.list_project_memories(
+                self.settings.default_user_id,
+                limit=max(1, self.settings.chat_context_projects),
+            )
+        )
+        chat_context = self._build_chat_context()
+        deepseek_result = await self.deepseek_service.analyze_memory(
+            transcript=plan.transcript,
+            conversation_context=plan.conversation_context,
+            current_life_summary=current_persona.life_summary,
+            prior_analyses_context=prior_analyses_context,
+            project_context=project_context,
+            chat_context=chat_context,
+            intent=plan.intent,
+            window_hours=plan.window_hours,
+            window_start=plan.window_start,
+            window_end=plan.window_end,
+            source_message_count=len(plan.source_messages),
+        )
+
+        analyzed_at = datetime.now(UTC)
+        snapshot = self._build_snapshot(
+            result=deepseek_result,
+            window_hours=plan.window_hours,
+            window_start=plan.window_start,
+            window_end=plan.window_end,
+            source_message_count=len(plan.source_messages),
+            created_at=analyzed_at,
+        )
+        persona = self.store.persist_memory_analysis(
+            snapshot=snapshot,
+            updated_life_summary=deepseek_result.updated_life_summary,
+            analyzed_at=analyzed_at,
+        )
+        projects = self.store.upsert_project_memories(
+            user_id=self.settings.default_user_id,
+            source_snapshot_id=snapshot.id,
+            projects=[
+                ProjectMemorySeed(
+                    project_name=project.name,
+                    summary=project.summary,
+                    status=project.status,
+                    what_is_being_built=project.what_is_being_built,
+                    built_for=project.built_for,
+                    next_steps=project.next_steps,
+                    evidence=project.evidence,
+                )
+                for project in deepseek_result.active_projects
+            ],
+            observed_at=analyzed_at,
+        )
+        return MemoryAnalysisOutcome(
+            persona=persona,
+            snapshot=snapshot,
+            projects=projects,
+            source_message_ids=[message.message_id for message in plan.source_messages],
+            source_messages=plan.source_messages,
+            selected_transcript_chars=plan.selected_transcript_chars,
         )
 
     def list_snapshots(self, *, limit: int = 20) -> list[MemorySnapshotRecord]:
@@ -783,6 +1023,82 @@ class MemoryAnalysisService:
 
         return "\n".join(sections)
 
+    def _build_conversation_context(self, messages: list[StoredMessageRecord]) -> str:
+        if not messages:
+            return ""
+
+        groups: dict[str, dict[str, object]] = {}
+        for message in messages:
+            key = message.chat_jid or message.contact_phone or message.contact_name.strip() or "contato-desconhecido"
+            group = groups.get(key)
+            if group is None:
+                group = {
+                    "contact_name": message.contact_name.strip() or message.contact_phone or "Contato",
+                    "contact_phone": message.contact_phone,
+                    "chat_jid": message.chat_jid,
+                    "inbound_count": 0,
+                    "outbound_count": 0,
+                    "first_timestamp": message.timestamp,
+                    "last_timestamp": message.timestamp,
+                    "samples": [],
+                }
+                groups[key] = group
+
+            if message.direction == "outbound":
+                group["outbound_count"] = int(group["outbound_count"]) + 1
+            else:
+                group["inbound_count"] = int(group["inbound_count"]) + 1
+
+            if message.timestamp < group["first_timestamp"]:
+                group["first_timestamp"] = message.timestamp
+            if message.timestamp > group["last_timestamp"]:
+                group["last_timestamp"] = message.timestamp
+
+            samples = group["samples"]
+            if isinstance(samples, list) and len(samples) < 2:
+                direction_label = "Dono -> contato" if message.direction == "outbound" else "Contato -> dono"
+                samples.append(f"{direction_label}: {self._summarize_message_text(message.message_text, 140)}")
+
+        ordered_groups = sorted(
+            groups.values(),
+            key=lambda group: (
+                -(int(group["inbound_count"]) + int(group["outbound_count"])),
+                group["last_timestamp"],
+            ),
+        )
+
+        sections: list[str] = []
+        current_size = 0
+        char_budget = max(1200, min(5000, self.settings.memory_analysis_snapshot_context_chars))
+
+        for group in ordered_groups[:12]:
+            total_messages = int(group["inbound_count"]) + int(group["outbound_count"])
+            lines = [
+                f"- Conversa: {group['contact_name']}",
+                f"  Identificador: {group['contact_phone'] or group['chat_jid'] or 'indisponivel'}",
+                (
+                    f"  Volume: {total_messages} mensagens "
+                    f"({int(group['inbound_count'])} recebidas, {int(group['outbound_count'])} enviadas)"
+                ),
+                (
+                    "  Janela: "
+                    f"{group['first_timestamp'].astimezone(UTC).strftime('%Y-%m-%d %H:%M UTC')} ate "
+                    f"{group['last_timestamp'].astimezone(UTC).strftime('%Y-%m-%d %H:%M UTC')}"
+                ),
+            ]
+            samples = group["samples"]
+            if isinstance(samples, list) and samples:
+                lines.append(f"  Sinais recentes: {'; '.join(samples)}")
+
+            section = "\n".join(lines)
+            projected_size = current_size + len(section) + 2
+            if sections and projected_size > char_budget:
+                break
+            sections.append(section)
+            current_size = projected_size
+
+        return "\n\n".join(sections)
+
     def _build_snapshot(
         self,
         *,
@@ -842,12 +1158,21 @@ class MemoryAnalysisService:
         selected = list(reversed(selected_reversed))
         return "\n".join(lines), selected
 
+    def _build_full_transcript(self, messages: list[StoredMessageRecord]) -> str:
+        return "\n".join(self._render_message_line(message) for message in messages if message.message_text.strip())
+
     def _render_message_line(self, message: StoredMessageRecord) -> str:
         timestamp = message.timestamp.astimezone(UTC).strftime("%Y-%m-%d %H:%M")
-        speaker = message.contact_name.strip() or message.contact_phone or "Contato"
-        direction = "user->contact" if message.direction == "outbound" else "contact->user"
+        contact = message.contact_name.strip() or message.contact_phone or "Contato"
+        direction = f"Dono -> {contact}" if message.direction == "outbound" else f"{contact} -> Dono"
         text = " ".join(message.message_text.split())
-        return f"[{timestamp} UTC] {direction} | {speaker}: {text}"
+        return f"[{timestamp} UTC] {direction}: {text}"
+
+    def _summarize_message_text(self, text: str, max_length: int) -> str:
+        normalized = " ".join(text.split()).strip()
+        if len(normalized) <= max_length:
+            return normalized
+        return f"{normalized[: max(0, max_length - 3)].rstrip()}..."
 
     def _build_important_messages_block(self, messages: list[StoredMessageRecord]) -> str:
         lines: list[str] = []

@@ -26,6 +26,16 @@ export type MemoryCurrent = {
   last_snapshot_id: string | null;
 };
 
+export type MemoryStatus = {
+  has_initial_analysis: boolean;
+  last_analyzed_at: string | null;
+  pending_new_message_count: number;
+  next_process_message_count: number;
+  messages_until_auto_process: number;
+  can_run_first_analysis: boolean;
+  can_run_next_batch: boolean;
+};
+
 export type MemorySnapshot = {
   id: string;
   window_hours: number;
@@ -339,6 +349,10 @@ export async function getCurrentMemory(): Promise<MemoryCurrent> {
   return request<MemoryCurrent>("/api/memories/current");
 }
 
+export async function getMemoryStatus(): Promise<MemoryStatus> {
+  return request<MemoryStatus>("/api/memories/status");
+}
+
 export async function getMemorySnapshots(limit = 20): Promise<MemorySnapshot[]> {
   const response = await request<MemorySnapshotsListResponse>(`/api/memories/snapshots?limit=${limit}`);
   return response.snapshots;
@@ -359,6 +373,18 @@ export async function getImportantMessages(limit = 80): Promise<ImportantMessage
 
 export async function analyzeMemory(windowHours: number): Promise<AnalyzeMemoryResponse> {
   return request<AnalyzeMemoryResponse>(`/api/memories/analyze?window_hours=${windowHours}`, {
+    method: "POST",
+  });
+}
+
+export async function runFirstMemoryAnalysis(): Promise<AnalyzeMemoryResponse> {
+  return request<AnalyzeMemoryResponse>("/api/memories/first-analysis", {
+    method: "POST",
+  });
+}
+
+export async function runNextMemoryBatch(): Promise<AnalyzeMemoryResponse> {
+  return request<AnalyzeMemoryResponse>("/api/memories/process-next-batch", {
     method: "POST",
   });
 }

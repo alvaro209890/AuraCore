@@ -38,16 +38,18 @@ import {
 import {
   createChatThread,
   getAutomationStatus,
-  analyzeMemoryWithFilters,
   connectObserver,
   getChatWorkspace,
   getImportantMessages,
+  getMemoryStatus,
   getMemorySnapshots,
   getObserverStatus,
   previewMemoryAnalysis,
   refreshObserverMessages,
   refineMemory,
   resetObserver,
+  runFirstMemoryAnalysis,
+  runNextMemoryBatch,
   runAutomationTick,
   sendChatMessageStream,
   updateAutomationSettings,
@@ -60,6 +62,7 @@ import {
   type MemoryAnalysisDetailMode,
   type MemoryAnalysisPreview,
   type MemoryCurrent,
+  type MemoryStatus,
   type MemorySnapshot,
   type ObserverStatus,
   type ProjectMemory,
@@ -809,6 +812,7 @@ export function ConnectionDashboard() {
   const [status, setStatus] = useState<ObserverStatus | null>(null);
   const [viewState, setViewState] = useState<ViewState>("idle");
   const [memory, setMemory] = useState<MemoryCurrent | null>(null);
+  const [memoryStatus, setMemoryStatus] = useState<MemoryStatus | null>(null);
   const [projects, setProjects] = useState<ProjectMemory[]>([]);
   const [snapshots, setSnapshots] = useState<MemorySnapshot[]>([]);
   const [importantMessages, setImportantMessages] = useState<ImportantMessage[]>([]);
@@ -864,7 +868,7 @@ export function ConnectionDashboard() {
   const agentStepIndexRef = useRef(0);
 
   const latestSnapshot = snapshots[0] ?? null;
-  const memoryIsEstablished = hasEstablishedMemory(memory, latestSnapshot);
+  const memoryIsEstablished = memoryStatus?.has_initial_analysis ?? hasEstablishedMemory(memory, latestSnapshot);
   const activeChatThread = useMemo(
     () => chatThreads.find((thread) => thread.id === activeChatThreadId) ?? chatThreads[0] ?? null,
     [activeChatThreadId, chatThreads],
@@ -949,9 +953,10 @@ export function ConnectionDashboard() {
       setIsHydrating(true);
     }
 
-    const [statusResult, chatResult, snapshotsResult, importantMessagesResult, automationResult] = await Promise.allSettled([
+    const [statusResult, chatResult, memoryStatusResult, snapshotsResult, importantMessagesResult, automationResult] = await Promise.allSettled([
       getObserverStatus(false),
       getChatWorkspace(activeChatThreadId ?? undefined),
+      getMemoryStatus(),
       getMemorySnapshots(6),
       getImportantMessages(80),
       getAutomationStatus(),
@@ -974,6 +979,10 @@ export function ConnectionDashboard() {
       const message = getErrorMessage(chatResult.reason);
       setChatError(message);
       setMemoryError(message);
+    }
+
+    if (memoryStatusResult.status === "fulfilled") {
+      setMemoryStatus(memoryStatusResult.value);
     }
 
     if (snapshotsResult.status === "fulfilled") {
@@ -1271,13 +1280,10 @@ export function ConnectionDashboard() {
     startAgentRun(intent);
 
     try {
-      if (intent !== "refine_saved") {
-        const response = await analyzeMemoryWithFilters({
-          intent,
-          target_message_count: filters.targetMessageCount,
-          max_lookback_hours: filters.maxLookbackHours,
-          detail_mode: filters.detailMode,
-        });
+      if (intent === "first_analysis" || intent === "improve_memory") {
+        const response = intent === "first_analysis"
+          ? await runFirstMemoryAnalysis()
+          : await runNextMemoryBatch();
         setMemory(response.current);
         setProjects(response.projects);
         setSnapshots((previous) => [response.snapshot, ...previous.filter((snapshot) => snapshot.id !== response.snapshot.id)].slice(0, 6));
@@ -1287,12 +1293,14 @@ export function ConnectionDashboard() {
             ? "Primeira analise concluida. A base inicial do dono foi criada."
             : "Leitura concluida. As mensagens novas foram cruzadas com a memoria existente e o perfil foi melhorado.",
         );
-        const [automationSnapshot, nextImportantMessagesResult] = await Promise.all([
+        const [automationSnapshot, nextMemoryStatus, nextImportantMessagesResult] = await Promise.all([
           getAutomationStatus(),
+          getMemoryStatus(),
           getImportantMessages(80).then((messages) => ({ ok: true as const, messages })).catch((error: unknown) => ({ ok: false as const, error })),
         ]);
         setAutomationStatus(automationSnapshot);
         setAutomationDraft((previous) => previous ?? toAutomationDraft(automationSnapshot.settings));
+        setMemoryStatus(nextMemoryStatus);
         if (nextImportantMessagesResult.ok) {
           setImportantMessages(nextImportantMessagesResult.messages);
           setImportantMessagesError(null);
@@ -1304,12 +1312,14 @@ export function ConnectionDashboard() {
         setMemory(response.current);
         setProjects(response.projects);
         finishAgentRunSuccess("refine_saved", "Refinamento concluido. A memoria consolidada ficou mais precisa.");
-        const [automationSnapshot, nextImportantMessagesResult] = await Promise.all([
+        const [automationSnapshot, nextMemoryStatus, nextImportantMessagesResult] = await Promise.all([
           getAutomationStatus(),
+          getMemoryStatus(),
           getImportantMessages(80).then((messages) => ({ ok: true as const, messages })).catch((error: unknown) => ({ ok: false as const, error })),
         ]);
         setAutomationStatus(automationSnapshot);
         setAutomationDraft((previous) => previous ?? toAutomationDraft(automationSnapshot.settings));
+        setMemoryStatus(nextMemoryStatus);
         if (nextImportantMessagesResult.ok) {
           setImportantMessages(nextImportantMessagesResult.messages);
           setImportantMessagesError(null);
@@ -1467,12 +1477,12 @@ export function ConnectionDashboard() {
             </div>
           </div>
           <div className="ac-quick-status">
-            <span>Mensagens retidas</span>
-            <strong>{preview ? `${preview.retained_message_count}/${preview.retention_limit}` : "..."}</strong>
+            <span>Mensagens novas</span>
+            <strong>{memoryStatus ? formatTokenCount(memoryStatus.pending_new_message_count) : "..."}</strong>
           </div>
           <div className="ac-quick-status">
-            <span>Tokens previstos</span>
-            <strong>{preview ? formatTokenCount(preview.estimated_total_tokens) : "..."}</strong>
+            <span>Próximo lote</span>
+            <strong>{memoryStatus ? formatTokenCount(memoryStatus.next_process_message_count) : "..."}</strong>
           </div>
         </div>
       </aside>
@@ -1501,7 +1511,10 @@ export function ConnectionDashboard() {
             <button
               className="ac-primary-button"
               onClick={() => void runMemoryJob(memoryIsEstablished ? "improve_memory" : "first_analysis")}
-              disabled={agentState.running || !preview?.selected_message_count}
+              disabled={
+                agentState.running ||
+                (memoryIsEstablished ? !memoryStatus?.can_run_next_batch : !memoryStatus?.can_run_first_analysis)
+              }
               type="button"
             >
               <Play size={15} />
@@ -1555,23 +1568,13 @@ export function ConnectionDashboard() {
 
               {activeTab === "memory" ? (
                 <MemoryTab
+                  memoryStatus={memoryStatus}
                   memory={memory}
                   latestSnapshot={latestSnapshot}
-                  preview={preview}
-                  previewError={previewError}
-                  previewLoading={isPreviewLoading}
                   memoryError={memoryError}
-                  messageRefreshError={messageRefreshError}
                   agentState={agentState}
-                  filters={filters}
-                  isRefreshingMessages={isRefreshingMessages}
-                  onTargetChange={(targetMessageCount) => setFilters((previous) => ({ ...previous, targetMessageCount }))}
-                  onLookbackChange={(maxLookbackHours) => setFilters((previous) => ({ ...previous, maxLookbackHours }))}
-                  onDetailChange={(detailMode) => setFilters((previous) => ({ ...previous, detailMode }))}
-                  onRefreshMessages={() => void requestMessageRefresh()}
                   onInitialAnalysis={() => void runMemoryJob("first_analysis")}
                   onImproveMemory={() => void runMemoryJob("improve_memory")}
-                  onRefineSaved={() => void runMemoryJob("refine_saved")}
                 />
               ) : null}
 
@@ -1939,388 +1942,133 @@ function ObserverTab({
 }
 
 function MemoryTab({
+  memoryStatus,
   memory,
   latestSnapshot,
-  preview,
-  previewError,
-  previewLoading,
   memoryError,
-  messageRefreshError,
   agentState,
-  filters,
-  isRefreshingMessages,
-  onTargetChange,
-  onLookbackChange,
-  onDetailChange,
-  onRefreshMessages,
   onInitialAnalysis,
   onImproveMemory,
-  onRefineSaved,
 }: {
+  memoryStatus: MemoryStatus | null;
   memory: MemoryCurrent | null;
   latestSnapshot: MemorySnapshot | null;
-  preview: MemoryAnalysisPreview | null;
-  previewError: string | null;
-  previewLoading: boolean;
   memoryError: string | null;
-  messageRefreshError: string | null;
   agentState: AgentState;
-  filters: MemoryFilters;
-  isRefreshingMessages: boolean;
-  onTargetChange: (value: number) => void;
-  onLookbackChange: (value: number) => void;
-  onDetailChange: (value: MemoryAnalysisDetailMode) => void;
-  onRefreshMessages: () => void;
   onInitialAnalysis: () => void;
   onImproveMemory: () => void;
-  onRefineSaved: () => void;
 }) {
-  const gaugeRadius = 92;
-  const gaugeCircumference = 2 * Math.PI * gaugeRadius;
-  const previewScore = preview?.recommendation_score ?? 0;
-  const dashOffset = gaugeCircumference - (gaugeCircumference * previewScore) / 100;
-  const previewTone = getPreviewTone(previewScore);
-  const memoryReady = hasEstablishedMemory(memory, latestSnapshot);
-  const missingFromTarget = preview ? Math.max(0, preview.target_message_count - preview.selected_message_count) : 0;
-  const costRangeLabel = preview
-    ? `${formatUsd(preview.estimated_cost_total_floor_usd)}-${formatUsd(preview.estimated_cost_total_ceiling_usd)}`
-    : "...";
-  const modelRangeLabel = preview
-    ? `${formatTokenCount(preview.model_message_capacity_floor)}-${formatTokenCount(preview.model_message_capacity_ceiling)} msgs`
-    : "...";
+  const memoryReady = memoryStatus?.has_initial_analysis ?? hasEstablishedMemory(memory, latestSnapshot);
+  const pendingNewMessages = memoryStatus?.pending_new_message_count ?? 0;
+  const nextProcessCount = memoryStatus?.next_process_message_count ?? 0;
+  const messagesUntilAutoProcess = memoryStatus?.messages_until_auto_process ?? 0;
+  const canRunFirstAnalysis = memoryStatus?.can_run_first_analysis ?? false;
+  const canRunNextBatch = memoryStatus?.can_run_next_batch ?? false;
+  const firstAnalysisLabel = nextProcessCount > 0
+    ? pendingNewMessages > nextProcessCount
+      ? `Fazer Primeira Analise (${formatTokenCount(nextProcessCount)} das ${formatTokenCount(pendingNewMessages)} mais recentes)`
+      : `Fazer Primeira Analise (${formatTokenCount(nextProcessCount)} mensagens)`
+    : "Fazer Primeira Analise";
+  const nextBatchLabel = nextProcessCount > 0
+    ? `Processar Proximo Lote de ${formatTokenCount(nextProcessCount)} Agora`
+    : "Aguardando 10 mensagens novas";
 
   return (
     <div className="page-stack">
-      <div className="memory-top-grid">
-        <Card className="memory-planner-card">
-          <SectionTitle
-            title="Planejador Real do Reasoner"
-            icon={Cpu}
-            action={<span className="micro-badge">{preview?.deepseek_model ?? "deepseek-reasoner"}</span>}
-          />
-
-          <p className="memory-deck-copy">
-            O planner cruza o transcript real da janela, a memória já salva, o prompt estrutural e a reserva de saída
-            do AuraCore para mostrar o que de fato cabe antes de rodar a análise.
-          </p>
-
-          <div className="memory-capacity-grid">
-            <MemorySignalCard
-              label="Cabem agora"
-              value={preview ? `${formatTokenCount(preview.selected_message_count)} msgs` : "..."}
-              meta={preview ? `de ${formatTokenCount(preview.target_message_count)} pedidas` : "Aguardando preview"}
-              accent
-            />
-            <MemorySignalCard
-              label="Modo atual aguenta"
-              value={preview ? `${formatTokenCount(preview.planner_message_capacity)} msgs` : "..."}
-              meta={preview ? `${formatTokenCount(preview.current_char_budget)} chars de transcript` : "Aguardando preview"}
-              tone="indigo"
-            />
-            <MemorySignalCard
-              label="Teto desta stack"
-              value={preview ? `${formatTokenCount(preview.stack_max_message_capacity)} msgs` : "..."}
-              meta="Cap interno atual: 250 msgs e 60k chars"
-              tone="amber"
-            />
-            <MemorySignalCard
-              label="Teto do reasoner"
-              value={modelRangeLabel}
-              meta="Faixa por mensagem media desta janela"
-              tone="emerald"
-            />
-          </div>
-
-          <div className="memory-controls-stack">
-            <div className="control-block">
-              <div className="control-head">
-                <label>Alvo de Mensagens</label>
-                <span>Amostragem máxima por leitura</span>
-              </div>
-              <SegmentedControl
-                options={MESSAGE_TARGET_PRESETS.map(String)}
-                selected={String(filters.targetMessageCount)}
-                onChange={(value) => onTargetChange(Number(value))}
-              />
-            </div>
-
-            <div className="control-block">
-              <div className="control-head">
-                <label>Alcance Máximo</label>
-                <span>Janela retrospectiva</span>
-              </div>
-              <SegmentedControl
-                options={LOOKBACK_PRESETS.map(formatHoursLabel)}
-                selected={formatHoursLabel(filters.maxLookbackHours)}
-                onChange={(value) => {
-                  const resolved = LOOKBACK_PRESETS.find((hours) => formatHoursLabel(hours) === value) ?? 72;
-                  onLookbackChange(resolved);
-                }}
-              />
-            </div>
-
-            <div className="control-block">
-              <div className="control-head">
-                <label>Profundidade da Análise</label>
-                <span>Nível de esforço do DeepSeek</span>
-              </div>
-              <div className="detail-card-grid">
-                {DETAIL_OPTIONS.map((option) => {
-                  const active = option.value === filters.detailMode;
-                  return (
-                    <button
-                      key={option.value}
-                      className={`detail-card${active ? " detail-card-active" : ""}`}
-                      onClick={() => onDetailChange(option.value)}
-                      type="button"
-                    >
-                      <div className="detail-card-head">
-                        <strong>{option.label}</strong>
-                        <span>{option.badge}</span>
-                      </div>
-                      <p>{option.description}</p>
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="depth-reality-strip">
-                <strong>Profundidade real do modo selecionado</strong>
-                <p>
-                  {preview
-                    ? `Este modo libera ${formatTokenCount(preview.current_char_budget)} chars de transcript, comporta ate ${formatTokenCount(preview.planner_message_capacity)} mensagens nesta janela, usa um piso seguro de ${formatTokenCount(preview.safe_input_budget_floor_tokens)} tokens de entrada e reserva ${formatTokenCount(preview.request_output_reserve_tokens)} tokens de saida.`
-                    : "Assim que o preview carregar, este bloco mostra o budget real de transcript, input seguro e saida reservada do modo escolhido."}
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div className="memory-capacity-rails">
-            <CapacityRail
-              label="Meta atendida pela leitura atual"
-              helper={preview ? `${formatTokenCount(missingFromTarget)} ainda ficam fora do alvo escolhido` : "Aguardando preview"}
-              current={preview?.selected_message_count ?? 0}
-              max={preview?.target_message_count ?? 1}
-              tone="indigo"
-            />
-            <CapacityRail
-              label="Uso do piso conservador de contexto"
-              helper={
-                preview
-                  ? `${formatTokenCount(preview.remaining_input_headroom_floor_tokens)} tokens ainda livres antes do limite seguro`
-                  : "Aguardando preview"
-              }
-              current={preview?.estimated_input_tokens ?? 0}
-              max={preview?.safe_input_budget_floor_tokens ?? 1}
-              tone="amber"
-            />
-            <CapacityRail
-              label="Uso do teto real desta stack"
-              helper={
-                preview
-                  ? `${formatTokenCount(preview.stack_max_message_capacity)} mensagens e o maximo plausivel com este perfil`
-                  : "Aguardando preview"
-              }
-              current={preview?.selected_message_count ?? 0}
-              max={preview?.stack_max_message_capacity ?? 1}
-              tone="emerald"
-            />
-          </div>
-
-          <div className="memory-economics-grid">
-            <MetricTile label="Tokens do transcript" value={preview ? `~${formatTokenCount(preview.selected_transcript_tokens)}` : "..."} accent />
-            <MetricTile label="Tokens do contexto salvo" value={preview ? `~${formatTokenCount(preview.estimated_prompt_context_tokens)}` : "..."} tone="indigo" />
-            <MetricTile label="Reasoning previsto" value={preview ? `~${formatTokenCount(preview.estimated_reasoning_tokens)}` : "..."} tone="amber" />
-            <MetricTile label="Saída reservada" value={preview ? `~${formatTokenCount(preview.request_output_reserve_tokens)}` : "..."} tone="emerald" />
-            <MetricTile label="Custo estimado" value={costRangeLabel} />
-            <MetricTile
-              label="Média por mensagem"
-              value={preview ? `${formatTokenCount(preview.average_selected_message_tokens)} tk` : "..."}
-              tone="zinc"
-            />
-          </div>
-
-          <div className="memory-doc-grid">
-            <MiniPanel
-              title="Contexto"
-              tone="amber"
-              icon={BarChart3}
-              content={
-                preview?.documentation_context_note ??
-                "O planner usa um piso conservador da documentacao para nao inflar o alcance visivel."
-              }
-            />
-            <MiniPanel
-              title="Custo"
-              tone="emerald"
-              icon={Terminal}
-              content={
-                preview?.documentation_pricing_note ??
-                "A faixa de custo combina o gasto de entrada e saida com base nos precos oficiais atuais do DeepSeek."
-              }
-            />
-          </div>
-        </Card>
-
-        <Card className="memory-score-card">
-          <SectionTitle
-            title="Compensa analisar agora?"
-            icon={Zap}
-            action={preview ? <span className={`micro-badge micro-badge-${previewTone}`}>{preview.recommendation_label}</span> : null}
-          />
-
-          <div className="score-gauge-wrap">
-            <svg className="score-gauge" viewBox="0 0 220 220">
-              <circle className="score-gauge-base" cx="110" cy="110" r={gaugeRadius} />
-              <circle
-                className={`score-gauge-fill score-gauge-${previewTone}`}
-                cx="110"
-                cy="110"
-                r={gaugeRadius}
-                strokeDasharray={gaugeCircumference}
-                strokeDashoffset={dashOffset}
-              />
-            </svg>
-            <div className="score-gauge-center">
-              <span>{previewScore}</span>
-              <small>score</small>
-            </div>
-          </div>
-
-          <p className="score-summary">
-            {previewLoading
-              ? "Calculando custo, volume novo e ganho esperado..."
-              : preview?.recommendation_summary ??
-                "O AuraCore mede quantas mensagens novas chegaram, quantas já foram substituídas e quanto contexto a próxima leitura realmente deve agregar."}
-          </p>
-
-          <div className="retention-banner">
-            <div>
-              <span>Novas</span>
-              <strong>{preview ? preview.new_message_count : "--"}</strong>
-            </div>
-            <div>
-              <span>Perdidas pela retenção</span>
-              <strong>{preview ? preview.replaced_message_count : "--"}</strong>
-            </div>
-            <div>
-              <span>Headroom seguro</span>
-              <strong>{preview ? `~${formatTokenCount(preview.remaining_input_headroom_floor_tokens)}` : "--"}</strong>
-            </div>
-          </div>
-
-          <div className="memory-score-metrics">
-            <MemorySignalCard
-              label="Input real"
-              value={preview ? `~${formatTokenCount(preview.estimated_input_tokens)} tk` : "..."}
-              meta="prompt estrutural + contexto salvo + transcript"
-              tone="indigo"
-            />
-            <MemorySignalCard
-              label="Output esperado"
-              value={preview ? `~${formatTokenCount(preview.estimated_output_tokens)} tk` : "..."}
-              meta={preview ? `de ate ${formatTokenCount(preview.request_output_reserve_tokens)} reservados` : "Aguardando preview"}
-              tone="emerald"
-            />
-            <MemorySignalCard
-              label="Faixa de custo"
-              value={costRangeLabel}
-              meta="Cache miss e faixas oficiais do DeepSeek"
-              tone="amber"
-            />
-          </div>
-
-          <div className="memory-action-stack">
-            <button
-              className="ac-secondary-button"
-              onClick={onRefreshMessages}
-              disabled={isRefreshingMessages || agentState.running}
-              type="button"
-            >
-              <RefreshCw size={15} className={isRefreshingMessages ? "spin" : ""} />
-              {isRefreshingMessages ? "Puxando mensagens..." : "Puxar Novas Mensagens do WhatsApp"}
-            </button>
-            <button
-              className="ac-success-button"
-              onClick={onInitialAnalysis}
-              disabled={agentState.running || memoryReady || !preview?.selected_message_count}
-              type="button"
-            >
-              <Play size={15} />
-              {agentState.running && agentState.intent === "first_analysis" ? "Executando..." : "Fazer Primeira Análise"}
-            </button>
-            <button
-              className="ac-primary-button"
-              onClick={onImproveMemory}
-              disabled={agentState.running || !memoryReady || !preview?.selected_message_count}
-              type="button"
-            >
-              <Sparkles size={15} />
-              {agentState.running && agentState.intent === "improve_memory" ? "Melhorando..." : "Ler Novas Mensagens e Melhorar Memória"}
-            </button>
-          </div>
-
-          <div className="memory-action-guides">
-            <div>
-              <strong>Puxar novas mensagens</strong>
-              <p>Reler o historico direto do WhatsApp, ignorar grupos e manter no Supabase so o volume operacional da memoria.</p>
-            </div>
-            <div>
-              <strong>Fazer primeira analise</strong>
-              <p>Criar a primeira base consolidada do dono quando ainda nao existe memoria forte salva.</p>
-            </div>
-            <div>
-              <strong>Melhorar memoria</strong>
-              <p>Usar mensagens novas junto com snapshots, projetos e chat pessoal para atualizar o que a IA ja sabe.</p>
-            </div>
-          </div>
-        </Card>
-      </div>
-
       <Card>
-        <SectionTitle title="Janela Atual e Alcance Máximo" icon={MessageSquare} />
+        <SectionTitle title="Estado da Memoria" icon={Database} />
+        <p className="support-copy">
+          Esta contagem considera mensagens recebidas e enviadas. Depois da primeira analise, o backend atualiza memoria,
+          projetos e mensagens importantes em lotes fixos de 10 mensagens novas.
+        </p>
         <div className="memory-breakdown-grid">
           <MemorySignalCard
-            label="Mensagens disponíveis na janela"
-            value={preview ? formatTokenCount(preview.available_message_count) : "..."}
-            meta={preview ? `alcance configurado em ${formatHoursLabel(preview.max_lookback_hours)}` : "Aguardando preview"}
+            label="Status da memoria"
+            value={memoryReady ? "Base criada" : "Primeira analise pendente"}
+            meta={
+              memoryStatus?.last_analyzed_at
+                ? `Ultima atualizacao em ${formatDateTime(memoryStatus.last_analyzed_at)}`
+                : "Ainda sem consolidacao inicial"
+            }
+            accent
           />
           <MemorySignalCard
-            label="Transcript que entra agora"
-            value={preview ? `${formatTokenCount(preview.selected_transcript_chars)} chars` : "..."}
-            meta={preview ? `media de ${formatTokenCount(preview.average_selected_message_chars)} chars por mensagem` : "Aguardando preview"}
+            label="Mensagens novas"
+            value={formatTokenCount(pendingNewMessages)}
+            meta="Fila operacional atual do WhatsApp, somando recebidas e enviadas"
             tone="indigo"
           />
           <MemorySignalCard
-            label="Contexto seguro do reasoner"
-            value={preview ? `${formatTokenCount(preview.safe_input_budget_floor_tokens)} tk` : "..."}
+            label="Proximo processamento"
+            value={formatTokenCount(nextProcessCount)}
             meta={
-              preview
-                ? `saida docs ${formatTokenCount(preview.model_default_output_tokens)}/${formatTokenCount(preview.model_max_output_tokens)} e reserva atual ${formatTokenCount(preview.request_output_reserve_tokens)}`
-                : "Aguardando preview"
+              memoryReady
+                ? nextProcessCount > 0
+                  ? "O proximo processamento vai consumir exatamente esse lote"
+                  : "Ainda nao ha lote suficiente para o processamento incremental"
+                : "Na primeira analise entram ate 250 mensagens recentes"
             }
             tone="amber"
           />
           <MemorySignalCard
-            label="Mensagens retidas no Supabase"
-            value={preview ? `${formatTokenCount(preview.retained_message_count)}/${formatTokenCount(preview.retention_limit)}` : "..."}
-            meta={preview ? `${formatTokenCount(preview.new_message_count)} novas ainda nao consolidadas` : "Aguardando preview"}
+            label="Faltam para o automatico"
+            value={memoryReady ? formatTokenCount(messagesUntilAutoProcess) : "--"}
+            meta={
+              memoryReady
+                ? messagesUntilAutoProcess > 0
+                  ? "Quando essa contagem chegar a zero, o backend enfileira 1 lote automatico"
+                  : "Ja existe volume suficiente para o proximo lote automatico"
+                : "O automatico so passa a valer depois da primeira analise"
+            }
             tone="emerald"
           />
         </div>
       </Card>
 
       <Card>
-        <SectionTitle title="Snapshot Consolidado Atual" icon={FileText} />
+        <SectionTitle title="Acoes" icon={Zap} />
+        {!memoryReady ? (
+          <>
+            <p className="support-copy">
+              A primeira analise roda uma unica vez e usa sempre as mensagens diretas mais recentes disponiveis, com teto de 250.
+            </p>
+            <button
+              className="ac-success-button"
+              onClick={onInitialAnalysis}
+              disabled={agentState.running || !canRunFirstAnalysis}
+              type="button"
+            >
+              <Play size={15} />
+              {agentState.running && agentState.intent === "first_analysis" ? "Executando..." : firstAnalysisLabel}
+            </button>
+          </>
+        ) : (
+          <>
+            <p className="support-copy">
+              Depois da base inicial, cada atualizacao usa apenas o proximo lote de 10 mensagens novas. O botao abaixo adianta manualmente esse proximo lote quando ele ja estiver disponivel.
+            </p>
+            <button
+              className="ac-primary-button"
+              onClick={onImproveMemory}
+              disabled={agentState.running || !canRunNextBatch}
+              type="button"
+            >
+              <Sparkles size={15} />
+              {agentState.running && agentState.intent === "improve_memory" ? "Processando..." : nextBatchLabel}
+            </button>
+          </>
+        )}
+      </Card>
+
+      <Card>
+        <SectionTitle title="Ultimo Snapshot" icon={FileText} />
         {latestSnapshot ? (
-          <div className="snapshot-console">
-            <pre>{`{
-  "timestamp": "${latestSnapshot.created_at}",
-  "window_summary": ${JSON.stringify(latestSnapshot.window_summary)},
-  "source_message_count": ${latestSnapshot.source_message_count},
-  "key_learnings": ${JSON.stringify(latestSnapshot.key_learnings.slice(0, 4), null, 2)},
-  "routine_signals": ${JSON.stringify(latestSnapshot.routine_signals.slice(0, 4), null, 2)},
-  "preferences": ${JSON.stringify(latestSnapshot.preferences.slice(0, 4), null, 2)}
-}`}</pre>
+          <div className="manual-list">
+            <p>{latestSnapshot.window_summary}</p>
+            <p>
+              Baseado em {formatTokenCount(latestSnapshot.source_message_count)} mensagens entre{" "}
+              {formatDateTime(latestSnapshot.window_start)} e {formatDateTime(latestSnapshot.window_end)}.
+            </p>
           </div>
         ) : (
           <div className="empty-hint">
@@ -2331,32 +2079,15 @@ function MemoryTab({
       </Card>
 
       <Card>
-        <SectionTitle
-          title="Ajuste Fino da Memória Salva"
-          icon={Sparkles}
-          action={<span className="micro-badge">sem reler WhatsApp</span>}
-        />
-        <p className="support-copy">
-          Este ajuste opcional reescreve a memoria consolidada usando apenas o que ja esta salvo no Supabase. Ele nao puxa mensagens novas.
-        </p>
-        <button className="ac-secondary-button" onClick={onRefineSaved} disabled={agentState.running || !memoryReady} type="button">
-          <Sparkles size={15} />
-          {agentState.running && agentState.intent === "refine_saved" ? "Refinando..." : "Refinar Memória Já Salva"}
-        </button>
-      </Card>
-
-      <Card>
-        <SectionTitle title="Memória Atual do Dono" icon={Fingerprint} />
+        <SectionTitle title="Memoria Atual do Dono" icon={Fingerprint} />
         <p className="lead-copy">
           {memory?.life_summary?.trim()
             ? memory.life_summary
-            : "Nenhum resumo consolidado ainda. Assim que a primeira leitura rodar, este bloco vira a visão mais útil do dono para o chat e para futuros refinamentos."}
+            : "Nenhum resumo consolidado ainda. Assim que a primeira leitura rodar, este bloco vira a visao mais util do dono para o chat e para futuras atualizacoes automaticas."}
         </p>
       </Card>
 
-      {previewError ? <InlineError title="Falha no preview" message={previewError} /> : null}
-      {messageRefreshError ? <InlineError title="Falha ao reler o WhatsApp" message={messageRefreshError} /> : null}
-      {memoryError ? <InlineError title="Falha na memória" message={memoryError} /> : null}
+      {memoryError ? <InlineError title="Falha na memoria" message={memoryError} /> : null}
     </div>
   );
 }
@@ -3068,6 +2799,125 @@ function AutomationTab({
   onSave: () => void;
   onTick: () => void;
 }) {
+  const operationalLatestJob = automationStatus?.jobs?.[0] ?? null;
+  const operationalLatestSync = automationStatus?.sync_runs?.[0] ?? null;
+  const operationalLatestDecision = automationStatus?.decisions?.[0] ?? null;
+  const operationalSettingsUpdatedAt = automationStatus?.settings?.updated_at ?? null;
+
+  return (
+    <div className="page-stack">
+      <Card>
+        <SectionTitle
+          title="Automacao Controlada"
+          icon={Settings}
+          action={
+            operationalSettingsUpdatedAt ? (
+              <span className="micro-badge">{formatShortDateTime(operationalSettingsUpdatedAt)}</span>
+            ) : null
+          }
+        />
+        <p className="support-copy">
+          Esta area mostra so o estado operacional do loop automatico. Sem memoria inicial, nada entra na fila sozinho.
+          Depois da primeira analise, o backend processa 1 lote de 10 mensagens novas por ciclo.
+        </p>
+
+        <div className="automation-top-grid">
+          <MemorySignalCard
+            label="Fila"
+            value={automationStatus ? String(automationStatus.queued_jobs_count) : "..."}
+            meta={automationStatus?.running_job_id ? "Ha job rodando agora" : "Sem job rodando"}
+            accent
+          />
+          <MemorySignalCard
+            label="Jobs automaticos hoje"
+            value={automationStatus ? String(automationStatus.daily_auto_jobs_count) : "..."}
+            meta={automationStatus ? `${formatUsd(automationStatus.daily_cost_usd)} consumidos hoje` : "Aguardando status"}
+            tone="indigo"
+          />
+          <MemorySignalCard
+            label="Ultimo sync"
+            value={operationalLatestSync ? operationalLatestSync.status : "..."}
+            meta={operationalLatestSync ? formatShortDateTime(operationalLatestSync.started_at) : "Sem sync persistido"}
+            tone="emerald"
+          />
+          <MemorySignalCard
+            label="Ultima decisao"
+            value={operationalLatestDecision ? operationalLatestDecision.action : "..."}
+            meta={operationalLatestDecision ? operationalLatestDecision.reason_code : "Sem decisao persistida"}
+            tone="amber"
+          />
+        </div>
+
+        <div className="hero-actions">
+          <button className="ac-secondary-button" onClick={onTick} disabled={isTickingAutomation} type="button">
+            <RefreshCw size={15} className={isTickingAutomation ? "spin" : ""} />
+            {isTickingAutomation ? "Processando..." : "Rodar Tick Agora"}
+          </button>
+        </div>
+      </Card>
+
+      <Card>
+        <SectionTitle title="Leitura Operacional" icon={Activity} />
+        <div className="manual-grid">
+          <ManualInfoCard
+            title="Ultima decisao"
+            text={
+              operationalLatestDecision
+                ? `${operationalLatestDecision.action} por ${operationalLatestDecision.reason_code} em ${formatShortDateTime(operationalLatestDecision.created_at)}.`
+                : "Ainda nao existe nenhuma decisao persistida."
+            }
+          />
+          <ManualInfoCard
+            title="Ultimo job"
+            text={
+              operationalLatestJob
+                ? `${getIntentTitle(operationalLatestJob.intent as AgentIntent)} ficou em ${operationalLatestJob.status} e foi criado em ${formatShortDateTime(operationalLatestJob.created_at)}.`
+                : "Nenhum job foi salvo ainda."
+            }
+          />
+          <ManualInfoCard
+            title="Ultimo sync"
+            text={
+              operationalLatestSync
+                ? `${operationalLatestSync.status} via ${operationalLatestSync.trigger} em ${formatShortDateTime(operationalLatestSync.started_at)}.`
+                : "Nenhum sync foi persistido ainda."
+            }
+          />
+        </div>
+      </Card>
+
+      <Card>
+        <SectionTitle title="Historico Recente" icon={Clock} />
+        <div className="automation-history-grid">
+          <div className="activity-persist-block">
+            <strong>Jobs recentes</strong>
+            {(automationStatus?.jobs ?? []).slice(0, 4).map((job) => (
+              <div key={job.id} className="activity-meta-row">
+                <span>{getIntentTitle(job.intent as AgentIntent)}</span>
+                <span>{job.status}</span>
+                <span>{formatShortDateTime(job.created_at)}</span>
+              </div>
+            ))}
+          </div>
+          <div className="activity-persist-block">
+            <strong>Syncs recentes</strong>
+            {(automationStatus?.sync_runs ?? []).slice(0, 4).map((syncRun) => (
+              <div key={syncRun.id} className="activity-meta-row">
+                <span>{syncRun.trigger}</span>
+                <span>{syncRun.status}</span>
+                <span>{formatShortDateTime(syncRun.started_at)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </Card>
+
+      {automationError ? <InlineError title="Falha na automacao" message={automationError} /> : null}
+    </div>
+  );
+
+  /*
+
   const settings = automationStatus?.settings ?? null;
   const draft = automationDraft;
 
@@ -3257,6 +3107,7 @@ function AutomationTab({
       {automationError ? <InlineError title="Falha na automação" message={automationError} /> : null}
     </div>
   );
+*/
 }
 
 function ManualTab({

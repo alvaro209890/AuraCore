@@ -113,6 +113,16 @@ class MemoryCurrentResponse(BaseModel):
     last_snapshot_id: str | None = None
 
 
+class MemoryStatusResponse(BaseModel):
+    has_initial_analysis: bool
+    last_analyzed_at: datetime | None = None
+    pending_new_message_count: int = Field(ge=0)
+    next_process_message_count: int = Field(ge=0)
+    messages_until_auto_process: int = Field(ge=0)
+    can_run_first_analysis: bool
+    can_run_next_batch: bool
+
+
 class MemorySnapshotResponse(BaseModel):
     id: str
     window_hours: int = Field(ge=1)

@@ -186,6 +186,13 @@ class GroqChatService:
         interaction_mode: str,
         context_hint: str = "",
     ) -> str:
+        important_messages_context = ""
+        if context_hint.strip():
+            important_messages_context = (
+                "Cofre de mensagens importantes do dono "
+                "(dados que a IA de analise identificou como relevantes nas conversas do WhatsApp):\n"
+                f"{context_hint.strip()}"
+            )
         return f"""
 Contexto consolidado do dono:
 {current_life_summary.strip() or "(ainda sem resumo consolidado)"}
@@ -205,7 +212,7 @@ Mensagem atual do dono:
 Modo de interacao:
 {interaction_mode}
 
-{("Cofre de mensagens importantes do dono (dados que a IA de analise identificou como relevantes nas conversas do WhatsApp):\n" + context_hint.strip()) if context_hint.strip() else ""}
+{important_messages_context}
 
 Regras:
 - Responda primeiro ao que o dono acabou de dizer, de forma natural.
