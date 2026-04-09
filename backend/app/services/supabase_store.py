@@ -107,7 +107,7 @@ class SupabaseStore:
         supabase_key: str,
         default_user_id: UUID,
         *,
-        message_retention_max_rows: int = 3000,
+        message_retention_max_rows: int = 5000,
     ) -> None:
         self.client: Client = create_client(supabase_url, supabase_key)
         self.default_user_id = default_user_id
