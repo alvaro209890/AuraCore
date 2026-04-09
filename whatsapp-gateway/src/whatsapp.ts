@@ -47,11 +47,29 @@ function isStatusJid(jid: string | null | undefined): boolean {
   return jid === "status@broadcast";
 }
 
+function isBroadcastJid(jid: string | null | undefined): boolean {
+  return Boolean(jid && jid.endsWith("@broadcast"));
+}
+
+function isNewsletterJid(jid: string | null | undefined): boolean {
+  return Boolean(jid && jid.endsWith("@newsletter"));
+}
+
 function jidToPhone(jid: string | null | undefined): string {
   if (!jid) return "";
   const userPart = jid.split("@")[0] ?? "";
   const phoneOnly = userPart.split(":")[0] ?? "";
   return phoneOnly.replace(/[^\d]/g, "");
+}
+
+function isDirectUserJid(jid: string | null | undefined): boolean {
+  return Boolean(
+    jid &&
+      !isGroupJid(jid) &&
+      !isStatusJid(jid) &&
+      !isBroadcastJid(jid) &&
+      !isNewsletterJid(jid),
+  );
 }
 
 function extractMessageText(message: proto.IWebMessageInfo): string {
@@ -116,6 +134,7 @@ export class WhatsAppObserverGateway {
   private connectionEpoch = 0;
   private readonly processedIds = new Set<string>();
   private readonly processedOrder: string[] = [];
+  private readonly knownContactNames = new Map<string, string>();
 
   async start(): Promise<void> {
     if (this.running) return;
@@ -194,7 +213,7 @@ export class WhatsAppObserverGateway {
       version,
       logger: baileysLogger,
       printQRInTerminal: false,
-      shouldIgnoreJid: (jid) => isStatusJid(jid) || isGroupJid(jid),
+      shouldIgnoreJid: (jid) => !isDirectUserJid(jid),
       browser: [`AuraCore-${config.instanceName}`, "Render", "1.0.0"],
     });
 
@@ -346,7 +365,7 @@ export class WhatsAppObserverGateway {
     }
 
     const remoteJid = String(key.remoteJid);
-    if (isGroupJid(remoteJid) || isStatusJid(remoteJid)) {
+    if (!isDirectUserJid(remoteJid)) {
       return null;
     }
 
@@ -360,7 +379,7 @@ export class WhatsAppObserverGateway {
       return null;
     }
 
-    const contactName = (message.pushName || contactPhone).trim();
+    const contactName = this.resolveContactName(message, remoteJid, contactPhone);
     return {
       message_id: key.id,
       direction: key.fromMe ? "outbound" : "inbound",
@@ -370,6 +389,50 @@ export class WhatsAppObserverGateway {
       timestamp: toIsoTimestamp(message.messageTimestamp),
       source: "baileys",
     };
+  }
+
+  private resolveContactName(
+    message: proto.IWebMessageInfo,
+    remoteJid: string,
+    contactPhone: string,
+  ): string {
+    const socketWithContacts = this.socket as
+      | (WASocket & {
+          contacts?: Record<
+            string,
+            {
+              name?: string | null;
+              notify?: string | null;
+              verifiedName?: string | null;
+              verifiedBizName?: string | null;
+            }
+          >;
+        })
+      | null;
+    const contact = socketWithContacts?.contacts?.[remoteJid];
+    const cachedName = this.knownContactNames.get(contactPhone);
+    const candidates = [
+      message.pushName,
+      contact?.name,
+      contact?.notify,
+      contact?.verifiedName,
+      contact?.verifiedBizName,
+      cachedName,
+      contactPhone,
+    ];
+
+    for (const candidate of candidates) {
+      const text = String(candidate ?? "").trim();
+      if (!text) {
+        continue;
+      }
+      if (text !== contactPhone) {
+        this.knownContactNames.set(contactPhone, text);
+      }
+      return text;
+    }
+
+    return contactPhone;
   }
 
   private isDuplicate(messageId: string): boolean {

@@ -3,21 +3,26 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
-  analyzeMemory,
+  analyzeMemoryWithFilters,
   connectObserver,
   getChatSession,
+  getMemorySnapshots,
   getObserverStatus,
+  previewMemoryAnalysis,
   refineMemory,
   resetObserver,
   sendChatMessage,
   type ChatMessage,
+  type MemoryAnalysisDetailMode,
+  type MemoryAnalysisPreview,
   type MemoryCurrent,
+  type MemorySnapshot,
   type ObserverStatus,
   type ProjectMemory,
 } from "@/lib/api";
 
 type ViewState = "idle" | "loading" | "waiting" | "connected" | "error";
-type AgentMode = "analyze" | "refine";
+type AgentMode = "idle" | "analyze" | "refine";
 type TabId = "overview" | "observer" | "memory" | "projects" | "chat" | "activity";
 type LogTone = "info" | "success" | "error";
 
@@ -35,7 +40,7 @@ type AgentLog = {
 };
 
 type AgentState = {
-  mode: AgentMode | null;
+  mode: AgentMode;
   running: boolean;
   progress: number;
   status: string;
@@ -43,69 +48,83 @@ type AgentState = {
   completedAt: string | null;
 };
 
+type MemoryFilters = {
+  targetMessageCount: number;
+  maxLookbackHours: number;
+  detailMode: MemoryAnalysisDetailMode;
+};
+
+type InsightMetric = {
+  label: string;
+  value: number;
+  description: string;
+};
+
 const POLL_INTERVAL_MS = 5000;
 const QR_REFRESH_INTERVAL_MS = 25000;
-const WINDOW_PRESETS = [6, 24, 72, 168];
+const MESSAGE_TARGET_PRESETS = [80, 140, 220, 320];
+const LOOKBACK_PRESETS = [24, 72, 168];
+const DETAIL_OPTIONS: Array<{ value: MemoryAnalysisDetailMode; label: string; description: string }> = [
+  { value: "light", label: "Leve", description: "Menos contexto, menos tokens." },
+  { value: "balanced", label: "Equilibrada", description: "Boa profundidade para rotina e projetos." },
+  { value: "deep", label: "Profunda", description: "Mais contexto e leitura mais cara." },
+];
+
 const IDLE_AGENT_STATUS = "Nenhuma atualização em andamento.";
 
 const ANALYZE_STEPS: AgentStep[] = [
   {
     threshold: 8,
     label: "Buscando mensagens diretas recentes",
-    detail: "Lendo apenas conversas com contatos normais salvas no Supabase.",
+    detail: "Lendo apenas contatos normais salvos no Supabase, sem grupos.",
   },
   {
     threshold: 24,
-    label: "Filtrando sinais relevantes do dono",
-    detail: "Separando hábitos, decisões, rotina, linguagem e trabalho.",
+    label: "Separando sinais do dono",
+    detail: "Mapeando rotina, linguagem, decisões, trabalho e relações úteis.",
   },
   {
     threshold: 42,
-    label: "Cruzando memória anterior e projetos",
-    detail: "Usando resumo atual, projetos salvos e contexto de análises passadas.",
+    label: "Cruzando memória e projetos",
+    detail: "Comparando a janela nova com o perfil salvo e com as frentes já consolidadas.",
   },
   {
-    threshold: 58,
-    label: "Lendo o que foi conversado com a IA",
-    detail: "Incluindo o histórico útil do chat para melhorar o perfil.",
+    threshold: 60,
+    label: "Lendo contexto do chat pessoal",
+    detail: "Incluindo o que o dono revelou nas conversas com a IA.",
   },
   {
-    threshold: 78,
+    threshold: 80,
     label: "Pedindo consolidação ao DeepSeek",
-    detail: "Gerando uma atualização mais coerente do perfil e das frentes ativas.",
+    detail: "Gerando resumo comportamental, sinais do dono e atualização de projetos.",
   },
   {
     threshold: 94,
-    label: "Persistindo o resultado",
-    detail: "Atualizando memória consolidada e projetos no Supabase.",
+    label: "Persistindo no Supabase",
+    detail: "Salvando snapshot, resumo atual e projetos enriquecidos.",
   },
 ];
 
 const REFINE_STEPS: AgentStep[] = [
   {
     threshold: 10,
-    label: "Lendo a memória consolidada atual",
-    detail: "Partindo do perfil salvo em vez de reprocessar tudo do zero.",
+    label: "Lendo memória consolidada atual",
+    detail: "Partindo do que já foi salvo para remover ruído e contradições.",
   },
   {
-    threshold: 28,
-    label: "Revisando projetos e contexto histórico",
-    detail: "Buscando contradições, ruído e sinais fracos na memória existente.",
+    threshold: 34,
+    label: "Revisando projetos e chat",
+    detail: "Usando os sinais já consolidados e as conversas recentes com a IA.",
   },
   {
-    threshold: 46,
-    label: "Incluindo conversas recentes do chat",
-    detail: "Usando o que o dono revelou à IA para corrigir prioridades e contexto.",
-  },
-  {
-    threshold: 74,
+    threshold: 70,
     label: "Refinando o perfil com o DeepSeek",
-    detail: "Pedindo uma versão mais limpa, precisa e útil para o assistente pessoal.",
+    detail: "Fortalecendo o que é recorrente e enfraquecendo o que é fraco.",
   },
   {
     threshold: 94,
-    label: "Salvando a memória refinada",
-    detail: "Aplicando o novo resumo consolidado no Supabase.",
+    label: "Aplicando o refinamento",
+    detail: "Atualizando resumo atual e frentes de trabalho no banco.",
   },
 ];
 
@@ -167,6 +186,10 @@ function formatHoursLabel(hours: number): string {
   return `${hours}h`;
 }
 
+function formatTokenCount(value: number): string {
+  return new Intl.NumberFormat("pt-BR").format(value);
+}
+
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message) {
     return error.message;
@@ -190,11 +213,14 @@ function getProgressIncrement(progress: number): number {
   return 1;
 }
 
-function getStepsForMode(mode: AgentMode | null): AgentStep[] {
+function getStepsForMode(mode: AgentMode): AgentStep[] {
   return mode === "refine" ? REFINE_STEPS : ANALYZE_STEPS;
 }
 
 function getRunningStatus(mode: AgentMode, progress: number): string {
+  if (mode === "idle") {
+    return IDLE_AGENT_STATUS;
+  }
   const step = [...getStepsForMode(mode)].reverse().find((candidate) => progress >= candidate.threshold);
   return step?.label ?? "Preparando atualização";
 }
@@ -208,16 +234,73 @@ function makeLog(tone: LogTone, message: string): AgentLog {
   };
 }
 
+function getPreviewTone(score: number): string {
+  if (score >= 78) {
+    return "high";
+  }
+  if (score >= 55) {
+    return "medium";
+  }
+  if (score >= 32) {
+    return "soft";
+  }
+  return "low";
+}
+
+function getSignalMetrics(snapshot: MemorySnapshot | null): InsightMetric[] {
+  return [
+    {
+      label: "Aprendizados",
+      value: snapshot?.key_learnings.length ?? 0,
+      description: "Sinais concretos do jeito de agir e das prioridades do dono.",
+    },
+    {
+      label: "Rotina",
+      value: snapshot?.routine_signals.length ?? 0,
+      description: "Pistas de horários, cadência e hábitos recorrentes.",
+    },
+    {
+      label: "Preferências",
+      value: snapshot?.preferences.length ?? 0,
+      description: "Gostos, padrões de escolha e critérios do dono.",
+    },
+    {
+      label: "Lacunas",
+      value: snapshot?.open_questions.length ?? 0,
+      description: "Pontos ainda frágeis para a IA aprender melhor.",
+    },
+  ];
+}
+
+function getProjectStrength(project: ProjectMemory): number {
+  const raw = 26 + (project.next_steps.length * 12) + (project.evidence.length * 8);
+  return Math.max(22, Math.min(100, raw));
+}
+
+function getAudienceLabel(project: ProjectMemory): string {
+  if (project.built_for.trim()) {
+    return project.built_for;
+  }
+  return "Público ainda não consolidado";
+}
+
 export function ConnectionDashboard() {
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [status, setStatus] = useState<ObserverStatus | null>(null);
   const [viewState, setViewState] = useState<ViewState>("idle");
   const [memory, setMemory] = useState<MemoryCurrent | null>(null);
   const [projects, setProjects] = useState<ProjectMemory[]>([]);
+  const [snapshots, setSnapshots] = useState<MemorySnapshot[]>([]);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatThreadTitle, setChatThreadTitle] = useState("Conversa principal");
-  const [windowHoursInput, setWindowHoursInput] = useState("24");
   const [chatDraft, setChatDraft] = useState("");
+  const [filters, setFilters] = useState<MemoryFilters>({
+    targetMessageCount: 140,
+    maxLookbackHours: 72,
+    detailMode: "balanced",
+  });
+  const [preview, setPreview] = useState<MemoryAnalysisPreview | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [memoryError, setMemoryError] = useState<string | null>(null);
   const [chatError, setChatError] = useState<string | null>(null);
@@ -226,9 +309,10 @@ export function ConnectionDashboard() {
   const [isResetting, setIsResetting] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isSendingChat, setIsSendingChat] = useState(false);
+  const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [pollingEnabled, setPollingEnabled] = useState(false);
   const [agentState, setAgentState] = useState<AgentState>({
-    mode: null,
+    mode: "idle",
     running: false,
     progress: 0,
     status: IDLE_AGENT_STATUS,
@@ -244,10 +328,7 @@ export function ConnectionDashboard() {
   const agentTimerRef = useRef<number | null>(null);
   const agentStepIndexRef = useRef(0);
 
-  const selectedWindowHours = useMemo(() => {
-    const parsed = Number.parseInt(windowHoursInput, 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-  }, [windowHoursInput]);
+  const latestSnapshot = snapshots[0] ?? null;
 
   const statusLabel = useMemo(() => {
     if (!status) {
@@ -257,6 +338,8 @@ export function ConnectionDashboard() {
   }, [status]);
 
   const currentSteps = useMemo(() => getStepsForMode(agentState.mode), [agentState.mode]);
+
+  const insightMetrics = useMemo(() => getSignalMetrics(latestSnapshot), [latestSnapshot]);
 
   useEffect(() => {
     void hydrateDashboard();
@@ -289,6 +372,18 @@ export function ConnectionDashboard() {
     };
   }, []);
 
+  useEffect(() => {
+    if (isHydrating) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      void refreshPreview();
+    }, 180);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [filters, isHydrating, memory?.last_analyzed_at]);
+
   async function hydrateDashboard(mode: "initial" | "manual" = "initial"): Promise<void> {
     if (mode === "manual") {
       setIsRefreshing(true);
@@ -296,9 +391,10 @@ export function ConnectionDashboard() {
       setIsHydrating(true);
     }
 
-    const [statusResult, chatResult] = await Promise.allSettled([
+    const [statusResult, chatResult, snapshotsResult] = await Promise.allSettled([
       getObserverStatus(false),
       getChatSession(),
+      getMemorySnapshots(6),
     ]);
 
     if (statusResult.status === "fulfilled") {
@@ -325,6 +421,10 @@ export function ConnectionDashboard() {
       setMemoryError(message);
     }
 
+    if (snapshotsResult.status === "fulfilled") {
+      setSnapshots(snapshotsResult.value);
+    }
+
     if (mode === "manual") {
       setIsRefreshing(false);
     } else {
@@ -332,11 +432,28 @@ export function ConnectionDashboard() {
     }
   }
 
-  function pushAgentLog(tone: LogTone, message: string): void {
-    setAgentLogs((previous) => [makeLog(tone, message), ...previous].slice(0, 24));
+  async function refreshPreview(): Promise<void> {
+    setIsPreviewLoading(true);
+    try {
+      const nextPreview = await previewMemoryAnalysis({
+        target_message_count: filters.targetMessageCount,
+        max_lookback_hours: filters.maxLookbackHours,
+        detail_mode: filters.detailMode,
+      });
+      setPreview(nextPreview);
+      setPreviewError(null);
+    } catch (error) {
+      setPreviewError(getErrorMessage(error));
+    } finally {
+      setIsPreviewLoading(false);
+    }
   }
 
-  function startAgentRun(mode: AgentMode): void {
+  function pushAgentLog(tone: LogTone, message: string): void {
+    setAgentLogs((previous) => [makeLog(tone, message), ...previous].slice(0, 28));
+  }
+
+  function startAgentRun(mode: Exclude<AgentMode, "idle">): void {
     if (agentTimerRef.current) {
       window.clearInterval(agentTimerRef.current);
     }
@@ -354,8 +471,8 @@ export function ConnectionDashboard() {
     pushAgentLog(
       "info",
       mode === "analyze"
-        ? "Nova leitura iniciada. O agente vai consolidar mensagens recentes com memória e chat."
-        : "Refinamento iniciado. O agente vai limpar e fortalecer o perfil já salvo.",
+        ? "Nova leitura iniciada. O agente vai consolidar mensagens diretas, memória anterior, projetos e chat."
+        : "Refinamento iniciado. O agente vai limpar a memória já salva sem reprocessar tudo do zero.",
     );
 
     agentTimerRef.current = window.setInterval(() => {
@@ -381,7 +498,7 @@ export function ConnectionDashboard() {
     }, 520);
   }
 
-  function finishAgentRunSuccess(mode: AgentMode, message: string): void {
+  function finishAgentRunSuccess(mode: Exclude<AgentMode, "idle">, message: string): void {
     if (agentTimerRef.current) {
       window.clearInterval(agentTimerRef.current);
     }
@@ -396,7 +513,7 @@ export function ConnectionDashboard() {
     pushAgentLog("success", message);
   }
 
-  function finishAgentRunError(mode: AgentMode, message: string): void {
+  function finishAgentRunError(mode: Exclude<AgentMode, "idle">, message: string): void {
     if (agentTimerRef.current) {
       window.clearInterval(agentTimerRef.current);
     }
@@ -483,26 +600,29 @@ export function ConnectionDashboard() {
     }
   }
 
-  async function runMemoryJob(mode: AgentMode): Promise<void> {
+  async function runMemoryJob(mode: Exclude<AgentMode, "idle">): Promise<void> {
     setMemoryError(null);
     startAgentRun(mode);
 
     try {
       if (mode === "analyze") {
-        if (!selectedWindowHours) {
-          throw new Error("Informe uma janela válida em horas.");
-        }
-        const response = await analyzeMemory(selectedWindowHours);
+        const response = await analyzeMemoryWithFilters({
+          target_message_count: filters.targetMessageCount,
+          max_lookback_hours: filters.maxLookbackHours,
+          detail_mode: filters.detailMode,
+        });
         setMemory(response.current);
         setProjects(response.projects);
-        finishAgentRunSuccess("analyze", "Leitura concluída. Perfil e projetos atualizados.");
-        return;
+        setSnapshots((previous) => [response.snapshot, ...previous.filter((snapshot) => snapshot.id !== response.snapshot.id)].slice(0, 6));
+        finishAgentRunSuccess("analyze", "Leitura concluída. Perfil, sinais do dono e projetos foram atualizados.");
+      } else {
+        const response = await refineMemory();
+        setMemory(response.current);
+        setProjects(response.projects);
+        finishAgentRunSuccess("refine", "Refinamento concluído. O perfil consolidado ficou mais limpo.");
       }
 
-      const response = await refineMemory();
-      setMemory(response.current);
-      setProjects(response.projects);
-      finishAgentRunSuccess("refine", "Refinamento concluído. Perfil consolidado ficou mais limpo.");
+      await refreshPreview();
     } catch (error) {
       const message = getErrorMessage(error);
       setMemoryError(message);
@@ -542,7 +662,7 @@ export function ConnectionDashboard() {
         <div className="brand-block">
           <span className="brand-mark">AuraCore</span>
           <h1>Segundo cérebro pessoal</h1>
-          <p>Abas separadas para observar, atualizar memória, acompanhar projetos e conversar com a IA.</p>
+          <p>Menos ruído, mais contexto útil sobre o dono, seus projetos, sua rotina e o ganho de cada nova leitura.</p>
         </div>
 
         <nav className="tab-nav" aria-label="Navegação principal">
@@ -565,7 +685,11 @@ export function ConnectionDashboard() {
             <strong>{statusLabel}</strong>
           </div>
           <div className="sidebar-status-card">
-            <span className="sidebar-label">Projetos</span>
+            <span className="sidebar-label">Score da próxima leitura</span>
+            <strong>{preview ? `${preview.recommendation_score}/100` : "Carregando"}</strong>
+          </div>
+          <div className="sidebar-status-card">
+            <span className="sidebar-label">Projetos ativos</span>
             <strong>{projects.length}</strong>
           </div>
           <div className="sidebar-status-card">
@@ -595,7 +719,7 @@ export function ConnectionDashboard() {
           <section className="stage-card">
             <div className="empty-state">
               <strong>Carregando o AuraCore</strong>
-              <p>Buscando status do observador, perfil atual, projetos e histórico do chat.</p>
+              <p>Buscando status do observador, perfil atual, snapshots, projetos e histórico do chat.</p>
             </div>
           </section>
         ) : (
@@ -603,12 +727,15 @@ export function ConnectionDashboard() {
             {activeTab === "overview" ? (
               <OverviewTab
                 memory={memory}
+                latestSnapshot={latestSnapshot}
                 projects={projects}
+                preview={preview}
                 status={status}
                 statusLabel={statusLabel}
                 connectionError={connectionError}
                 memoryError={memoryError}
-                agentState={agentState}
+                previewError={previewError}
+                insightMetrics={insightMetrics}
                 onGoToObserver={() => setActiveTab("observer")}
                 onGoToMemory={() => setActiveTab("memory")}
                 onGoToChat={() => setActiveTab("chat")}
@@ -631,17 +758,27 @@ export function ConnectionDashboard() {
             {activeTab === "memory" ? (
               <MemoryTab
                 memory={memory}
+                latestSnapshot={latestSnapshot}
+                preview={preview}
+                previewError={previewError}
+                previewLoading={isPreviewLoading}
                 memoryError={memoryError}
                 agentState={agentState}
-                selectedWindowHours={selectedWindowHours}
-                windowHoursInput={windowHoursInput}
-                onWindowHoursInputChange={setWindowHoursInput}
+                filters={filters}
+                onTargetChange={(targetMessageCount) => setFilters((previous) => ({ ...previous, targetMessageCount }))}
+                onLookbackChange={(maxLookbackHours) => setFilters((previous) => ({ ...previous, maxLookbackHours }))}
+                onDetailChange={(detailMode) => setFilters((previous) => ({ ...previous, detailMode }))}
                 onAnalyze={() => void runMemoryJob("analyze")}
                 onRefine={() => void runMemoryJob("refine")}
               />
             ) : null}
 
-            {activeTab === "projects" ? <ProjectsTab projects={projects} /> : null}
+            {activeTab === "projects" ? (
+              <ProjectsTab
+                projects={projects}
+                latestSnapshot={latestSnapshot}
+              />
+            ) : null}
 
             {activeTab === "chat" ? (
               <ChatTab
@@ -677,9 +814,9 @@ function getTabTitle(tab: TabId): string {
     case "observer":
       return "Conexão do observador do WhatsApp";
     case "memory":
-      return "Leituras e refinamento da memória";
+      return "Planejamento e treinamento da memória";
     case "projects":
-      return "Projetos, frentes e contexto ativo";
+      return "Projetos, entregas e público alvo";
     case "chat":
       return "Chat personalizado com contexto do dono";
     case "activity":
@@ -689,23 +826,29 @@ function getTabTitle(tab: TabId): string {
 
 function OverviewTab({
   memory,
+  latestSnapshot,
   projects,
+  preview,
   status,
   statusLabel,
   connectionError,
   memoryError,
-  agentState,
+  previewError,
+  insightMetrics,
   onGoToObserver,
   onGoToMemory,
   onGoToChat,
 }: {
   memory: MemoryCurrent | null;
+  latestSnapshot: MemorySnapshot | null;
   projects: ProjectMemory[];
+  preview: MemoryAnalysisPreview | null;
   status: ObserverStatus | null;
   statusLabel: string;
   connectionError: string | null;
   memoryError: string | null;
-  agentState: AgentState;
+  previewError: string | null;
+  insightMetrics: InsightMetric[];
   onGoToObserver: () => void;
   onGoToMemory: () => void;
   onGoToChat: () => void;
@@ -714,21 +857,20 @@ function OverviewTab({
     <div className="content-grid">
       <section className="stage-card stage-card-hero">
         <span className="section-kicker">Perfil vivo</span>
-        <h3>O AuraCore agora está dividido por áreas, com menos ruído e mais previsibilidade.</h3>
+        <h3>O painel agora mostra não só o que a IA sabe, mas também se vale a pena aprender mais agora.</h3>
         <p>
-          O observador alimenta o banco com mensagens diretas. A memória consolida quem é o dono,
-          o agente mostra a atualização em andamento e o chat usa esse contexto para responder de forma
-          pessoal.
+          O observador alimenta o banco com contatos diretos, o planejador estima custo e ganho da próxima leitura
+          e o perfil consolidado foca em comportamento, rotina e projetos do dono.
         </p>
         <div className="hero-actions">
-          <button className="primary-button" onClick={onGoToObserver} type="button">
-            Abrir conexão
+          <button className="primary-button" onClick={onGoToMemory} type="button">
+            Abrir planejador
           </button>
-          <button className="ghost-button" onClick={onGoToMemory} type="button">
-            Abrir memória
+          <button className="ghost-button" onClick={onGoToObserver} type="button">
+            Ver conexão
           </button>
           <button className="ghost-button" onClick={onGoToChat} type="button">
-            Abrir chat
+            Conversar com a IA
           </button>
         </div>
       </section>
@@ -736,7 +878,7 @@ function OverviewTab({
       <section className="stats-grid">
         <StatCard label="Estado do observador" value={statusLabel} />
         <StatCard label="Número conectado" value={status?.owner_number ?? "Aguardando leitura"} />
-        <StatCard label="Projetos ativos" value={String(projects.length)} />
+        <StatCard label="Score da leitura" value={preview ? `${preview.recommendation_score}/100` : "Sem preview"} />
         <StatCard
           label="Última atualização"
           value={memory?.last_analyzed_at ? formatDateTime(memory.last_analyzed_at) : "Ainda sem leitura"}
@@ -759,18 +901,65 @@ function OverviewTab({
 
       <section className="stage-card">
         <div className="card-head">
-          <span className="section-kicker">Estado do agente</span>
-          <span className="meta-text">{agentState.mode === "refine" ? "Refinamento" : "Leitura"}</span>
+          <span className="section-kicker">Leitura recomendada</span>
+          <span className="meta-text">{preview?.recommendation_label ?? "Sem cálculo ainda"}</span>
         </div>
-        <div className="progress-track">
-          <div className={`progress-fill${agentState.running ? " progress-fill-running" : ""}`} style={{ width: `${agentState.progress}%` }} />
+        <div className="recommendation-gauge">
+          <div
+            className={`recommendation-gauge-fill recommendation-gauge-${getPreviewTone(preview?.recommendation_score ?? 0)}`}
+            style={{ width: `${preview?.recommendation_score ?? 0}%` }}
+          />
         </div>
-        <p className="summary-copy summary-copy-tight">{agentState.status}</p>
-        {agentState.error ? <InlineError title="Falha do agente" message={agentState.error} /> : null}
+        <div className="recommendation-copy">
+          <strong>{preview ? `${preview.recommendation_score}/100` : "Sem score"}</strong>
+          <p>{preview?.recommendation_summary ?? "Escolha uma configuração na aba Memória para calcular o ganho da próxima leitura."}</p>
+        </div>
+      </section>
+
+      <section className="stage-card stage-card-span">
+        <div className="card-head">
+          <span className="section-kicker">Sinais recentes sobre o dono</span>
+          <span className="meta-text">
+            {latestSnapshot ? `Baseado na leitura de ${formatDateTime(latestSnapshot.created_at)}` : "Sem snapshot ainda"}
+          </span>
+        </div>
+        <div className="insight-bars">
+          {insightMetrics.map((metric) => (
+            <InsightBar key={metric.label} metric={metric} maxValue={Math.max(...insightMetrics.map((item) => item.value), 1)} />
+          ))}
+        </div>
+      </section>
+
+      <section className="stage-card">
+        <div className="card-head">
+          <span className="section-kicker">Áreas mais fortes</span>
+          <span className="meta-text">{projects.length} projetos em contexto</span>
+        </div>
+        {latestSnapshot ? (
+          <div className="signal-columns">
+            <SignalColumn title="Aprendizados" items={latestSnapshot.key_learnings} emptyLabel="Sem aprendizados consolidados ainda." />
+            <SignalColumn title="Rotina" items={latestSnapshot.routine_signals} emptyLabel="Sem sinais de rotina ainda." />
+            <SignalColumn title="Preferências" items={latestSnapshot.preferences} emptyLabel="Sem preferências fortes ainda." />
+          </div>
+        ) : (
+          <div className="empty-state empty-state-soft">
+            <strong>Sem leitura recente</strong>
+            <p>Assim que o DeepSeek consolidar uma nova janela, esse bloco passa a destacar sinais mais úteis sobre o dono.</p>
+          </div>
+        )}
+      </section>
+
+      <section className="stage-card">
+        <div className="card-head">
+          <span className="section-kicker">Pontos ainda frágeis</span>
+          <span className="meta-text">Lacunas que orientam a próxima leitura</span>
+        </div>
+        <SignalColumn title="Lacunas abertas" items={latestSnapshot?.open_questions ?? []} emptyLabel="Nenhuma lacuna relevante por enquanto." />
       </section>
 
       {connectionError ? <InlineError title="Falha na conexão" message={connectionError} /> : null}
       {memoryError ? <InlineError title="Falha na memória" message={memoryError} /> : null}
+      {previewError ? <InlineError title="Falha no preview" message={previewError} /> : null}
     </div>
   );
 }
@@ -867,72 +1056,156 @@ function ObserverTab({
 
 function MemoryTab({
   memory,
+  latestSnapshot,
+  preview,
+  previewError,
+  previewLoading,
   memoryError,
   agentState,
-  selectedWindowHours,
-  windowHoursInput,
-  onWindowHoursInputChange,
+  filters,
+  onTargetChange,
+  onLookbackChange,
+  onDetailChange,
   onAnalyze,
   onRefine,
 }: {
   memory: MemoryCurrent | null;
+  latestSnapshot: MemorySnapshot | null;
+  preview: MemoryAnalysisPreview | null;
+  previewError: string | null;
+  previewLoading: boolean;
   memoryError: string | null;
   agentState: AgentState;
-  selectedWindowHours: number | null;
-  windowHoursInput: string;
-  onWindowHoursInputChange: (value: string) => void;
+  filters: MemoryFilters;
+  onTargetChange: (value: number) => void;
+  onLookbackChange: (value: number) => void;
+  onDetailChange: (value: MemoryAnalysisDetailMode) => void;
   onAnalyze: () => void;
   onRefine: () => void;
 }) {
   return (
     <div className="content-grid">
-      <section className="stage-card">
+      <section className="stage-card stage-card-span">
         <div className="card-head">
-          <span className="section-kicker">Leitura de memória</span>
-          <span className="meta-text">DeepSeek com mensagens, memória e chat</span>
+          <div>
+            <span className="section-kicker">Planejador de leitura</span>
+            <h3 className="section-title">Escolha o volume, o alcance e a profundidade antes de gastar tokens.</h3>
+          </div>
+          <span className="meta-text">Preview barato, sem mandar o conteúdo bruto para o modelo leve</span>
         </div>
 
-        <div className="preset-row">
-          {WINDOW_PRESETS.map((hours) => {
-            const active = selectedWindowHours === hours;
-            return (
-              <button
-                key={hours}
-                className={`chip-button${active ? " chip-button-active" : ""}`}
-                onClick={() => onWindowHoursInputChange(String(hours))}
-                type="button"
-              >
-                {formatHoursLabel(hours)}
-              </button>
-            );
-          })}
+        <div className="planner-grid">
+          <div className="planner-block">
+            <span className="planner-label">Mensagens alvo</span>
+            <div className="preset-row">
+              {MESSAGE_TARGET_PRESETS.map((count) => (
+                <button
+                  key={count}
+                  className={`chip-button${filters.targetMessageCount === count ? " chip-button-active" : ""}`}
+                  onClick={() => onTargetChange(count)}
+                  type="button"
+                >
+                  {count}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="planner-block">
+            <span className="planner-label">Alcance máximo</span>
+            <div className="preset-row">
+              {LOOKBACK_PRESETS.map((hours) => (
+                <button
+                  key={hours}
+                  className={`chip-button${filters.maxLookbackHours === hours ? " chip-button-active" : ""}`}
+                  onClick={() => onLookbackChange(hours)}
+                  type="button"
+                >
+                  {formatHoursLabel(hours)}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="planner-block">
+            <span className="planner-label">Profundidade</span>
+            <div className="detail-option-row">
+              {DETAIL_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  className={`detail-option${filters.detailMode === option.value ? " detail-option-active" : ""}`}
+                  onClick={() => onDetailChange(option.value)}
+                  type="button"
+                >
+                  <strong>{option.label}</strong>
+                  <span>{option.description}</span>
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
 
-        <label className="input-shell">
-          <span>Janela personalizada em horas</span>
-          <input
-            type="number"
-            min={1}
-            step={1}
-            value={windowHoursInput}
-            onChange={(event) => onWindowHoursInputChange(event.target.value)}
-          />
-        </label>
-
-        <p className="meta-paragraph">
-          {selectedWindowHours
-            ? `A próxima leitura vai consolidar as últimas ${selectedWindowHours} horas com o perfil atual e o histórico do chat.`
-            : "Informe uma janela válida antes de iniciar a leitura."}
-        </p>
-
-        <div className="hero-actions">
-          <button className="primary-button" onClick={onAnalyze} disabled={agentState.running || !selectedWindowHours} type="button">
-            {agentState.running && agentState.mode === "analyze" ? "Lendo..." : "Analisar mensagens"}
-          </button>
-          <button className="ghost-button" onClick={onRefine} disabled={agentState.running} type="button">
-            {agentState.running && agentState.mode === "refine" ? "Refinando..." : "Refinar memória salva"}
-          </button>
+        <div className="stats-grid planner-stats-grid">
+          <StatCard label="Disponíveis na janela" value={preview ? String(preview.available_message_count) : "..." } />
+          <StatCard label="Entram na leitura" value={preview ? String(preview.selected_message_count) : "..."} />
+          <StatCard label="Novas desde a última análise" value={preview ? String(preview.new_message_count) : "..."} />
+          <StatCard label="Já substituídas pela retenção" value={preview ? String(preview.replaced_message_count) : "..."} />
+          <StatCard label="Tokens de entrada" value={preview ? formatTokenCount(preview.estimated_input_tokens) : "..."} />
+          <StatCard label="Tokens totais estimados" value={preview ? formatTokenCount(preview.estimated_total_tokens) : "..."} />
         </div>
+
+        <div className="planner-bottom">
+          <div className="recommendation-panel">
+            <div className="card-head">
+              <span className="section-kicker">Compensa analisar agora?</span>
+              <span className="meta-text">{preview?.recommendation_label ?? "Aguardando cálculo"}</span>
+            </div>
+            <div className="recommendation-gauge recommendation-gauge-large">
+              <div
+                className={`recommendation-gauge-fill recommendation-gauge-${getPreviewTone(preview?.recommendation_score ?? 0)}`}
+                style={{ width: `${preview?.recommendation_score ?? 0}%` }}
+              />
+            </div>
+            <div className="recommendation-copy">
+              <strong>{preview ? `${preview.recommendation_score}/100` : "Sem score"}</strong>
+              <p>
+                {previewLoading
+                  ? "Calculando ganho esperado da próxima leitura..."
+                  : preview?.recommendation_summary ??
+                    "Defina a configuração para ver o ganho estimado da próxima análise."}
+              </p>
+            </div>
+            <div className="retention-strip">
+              <span>{preview ? `${preview.new_message_count} novas no banco` : "..."}</span>
+              <span>{preview ? `${preview.replaced_message_count} já substituídas` : "..."}</span>
+              <span>{preview ? `${preview.retained_message_count}/${preview.retention_limit} retidas agora` : "..."}</span>
+            </div>
+          </div>
+
+          <div className="memory-actions-panel">
+            <button className="primary-button" onClick={onAnalyze} disabled={agentState.running || !preview?.selected_message_count} type="button">
+              {agentState.running && agentState.mode === "analyze" ? "Lendo..." : "Executar leitura"}
+            </button>
+            <button className="ghost-button" onClick={onRefine} disabled={agentState.running} type="button">
+              {agentState.running && agentState.mode === "refine" ? "Refinando..." : "Refinar memória salva"}
+            </button>
+            <div className="action-bar-caption">
+              <div className="recommendation-gauge recommendation-gauge-inline">
+                <div
+                  className={`recommendation-gauge-fill recommendation-gauge-${getPreviewTone(preview?.recommendation_score ?? 0)}`}
+                  style={{ width: `${preview?.recommendation_score ?? 0}%` }}
+                />
+              </div>
+              <p>
+                {preview
+                  ? `${preview.recommendation_score}/100 de ganho esperado com esta configuração.`
+                  : "O preview mostra o custo estimado e o quanto a IA deve aprender com a próxima leitura."}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {previewError ? <InlineError title="Falha no preview" message={previewError} /> : null}
       </section>
 
       <section className="stage-card">
@@ -949,47 +1222,130 @@ function MemoryTab({
         </p>
         {memoryError ? <InlineError title="Falha na memória" message={memoryError} /> : null}
       </section>
+
+      <section className="stage-card">
+        <div className="card-head">
+          <span className="section-kicker">Última leitura</span>
+          <span className="meta-text">{latestSnapshot ? formatDateTime(latestSnapshot.created_at) : "Sem snapshot"}</span>
+        </div>
+        {latestSnapshot ? (
+          <>
+            <p className="summary-copy">{latestSnapshot.window_summary}</p>
+            <div className="signal-columns">
+              <SignalColumn title="Aprendizados" items={latestSnapshot.key_learnings} emptyLabel="Sem aprendizados." />
+              <SignalColumn title="Rotina" items={latestSnapshot.routine_signals} emptyLabel="Sem sinais de rotina." />
+              <SignalColumn title="Preferências" items={latestSnapshot.preferences} emptyLabel="Sem preferências." />
+            </div>
+          </>
+        ) : (
+          <div className="empty-state empty-state-soft">
+            <strong>Sem snapshot recente</strong>
+            <p>Depois da próxima leitura, esta área mostra o resumo da janela mais recente e os sinais extraídos.</p>
+          </div>
+        )}
+      </section>
     </div>
   );
 }
 
-function ProjectsTab({ projects }: { projects: ProjectMemory[] }) {
+function ProjectsTab({
+  projects,
+  latestSnapshot,
+}: {
+  projects: ProjectMemory[];
+  latestSnapshot: MemorySnapshot | null;
+}) {
   return (
     <div className="content-grid">
       <section className="stage-card stage-card-span">
         <div className="card-head">
-          <span className="section-kicker">Projetos e frentes</span>
+          <div>
+            <span className="section-kicker">Projetos e frentes</span>
+            <h3 className="section-title">Agora cada projeto destaca o que o dono está construindo e para quem.</h3>
+          </div>
           <span className="meta-text">{projects.length} itens em contexto</span>
         </div>
 
         {projects.length === 0 ? (
           <div className="empty-state">
             <strong>Nenhum projeto consolidado ainda</strong>
-            <p>Assim que a memória ficar mais rica, o DeepSeek passa a destacar frentes recorrentes e status de trabalho.</p>
+            <p>Assim que a memória ficar mais rica, o DeepSeek passa a destacar frentes recorrentes, entregas e público alvo.</p>
           </div>
         ) : (
-          <div className="project-grid">
-            {projects.map((project) => (
-              <article key={project.id} className="project-card">
-                <div className="project-card-head">
-                  <strong>{project.project_name}</strong>
-                  <span>{project.last_seen_at ? formatShortDateTime(project.last_seen_at) : "Sem data"}</span>
-                </div>
-                <p>{project.summary}</p>
-                {project.status ? <div className="project-status">{project.status}</div> : null}
-                {project.next_steps.length > 0 ? (
-                  <div className="tag-list">
-                    {project.next_steps.slice(0, 4).map((step, index) => (
-                      <span key={`${project.id}-step-${index}`} className="tag-chip">
-                        {step}
-                      </span>
-                    ))}
+          <>
+            <div className="project-focus-grid">
+              {projects.slice(0, 4).map((project) => (
+                <article key={`${project.id}-focus`} className="focus-card">
+                  <span>{project.project_name}</span>
+                  <strong>{getProjectStrength(project)}%</strong>
+                  <div className="focus-bar">
+                    <div className="focus-bar-fill" style={{ width: `${getProjectStrength(project)}%` }} />
                   </div>
-                ) : null}
-              </article>
-            ))}
-          </div>
+                  <p>{project.what_is_being_built || project.summary}</p>
+                </article>
+              ))}
+            </div>
+
+            <div className="project-grid">
+              {projects.map((project) => (
+                <article key={project.id} className="project-card project-card-rich">
+                  <div className="project-card-head">
+                    <strong>{project.project_name}</strong>
+                    <span>{project.last_seen_at ? formatShortDateTime(project.last_seen_at) : "Sem data"}</span>
+                  </div>
+
+                  <div className="project-meta-grid">
+                    <ProjectMeta label="O que está sendo desenvolvido" value={project.what_is_being_built || project.summary} />
+                    <ProjectMeta label="Para quem" value={getAudienceLabel(project)} />
+                    <ProjectMeta label="Status" value={project.status || "Sem status consolidado"} />
+                  </div>
+
+                  <p>{project.summary}</p>
+
+                  {project.next_steps.length > 0 ? (
+                    <>
+                      <span className="project-subtitle">Próximos passos</span>
+                      <div className="tag-list">
+                        {project.next_steps.slice(0, 5).map((step, index) => (
+                          <span key={`${project.id}-step-${index}`} className="tag-chip">
+                            {step}
+                          </span>
+                        ))}
+                      </div>
+                    </>
+                  ) : null}
+
+                  {project.evidence.length > 0 ? (
+                    <>
+                      <span className="project-subtitle">Evidências recentes</span>
+                      <div className="tag-list">
+                        {project.evidence.slice(0, 4).map((evidence, index) => (
+                          <span key={`${project.id}-evidence-${index}`} className="tag-chip tag-chip-soft">
+                            {evidence}
+                          </span>
+                        ))}
+                      </div>
+                    </>
+                  ) : null}
+                </article>
+              ))}
+            </div>
+          </>
         )}
+      </section>
+
+      <section className="stage-card stage-card-span">
+        <div className="card-head">
+          <span className="section-kicker">Pistas recentes da leitura</span>
+          <span className="meta-text">
+            {latestSnapshot ? `Baseado em ${formatDateTime(latestSnapshot.created_at)}` : "Sem snapshot recente"}
+          </span>
+        </div>
+        <SignalColumn
+          title="Projetos e relações da última leitura"
+          items={latestSnapshot?.people_and_relationships ?? []}
+          emptyLabel="A última leitura ainda não consolidou relações e projetos suficientes."
+        />
       </section>
     </div>
   );
@@ -1022,7 +1378,7 @@ function ChatTab({
             <span className="section-kicker">Chat personalizado</span>
             <h3 className="section-title">{chatThreadTitle}</h3>
           </div>
-          <span className="meta-text">O histórico daqui alimenta futuras leituras da memória</span>
+          <span className="meta-text">O histórico daqui também entra nas próximas leituras da memória</span>
         </div>
 
         {chatError ? <InlineError title="Falha no chat" message={chatError} /> : null}
@@ -1053,7 +1409,7 @@ function ChatTab({
               rows={4}
               value={chatDraft}
               onChange={(event) => onChatDraftChange(event.target.value)}
-              placeholder="Ex.: O que você já entendeu sobre minha rotina e meus projetos atuais?"
+              placeholder="Ex.: O que você já entendeu sobre minha rotina, meus projetos e meus critérios de decisão?"
             />
           </label>
           <button className="primary-button" onClick={onSubmit} disabled={isSendingChat} type="button">
@@ -1152,6 +1508,56 @@ function InlineError({ title, message }: { title: string; message: string }) {
     <div className="inline-error">
       <strong>{title}</strong>
       <p>{message}</p>
+    </div>
+  );
+}
+
+function InsightBar({ metric, maxValue }: { metric: InsightMetric; maxValue: number }) {
+  const width = `${Math.max(12, Math.round((metric.value / Math.max(maxValue, 1)) * 100))}%`;
+  return (
+    <article className="insight-bar-card">
+      <div className="insight-bar-head">
+        <strong>{metric.label}</strong>
+        <span>{metric.value}</span>
+      </div>
+      <div className="insight-bar-track">
+        <div className="insight-bar-fill" style={{ width }} />
+      </div>
+      <p>{metric.description}</p>
+    </article>
+  );
+}
+
+function SignalColumn({
+  title,
+  items,
+  emptyLabel,
+}: {
+  title: string;
+  items: string[];
+  emptyLabel: string;
+}) {
+  return (
+    <div className="signal-column">
+      <strong>{title}</strong>
+      {items.length === 0 ? (
+        <p>{emptyLabel}</p>
+      ) : (
+        <ul className="signal-list">
+          {items.slice(0, 5).map((item, index) => (
+            <li key={`${title}-${index}`}>{item}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function ProjectMeta({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="project-meta-card">
+      <span>{label}</span>
+      <strong>{value}</strong>
     </div>
   );
 }

@@ -62,12 +62,12 @@ textarea {
 }
 
 .workspace-shell {
-  width: min(1440px, calc(100% - 28px));
+  width: min(1480px, calc(100% - 20px));
   margin: 0 auto;
-  padding: 22px 0 28px;
+  padding: 14px 0 18px;
   display: grid;
-  grid-template-columns: 300px minmax(0, 1fr);
-  gap: 20px;
+  grid-template-columns: 270px minmax(0, 1fr);
+  gap: 14px;
 }
 
 .workspace-sidebar,
@@ -95,15 +95,15 @@ textarea {
 }
 
 .workspace-sidebar {
-  padding: 24px;
+  padding: 18px;
   display: grid;
   align-content: start;
-  gap: 22px;
+  gap: 16px;
   background: linear-gradient(180deg, rgba(11, 19, 24, 0.96), rgba(9, 15, 20, 0.92));
 }
 
 .brand-block {
-  padding-bottom: 22px;
+  padding-bottom: 14px;
   border-bottom: 1px solid var(--line);
 }
 
@@ -128,7 +128,7 @@ textarea {
 }
 
 .brand-block h1 {
-  font-size: 2rem;
+  font-size: 1.7rem;
 }
 
 .brand-block p,
@@ -147,15 +147,15 @@ textarea {
 
 .tab-nav {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .tab-button {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 14px 16px;
+  gap: 10px;
+  padding: 10px 12px;
   border-radius: var(--radius-md);
   cursor: pointer;
   color: var(--text);
@@ -179,21 +179,21 @@ textarea {
 .tab-kicker {
   display: inline-grid;
   place-items: center;
-  min-width: 36px;
-  height: 36px;
+  min-width: 30px;
+  height: 30px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.05);
   color: var(--accent);
-  font-size: 0.8rem;
+  font-size: 0.72rem;
 }
 
 .sidebar-status {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .sidebar-status-card {
-  padding: 14px 16px;
+  padding: 10px 12px;
   border-radius: var(--radius-md);
   background: rgba(255, 255, 255, 0.03);
 }
@@ -213,7 +213,7 @@ textarea {
 }
 
 .workspace-main {
-  padding: 22px;
+  padding: 16px;
   background: linear-gradient(180deg, rgba(12, 18, 23, 0.95), rgba(9, 14, 18, 0.92));
 }
 
@@ -221,12 +221,12 @@ textarea {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 18px;
-  margin-bottom: 20px;
+  gap: 14px;
+  margin-bottom: 14px;
 }
 
 .topbar h2 {
-  font-size: clamp(2rem, 3vw, 2.9rem);
+  font-size: clamp(1.55rem, 2.5vw, 2.2rem);
 }
 
 .topbar-actions,
@@ -234,14 +234,14 @@ textarea {
 .preset-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px;
 }
 
 .primary-button,
 .ghost-button,
 .chip-button {
   border-radius: 999px;
-  padding: 13px 18px;
+  padding: 10px 14px;
   border: 0;
   cursor: pointer;
   transition:
@@ -285,7 +285,7 @@ textarea {
 .stats-grid,
 .project-grid {
   display: grid;
-  gap: 16px;
+  gap: 12px;
 }
 
 .content-grid {
@@ -295,7 +295,7 @@ textarea {
 .stage-card {
   grid-column: span 6;
   border-radius: var(--radius-lg);
-  padding: 22px;
+  padding: 16px;
   background: linear-gradient(180deg, rgba(16, 23, 29, 0.94), rgba(12, 18, 23, 0.92));
 }
 
@@ -311,8 +311,8 @@ textarea {
 }
 
 .stage-card h3 {
-  margin: 14px 0 10px;
-  font-size: clamp(1.6rem, 2.8vw, 2.4rem);
+  margin: 10px 0 8px;
+  font-size: clamp(1.25rem, 2.2vw, 1.8rem);
   line-height: 1.08;
 }
 
@@ -324,7 +324,7 @@ textarea {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
 }
 
 .stats-grid {
@@ -333,7 +333,7 @@ textarea {
 }
 
 .stat-card {
-  padding: 18px;
+  padding: 12px;
   border-radius: var(--radius-md);
   background: rgba(255, 255, 255, 0.035);
 }
@@ -347,17 +347,21 @@ textarea {
 }
 
 .summary-copy {
-  margin: 16px 0 0;
-  font-size: 1rem;
+  margin: 12px 0 0;
+  font-size: 0.94rem;
 }
 
 .summary-copy-tight {
-  margin-top: 12px;
+  margin-top: 8px;
+}
+
+.section-title {
+  font-size: clamp(1.08rem, 1.8vw, 1.55rem);
 }
 
 .inline-error {
-  margin-top: 16px;
-  padding: 14px 16px;
+  margin-top: 12px;
+  padding: 12px 14px;
   border-radius: var(--radius-md);
   background: var(--danger-soft);
   border-color: rgba(255, 158, 135, 0.24);
@@ -377,15 +381,15 @@ textarea {
 
 .observer-card {
   display: grid;
-  gap: 18px;
+  gap: 12px;
 }
 
 .status-pill {
   display: inline-flex;
   align-items: center;
   border-radius: 999px;
-  padding: 8px 12px;
-  font-size: 0.76rem;
+  padding: 6px 10px;
+  font-size: 0.7rem;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -420,20 +424,20 @@ textarea {
 .qr-frame {
   display: grid;
   place-items: center;
-  min-height: 320px;
+  min-height: 250px;
   background:
     linear-gradient(145deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02)),
     linear-gradient(160deg, rgba(113, 226, 193, 0.08), rgba(231, 191, 115, 0.08));
 }
 
 .qr-image {
-  width: min(320px, 100%);
+  width: min(250px, 100%);
   height: auto;
 }
 
 .empty-state,
 .empty-state-soft {
-  padding: 22px;
+  padding: 16px;
 }
 
 .empty-state strong,
@@ -444,12 +448,12 @@ textarea {
 
 .detail-list {
   display: grid;
-  gap: 12px;
-  margin: 18px 0 0;
+  gap: 8px;
+  margin: 12px 0 0;
 }
 
 .detail-list > div {
-  padding: 14px 16px;
+  padding: 10px 12px;
   border-radius: var(--radius-md);
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.025);
@@ -463,14 +467,14 @@ textarea {
 }
 
 .detail-list dd {
-  margin: 8px 0 0;
+  margin: 6px 0 0;
 }
 
 .input-shell {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 14px 16px;
+  gap: 8px;
+  padding: 10px 12px;
   border-radius: var(--radius-md);
   background: rgba(255, 255, 255, 0.025);
 }
@@ -487,7 +491,7 @@ textarea {
   border-radius: 12px;
   background: rgba(4, 8, 10, 0.34);
   color: var(--text);
-  padding: 12px 14px;
+  padding: 10px 12px;
 }
 
 .input-shell textarea {
@@ -495,26 +499,297 @@ textarea {
 }
 
 .meta-paragraph {
-  margin: 16px 0 0;
+  margin: 12px 0 0;
 }
 
 .project-grid {
-  margin-top: 18px;
+  margin-top: 12px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.planner-grid,
+.planner-bottom,
+.signal-columns,
+.project-focus-grid,
+.project-meta-grid,
+.insight-bars {
+  display: grid;
+  gap: 12px;
+}
+
+.planner-grid {
+  margin-top: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.planner-block,
+.recommendation-panel,
+.memory-actions-panel,
+.focus-card,
+.project-meta-card,
+.signal-column,
+.insight-bar-card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.03);
+  box-shadow: var(--shadow);
+}
+
+.planner-block,
+.recommendation-panel,
+.memory-actions-panel,
+.focus-card,
+.signal-column,
+.insight-bar-card {
+  padding: 14px;
+}
+
+.planner-label,
+.project-subtitle {
+  display: block;
+  color: var(--muted);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.detail-option-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.detail-option {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.detail-option strong,
+.project-meta-card strong,
+.focus-card strong,
+.signal-column strong,
+.insight-bar-head strong {
+  display: block;
+}
+
+.detail-option span,
+.signal-column p,
+.insight-bar-card p,
+.project-meta-card span,
+.focus-card p {
+  color: var(--muted);
+}
+
+.detail-option-active {
+  border-color: rgba(113, 226, 193, 0.3);
+  background: linear-gradient(145deg, rgba(113, 226, 193, 0.14), rgba(255, 255, 255, 0.03));
+}
+
+.planner-stats-grid {
+  margin-top: 12px;
+}
+
+.planner-bottom {
+  margin-top: 12px;
+  grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.95fr);
+}
+
+.recommendation-gauge,
+.focus-bar,
+.insight-bar-track {
+  overflow: hidden;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.recommendation-gauge {
+  height: 12px;
+}
+
+.recommendation-gauge-large {
+  height: 14px;
+  margin-top: 12px;
+}
+
+.recommendation-gauge-inline {
+  height: 10px;
+  margin: 0 0 8px;
+}
+
+.recommendation-gauge-fill,
+.focus-bar-fill,
+.insight-bar-fill {
+  height: 100%;
+  border-radius: inherit;
+}
+
+.recommendation-gauge-fill {
+  transition: width 220ms ease;
+}
+
+.recommendation-gauge-high {
+  background: linear-gradient(90deg, #77efb8, #dff8de);
+}
+
+.recommendation-gauge-medium {
+  background: linear-gradient(90deg, #e8c373, #f5e3b9);
+}
+
+.recommendation-gauge-soft {
+  background: linear-gradient(90deg, #d8d483, #eceac0);
+}
+
+.recommendation-gauge-low {
+  background: linear-gradient(90deg, #ffa88d, #ffd0c4);
+}
+
+.recommendation-copy {
+  margin-top: 12px;
+}
+
+.recommendation-copy strong {
+  display: block;
+  font-size: 1.35rem;
+}
+
+.recommendation-copy p,
+.action-bar-caption p,
+.retention-strip span {
+  color: var(--muted);
+}
+
+.retention-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 12px;
+  font-size: 0.82rem;
+}
+
+.memory-actions-panel {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.action-bar-caption {
+  margin-top: 2px;
+}
+
+.insight-bars {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 12px;
+}
+
+.insight-bar-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.insight-bar-track,
+.focus-bar {
+  height: 10px;
+  margin: 10px 0 8px;
+}
+
+.insight-bar-fill {
+  background: linear-gradient(90deg, var(--accent), var(--gold));
+}
+
+.signal-columns {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 12px;
+}
+
+.signal-column {
+  min-height: 100%;
+}
+
+.signal-column p {
+  margin: 10px 0 0;
+}
+
+.signal-list {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 8px;
+  color: var(--muted);
+}
+
+.project-focus-grid {
+  margin-top: 12px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.focus-card span {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.focus-card strong {
+  margin-top: 6px;
+  font-size: 1.15rem;
+}
+
+.focus-bar-fill {
+  background: linear-gradient(90deg, var(--accent), #eef3d0);
+}
+
+.project-card-rich {
+  display: grid;
+  gap: 10px;
+}
+
+.project-meta-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.project-meta-card {
+  padding: 12px;
+}
+
+.project-meta-card span {
+  display: block;
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.project-meta-card strong {
+  margin-top: 8px;
+  line-height: 1.45;
+}
+
+.project-subtitle {
+  margin-top: 4px;
+}
+
+.tag-chip-soft {
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
 .project-card {
-  padding: 18px;
+  padding: 14px;
   border-radius: var(--radius-md);
   background: rgba(255, 255, 255, 0.03);
 }
 
 .project-card p {
-  margin: 14px 0 0;
+  margin: 10px 0 0;
 }
 
 .project-status {
-  margin-top: 14px;
+  margin-top: 10px;
   color: var(--gold);
   font-size: 0.84rem;
   letter-spacing: 0.08em;
@@ -524,15 +799,15 @@ textarea {
 .tag-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 14px;
+  gap: 6px;
+  margin-top: 10px;
 }
 
 .tag-chip {
   display: inline-flex;
   align-items: center;
   border-radius: 999px;
-  padding: 8px 12px;
+  padding: 6px 10px;
   color: var(--text);
   background: rgba(255, 255, 255, 0.06);
   font-size: 0.8rem;
@@ -540,15 +815,15 @@ textarea {
 
 .chat-history-board {
   display: grid;
-  gap: 12px;
-  max-height: 580px;
+  gap: 10px;
+  max-height: 500px;
   overflow-y: auto;
-  margin-top: 18px;
-  padding: 14px;
+  margin-top: 12px;
+  padding: 10px;
 }
 
 .chat-message {
-  padding: 16px;
+  padding: 12px;
   border-radius: var(--radius-md);
   background: rgba(255, 255, 255, 0.03);
 }
@@ -562,22 +837,22 @@ textarea {
 }
 
 .chat-message p {
-  margin: 10px 0 0;
+  margin: 8px 0 0;
   white-space: pre-wrap;
 }
 
 .composer {
   display: grid;
-  gap: 14px;
-  margin-top: 18px;
+  gap: 10px;
+  margin-top: 12px;
 }
 
 .activity-meter {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 12px;
-  margin-top: 18px;
+  gap: 10px;
+  margin-top: 12px;
 }
 
 .activity-meter span {
@@ -585,8 +860,8 @@ textarea {
 }
 
 .progress-track {
-  height: 14px;
-  margin-top: 18px;
+  height: 12px;
+  margin-top: 12px;
   overflow: hidden;
   border-radius: 999px;
   border: 1px solid var(--line);
@@ -608,20 +883,20 @@ textarea {
 .steps-list,
 .log-list {
   display: grid;
-  gap: 12px;
-  margin-top: 18px;
+  gap: 10px;
+  margin-top: 12px;
 }
 
 .step-card,
 .log-item {
-  padding: 16px;
+  padding: 12px;
   border-radius: var(--radius-md);
   background: rgba(255, 255, 255, 0.025);
 }
 
 .step-card p,
 .log-item p {
-  margin: 10px 0 0;
+  margin: 8px 0 0;
 }
 
 .step-card-head span,
@@ -678,15 +953,30 @@ textarea {
   }
 
   .stats-grid,
-  .project-grid {
+  .project-grid,
+  .planner-grid,
+  .project-focus-grid,
+  .insight-bars {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .planner-bottom,
+  .signal-columns,
+  .project-meta-grid {
+    grid-template-columns: 1fr;
   }
 }
 
 @media (max-width: 900px) {
   .content-grid,
   .stats-grid,
-  .project-grid {
+  .project-grid,
+  .planner-grid,
+  .project-focus-grid,
+  .insight-bars,
+  .signal-columns,
+  .project-meta-grid,
+  .detail-option-row {
     grid-template-columns: 1fr;
   }
 
@@ -716,7 +1006,7 @@ textarea {
   .workspace-sidebar,
   .workspace-main,
   .stage-card {
-    padding: 18px;
+    padding: 14px;
   }
 
   .tab-nav {

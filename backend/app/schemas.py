@@ -42,7 +42,29 @@ class IngestMessagesResponse(BaseModel):
 
 
 class AnalyzeMemoryRequest(BaseModel):
-    window_hours: int = Field(default=24, ge=1)
+    window_hours: int | None = Field(default=None, ge=1)
+    target_message_count: int | None = Field(default=None, ge=20, le=500)
+    max_lookback_hours: int | None = Field(default=None, ge=1, le=168)
+    detail_mode: Literal["light", "balanced", "deep"] = "balanced"
+
+
+class MemoryAnalysisPreviewResponse(BaseModel):
+    target_message_count: int = Field(ge=1)
+    max_lookback_hours: int = Field(ge=1)
+    detail_mode: Literal["light", "balanced", "deep"]
+    available_message_count: int = Field(ge=0)
+    selected_message_count: int = Field(ge=0)
+    new_message_count: int = Field(ge=0)
+    replaced_message_count: int = Field(ge=0)
+    retained_message_count: int = Field(ge=0)
+    retention_limit: int = Field(ge=1)
+    estimated_input_tokens: int = Field(ge=0)
+    estimated_output_tokens: int = Field(ge=0)
+    estimated_total_tokens: int = Field(ge=0)
+    recommendation_score: int = Field(ge=0, le=100)
+    recommendation_label: str
+    recommendation_summary: str
+    should_analyze: bool
 
 
 class MemoryCurrentResponse(BaseModel):
@@ -73,6 +95,8 @@ class ProjectMemoryResponse(BaseModel):
     project_name: str
     summary: str
     status: str = ""
+    what_is_being_built: str = ""
+    built_for: str = ""
     next_steps: list[str] = Field(default_factory=list)
     evidence: list[str] = Field(default_factory=list)
     source_snapshot_id: str | None = None

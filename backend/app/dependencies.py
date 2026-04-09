@@ -48,6 +48,7 @@ def get_memory_analysis_service() -> MemoryAnalysisService:
         settings=get_settings(),
         store=get_supabase_store(),
         deepseek_service=get_deepseek_service(),
+        groq_service=get_groq_service(),
     )
 
 

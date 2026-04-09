@@ -39,11 +39,34 @@ export type ProjectMemory = {
   project_name: string;
   summary: string;
   status: string;
+  what_is_being_built: string;
+  built_for: string;
   next_steps: string[];
   evidence: string[];
   source_snapshot_id: string | null;
   last_seen_at: string | null;
   updated_at: string;
+};
+
+export type MemoryAnalysisDetailMode = "light" | "balanced" | "deep";
+
+export type MemoryAnalysisPreview = {
+  target_message_count: number;
+  max_lookback_hours: number;
+  detail_mode: MemoryAnalysisDetailMode;
+  available_message_count: number;
+  selected_message_count: number;
+  new_message_count: number;
+  replaced_message_count: number;
+  retained_message_count: number;
+  retention_limit: number;
+  estimated_input_tokens: number;
+  estimated_output_tokens: number;
+  estimated_total_tokens: number;
+  recommendation_score: number;
+  recommendation_label: string;
+  recommendation_summary: string;
+  should_analyze: boolean;
 };
 
 export type ChatMessage = {
@@ -138,6 +161,28 @@ export async function getMemorySnapshots(limit = 20): Promise<MemorySnapshot[]> 
 export async function analyzeMemory(windowHours: number): Promise<AnalyzeMemoryResponse> {
   return request<AnalyzeMemoryResponse>(`/api/memories/analyze?window_hours=${windowHours}`, {
     method: "POST",
+  });
+}
+
+export async function analyzeMemoryWithFilters(input: {
+  target_message_count: number;
+  max_lookback_hours: number;
+  detail_mode: MemoryAnalysisDetailMode;
+}): Promise<AnalyzeMemoryResponse> {
+  return request<AnalyzeMemoryResponse>("/api/memories/analyze", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function previewMemoryAnalysis(input: {
+  target_message_count: number;
+  max_lookback_hours: number;
+  detail_mode: MemoryAnalysisDetailMode;
+}): Promise<MemoryAnalysisPreview> {
+  return request<MemoryAnalysisPreview>("/api/memories/preview", {
+    method: "POST",
+    body: JSON.stringify(input),
   });
 }
 

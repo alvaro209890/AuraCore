@@ -7,6 +7,7 @@ from app.schemas import (
     AnalyzeMemoryRequest,
     AnalyzeMemoryResponse,
     MemoryCurrentResponse,
+    MemoryAnalysisPreviewResponse,
     MemorySnapshotResponse,
     MemorySnapshotsListResponse,
     ProjectMemoryResponse,
@@ -41,12 +42,53 @@ async def analyze_memory(
     window_hours: int | None = Query(default=None, ge=1),
     memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
 ) -> AnalyzeMemoryResponse:
-    resolved_window_hours = request.window_hours if request is not None else window_hours or 24
-    outcome = await memory_service.analyze_window(window_hours=resolved_window_hours)
+    if request is not None and request.target_message_count is not None:
+        outcome = await memory_service.analyze_selection(
+            target_message_count=request.target_message_count,
+            max_lookback_hours=request.max_lookback_hours or 72,
+            detail_mode=request.detail_mode,
+        )
+    else:
+        resolved_window_hours = (
+            request.window_hours
+            if request is not None and request.window_hours is not None
+            else window_hours or 24
+        )
+        outcome = await memory_service.analyze_window(window_hours=resolved_window_hours)
     return AnalyzeMemoryResponse(
         current=_to_persona_response(outcome.persona),
         snapshot=_to_snapshot_response(outcome.snapshot),
         projects=[_to_project_response(project) for project in outcome.projects],
+    )
+
+
+@router.post("/preview", response_model=MemoryAnalysisPreviewResponse)
+async def preview_memory_analysis(
+    request: AnalyzeMemoryRequest = Body(...),
+    memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
+) -> MemoryAnalysisPreviewResponse:
+    preview = await memory_service.get_analysis_preview(
+        target_message_count=request.target_message_count or 120,
+        max_lookback_hours=request.max_lookback_hours or 72,
+        detail_mode=request.detail_mode,
+    )
+    return MemoryAnalysisPreviewResponse(
+        target_message_count=preview.target_message_count,
+        max_lookback_hours=preview.max_lookback_hours,
+        detail_mode=preview.detail_mode,
+        available_message_count=preview.available_message_count,
+        selected_message_count=preview.selected_message_count,
+        new_message_count=preview.new_message_count,
+        replaced_message_count=preview.replaced_message_count,
+        retained_message_count=preview.retained_message_count,
+        retention_limit=preview.retention_limit,
+        estimated_input_tokens=preview.estimated_input_tokens,
+        estimated_output_tokens=preview.estimated_output_tokens,
+        estimated_total_tokens=preview.estimated_total_tokens,
+        recommendation_score=preview.recommendation_score,
+        recommendation_label=preview.recommendation_label,
+        recommendation_summary=preview.recommendation_summary,
+        should_analyze=preview.should_analyze,
     )
 
 
@@ -94,6 +136,8 @@ def _to_project_response(project: ProjectMemoryRecord) -> ProjectMemoryResponse:
         project_name=project.project_name,
         summary=project.summary,
         status=project.status,
+        what_is_being_built=project.what_is_being_built,
+        built_for=project.built_for,
         next_steps=project.next_steps,
         evidence=project.evidence,
         source_snapshot_id=project.source_snapshot_id,

@@ -18,6 +18,8 @@ class DeepSeekProjectMemory(BaseModel):
     name: str
     summary: str
     status: str = ""
+    what_is_being_built: str = ""
+    built_for: str = ""
     next_steps: list[str] = Field(default_factory=list)
     evidence: list[str] = Field(default_factory=list)
 
@@ -206,7 +208,7 @@ Retorne um JSON com exatamente estes campos:
 - routine_signals: string[]
 - preferences: string[]
 - open_questions: string[]
-- active_projects: {{ name: string, summary: string, status: string, next_steps: string[], evidence: string[] }}[]
+- active_projects: {{ name: string, summary: string, status: string, what_is_being_built: string, built_for: string, next_steps: string[], evidence: string[] }}[]
 
 Regras:
 - updated_life_summary deve ser cumulativo e integrar o resumo atual com esta janela.
@@ -215,6 +217,7 @@ Regras:
 - Procure entender como o dono do numero age, fala, decide, trabalha, se relaciona e organiza a rotina.
 - Priorize sinais comportamentais do dono do numero, nao apenas um inventario de contatos.
 - Preencha active_projects apenas com projetos, trabalhos, produtos, operacoes ou frentes reais que parecam recorrentes ou importantes para o dono.
+- Em cada item de active_projects, explicite o que esta sendo desenvolvido e para quem a entrega, sistema ou servico parece ser direcionado.
 - Em active_projects, use no maximo 6 itens e descarte assuntos soltos sem continuidade.
 - Mantenha updated_life_summary factual, claro, conciso e util para um assistente pessoal futuro.
 - Use os campos de lista para aprendizados concretos, padroes de comportamento e sinais incertos.
@@ -248,7 +251,7 @@ Conversas recentes com a IA pessoal:
 
 Retorne um JSON com exatamente estes campos:
 - updated_life_summary: string
-- active_projects: {{ name: string, summary: string, status: string, next_steps: string[], evidence: string[] }}[]
+- active_projects: {{ name: string, summary: string, status: string, what_is_being_built: string, built_for: string, next_steps: string[], evidence: string[] }}[]
 
 Regras:
 - O objetivo e melhorar a memoria do dono, nao repetir tudo do mesmo jeito.
@@ -256,6 +259,7 @@ Regras:
 - Considere o que o dono revelou ou pediu no chat com a IA para reforcar prioridades reais e estado de projetos.
 - Se algo estiver fraco ou pouco sustentado, enfraqueça ou remova em vez de inventar complemento.
 - Em active_projects, mantenha so projetos realmente importantes e atuais.
+- Sempre preencha, quando possivel, o que esta sendo desenvolvido e para quem cada projeto e direcionado.
 - Nao inclua markdown fences.
 """.strip()
 
@@ -354,6 +358,8 @@ Regras:
                 name=self._as_text(item.get("name")),
                 summary=self._as_text(item.get("summary")),
                 status=self._as_text(item.get("status")),
+                what_is_being_built=self._as_text(item.get("what_is_being_built")),
+                built_for=self._as_text(item.get("built_for")),
                 next_steps=self._as_string_list(item.get("next_steps")),
                 evidence=self._as_string_list(item.get("evidence")),
             )

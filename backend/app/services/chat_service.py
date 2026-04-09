@@ -86,6 +86,8 @@ class ChatAssistantService:
             life_summary="",
             last_analyzed_at=None,
             last_snapshot_id=None,
+            last_analyzed_ingested_count=None,
+            last_analyzed_pruned_count=None,
         )
         projects = self.store.list_project_memories(
             self.settings.default_user_id,
@@ -125,6 +127,10 @@ class ChatAssistantService:
             ]
             if project.status:
                 lines.append(f"  Status: {project.status}")
+            if project.what_is_being_built:
+                lines.append(f"  O que esta sendo desenvolvido: {project.what_is_being_built}")
+            if project.built_for:
+                lines.append(f"  Para quem: {project.built_for}")
             if project.next_steps:
                 lines.append(f"  Proximos passos: {'; '.join(project.next_steps[:4])}")
             if project.evidence:

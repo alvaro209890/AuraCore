@@ -74,6 +74,69 @@ class GroqChatService:
             raise GroqChatError("Groq retornou uma resposta vazia.")
         return content.strip()
 
+    async def generate_analysis_preview_summary(
+        self,
+        *,
+        target_message_count: int,
+        max_lookback_hours: int,
+        detail_mode: str,
+        available_message_count: int,
+        selected_message_count: int,
+        new_message_count: int,
+        replaced_message_count: int,
+        estimated_total_tokens: int,
+        recommendation_score: int,
+        recommendation_label: str,
+    ) -> str:
+        if not self.settings.groq_api_key:
+            raise GroqChatError("GROQ_API_KEY nao configurada na Render.")
+
+        headers = {
+            "Authorization": f"Bearer {self.settings.groq_api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self.settings.groq_model,
+            "temperature": 0.1,
+            "max_tokens": 120,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Voce resume, em portugues do Brasil e em no maximo duas frases curtas, se vale a pena "
+                        "rodar uma nova analise de memoria. Use apenas os numeros recebidos. Nao invente contexto "
+                        "das mensagens e nao use markdown."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Configuracao: alvo {target_message_count} mensagens, alcance {max_lookback_hours}h, modo {detail_mode}. "
+                        f"Disponiveis: {available_message_count}. Selecionadas: {selected_message_count}. "
+                        f"Novas desde a ultima analise: {new_message_count}. Substituidas pela retencao: {replaced_message_count}. "
+                        f"Tokens estimados do DeepSeek: {estimated_total_tokens}. "
+                        f"Score atual: {recommendation_score}/100 ({recommendation_label})."
+                    ),
+                },
+            ],
+        }
+
+        async with httpx.AsyncClient(
+            base_url=self.settings.normalized_groq_api_base_url,
+            timeout=self.settings.groq_timeout_seconds,
+        ) as client:
+            response = await client.post("/chat/completions", headers=headers, json=payload)
+
+        if response.status_code >= 400:
+            detail = response.text.strip() or "Unexpected Groq error."
+            raise GroqChatError(f"Groq request failed ({response.status_code}): {detail}")
+
+        data = response.json()
+        content = self._extract_content(data)
+        if not content.strip():
+            raise GroqChatError("Groq retornou um resumo vazio para o preview.")
+        return content.strip()
+
     def _build_prompt(
         self,
         *,
