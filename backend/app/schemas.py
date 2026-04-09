@@ -44,7 +44,7 @@ class IngestMessagesResponse(BaseModel):
 class AnalyzeMemoryRequest(BaseModel):
     window_hours: int | None = Field(default=None, ge=1)
     target_message_count: int | None = Field(default=None, ge=20, le=500)
-    max_lookback_hours: int | None = Field(default=None, ge=1, le=168)
+    max_lookback_hours: int | None = Field(default=None, ge=1, le=336)
     detail_mode: Literal["light", "balanced", "deep"] = "balanced"
 
 

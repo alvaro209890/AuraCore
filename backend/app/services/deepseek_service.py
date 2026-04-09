@@ -50,6 +50,7 @@ class DeepSeekService:
         transcript: str,
         current_life_summary: str,
         prior_analyses_context: str,
+        project_context: str,
         chat_context: str,
         window_hours: int,
         window_start: datetime,
@@ -68,10 +69,12 @@ class DeepSeekService:
                 {
                     "role": "system",
                     "content": (
-                        "Voce analisa conversas privadas em portugues para construir uma memoria util sobre o dono "
-                        "do numero. Responda sempre em portugues do Brasil e retorne apenas JSON valido. Nunca "
-                        "invente fatos. Quando algo for incerto, trate como sinal ou hipotese nas listas, sem "
-                        "afirmar como certeza no resumo consolidado."
+                        "Voce e o analista principal de memoria do AuraCore. Sua funcao e transformar conversas "
+                        "privadas em portugues do Brasil em uma memoria altamente util sobre o dono do numero. "
+                        "Responda sempre em portugues do Brasil e retorne apenas JSON valido. Nunca invente fatos. "
+                        "Priorize sinais sobre identidade, forma de agir, criterio de decisao, ritmo, projetos, "
+                        "responsabilidades e tensoes reais do dono. Quando algo for incerto, trate como sinal ou "
+                        "hipotese nas listas, sem afirmar como certeza no resumo consolidado."
                     ),
                 },
                 {
@@ -80,6 +83,7 @@ class DeepSeekService:
                         transcript=transcript,
                         current_life_summary=current_life_summary,
                         prior_analyses_context=prior_analyses_context,
+                        project_context=project_context,
                         chat_context=chat_context,
                         window_hours=window_hours,
                         window_start=window_start,
@@ -132,8 +136,8 @@ class DeepSeekService:
                     "content": (
                         "Voce revisa memorias privadas em portugues para melhorar a qualidade do perfil salvo do "
                         "dono do numero. Responda sempre em portugues do Brasil e retorne apenas JSON valido. "
-                        "Nunca invente fatos. Remova exageros, refine hipoteses fracas e deixe a memoria mais "
-                        "util para um assistente pessoal futuro."
+                        "Nunca invente fatos. Remova exageros, refine hipoteses fracas, fortaleça padroes "
+                        "recorrentes e deixe a memoria mais util para um assistente pessoal futuro."
                     ),
                 },
                 {
@@ -171,6 +175,7 @@ class DeepSeekService:
         transcript: str,
         current_life_summary: str,
         prior_analyses_context: str,
+        project_context: str,
         chat_context: str,
         window_hours: int,
         window_start: datetime,
@@ -194,6 +199,9 @@ Resumo consolidado atual:
 Analises anteriores relevantes:
 {previous_analyses}
 
+Projetos e frentes ja consolidados:
+{project_context.strip() or "(nenhum projeto consolidado ainda)"}
+
 Conversas recentes com a IA pessoal:
 {recent_chat_context}
 
@@ -212,14 +220,16 @@ Retorne um JSON com exatamente estes campos:
 
 Regras:
 - updated_life_summary deve ser cumulativo e integrar o resumo atual com esta janela.
+- Em updated_life_summary, descreva principalmente: quem o dono parece ser, como trabalha e decide, quais frentes estao mais vivas agora e quais tensoes ou prioridades estao guiando o momento.
 - Use as analises anteriores como contexto, mas corrija ou refine o que parecer fraco, incompleto ou contraditorio.
+- Use tambem os projetos ja salvos para manter continuidade entre leituras e evitar perder o fio de frentes recorrentes.
 - Considere tambem o que o dono conversou com a IA no chat para entender melhor prioridades, projetos e como ele pensa.
 - Procure entender como o dono do numero age, fala, decide, trabalha, se relaciona e organiza a rotina.
-- Priorize sinais comportamentais do dono do numero, nao apenas um inventario de contatos.
+- Priorize sinais comportamentais e estruturais do dono do numero, nao apenas um inventario de contatos.
 - Preencha active_projects apenas com projetos, trabalhos, produtos, operacoes ou frentes reais que parecam recorrentes ou importantes para o dono.
 - Em cada item de active_projects, explicite o que esta sendo desenvolvido e para quem a entrega, sistema ou servico parece ser direcionado.
 - Em active_projects, use no maximo 6 itens e descarte assuntos soltos sem continuidade.
-- Mantenha updated_life_summary factual, claro, conciso e util para um assistente pessoal futuro.
+- Mantenha updated_life_summary factual, claro, conciso e util para um assistente pessoal futuro. Dê mais peso ao que aparece repetido, ao que tem impacto operacional e ao que altera o comportamento do dono.
 - Use os campos de lista para aprendizados concretos, padroes de comportamento e sinais incertos.
 - Se a evidencia for fraca, trate como hipotese e nao como fato consolidado.
 - Nao mencione que voce e uma IA.
@@ -256,6 +266,7 @@ Retorne um JSON com exatamente estes campos:
 Regras:
 - O objetivo e melhorar a memoria do dono, nao repetir tudo do mesmo jeito.
 - Corrija contradicoes, reduza ruido e deixe o resumo mais preciso sobre como o dono age, decide, trabalha e se organiza.
+- Dê prioridade a tracos duraveis, responsabilidades recorrentes, projetos reais, estilo de decisao e preferencia operacional.
 - Considere o que o dono revelou ou pediu no chat com a IA para reforcar prioridades reais e estado de projetos.
 - Se algo estiver fraco ou pouco sustentado, enfraqueça ou remova em vez de inventar complemento.
 - Em active_projects, mantenha so projetos realmente importantes e atuais.

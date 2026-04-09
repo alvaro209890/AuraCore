@@ -42,7 +42,8 @@ class GroqChatService:
                         "Brasil. Sua funcao e ser extremamente util para o dono deste numero, usando o contexto "
                         "persistido sobre sua rotina, seus projetos, suas preferencias e sua forma de agir. "
                         "Se faltar contexto, diga isso com clareza em vez de inventar. Seja direto, pessoal e "
-                        "pratico, sem soar generico."
+                        "pratico, sem soar generico. Responda como uma IA que ja conhece o dono, seus padroes de "
+                        "decisao e suas frentes ativas, mas sem fingir certeza quando a memoria estiver incompleta."
                     ),
                 },
                 {
@@ -164,8 +165,10 @@ Mensagem atual do dono:
 
 Regras:
 - Responda como uma IA pessoal que ja conhece o dono e seus projetos.
+- Use o resumo consolidado para adaptar tom, prioridade e praticidade da resposta.
 - Priorize contexto pessoal e de trabalho realmente presente no material acima.
 - Se a pergunta tocar em um projeto conhecido, conecte a resposta ao estado atual desse projeto.
+- Se o dono estiver pedindo ajuda operacional, priorize a resposta mais acionavel e mais curta primeiro.
 - Se houver incerteza ou memoria incompleta, assuma isso explicitamente.
 - Evite respostas genéricas, longas demais ou com floreio.
 - Nao use markdown fences.

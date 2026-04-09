@@ -1,6 +1,39 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { LucideIcon } from "lucide-react";
+import {
+  Activity,
+  AlertCircle,
+  BarChart3,
+  Bot,
+  Brain,
+  CheckCircle2,
+  ChevronRight,
+  Clock,
+  Cpu,
+  Database,
+  Eye,
+  FileText,
+  FolderGit2,
+  Fingerprint,
+  GitBranch,
+  Menu,
+  MessageSquare,
+  MoreVertical,
+  Paperclip,
+  Play,
+  RefreshCw,
+  Send,
+  Server,
+  Settings,
+  Sparkles,
+  Smartphone,
+  Terminal,
+  User,
+  XCircle,
+  Zap,
+} from "lucide-react";
 
 import {
   analyzeMemoryWithFilters,
@@ -58,16 +91,37 @@ type InsightMetric = {
   label: string;
   value: number;
   description: string;
+  color: "emerald" | "amber" | "indigo" | "zinc";
+};
+
+type NavItem = {
+  id: TabId;
+  label: string;
+  icon: LucideIcon;
 };
 
 const POLL_INTERVAL_MS = 5000;
 const QR_REFRESH_INTERVAL_MS = 25000;
-const MESSAGE_TARGET_PRESETS = [80, 140, 220, 320];
-const LOOKBACK_PRESETS = [24, 72, 168];
-const DETAIL_OPTIONS: Array<{ value: MemoryAnalysisDetailMode; label: string; description: string }> = [
-  { value: "light", label: "Leve", description: "Menos contexto, menos tokens." },
-  { value: "balanced", label: "Equilibrada", description: "Boa profundidade para rotina e projetos." },
-  { value: "deep", label: "Profunda", description: "Mais contexto e leitura mais cara." },
+const MESSAGE_TARGET_PRESETS = [120, 200, 280, 360];
+const LOOKBACK_PRESETS = [24, 72, 168, 336];
+const DETAIL_OPTIONS: Array<{
+  value: MemoryAnalysisDetailMode;
+  label: string;
+  description: string;
+  badge: string;
+}> = [
+  { value: "light", label: "Rápida", description: "Sincroniza sinais novos com pouco custo e boa frequência.", badge: "baixo custo" },
+  { value: "balanced", label: "Padrão", description: "Melhor equilíbrio para perfil, rotina, decisões e projetos.", badge: "recomendada" },
+  { value: "deep", label: "Profunda", description: "Puxa mais contexto quando houve mudanças importantes ou atraso de leitura.", badge: "alto contexto" },
+];
+
+const NAV_ITEMS: NavItem[] = [
+  { id: "overview", label: "Visão Geral", icon: Brain },
+  { id: "observer", label: "Observador", icon: Eye },
+  { id: "memory", label: "Memória", icon: Database },
+  { id: "projects", label: "Projetos", icon: FolderGit2 },
+  { id: "chat", label: "Chat Pessoal", icon: MessageSquare },
+  { id: "activity", label: "Atividade", icon: Activity },
 ];
 
 const IDLE_AGENT_STATUS = "Nenhuma atualização em andamento.";
@@ -75,66 +129,57 @@ const IDLE_AGENT_STATUS = "Nenhuma atualização em andamento.";
 const ANALYZE_STEPS: AgentStep[] = [
   {
     threshold: 8,
-    label: "Buscando mensagens diretas recentes",
-    detail: "Lendo apenas contatos normais salvos no Supabase, sem grupos.",
+    label: "Coletando sinais recentes",
+    detail: "Lendo somente conversas diretas úteis e ignorando grupos, broadcast e lixo sem texto.",
   },
   {
-    threshold: 24,
-    label: "Separando sinais do dono",
-    detail: "Mapeando rotina, linguagem, decisões, trabalho e relações úteis.",
+    threshold: 22,
+    label: "Normalizando o dono",
+    detail: "Agrupando linguagem, rotina, decisões, tensões, contexto profissional e prioridades.",
   },
   {
-    threshold: 42,
-    label: "Cruzando memória e projetos",
-    detail: "Comparando a janela nova com o perfil salvo e com as frentes já consolidadas.",
+    threshold: 38,
+    label: "Cruzando memória estável",
+    detail: "Comparando a janela nova com snapshots antigos, projetos e contexto já consolidado.",
   },
   {
-    threshold: 60,
-    label: "Lendo contexto do chat pessoal",
-    detail: "Incluindo o que o dono revelou nas conversas com a IA.",
+    threshold: 56,
+    label: "Lendo o chat pessoal",
+    detail: "Usando o que o dono já revelou para reforçar objetivos, preocupações e preferências.",
   },
   {
-    threshold: 80,
-    label: "Pedindo consolidação ao DeepSeek",
-    detail: "Gerando resumo comportamental, sinais do dono e atualização de projetos.",
+    threshold: 78,
+    label: "Consolidando com DeepSeek",
+    detail: "Transformando sinais dispersos em um perfil mais útil e mais fiel ao dono.",
   },
   {
     threshold: 94,
-    label: "Persistindo no Supabase",
-    detail: "Salvando snapshot, resumo atual e projetos enriquecidos.",
+    label: "Salvando no Supabase",
+    detail: "Persistindo resumo, projetos, contadores de retenção e novo snapshot para futuras leituras.",
   },
 ];
 
 const REFINE_STEPS: AgentStep[] = [
   {
     threshold: 10,
-    label: "Lendo memória consolidada atual",
-    detail: "Partindo do que já foi salvo para remover ruído e contradições.",
+    label: "Lendo memória consolidada",
+    detail: "Partindo do que já foi salvo para remover ruído e reduzir suposições fracas.",
   },
   {
     threshold: 34,
-    label: "Revisando projetos e chat",
-    detail: "Usando os sinais já consolidados e as conversas recentes com a IA.",
+    label: "Revisando projetos e fricções",
+    detail: "Reforçando o que é recorrente e enfraquecendo o que não tem sustentação real.",
   },
   {
-    threshold: 70,
-    label: "Refinando o perfil com o DeepSeek",
-    detail: "Fortalecendo o que é recorrente e enfraquecendo o que é fraco.",
+    threshold: 66,
+    label: "Refinando com DeepSeek",
+    detail: "Melhorando linguagem, prioridades e retrato comportamental do dono.",
   },
   {
     threshold: 94,
-    label: "Aplicando o refinamento",
-    detail: "Atualizando resumo atual e frentes de trabalho no banco.",
+    label: "Aplicando refinamento",
+    detail: "Atualizando memória atual e frentes principais sem reprocessar tudo do zero.",
   },
-];
-
-const TABS: Array<{ id: TabId; label: string; kicker: string }> = [
-  { id: "overview", label: "Visão Geral", kicker: "00" },
-  { id: "observer", label: "Observador", kicker: "01" },
-  { id: "memory", label: "Memória", kicker: "02" },
-  { id: "projects", label: "Projetos", kicker: "03" },
-  { id: "chat", label: "Chat", kicker: "04" },
-  { id: "activity", label: "Atividade", kicker: "05" },
 ];
 
 function mergeStatus(previous: ObserverStatus | null, next: ObserverStatus): ObserverStatus {
@@ -198,16 +243,16 @@ function getErrorMessage(error: unknown): string {
 }
 
 function getProgressIncrement(progress: number): number {
-  if (progress < 16) {
+  if (progress < 18) {
     return 7;
   }
-  if (progress < 34) {
+  if (progress < 38) {
     return 5;
   }
-  if (progress < 56) {
+  if (progress < 60) {
     return 4;
   }
-  if (progress < 76) {
+  if (progress < 80) {
     return 3;
   }
   return 1;
@@ -234,47 +279,51 @@ function makeLog(tone: LogTone, message: string): AgentLog {
   };
 }
 
-function getPreviewTone(score: number): string {
-  if (score >= 78) {
-    return "high";
+function getPreviewTone(score: number): "emerald" | "amber" | "indigo" | "rose" {
+  if (score >= 80) {
+    return "emerald";
   }
-  if (score >= 55) {
-    return "medium";
+  if (score >= 60) {
+    return "indigo";
   }
-  if (score >= 32) {
-    return "soft";
+  if (score >= 38) {
+    return "amber";
   }
-  return "low";
+  return "rose";
 }
 
 function getSignalMetrics(snapshot: MemorySnapshot | null): InsightMetric[] {
   return [
     {
-      label: "Aprendizados",
-      value: snapshot?.key_learnings.length ?? 0,
-      description: "Sinais concretos do jeito de agir e das prioridades do dono.",
+      label: "Trabalho & Projetos",
+      value: (snapshot?.key_learnings.length ?? 0) + Math.min(snapshot?.people_and_relationships.length ?? 0, 2),
+      description: "Aprendizados de entregas, decisões e frentes correntes.",
+      color: "emerald",
     },
     {
-      label: "Rotina",
+      label: "Rotina & Ritmo",
       value: snapshot?.routine_signals.length ?? 0,
-      description: "Pistas de horários, cadência e hábitos recorrentes.",
+      description: "Padrões de horário, intensidade e sequência operacional.",
+      color: "amber",
     },
     {
-      label: "Preferências",
+      label: "Critérios & Preferências",
       value: snapshot?.preferences.length ?? 0,
-      description: "Gostos, padrões de escolha e critérios do dono.",
+      description: "Jeito de escolher, recusar, priorizar e decidir.",
+      color: "indigo",
     },
     {
-      label: "Lacunas",
+      label: "Lacunas Restantes",
       value: snapshot?.open_questions.length ?? 0,
-      description: "Pontos ainda frágeis para a IA aprender melhor.",
+      description: "Pontos que ainda precisam de mais sinal para a IA ficar melhor.",
+      color: "zinc",
     },
   ];
 }
 
 function getProjectStrength(project: ProjectMemory): number {
-  const raw = 26 + (project.next_steps.length * 12) + (project.evidence.length * 8);
-  return Math.max(22, Math.min(100, raw));
+  const raw = 30 + (project.next_steps.length * 10) + (project.evidence.length * 7) + (project.status ? 8 : 0);
+  return Math.max(24, Math.min(100, raw));
 }
 
 function getAudienceLabel(project: ProjectMemory): string {
@@ -284,8 +333,108 @@ function getAudienceLabel(project: ProjectMemory): string {
   return "Público ainda não consolidado";
 }
 
+function getSignalColorClass(color: InsightMetric["color"]): string {
+  switch (color) {
+    case "emerald":
+      return "bar-emerald";
+    case "amber":
+      return "bar-amber";
+    case "indigo":
+      return "bar-indigo";
+    case "zinc":
+      return "bar-zinc";
+  }
+}
+
+function Card({
+  children,
+  className = "",
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return <section className={`neo-card ${className}`}>{children}</section>;
+}
+
+function SectionTitle({
+  title,
+  icon: Icon,
+  action,
+}: {
+  title: string;
+  icon?: LucideIcon;
+  action?: React.ReactNode;
+}) {
+  return (
+    <div className="section-head">
+      <div className="section-head-copy">
+        {Icon ? (
+          <span className="section-icon-shell">
+            <Icon size={16} />
+          </span>
+        ) : null}
+        <h3>{title}</h3>
+      </div>
+      {action ? <div>{action}</div> : null}
+    </div>
+  );
+}
+
+function ProgressBar({
+  value,
+  max = 100,
+  tone = "indigo",
+  label,
+}: {
+  value: number;
+  max?: number;
+  tone?: "indigo" | "emerald" | "amber" | "rose" | "zinc";
+  label?: string;
+}) {
+  const width = `${Math.max(0, Math.min(100, (value / max) * 100))}%`;
+  return (
+    <div className="mini-progress-wrap">
+      {label ? (
+        <div className="mini-progress-head">
+          <span>{label}</span>
+          <span>{Math.round((value / max) * 100)}%</span>
+        </div>
+      ) : null}
+      <div className="mini-progress-track">
+        <div className={`mini-progress-fill tone-${tone}`} style={{ width }} />
+      </div>
+    </div>
+  );
+}
+
+function SegmentedControl({
+  options,
+  selected,
+  onChange,
+}: {
+  options: string[];
+  selected: string;
+  onChange: (next: string) => void;
+}) {
+  return (
+    <div className="segmented-control">
+      {options.map((option) => (
+        <button
+          key={option}
+          onClick={() => onChange(option)}
+          className={`segment-button${selected === option ? " segment-button-active" : ""}`}
+          type="button"
+        >
+          {option}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function ConnectionDashboard() {
   const [activeTab, setActiveTab] = useState<TabId>("overview");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [status, setStatus] = useState<ObserverStatus | null>(null);
   const [viewState, setViewState] = useState<ViewState>("idle");
   const [memory, setMemory] = useState<MemoryCurrent | null>(null);
@@ -295,7 +444,7 @@ export function ConnectionDashboard() {
   const [chatThreadTitle, setChatThreadTitle] = useState("Conversa principal");
   const [chatDraft, setChatDraft] = useState("");
   const [filters, setFilters] = useState<MemoryFilters>({
-    targetMessageCount: 140,
+    targetMessageCount: 200,
     maxLookbackHours: 72,
     detailMode: "balanced",
   });
@@ -334,11 +483,10 @@ export function ConnectionDashboard() {
     if (!status) {
       return "Pronto para iniciar";
     }
-    return status.connected ? "Conectado ao WhatsApp" : formatState(status.state);
+    return status.connected ? "Online" : formatState(status.state);
   }, [status]);
 
   const currentSteps = useMemo(() => getStepsForMode(agentState.mode), [agentState.mode]);
-
   const insightMetrics = useMemo(() => getSignalMetrics(latestSnapshot), [latestSnapshot]);
 
   useEffect(() => {
@@ -468,11 +616,12 @@ export function ConnectionDashboard() {
       error: null,
       completedAt: null,
     });
+
     pushAgentLog(
       "info",
       mode === "analyze"
-        ? "Nova leitura iniciada. O agente vai consolidar mensagens diretas, memória anterior, projetos e chat."
-        : "Refinamento iniciado. O agente vai limpar a memória já salva sem reprocessar tudo do zero.",
+        ? "Nova leitura iniciada. O agente vai combinar mensagens diretas, snapshots, projetos e histórico do chat."
+        : "Refinamento iniciado. O agente vai limpar a memória consolidada e reforçar padrões mais estáveis.",
     );
 
     agentTimerRef.current = window.setInterval(() => {
@@ -588,7 +737,7 @@ export function ConnectionDashboard() {
       if (nextStatus.connected) {
         setPollingEnabled(false);
         setViewState("connected");
-        pushAgentLog("success", "Observador conectado. Mensagens diretas já podem alimentar a memória.");
+        pushAgentLog("success", "Observador conectado. As mensagens diretas já podem alimentar a memória.");
         return;
       }
 
@@ -614,12 +763,12 @@ export function ConnectionDashboard() {
         setMemory(response.current);
         setProjects(response.projects);
         setSnapshots((previous) => [response.snapshot, ...previous.filter((snapshot) => snapshot.id !== response.snapshot.id)].slice(0, 6));
-        finishAgentRunSuccess("analyze", "Leitura concluída. Perfil, sinais do dono e projetos foram atualizados.");
+        finishAgentRunSuccess("analyze", "Leitura concluída. Perfil, sinais e projetos foram atualizados.");
       } else {
         const response = await refineMemory();
         setMemory(response.current);
         setProjects(response.projects);
-        finishAgentRunSuccess("refine", "Refinamento concluído. O perfil consolidado ficou mais limpo.");
+        finishAgentRunSuccess("refine", "Refinamento concluído. A memória consolidada ficou mais precisa.");
       }
 
       await refreshPreview();
@@ -656,172 +805,184 @@ export function ConnectionDashboard() {
     }
   }
 
+  const currentNavTitle = NAV_ITEMS.find((item) => item.id === activeTab)?.label ?? "AuraCore";
+  const previewTone = getPreviewTone(preview?.recommendation_score ?? 0);
+
   return (
-    <main className="workspace-shell">
-      <aside className="workspace-sidebar">
-        <div className="brand-block">
-          <span className="brand-mark">AuraCore</span>
-          <h1>Segundo cérebro pessoal</h1>
-          <p>Menos ruído, mais contexto útil sobre o dono, seus projetos, sua rotina e o ganho de cada nova leitura.</p>
+    <div className="ac-layout-shell">
+      {sidebarOpen ? (
+        <button
+          className="ac-sidebar-overlay"
+          type="button"
+          aria-label="Fechar menu"
+          onClick={() => setSidebarOpen(false)}
+        />
+      ) : null}
+
+      <aside className={`ac-sidebar${sidebarOpen ? " ac-sidebar-open" : ""}`}>
+        <div className="ac-sidebar-brand">
+          <div className="ac-brand-mark">
+            <Brain size={18} />
+          </div>
+          <div>
+            <h1>AuraCore</h1>
+            <p>Segundo Cérebro</p>
+          </div>
         </div>
 
-        <nav className="tab-nav" aria-label="Navegação principal">
-          {TABS.map((tab) => (
-            <button
-              key={tab.id}
-              className={`tab-button${activeTab === tab.id ? " tab-button-active" : ""}`}
-              onClick={() => setActiveTab(tab.id)}
-              type="button"
-            >
-              <span className="tab-kicker">{tab.kicker}</span>
-              <span>{tab.label}</span>
-            </button>
-          ))}
+        <nav className="ac-sidebar-nav" aria-label="Navegação principal">
+          {NAV_ITEMS.map((item) => {
+            const Icon = item.icon;
+            const active = activeTab === item.id;
+            return (
+              <button
+                key={item.id}
+                className={`ac-nav-item${active ? " ac-nav-item-active" : ""}`}
+                onClick={() => {
+                  setActiveTab(item.id);
+                  setSidebarOpen(false);
+                }}
+                type="button"
+              >
+                <Icon size={18} />
+                <span>{item.label}</span>
+              </button>
+            );
+          })}
         </nav>
 
-        <div className="sidebar-status">
-          <div className="sidebar-status-card">
-            <span className="sidebar-label">Observador</span>
-            <strong>{statusLabel}</strong>
+        <div className="ac-sidebar-footer">
+          <div className="ac-quick-status">
+            <span>Observador</span>
+            <div className={`ac-status-badge status-${viewState === "error" ? "error" : "connected"}`}>
+              <span className="status-dot" />
+              {statusLabel}
+            </div>
           </div>
-          <div className="sidebar-status-card">
-            <span className="sidebar-label">Score da próxima leitura</span>
-            <strong>{preview ? `${preview.recommendation_score}/100` : "Carregando"}</strong>
+          <div className="ac-quick-status">
+            <span>Mensagens retidas</span>
+            <strong>{preview ? `${preview.retained_message_count}/${preview.retention_limit}` : "..."}</strong>
           </div>
-          <div className="sidebar-status-card">
-            <span className="sidebar-label">Projetos ativos</span>
-            <strong>{projects.length}</strong>
-          </div>
-          <div className="sidebar-status-card">
-            <span className="sidebar-label">Última memória</span>
-            <strong>{memory?.last_analyzed_at ? formatShortDateTime(memory.last_analyzed_at) : "Sem leitura"}</strong>
+          <div className="ac-quick-status">
+            <span>Tokens úteis</span>
+            <strong>{preview ? formatTokenCount(preview.estimated_total_tokens) : "..."}</strong>
           </div>
         </div>
       </aside>
 
-      <section className="workspace-main">
-        <header className="topbar">
-          <div>
-            <span className="topbar-kicker">Painel principal</span>
-            <h2>{getTabTitle(activeTab)}</h2>
-          </div>
-          <div className="topbar-actions">
-            <button className="ghost-button" onClick={() => void hydrateDashboard("manual")} disabled={isRefreshing} type="button">
-              {isRefreshing ? "Atualizando..." : "Atualizar painel"}
+      <main className="ac-main-shell">
+        <header className="ac-topbar">
+          <div className="ac-topbar-left">
+            <button
+              className="ac-icon-button ac-mobile-menu"
+              onClick={() => setSidebarOpen(true)}
+              type="button"
+              aria-label="Abrir menu"
+            >
+              <Menu size={18} />
             </button>
-            <button className="primary-button" onClick={() => void runMemoryJob("analyze")} disabled={agentState.running} type="button">
-              {agentState.running && agentState.mode === "analyze" ? "Lendo..." : "Nova leitura"}
+            <div>
+              <span className="ac-topbar-kicker">Painel principal</span>
+              <h2>{currentNavTitle}</h2>
+            </div>
+          </div>
+
+          <div className="ac-topbar-actions">
+            <button className="ac-icon-button" onClick={() => void hydrateDashboard("manual")} disabled={isRefreshing} type="button">
+              <RefreshCw size={16} className={isRefreshing ? "spin" : ""} />
+            </button>
+            <button className="ac-primary-button" onClick={() => void runMemoryJob("analyze")} disabled={agentState.running} type="button">
+              <Play size={15} />
+              {agentState.running && agentState.mode === "analyze" ? "Lendo..." : "Nova Leitura"}
             </button>
           </div>
         </header>
 
-        {isHydrating ? (
-          <section className="stage-card">
-            <div className="empty-state">
-              <strong>Carregando o AuraCore</strong>
+        <div className="ac-main-scroll">
+          {isHydrating ? (
+            <Card className="ac-loading-card">
+              <SectionTitle title="Carregando AuraCore" icon={RefreshCw} />
               <p>Buscando status do observador, perfil atual, snapshots, projetos e histórico do chat.</p>
-            </div>
-          </section>
-        ) : (
-          <>
-            {activeTab === "overview" ? (
-              <OverviewTab
-                memory={memory}
-                latestSnapshot={latestSnapshot}
-                projects={projects}
-                preview={preview}
-                status={status}
-                statusLabel={statusLabel}
-                connectionError={connectionError}
-                memoryError={memoryError}
-                previewError={previewError}
-                insightMetrics={insightMetrics}
-                onGoToObserver={() => setActiveTab("observer")}
-                onGoToMemory={() => setActiveTab("memory")}
-                onGoToChat={() => setActiveTab("chat")}
-              />
-            ) : null}
+            </Card>
+          ) : (
+            <>
+              {activeTab === "overview" ? (
+                <OverviewTab
+                  memory={memory}
+                  latestSnapshot={latestSnapshot}
+                  projects={projects}
+                  preview={preview}
+                  previewTone={previewTone}
+                  status={status}
+                  connectionError={connectionError}
+                  memoryError={memoryError}
+                  previewError={previewError}
+                  insightMetrics={insightMetrics}
+                  onGoToObserver={() => setActiveTab("observer")}
+                  onGoToMemory={() => setActiveTab("memory")}
+                  onGoToChat={() => setActiveTab("chat")}
+                />
+              ) : null}
 
-            {activeTab === "observer" ? (
-              <ObserverTab
-                status={status}
-                statusLabel={statusLabel}
-                viewState={viewState}
-                isSubmitting={isSubmitting}
-                isResetting={isResetting}
-                connectionError={connectionError}
-                onConnect={() => void startConnection()}
-                onReset={() => void resetConnection()}
-              />
-            ) : null}
+              {activeTab === "observer" ? (
+                <ObserverTab
+                  status={status}
+                  statusLabel={statusLabel}
+                  viewState={viewState}
+                  isSubmitting={isSubmitting}
+                  isResetting={isResetting}
+                  connectionError={connectionError}
+                  onConnect={() => void startConnection()}
+                  onReset={() => void resetConnection()}
+                />
+              ) : null}
 
-            {activeTab === "memory" ? (
-              <MemoryTab
-                memory={memory}
-                latestSnapshot={latestSnapshot}
-                preview={preview}
-                previewError={previewError}
-                previewLoading={isPreviewLoading}
-                memoryError={memoryError}
-                agentState={agentState}
-                filters={filters}
-                onTargetChange={(targetMessageCount) => setFilters((previous) => ({ ...previous, targetMessageCount }))}
-                onLookbackChange={(maxLookbackHours) => setFilters((previous) => ({ ...previous, maxLookbackHours }))}
-                onDetailChange={(detailMode) => setFilters((previous) => ({ ...previous, detailMode }))}
-                onAnalyze={() => void runMemoryJob("analyze")}
-                onRefine={() => void runMemoryJob("refine")}
-              />
-            ) : null}
+              {activeTab === "memory" ? (
+                <MemoryTab
+                  memory={memory}
+                  latestSnapshot={latestSnapshot}
+                  preview={preview}
+                  previewError={previewError}
+                  previewLoading={isPreviewLoading}
+                  memoryError={memoryError}
+                  agentState={agentState}
+                  filters={filters}
+                  onTargetChange={(targetMessageCount) => setFilters((previous) => ({ ...previous, targetMessageCount }))}
+                  onLookbackChange={(maxLookbackHours) => setFilters((previous) => ({ ...previous, maxLookbackHours }))}
+                  onDetailChange={(detailMode) => setFilters((previous) => ({ ...previous, detailMode }))}
+                  onAnalyze={() => void runMemoryJob("analyze")}
+                  onRefine={() => void runMemoryJob("refine")}
+                />
+              ) : null}
 
-            {activeTab === "projects" ? (
-              <ProjectsTab
-                projects={projects}
-                latestSnapshot={latestSnapshot}
-              />
-            ) : null}
+              {activeTab === "projects" ? <ProjectsTab projects={projects} /> : null}
 
-            {activeTab === "chat" ? (
-              <ChatTab
-                chatThreadTitle={chatThreadTitle}
-                chatMessages={chatMessages}
-                chatDraft={chatDraft}
-                chatError={chatError}
-                isSendingChat={isSendingChat}
-                chatScrollRef={chatScrollRef}
-                onChatDraftChange={setChatDraft}
-                onSubmit={() => void submitChatMessage()}
-              />
-            ) : null}
+              {activeTab === "chat" ? (
+                <ChatTab
+                  chatThreadTitle={chatThreadTitle}
+                  chatMessages={chatMessages}
+                  chatDraft={chatDraft}
+                  chatError={chatError}
+                  isSendingChat={isSendingChat}
+                  chatScrollRef={chatScrollRef}
+                  onChatDraftChange={setChatDraft}
+                  onSubmit={() => void submitChatMessage()}
+                />
+              ) : null}
 
-            {activeTab === "activity" ? (
-              <ActivityTab
-                agentState={agentState}
-                steps={currentSteps}
-                logs={agentLogs}
-              />
-            ) : null}
-          </>
-        )}
-      </section>
-    </main>
+              {activeTab === "activity" ? (
+                <ActivityTab
+                  agentState={agentState}
+                  steps={currentSteps}
+                  logs={agentLogs}
+                />
+              ) : null}
+            </>
+          )}
+        </div>
+      </main>
+    </div>
   );
-}
-
-function getTabTitle(tab: TabId): string {
-  switch (tab) {
-    case "overview":
-      return "Visão geral do segundo cérebro";
-    case "observer":
-      return "Conexão do observador do WhatsApp";
-    case "memory":
-      return "Planejamento e treinamento da memória";
-    case "projects":
-      return "Projetos, entregas e público alvo";
-    case "chat":
-      return "Chat personalizado com contexto do dono";
-    case "activity":
-      return "Atividade do agente de memória";
-  }
 }
 
 function OverviewTab({
@@ -829,8 +990,8 @@ function OverviewTab({
   latestSnapshot,
   projects,
   preview,
+  previewTone,
   status,
-  statusLabel,
   connectionError,
   memoryError,
   previewError,
@@ -843,8 +1004,8 @@ function OverviewTab({
   latestSnapshot: MemorySnapshot | null;
   projects: ProjectMemory[];
   preview: MemoryAnalysisPreview | null;
+  previewTone: "emerald" | "amber" | "indigo" | "rose";
   status: ObserverStatus | null;
-  statusLabel: string;
   connectionError: string | null;
   memoryError: string | null;
   previewError: string | null;
@@ -854,108 +1015,147 @@ function OverviewTab({
   onGoToChat: () => void;
 }) {
   return (
-    <div className="content-grid">
-      <section className="stage-card stage-card-hero">
-        <span className="section-kicker">Perfil vivo</span>
-        <h3>O painel agora mostra não só o que a IA sabe, mas também se vale a pena aprender mais agora.</h3>
-        <p>
-          O observador alimenta o banco com contatos diretos, o planejador estima custo e ganho da próxima leitura
-          e o perfil consolidado foca em comportamento, rotina e projetos do dono.
-        </p>
+    <div className="page-stack">
+      <Card className="hero-panel">
+        <div className="hero-copy">
+          <div className="hero-kicker">
+            <Brain size={14} />
+            AuraCore Ativo
+          </div>
+          <h3>Seu cérebro expandido está monitorando sinais, extraindo contexto e reorganizando prioridades em tempo real.</h3>
+          <p>
+            O observador captura apenas contatos diretos, a memória consolida padrões do dono e o planejador mostra se
+            uma nova leitura realmente compensa antes de gastar tokens.
+          </p>
+        </div>
         <div className="hero-actions">
-          <button className="primary-button" onClick={onGoToMemory} type="button">
-            Abrir planejador
+          <button className="ac-secondary-button" onClick={onGoToObserver} type="button">
+            <Eye size={15} />
+            Ver Observador
           </button>
-          <button className="ghost-button" onClick={onGoToObserver} type="button">
-            Ver conexão
+          <button className="ac-secondary-button" onClick={onGoToMemory} type="button">
+            <Database size={15} />
+            Planejar Leitura
           </button>
-          <button className="ghost-button" onClick={onGoToChat} type="button">
-            Conversar com a IA
+          <button className="ac-primary-button" onClick={onGoToChat} type="button">
+            <MessageSquare size={15} />
+            Falar com IA
           </button>
         </div>
-      </section>
+      </Card>
 
-      <section className="stats-grid">
-        <StatCard label="Estado do observador" value={statusLabel} />
-        <StatCard label="Número conectado" value={status?.owner_number ?? "Aguardando leitura"} />
-        <StatCard label="Score da leitura" value={preview ? `${preview.recommendation_score}/100` : "Sem preview"} />
-        <StatCard
-          label="Última atualização"
-          value={memory?.last_analyzed_at ? formatDateTime(memory.last_analyzed_at) : "Ainda sem leitura"}
+      <div className="stats-grid modern-stats-grid">
+        <ModernStatCard
+          label="Observador"
+          value={status?.connected ? "Online" : "Aguardando"}
+          meta={status?.connected ? "Operacional" : "Sem sessão ativa"}
+          icon={Eye}
+          tone="emerald"
         />
-      </section>
+        <ModernStatCard
+          label="Conexão ativa"
+          value={status?.owner_number ?? "Sem número"}
+          meta="Dispositivo principal"
+          icon={Smartphone}
+        />
+        <ModernStatCard
+          label="Próxima leitura"
+          value={preview ? `${preview.recommendation_score}%` : "--"}
+          meta={preview?.recommendation_label ?? "Sem cálculo"}
+          icon={Zap}
+          tone={previewTone}
+        />
+        <ModernStatCard
+          label="Mensagens salvas"
+          value={preview ? String(preview.retained_message_count) : "--"}
+          meta={preview ? `de ${preview.retention_limit} retidas` : "Aguardando preview"}
+          icon={Database}
+          tone="indigo"
+        />
+      </div>
 
-      <section className="stage-card">
-        <div className="card-head">
-          <span className="section-kicker">Resumo atual</span>
-          <span className="meta-text">
-            {memory?.last_analyzed_at ? `Atualizado em ${formatDateTime(memory.last_analyzed_at)}` : "Sem resumo consolidado"}
-          </span>
-        </div>
-        <p className="summary-copy">
-          {memory?.life_summary?.trim()
-            ? memory.life_summary
-            : "Ainda não existe um perfil consolidado. Conecte o observador, deixe o histórico chegar e rode a primeira leitura."}
-        </p>
-      </section>
+      <div className="overview-grid">
+        <div className="overview-main-stack">
+          <Card>
+            <SectionTitle title="Resumo do Dono (Atual)" icon={Fingerprint} />
+            <p className="lead-copy">
+              {memory?.life_summary?.trim()
+                ? memory.life_summary
+                : "Ainda não existe um perfil consolidado. Conecte o observador, deixe sinais suficientes chegarem e execute a primeira leitura."}
+            </p>
+          </Card>
 
-      <section className="stage-card">
-        <div className="card-head">
-          <span className="section-kicker">Leitura recomendada</span>
-          <span className="meta-text">{preview?.recommendation_label ?? "Sem cálculo ainda"}</span>
-        </div>
-        <div className="recommendation-gauge">
-          <div
-            className={`recommendation-gauge-fill recommendation-gauge-${getPreviewTone(preview?.recommendation_score ?? 0)}`}
-            style={{ width: `${preview?.recommendation_score ?? 0}%` }}
-          />
-        </div>
-        <div className="recommendation-copy">
-          <strong>{preview ? `${preview.recommendation_score}/100` : "Sem score"}</strong>
-          <p>{preview?.recommendation_summary ?? "Escolha uma configuração na aba Memória para calcular o ganho da próxima leitura."}</p>
-        </div>
-      </section>
+          <Card>
+            <SectionTitle title="Mapeamento Estrutural" icon={Brain} />
+            <div className="dual-column-grid">
+              <div className="signal-cluster">
+                <h4>Áreas Fortes</h4>
+                <SignalBlock
+                  title="Aprendizados Recentes"
+                  lines={latestSnapshot?.key_learnings ?? []}
+                  emptyLabel="Sem aprendizados recentes consolidados."
+                />
+                <SignalBlock
+                  title="Rotina Detectada"
+                  lines={latestSnapshot?.routine_signals ?? []}
+                  emptyLabel="Sem sinais fortes de rotina ainda."
+                />
+                <SignalBlock
+                  title="Preferências Operacionais"
+                  lines={latestSnapshot?.preferences ?? []}
+                  emptyLabel="Sem preferências consolidadas ainda."
+                />
+              </div>
 
-      <section className="stage-card stage-card-span">
-        <div className="card-head">
-          <span className="section-kicker">Sinais recentes sobre o dono</span>
-          <span className="meta-text">
-            {latestSnapshot ? `Baseado na leitura de ${formatDateTime(latestSnapshot.created_at)}` : "Sem snapshot ainda"}
-          </span>
+              <div className="signal-cluster">
+                <h4 className="amber">Pontos Frágeis</h4>
+                <SignalBlock
+                  title="Lacunas Atuais"
+                  lines={latestSnapshot?.open_questions ?? []}
+                  emptyLabel="Sem lacunas críticas no momento."
+                  subtle
+                />
+                <SignalBlock
+                  title="Projetos em Contexto"
+                  lines={projects.slice(0, 3).map((project) => `${project.project_name}: ${project.status || "sem status claro"}`)}
+                  emptyLabel="Nenhum projeto relevante foi consolidado ainda."
+                  subtle
+                />
+              </div>
+            </div>
+          </Card>
         </div>
-        <div className="insight-bars">
-          {insightMetrics.map((metric) => (
-            <InsightBar key={metric.label} metric={metric} maxValue={Math.max(...insightMetrics.map((item) => item.value), 1)} />
-          ))}
-        </div>
-      </section>
 
-      <section className="stage-card">
-        <div className="card-head">
-          <span className="section-kicker">Áreas mais fortes</span>
-          <span className="meta-text">{projects.length} projetos em contexto</span>
-        </div>
-        {latestSnapshot ? (
-          <div className="signal-columns">
-            <SignalColumn title="Aprendizados" items={latestSnapshot.key_learnings} emptyLabel="Sem aprendizados consolidados ainda." />
-            <SignalColumn title="Rotina" items={latestSnapshot.routine_signals} emptyLabel="Sem sinais de rotina ainda." />
-            <SignalColumn title="Preferências" items={latestSnapshot.preferences} emptyLabel="Sem preferências fortes ainda." />
-          </div>
-        ) : (
-          <div className="empty-state empty-state-soft">
-            <strong>Sem leitura recente</strong>
-            <p>Assim que o DeepSeek consolidar uma nova janela, esse bloco passa a destacar sinais mais úteis sobre o dono.</p>
-          </div>
-        )}
-      </section>
+        <div className="overview-side-stack">
+          <Card className="score-card-modern">
+            <SectionTitle title="Leitura Recomendada" icon={BarChart3} />
+            <div className="score-display-row">
+              <span className="score-big">{preview?.recommendation_score ?? 0}</span>
+              <span className="score-small">/ 100</span>
+            </div>
+            <ProgressBar value={preview?.recommendation_score ?? 0} tone={previewTone} />
+            <p className="support-copy">
+              {preview?.recommendation_summary ??
+                "A barra sobe quando o banco acumulou contexto novo suficiente para justificar uma nova leitura do DeepSeek."}
+            </p>
+          </Card>
 
-      <section className="stage-card">
-        <div className="card-head">
-          <span className="section-kicker">Pontos ainda frágeis</span>
-          <span className="meta-text">Lacunas que orientam a próxima leitura</span>
+          <Card>
+            <SectionTitle title="Sinais Recentes" icon={Activity} />
+            <div className="progress-bar-stack">
+              {insightMetrics.map((metric) => (
+                <ProgressBar
+                  key={metric.label}
+                  value={metric.value}
+                  max={Math.max(...insightMetrics.map((item) => item.value), 1)}
+                  tone={metric.color === "zinc" ? "amber" : metric.color}
+                  label={metric.label}
+                />
+              ))}
+            </div>
+          </Card>
         </div>
-        <SignalColumn title="Lacunas abertas" items={latestSnapshot?.open_questions ?? []} emptyLabel="Nenhuma lacuna relevante por enquanto." />
-      </section>
+      </div>
 
       {connectionError ? <InlineError title="Falha na conexão" message={connectionError} /> : null}
       {memoryError ? <InlineError title="Falha na memória" message={memoryError} /> : null}
@@ -984,72 +1184,67 @@ function ObserverTab({
   onReset: () => void;
 }) {
   return (
-    <div className="content-grid observer-grid">
-      <section className="stage-card observer-card">
-        <div className="card-head">
-          <span className="section-kicker">QR Code</span>
-          <span className={`status-pill status-${viewState}`}>{statusLabel}</span>
-        </div>
+    <div className="page-stack observer-page">
+      <div className="observer-grid-modern">
+        <Card className="observer-qr-card">
+          <SectionTitle title="Conexão WhatsApp" icon={Smartphone} />
+          <p className="support-copy">Escaneie o QR para conectar o observador. A captura é restrita a contatos diretos úteis.</p>
 
-        {status?.qr_code ? (
-          <div className="qr-frame">
-            <img className="qr-image" src={status.qr_code} alt="QR Code do WhatsApp observador" />
+          <div className="qr-display-shell">
+            {status?.qr_code ? (
+              <div className="qr-modern-frame">
+                <img className="qr-modern-image" src={status.qr_code} alt="QR Code do WhatsApp observador" />
+              </div>
+            ) : (
+              <div className="qr-modern-empty">
+                <Smartphone size={28} />
+                <strong>QR indisponível</strong>
+                <p>
+                  {status?.connected
+                    ? "A sessão já está conectada. Não é necessário gerar um novo QR."
+                    : "Gere uma nova sessão para exibir o QR do observador."}
+                </p>
+              </div>
+            )}
+            <div className="qr-expiry-tag">
+              <Clock size={12} />
+              {status?.connected ? "Sessão ativa" : status?.qr_expires_in_sec ? `Expira em ${status.qr_expires_in_sec}s` : "Sem QR ativo"}
+            </div>
           </div>
-        ) : (
-          <div className="empty-state empty-state-soft">
-            <strong>QR indisponível</strong>
-            <p>
-              {status?.connected
-                ? "A sessão já está conectada. Não é necessário gerar um novo QR."
-                : "Gere uma nova sessão para exibir o QR do observador."}
-            </p>
-          </div>
-        )}
 
-        <div className="hero-actions">
-          <button className="primary-button" onClick={onConnect} disabled={isSubmitting || viewState === "connected"} type="button">
-            {viewState === "connected" ? "Observador conectado" : isSubmitting ? "Gerando QR..." : "Conectar observador"}
-          </button>
-          <button className="ghost-button" onClick={onReset} disabled={isResetting} type="button">
-            {isResetting ? "Resetando..." : "Resetar sessão"}
-          </button>
-        </div>
+          <div className="observer-actions">
+            <button className="ac-primary-button" onClick={onConnect} disabled={isSubmitting || viewState === "connected"} type="button">
+              <RefreshCw size={15} className={isSubmitting ? "spin" : ""} />
+              {viewState === "connected" ? "Observador conectado" : isSubmitting ? "Gerando QR..." : "Gerar Novo QR"}
+            </button>
+          </div>
+        </Card>
 
-        {connectionError ? <InlineError title="Falha na conexão" message={connectionError} /> : null}
-      </section>
+        <Card className="observer-status-card">
+          <SectionTitle title="Status da Instância" icon={Server} />
 
-      <section className="stage-card">
-        <div className="card-head">
-          <span className="section-kicker">Status da instância</span>
-          <span className="meta-text">{status?.instance_name ?? "observer"}</span>
-        </div>
-        <dl className="detail-list">
-          <div>
-            <dt>Número dono</dt>
-            <dd>{status?.owner_number ?? "Aguardando leitura"}</dd>
+          <div className="status-line-list">
+            <StatusLine label="Gateway" value={status?.gateway_ready ? "Baileys online" : "Indisponível"} tone="emerald" />
+            <StatusLine label="Sessão" value={status?.owner_number ?? "Aguardando leitura"} tone="indigo" />
+            <StatusLine label="Ingestão" value={status?.ingestion_ready ? "Pronta" : "Pendente"} tone="amber" />
+            <StatusLine label="Última sincronização" value={formatDateTime(status?.last_seen_at)} tone="zinc" />
           </div>
-          <div>
-            <dt>Gateway</dt>
-            <dd>{status?.gateway_ready ? "Online" : "Indisponível"}</dd>
+
+          <div className="danger-box">
+            <h4>
+              <AlertCircle size={16} />
+              Zona de perigo
+            </h4>
+            <p>Resetar a sessão apaga as chaves atuais e força uma nova leitura do QR Code.</p>
+            <button className="ac-danger-button" onClick={onReset} disabled={isResetting} type="button">
+              <XCircle size={15} />
+              {isResetting ? "Resetando..." : "Resetar Sessão Completa"}
+            </button>
           </div>
-          <div>
-            <dt>Ingestão</dt>
-            <dd>{status?.ingestion_ready ? "Pronta" : "Pendente"}</dd>
-          </div>
-          <div>
-            <dt>Última atualização</dt>
-            <dd>{formatDateTime(status?.last_seen_at)}</dd>
-          </div>
-          <div>
-            <dt>Expira em</dt>
-            <dd>{status?.connected ? "Sessão ativa" : status?.qr_expires_in_sec ? `${status.qr_expires_in_sec}s` : "Sem QR ativo"}</dd>
-          </div>
-          <div>
-            <dt>Coleta</dt>
-            <dd>Somente contatos diretos</dd>
-          </div>
-        </dl>
-      </section>
+        </Card>
+      </div>
+
+      {connectionError ? <InlineError title={`Falha do observador (${statusLabel})`} message={connectionError} /> : null}
     </div>
   );
 }
@@ -1083,270 +1278,256 @@ function MemoryTab({
   onAnalyze: () => void;
   onRefine: () => void;
 }) {
+  const gaugeSize = 220;
+  const gaugeRadius = 92;
+  const gaugeCircumference = 2 * Math.PI * gaugeRadius;
+  const previewScore = preview?.recommendation_score ?? 0;
+  const dashOffset = gaugeCircumference - (gaugeCircumference * previewScore) / 100;
+  const previewTone = getPreviewTone(previewScore);
+
   return (
-    <div className="content-grid">
-      <section className="stage-card stage-card-span">
-        <div className="card-head">
-          <div>
-            <span className="section-kicker">Planejador de leitura</span>
-            <h3 className="section-title">Escolha o volume, o alcance e a profundidade antes de gastar tokens.</h3>
-          </div>
-          <span className="meta-text">Preview barato, sem mandar o conteúdo bruto para o modelo leve</span>
-        </div>
+    <div className="page-stack">
+      <div className="memory-top-grid">
+        <Card className="memory-planner-card">
+          <SectionTitle
+            title="Configuração da Leitura"
+            icon={Settings}
+            action={<span className="micro-badge">Simulação estratégica</span>}
+          />
 
-        <div className="planner-grid">
-          <div className="planner-block">
-            <span className="planner-label">Mensagens alvo</span>
-            <div className="preset-row">
-              {MESSAGE_TARGET_PRESETS.map((count) => (
-                <button
-                  key={count}
-                  className={`chip-button${filters.targetMessageCount === count ? " chip-button-active" : ""}`}
-                  onClick={() => onTargetChange(count)}
-                  type="button"
-                >
-                  {count}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="planner-block">
-            <span className="planner-label">Alcance máximo</span>
-            <div className="preset-row">
-              {LOOKBACK_PRESETS.map((hours) => (
-                <button
-                  key={hours}
-                  className={`chip-button${filters.maxLookbackHours === hours ? " chip-button-active" : ""}`}
-                  onClick={() => onLookbackChange(hours)}
-                  type="button"
-                >
-                  {formatHoursLabel(hours)}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="planner-block">
-            <span className="planner-label">Profundidade</span>
-            <div className="detail-option-row">
-              {DETAIL_OPTIONS.map((option) => (
-                <button
-                  key={option.value}
-                  className={`detail-option${filters.detailMode === option.value ? " detail-option-active" : ""}`}
-                  onClick={() => onDetailChange(option.value)}
-                  type="button"
-                >
-                  <strong>{option.label}</strong>
-                  <span>{option.description}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        <div className="stats-grid planner-stats-grid">
-          <StatCard label="Disponíveis na janela" value={preview ? String(preview.available_message_count) : "..." } />
-          <StatCard label="Entram na leitura" value={preview ? String(preview.selected_message_count) : "..."} />
-          <StatCard label="Novas desde a última análise" value={preview ? String(preview.new_message_count) : "..."} />
-          <StatCard label="Já substituídas pela retenção" value={preview ? String(preview.replaced_message_count) : "..."} />
-          <StatCard label="Tokens de entrada" value={preview ? formatTokenCount(preview.estimated_input_tokens) : "..."} />
-          <StatCard label="Tokens totais estimados" value={preview ? formatTokenCount(preview.estimated_total_tokens) : "..."} />
-        </div>
-
-        <div className="planner-bottom">
-          <div className="recommendation-panel">
-            <div className="card-head">
-              <span className="section-kicker">Compensa analisar agora?</span>
-              <span className="meta-text">{preview?.recommendation_label ?? "Aguardando cálculo"}</span>
-            </div>
-            <div className="recommendation-gauge recommendation-gauge-large">
-              <div
-                className={`recommendation-gauge-fill recommendation-gauge-${getPreviewTone(preview?.recommendation_score ?? 0)}`}
-                style={{ width: `${preview?.recommendation_score ?? 0}%` }}
+          <div className="memory-controls-stack">
+            <div className="control-block">
+              <div className="control-head">
+                <label>Alvo de Mensagens</label>
+                <span>Amostragem máxima por leitura</span>
+              </div>
+              <SegmentedControl
+                options={MESSAGE_TARGET_PRESETS.map(String)}
+                selected={String(filters.targetMessageCount)}
+                onChange={(value) => onTargetChange(Number(value))}
               />
             </div>
-            <div className="recommendation-copy">
-              <strong>{preview ? `${preview.recommendation_score}/100` : "Sem score"}</strong>
-              <p>
-                {previewLoading
-                  ? "Calculando ganho esperado da próxima leitura..."
-                  : preview?.recommendation_summary ??
-                    "Defina a configuração para ver o ganho estimado da próxima análise."}
-              </p>
-            </div>
-            <div className="retention-strip">
-              <span>{preview ? `${preview.new_message_count} novas no banco` : "..."}</span>
-              <span>{preview ? `${preview.replaced_message_count} já substituídas` : "..."}</span>
-              <span>{preview ? `${preview.retained_message_count}/${preview.retention_limit} retidas agora` : "..."}</span>
-            </div>
-          </div>
 
-          <div className="memory-actions-panel">
-            <button className="primary-button" onClick={onAnalyze} disabled={agentState.running || !preview?.selected_message_count} type="button">
-              {agentState.running && agentState.mode === "analyze" ? "Lendo..." : "Executar leitura"}
-            </button>
-            <button className="ghost-button" onClick={onRefine} disabled={agentState.running} type="button">
-              {agentState.running && agentState.mode === "refine" ? "Refinando..." : "Refinar memória salva"}
-            </button>
-            <div className="action-bar-caption">
-              <div className="recommendation-gauge recommendation-gauge-inline">
-                <div
-                  className={`recommendation-gauge-fill recommendation-gauge-${getPreviewTone(preview?.recommendation_score ?? 0)}`}
-                  style={{ width: `${preview?.recommendation_score ?? 0}%` }}
-                />
+            <div className="control-block">
+              <div className="control-head">
+                <label>Alcance Máximo</label>
+                <span>Janela retrospectiva</span>
               </div>
-              <p>
-                {preview
-                  ? `${preview.recommendation_score}/100 de ganho esperado com esta configuração.`
-                  : "O preview mostra o custo estimado e o quanto a IA deve aprender com a próxima leitura."}
-              </p>
+              <SegmentedControl
+                options={LOOKBACK_PRESETS.map(formatHoursLabel)}
+                selected={formatHoursLabel(filters.maxLookbackHours)}
+                onChange={(value) => {
+                  const resolved = LOOKBACK_PRESETS.find((hours) => formatHoursLabel(hours) === value) ?? 72;
+                  onLookbackChange(resolved);
+                }}
+              />
+            </div>
+
+            <div className="control-block">
+              <div className="control-head">
+                <label>Profundidade da Análise</label>
+                <span>Nível de esforço do DeepSeek</span>
+              </div>
+              <div className="detail-card-grid">
+                {DETAIL_OPTIONS.map((option) => {
+                  const active = option.value === filters.detailMode;
+                  return (
+                    <button
+                      key={option.value}
+                      className={`detail-card${active ? " detail-card-active" : ""}`}
+                      onClick={() => onDetailChange(option.value)}
+                      type="button"
+                    >
+                      <div className="detail-card-head">
+                        <strong>{option.label}</strong>
+                        <span>{option.badge}</span>
+                      </div>
+                      <p>{option.description}</p>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
-        </div>
 
-        {previewError ? <InlineError title="Falha no preview" message={previewError} /> : null}
-      </section>
+          <div className="memory-metrics-grid">
+            <MetricTile label="Disponíveis (janela)" value={preview ? String(preview.available_message_count) : "..."} />
+            <MetricTile label="Entram na leitura" value={preview ? String(preview.selected_message_count) : "..."} accent />
+            <MetricTile label="Novas desde a última" value={preview ? String(preview.new_message_count) : "..."} tone="emerald" />
+            <MetricTile label="Substituídas pela retenção" value={preview ? String(preview.replaced_message_count) : "..."} tone="amber" />
+            <MetricTile label="Tokens de entrada" value={preview ? `~${formatTokenCount(preview.estimated_input_tokens)}` : "..."} />
+            <MetricTile label="Tokens totais previstos" value={preview ? `~${formatTokenCount(preview.estimated_total_tokens)}` : "..."} />
+            <MetricTile
+              label="Mensagens salvas no Supabase"
+              value={preview ? `${preview.retained_message_count}/${preview.retention_limit}` : "..."}
+              tone="indigo"
+            />
+          </div>
+        </Card>
 
-      <section className="stage-card">
-        <div className="card-head">
-          <span className="section-kicker">Perfil consolidado</span>
-          <span className="meta-text">
-            {memory?.last_analyzed_at ? `Atualizado em ${formatDateTime(memory.last_analyzed_at)}` : "Sem atualização ainda"}
-          </span>
-        </div>
-        <p className="summary-copy">
-          {memory?.life_summary?.trim()
-            ? memory.life_summary
-            : "Nenhum resumo consolidado ainda. A primeira leitura vai transformar conversas diretas em um perfil mais coerente do dono."}
-        </p>
-        {memoryError ? <InlineError title="Falha na memória" message={memoryError} /> : null}
-      </section>
+        <Card className="memory-score-card">
+          <SectionTitle title="Compensa analisar agora?" icon={Zap} />
 
-      <section className="stage-card">
-        <div className="card-head">
-          <span className="section-kicker">Última leitura</span>
-          <span className="meta-text">{latestSnapshot ? formatDateTime(latestSnapshot.created_at) : "Sem snapshot"}</span>
-        </div>
-        {latestSnapshot ? (
-          <>
-            <p className="summary-copy">{latestSnapshot.window_summary}</p>
-            <div className="signal-columns">
-              <SignalColumn title="Aprendizados" items={latestSnapshot.key_learnings} emptyLabel="Sem aprendizados." />
-              <SignalColumn title="Rotina" items={latestSnapshot.routine_signals} emptyLabel="Sem sinais de rotina." />
-              <SignalColumn title="Preferências" items={latestSnapshot.preferences} emptyLabel="Sem preferências." />
+          <div className="score-gauge-wrap">
+            <svg className="score-gauge" viewBox="0 0 220 220">
+              <circle className="score-gauge-base" cx="110" cy="110" r={gaugeRadius} />
+              <circle
+                className={`score-gauge-fill score-gauge-${previewTone}`}
+                cx="110"
+                cy="110"
+                r={gaugeRadius}
+                strokeDasharray={gaugeCircumference}
+                strokeDashoffset={dashOffset}
+              />
+            </svg>
+            <div className="score-gauge-center">
+              <span>{previewScore}</span>
+              <small>score</small>
             </div>
-          </>
+          </div>
+
+          <p className="score-summary">
+            {previewLoading
+              ? "Calculando custo, volume novo e ganho esperado..."
+              : preview?.recommendation_summary ??
+                "O AuraCore mede quantas mensagens novas chegaram, quantas já foram substituídas e quanto contexto a próxima leitura realmente deve agregar."}
+          </p>
+
+          <div className="retention-banner">
+            <div>
+              <span>Novas</span>
+              <strong>{preview ? preview.new_message_count : "--"}</strong>
+            </div>
+            <div>
+              <span>Perdidas pela retenção</span>
+              <strong>{preview ? preview.replaced_message_count : "--"}</strong>
+            </div>
+          </div>
+
+          <div className="memory-action-stack">
+            <button className="ac-success-button" onClick={onAnalyze} disabled={agentState.running || !preview?.selected_message_count} type="button">
+              <Play size={15} />
+              {agentState.running && agentState.mode === "analyze" ? "Executando..." : "Executar Leitura"}
+            </button>
+            <button className="ac-secondary-button" onClick={onRefine} disabled={agentState.running} type="button">
+              <Sparkles size={15} />
+              {agentState.running && agentState.mode === "refine" ? "Refinando..." : "Refinar Memória Salva"}
+            </button>
+          </div>
+        </Card>
+      </div>
+
+      <Card>
+        <SectionTitle title="Snapshot Consolidado Atual" icon={FileText} />
+        {latestSnapshot ? (
+          <div className="snapshot-console">
+            <pre>{`{
+  "timestamp": "${latestSnapshot.created_at}",
+  "window_summary": ${JSON.stringify(latestSnapshot.window_summary)},
+  "source_message_count": ${latestSnapshot.source_message_count},
+  "key_learnings": ${JSON.stringify(latestSnapshot.key_learnings.slice(0, 4), null, 2)},
+  "routine_signals": ${JSON.stringify(latestSnapshot.routine_signals.slice(0, 4), null, 2)},
+  "preferences": ${JSON.stringify(latestSnapshot.preferences.slice(0, 4), null, 2)}
+}`}</pre>
+          </div>
         ) : (
-          <div className="empty-state empty-state-soft">
-            <strong>Sem snapshot recente</strong>
-            <p>Depois da próxima leitura, esta área mostra o resumo da janela mais recente e os sinais extraídos.</p>
+          <div className="empty-hint">
+            <Database size={18} />
+            <p>Sem snapshot ainda. A primeira leitura cria a base consolidada do dono.</p>
           </div>
         )}
-      </section>
+      </Card>
+
+      <Card>
+        <SectionTitle title="Memória Atual do Dono" icon={Fingerprint} />
+        <p className="lead-copy">
+          {memory?.life_summary?.trim()
+            ? memory.life_summary
+            : "Nenhum resumo consolidado ainda. Assim que a primeira leitura rodar, este bloco vira a visão mais útil do dono para o chat e para futuros refinamentos."}
+        </p>
+      </Card>
+
+      {previewError ? <InlineError title="Falha no preview" message={previewError} /> : null}
+      {memoryError ? <InlineError title="Falha na memória" message={memoryError} /> : null}
     </div>
   );
 }
 
-function ProjectsTab({
-  projects,
-  latestSnapshot,
-}: {
-  projects: ProjectMemory[];
-  latestSnapshot: MemorySnapshot | null;
-}) {
+function ProjectsTab({ projects }: { projects: ProjectMemory[] }) {
   return (
-    <div className="content-grid">
-      <section className="stage-card stage-card-span">
-        <div className="card-head">
-          <div>
-            <span className="section-kicker">Projetos e frentes</span>
-            <h3 className="section-title">Agora cada projeto destaca o que o dono está construindo e para quem.</h3>
-          </div>
-          <span className="meta-text">{projects.length} itens em contexto</span>
-        </div>
-
-        {projects.length === 0 ? (
-          <div className="empty-state">
-            <strong>Nenhum projeto consolidado ainda</strong>
-            <p>Assim que a memória ficar mais rica, o DeepSeek passa a destacar frentes recorrentes, entregas e público alvo.</p>
-          </div>
-        ) : (
-          <>
-            <div className="project-focus-grid">
-              {projects.slice(0, 4).map((project) => (
-                <article key={`${project.id}-focus`} className="focus-card">
-                  <span>{project.project_name}</span>
-                  <strong>{getProjectStrength(project)}%</strong>
-                  <div className="focus-bar">
-                    <div className="focus-bar-fill" style={{ width: `${getProjectStrength(project)}%` }} />
-                  </div>
-                  <p>{project.what_is_being_built || project.summary}</p>
-                </article>
-              ))}
+    <div className="page-stack">
+      <div className="project-focus-row">
+        {projects.slice(0, 2).map((project, index) => (
+          <Card key={`${project.id}-focus`} className={`project-focus-card${index === 0 ? " project-focus-card-primary" : ""}`}>
+            <div className="project-focus-head">
+              <div>
+                <span>{index === 0 ? "Foco Principal" : "Foco Secundário"}</span>
+                <h3>{project.project_name}</h3>
+              </div>
+              <div className={`micro-status micro-status-${index === 0 ? "emerald" : "amber"}`}>{project.status || "Em progresso"}</div>
             </div>
+            <ProgressBar value={getProjectStrength(project)} tone={index === 0 ? "indigo" : "zinc"} label="Maturidade da frente" />
+            <p>{project.summary}</p>
+          </Card>
+        ))}
+      </div>
 
-            <div className="project-grid">
-              {projects.map((project) => (
-                <article key={project.id} className="project-card project-card-rich">
-                  <div className="project-card-head">
-                    <strong>{project.project_name}</strong>
-                    <span>{project.last_seen_at ? formatShortDateTime(project.last_seen_at) : "Sem data"}</span>
+      <SectionTitle title="Mapa Detalhado de Projetos" icon={FolderGit2} />
+
+      {projects.length === 0 ? (
+        <Card>
+          <div className="empty-hint">
+            <FolderGit2 size={18} />
+            <p>Nenhum projeto consolidado ainda. Assim que a memória tiver mais sinal, as frentes reais aparecem aqui.</p>
+          </div>
+        </Card>
+      ) : (
+        <div className="project-list-stack">
+          {projects.map((project) => (
+            <Card key={project.id} className="project-list-card">
+              <div className="project-list-grid">
+                <div className="project-left-col">
+                  <div className="project-name-line">
+                    <GitBranch size={16} />
+                    <h3>{project.project_name}</h3>
+                  </div>
+                  <div className="project-seen-row">
+                    <Clock size={12} />
+                    <span>{project.last_seen_at ? `Visto em ${formatShortDateTime(project.last_seen_at)}` : "Sem data recente"}</span>
                   </div>
 
-                  <div className="project-meta-grid">
-                    <ProjectMeta label="O que está sendo desenvolvido" value={project.what_is_being_built || project.summary} />
-                    <ProjectMeta label="Para quem" value={getAudienceLabel(project)} />
-                    <ProjectMeta label="Status" value={project.status || "Sem status consolidado"} />
+                  <div className="project-core-meta">
+                    <ProjectInfoBlock label="O que está sendo desenvolvido" value={project.what_is_being_built || project.summary} />
+                    <ProjectInfoBlock label="Para quem" value={getAudienceLabel(project)} />
+                  </div>
+                </div>
+
+                <div className="project-right-col">
+                  <div>
+                    <h4>Resumo Atualizado</h4>
+                    <p>{project.summary}</p>
                   </div>
 
-                  <p>{project.summary}</p>
-
-                  {project.next_steps.length > 0 ? (
-                    <>
-                      <span className="project-subtitle">Próximos passos</span>
-                      <div className="tag-list">
-                        {project.next_steps.slice(0, 5).map((step, index) => (
-                          <span key={`${project.id}-step-${index}`} className="tag-chip">
-                            {step}
-                          </span>
-                        ))}
-                      </div>
-                    </>
-                  ) : null}
-
-                  {project.evidence.length > 0 ? (
-                    <>
-                      <span className="project-subtitle">Evidências recentes</span>
-                      <div className="tag-list">
-                        {project.evidence.slice(0, 4).map((evidence, index) => (
-                          <span key={`${project.id}-evidence-${index}`} className="tag-chip tag-chip-soft">
-                            {evidence}
-                          </span>
-                        ))}
-                      </div>
-                    </>
-                  ) : null}
-                </article>
-              ))}
-            </div>
-          </>
-        )}
-      </section>
-
-      <section className="stage-card stage-card-span">
-        <div className="card-head">
-          <span className="section-kicker">Pistas recentes da leitura</span>
-          <span className="meta-text">
-            {latestSnapshot ? `Baseado em ${formatDateTime(latestSnapshot.created_at)}` : "Sem snapshot recente"}
-          </span>
+                  <div className="project-bottom-panels">
+                    <MiniPanel
+                      title="Próximos Passos"
+                      tone="amber"
+                      icon={ChevronRight}
+                      content={project.next_steps[0] ?? "Sem próximo passo consolidado."}
+                    />
+                    <MiniPanel
+                      title="Evidência Recente"
+                      tone="emerald"
+                      icon={CheckCircle2}
+                      content={project.evidence[0] ?? "Sem evidência recente consolidada."}
+                    />
+                  </div>
+                </div>
+              </div>
+            </Card>
+          ))}
         </div>
-        <SignalColumn
-          title="Projetos e relações da última leitura"
-          items={latestSnapshot?.people_and_relationships ?? []}
-          emptyLabel="A última leitura ainda não consolidou relações e projetos suficientes."
-        />
-      </section>
+      )}
     </div>
   );
 }
@@ -1371,52 +1552,90 @@ function ChatTab({
   onSubmit: () => void;
 }) {
   return (
-    <div className="content-grid">
-      <section className="stage-card stage-card-span">
-        <div className="card-head">
-          <div>
-            <span className="section-kicker">Chat personalizado</span>
-            <h3 className="section-title">{chatThreadTitle}</h3>
+    <div className="chat-shell-modern">
+      <div className="chat-header-modern">
+        <div className="chat-bot-badge">
+          <div className="chat-bot-avatar">
+            <Bot size={18} />
           </div>
-          <span className="meta-text">O histórico daqui também entra nas próximas leituras da memória</span>
+          <div>
+            <h3>{chatThreadTitle}</h3>
+            <p>
+              <Database size={10} />
+              Contexto de memória ativo
+            </p>
+          </div>
         </div>
+        <div className="chat-header-actions">
+          <button className="ac-icon-button" type="button">
+            <Settings size={16} />
+          </button>
+          <button className="ac-icon-button" type="button">
+            <MoreVertical size={16} />
+          </button>
+        </div>
+      </div>
 
-        {chatError ? <InlineError title="Falha no chat" message={chatError} /> : null}
+      <div ref={chatScrollRef} className="chat-scroll-modern">
+        <div className="chat-date-pill">Hoje</div>
 
-        <div ref={chatScrollRef} className="chat-history-board">
-          {chatMessages.length === 0 ? (
-            <div className="empty-state">
-              <strong>Sem conversa ainda</strong>
-              <p>Envie a primeira mensagem para testar a IA personalizada com base no contexto atual do dono.</p>
-            </div>
-          ) : (
-            chatMessages.map((message) => (
-              <article key={message.id} className={`chat-message${message.role === "assistant" ? " chat-message-assistant" : " chat-message-user"}`}>
-                <div className="chat-message-head">
+        {chatMessages.length === 0 ? (
+          <Card className="chat-empty-card">
+            <SectionTitle title="Sem conversa ainda" icon={Bot} />
+            <p>Use o chat para discutir rotina, projetos, decisões ou pedir ajuda contextual. Esse histórico também melhora as próximas leituras.</p>
+          </Card>
+        ) : (
+          chatMessages.map((message) => (
+            <div
+              key={message.id}
+              className={`chat-row-modern${message.role === "assistant" ? "" : " chat-row-user"}`}
+            >
+              <div className={`chat-avatar-modern${message.role === "assistant" ? "" : " chat-avatar-user"}`}>
+                {message.role === "assistant" ? <Bot size={16} /> : <User size={16} />}
+              </div>
+              <div className="chat-bubble-stack">
+                <div className="chat-bubble-meta">
                   <strong>{message.role === "assistant" ? "AuraCore" : "Você"}</strong>
                   <span>{formatShortDateTime(message.created_at)}</span>
                 </div>
-                <p>{message.content}</p>
-              </article>
-            ))
-          )}
-        </div>
+                <div className={`chat-bubble-modern${message.role === "assistant" ? "" : " chat-bubble-user"}`}>
+                  <p>{message.content}</p>
+                </div>
+              </div>
+            </div>
+          ))
+        )}
 
-        <div className="composer">
-          <label className="input-shell input-shell-textarea">
-            <span>Mensagem para a IA</span>
+        <div className="quick-replies">
+          <button type="button">Resumir minhas pendências de hoje</button>
+          <button type="button">O que você aprendeu sobre meus projetos?</button>
+        </div>
+      </div>
+
+      <div className="chat-composer-modern">
+        {chatError ? <InlineError title="Falha no chat" message={chatError} /> : null}
+        <div className="chat-input-row">
+          <button className="ac-icon-button ac-hide-mobile" type="button">
+            <Paperclip size={16} />
+          </button>
+          <div className="chat-textarea-shell">
             <textarea
-              rows={4}
+              rows={1}
               value={chatDraft}
               onChange={(event) => onChatDraftChange(event.target.value)}
-              placeholder="Ex.: O que você já entendeu sobre minha rotina, meus projetos e meus critérios de decisão?"
+              placeholder="Discutir rotina, atualizar status de projetos ou revisar critérios de decisão..."
             />
-          </label>
-          <button className="primary-button" onClick={onSubmit} disabled={isSendingChat} type="button">
-            {isSendingChat ? "Respondendo..." : "Enviar para a IA"}
+          </div>
+          <button className="ac-primary-button" onClick={onSubmit} disabled={isSendingChat} type="button">
+            <Send size={15} />
+            {isSendingChat ? "Enviando..." : "Enviar"}
           </button>
         </div>
-      </section>
+        <div className="chat-footer-note">
+          <Cpu size={11} />
+          O agente pode usar esse chat para reforçar prioridades, projetos e padrões do dono.
+        </div>
+      </div>
     </div>
   );
 }
@@ -1431,121 +1650,121 @@ function ActivityTab({
   logs: AgentLog[];
 }) {
   return (
-    <div className="content-grid">
-      <section className="stage-card">
-        <div className="card-head">
-          <span className="section-kicker">Andamento do agente</span>
-          <span className="meta-text">
-            {agentState.mode === "refine" ? "Refinamento manual" : agentState.mode === "analyze" ? "Leitura de mensagens" : "Aguardando"}
-          </span>
+    <div className="page-stack narrow-stack">
+      <Card className="activity-hero-card">
+        <div className="activity-hero-meter">
+          <svg viewBox="0 0 120 120">
+            <circle className="activity-ring-base" cx="60" cy="60" r="50" />
+            <circle
+              className="activity-ring-fill"
+              cx="60"
+              cy="60"
+              r="50"
+              strokeDasharray={314}
+              strokeDashoffset={314 - (314 * agentState.progress) / 100}
+            />
+          </svg>
+          <div className="activity-ring-center">{agentState.progress}%</div>
         </div>
 
-        <div className="activity-meter">
-          <strong>{agentState.progress}%</strong>
-          <span>{agentState.status}</span>
+        <div className="activity-hero-copy">
+          <div className="activity-hero-head">
+            <h3>
+              <Terminal size={18} />
+              Agente Trabalhador
+            </h3>
+            <span className={`micro-status micro-status-${agentState.running ? "indigo" : "emerald"}`}>
+              {agentState.running ? "Processando" : "Ocioso"}
+            </span>
+          </div>
+          <p>{agentState.status}</p>
+          <div className="step-pill-row">
+            {steps.map((step) => {
+              const completed = agentState.progress >= step.threshold;
+              const active =
+                agentState.running &&
+                agentState.progress >= step.threshold &&
+                !steps.some((candidate) => candidate.threshold > step.threshold && agentState.progress >= candidate.threshold);
+              return (
+                <span
+                  key={step.label}
+                  className={`step-pill${completed ? " step-pill-done" : ""}${active ? " step-pill-active" : ""}`}
+                >
+                  {completed ? <CheckCircle2 size={12} /> : active ? <RefreshCw size={12} className="spin" /> : <Clock size={12} />}
+                  {step.label}
+                </span>
+              );
+            })}
+          </div>
         </div>
+      </Card>
 
-        <div className="progress-track">
-          <div className={`progress-fill${agentState.running ? " progress-fill-running" : ""}`} style={{ width: `${agentState.progress}%` }} />
+      <div className="terminal-shell">
+        <div className="terminal-header">
+          <span className="terminal-dot terminal-dot-red" />
+          <span className="terminal-dot terminal-dot-yellow" />
+          <span className="terminal-dot terminal-dot-green" />
+          <span className="terminal-title">system.log</span>
         </div>
-
-        <div className="steps-list">
-          {steps.map((step) => {
-            const completed = agentState.progress >= step.threshold;
-            const active =
-              agentState.running &&
-              agentState.progress >= step.threshold &&
-              !steps.some((candidate) => candidate.threshold > step.threshold && agentState.progress >= candidate.threshold);
-
-            return (
-              <article
-                key={step.label}
-                className={`step-card${completed ? " step-card-completed" : ""}${active ? " step-card-active" : ""}`}
-              >
-                <div className="step-card-head">
-                  <strong>{step.label}</strong>
-                  <span>{completed ? "ok" : "fila"}</span>
-                </div>
-                <p>{step.detail}</p>
-              </article>
-            );
-          })}
-        </div>
-      </section>
-
-      <section className="stage-card">
-        <div className="card-head">
-          <span className="section-kicker">Log do agente</span>
-          <span className="meta-text">{logs.length} eventos recentes</span>
-        </div>
-        <div className="log-list">
+        <div className="terminal-body">
           {logs.map((log) => (
-            <article key={log.id} className={`log-item log-item-${log.tone}`}>
-              <div className="log-item-head">
-                <strong>{formatShortDateTime(log.createdAt)}</strong>
-                <span>{log.tone}</span>
-              </div>
-              <p>{log.message}</p>
-            </article>
+            <div key={log.id} className="terminal-line">
+              <span className="terminal-time">{formatShortDateTime(log.createdAt)}</span>
+              <span className={`terminal-tag terminal-tag-${log.tone}`}>[{log.tone}]</span>
+              <span className="terminal-message">{log.message}</span>
+            </div>
           ))}
         </div>
-      </section>
+      </div>
     </div>
   );
 }
 
-function StatCard({ label, value }: { label: string; value: string }) {
-  return (
-    <article className="stat-card">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </article>
-  );
-}
-
-function InlineError({ title, message }: { title: string; message: string }) {
-  return (
-    <div className="inline-error">
-      <strong>{title}</strong>
-      <p>{message}</p>
-    </div>
-  );
-}
-
-function InsightBar({ metric, maxValue }: { metric: InsightMetric; maxValue: number }) {
-  const width = `${Math.max(12, Math.round((metric.value / Math.max(maxValue, 1)) * 100))}%`;
-  return (
-    <article className="insight-bar-card">
-      <div className="insight-bar-head">
-        <strong>{metric.label}</strong>
-        <span>{metric.value}</span>
-      </div>
-      <div className="insight-bar-track">
-        <div className="insight-bar-fill" style={{ width }} />
-      </div>
-      <p>{metric.description}</p>
-    </article>
-  );
-}
-
-function SignalColumn({
-  title,
-  items,
-  emptyLabel,
+function ModernStatCard({
+  label,
+  value,
+  meta,
+  icon: Icon,
+  tone = "zinc",
 }: {
-  title: string;
-  items: string[];
-  emptyLabel: string;
+  label: string;
+  value: string;
+  meta: string;
+  icon: LucideIcon;
+  tone?: "emerald" | "amber" | "indigo" | "rose" | "zinc";
 }) {
   return (
-    <div className="signal-column">
-      <strong>{title}</strong>
-      {items.length === 0 ? (
+    <Card className={`modern-stat-card modern-stat-${tone}`}>
+      <div className="modern-stat-top">
+        <span>{label}</span>
+        <Icon size={15} />
+      </div>
+      <strong>{value}</strong>
+      <small>{meta}</small>
+    </Card>
+  );
+}
+
+function SignalBlock({
+  title,
+  lines,
+  emptyLabel,
+  subtle = false,
+}: {
+  title: string;
+  lines: string[];
+  emptyLabel: string;
+  subtle?: boolean;
+}) {
+  return (
+    <div className={`signal-block${subtle ? " signal-block-subtle" : ""}`}>
+      <span>{title}</span>
+      {lines.length === 0 ? (
         <p>{emptyLabel}</p>
       ) : (
-        <ul className="signal-list">
-          {items.slice(0, 5).map((item, index) => (
-            <li key={`${title}-${index}`}>{item}</li>
+        <ul>
+          {lines.slice(0, 3).map((line, index) => (
+            <li key={`${title}-${index}`}>{line}</li>
           ))}
         </ul>
       )}
@@ -1553,11 +1772,84 @@ function SignalColumn({
   );
 }
 
-function ProjectMeta({ label, value }: { label: string; value: string }) {
+function StatusLine({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: "emerald" | "amber" | "indigo" | "zinc";
+}) {
   return (
-    <div className="project-meta-card">
+    <div className="status-line">
+      <div className="status-line-left">
+        <span className={`status-line-dot tone-${tone}`} />
+        <span>{label}</span>
+      </div>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function MetricTile({
+  label,
+  value,
+  accent = false,
+  tone = "zinc",
+}: {
+  label: string;
+  value: string;
+  accent?: boolean;
+  tone?: "emerald" | "amber" | "indigo" | "zinc";
+}) {
+  return (
+    <div className={`metric-tile${accent ? " metric-tile-accent" : ""}${tone !== "zinc" ? ` metric-tile-${tone}` : ""}`}>
       <span>{label}</span>
       <strong>{value}</strong>
+    </div>
+  );
+}
+
+function ProjectInfoBlock({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="project-info-block">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function MiniPanel({
+  title,
+  tone,
+  icon: Icon,
+  content,
+}: {
+  title: string;
+  tone: "amber" | "emerald";
+  icon: LucideIcon;
+  content: string;
+}) {
+  return (
+    <div className="mini-panel">
+      <span className={`mini-panel-title tone-${tone}`}>
+        <Icon size={14} />
+        {title}
+      </span>
+      <p>{content}</p>
+    </div>
+  );
+}
+
+function InlineError({ title, message }: { title: string; message: string }) {
+  return (
+    <div className="inline-error-modern">
+      <AlertCircle size={16} />
+      <div>
+        <strong>{title}</strong>
+        <p>{message}</p>
+      </div>
     </div>
   );
 }

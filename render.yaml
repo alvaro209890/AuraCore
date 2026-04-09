@@ -29,23 +29,23 @@ services:
       - key: GROQ_TIMEOUT_SECONDS
         value: "45"
       - key: MEMORY_ANALYSIS_MAX_MESSAGES
-        value: "250"
+        value: "360"
       - key: MEMORY_ANALYSIS_MAX_CHARS
-        value: "60000"
+        value: "85000"
       - key: MEMORY_ANALYSIS_MAX_WINDOW_HOURS
-        value: "168"
+        value: "336"
       - key: MEMORY_ANALYSIS_CONTEXT_SNAPSHOTS
-        value: "5"
+        value: "6"
       - key: MEMORY_ANALYSIS_SNAPSHOT_CONTEXT_CHARS
-        value: "12000"
-      - key: CHAT_MAX_HISTORY_MESSAGES
-        value: "18"
-      - key: CHAT_CONTEXT_SNAPSHOTS
-        value: "5"
-      - key: CHAT_CONTEXT_PROJECTS
-        value: "8"
-      - key: CHAT_CONTEXT_CHARS
         value: "18000"
+      - key: CHAT_MAX_HISTORY_MESSAGES
+        value: "20"
+      - key: CHAT_CONTEXT_SNAPSHOTS
+        value: "6"
+      - key: CHAT_CONTEXT_PROJECTS
+        value: "10"
+      - key: CHAT_CONTEXT_CHARS
+        value: "22000"
       - key: CHAT_MAX_MESSAGE_CHARS
         value: "2000"
       - key: MESSAGE_RETENTION_MAX_ROWS

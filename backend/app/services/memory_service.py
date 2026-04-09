@@ -97,11 +97,18 @@ class MemoryAnalysisService:
         current_persona = self.store.get_persona(self.settings.default_user_id)
         current_summary = current_persona.life_summary if current_persona else ""
         prior_analyses_context = self._build_prior_analyses_context()
+        project_context = self._build_project_context(
+            self.store.list_project_memories(
+                self.settings.default_user_id,
+                limit=max(1, self.settings.chat_context_projects),
+            )
+        )
         chat_context = self._build_chat_context()
         deepseek_result = await self.deepseek_service.analyze_memory(
             transcript=transcript,
             current_life_summary=current_summary,
             prior_analyses_context=prior_analyses_context,
+            project_context=project_context,
             chat_context=chat_context,
             window_hours=window_hours,
             window_start=window_start,
@@ -180,11 +187,18 @@ class MemoryAnalysisService:
         current_persona = self.store.get_persona(self.settings.default_user_id)
         current_summary = current_persona.life_summary if current_persona else ""
         prior_analyses_context = self._build_prior_analyses_context()
+        project_context = self._build_project_context(
+            self.store.list_project_memories(
+                self.settings.default_user_id,
+                limit=max(1, self.settings.chat_context_projects),
+            )
+        )
         chat_context = self._build_chat_context()
         deepseek_result = await self.deepseek_service.analyze_memory(
             transcript=transcript,
             current_life_summary=current_summary,
             prior_analyses_context=prior_analyses_context,
+            project_context=project_context,
             chat_context=chat_context,
             window_hours=max_lookback_hours,
             window_start=window_start,
@@ -526,9 +540,9 @@ class MemoryAnalysisService:
 
     def _resolve_char_budget(self, detail_mode: Literal["light", "balanced", "deep"]) -> int:
         presets = {
-            "light": 14000,
-            "balanced": 26000,
-            "deep": 42000,
+            "light": 18000,
+            "balanced": 36000,
+            "deep": 60000,
         }
         return min(self.settings.memory_analysis_max_chars, presets[detail_mode])
 
@@ -540,21 +554,21 @@ class MemoryAnalysisService:
         detail_mode: Literal["light", "balanced", "deep"],
     ) -> tuple[int, int, int]:
         average_chars_per_message = {
-            "light": 72,
-            "balanced": 88,
-            "deep": 102,
+            "light": 74,
+            "balanced": 92,
+            "deep": 110,
         }[detail_mode]
         transcript_chars = min(char_budget, selected_message_count * average_chars_per_message)
         context_chars = {
-            "light": 5200,
-            "balanced": 7600,
-            "deep": 9800,
+            "light": 6200,
+            "balanced": 9200,
+            "deep": 13200,
         }[detail_mode]
         estimated_input_tokens = max(600, round((transcript_chars + context_chars) / 4))
         estimated_output_tokens = {
-            "light": 650,
-            "balanced": 850,
-            "deep": 1050,
+            "light": 700,
+            "balanced": 920,
+            "deep": 1180,
         }[detail_mode]
         return estimated_input_tokens, estimated_output_tokens, estimated_input_tokens + estimated_output_tokens
 
@@ -574,7 +588,7 @@ class MemoryAnalysisService:
         freshness_ratio = min(1.0, new_message_count / max(selected_message_count, 1))
         coverage_ratio = min(1.0, available_message_count / max(selected_message_count, 1))
         replacement_ratio = min(1.0, replaced_message_count / max(selected_message_count, 1))
-        token_efficiency = max(0.0, 1.0 - min(1.0, estimated_total_tokens / 15000))
+        token_efficiency = max(0.0, 1.0 - min(1.0, estimated_total_tokens / 22000))
 
         if persona.last_analyzed_at is None:
             staleness_ratio = 1.0
