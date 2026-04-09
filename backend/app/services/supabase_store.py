@@ -63,6 +63,63 @@ class MemorySnapshotRecord:
 
 
 @dataclass(slots=True)
+class PersonMemorySeed:
+    person_key: str
+    contact_name: str
+    contact_phone: str | None
+    chat_jid: str | None
+    profile_summary: str
+    relationship_summary: str
+    salient_facts: list[str]
+    open_loops: list[str]
+    recent_topics: list[str]
+    source_message_count: int
+    window_start: datetime | None = None
+    window_end: datetime | None = None
+
+
+@dataclass(slots=True)
+class PersonMemoryRecord:
+    id: str
+    user_id: UUID
+    person_key: str
+    contact_name: str
+    contact_phone: str | None
+    chat_jid: str | None
+    profile_summary: str
+    relationship_summary: str
+    salient_facts: list[str]
+    open_loops: list[str]
+    recent_topics: list[str]
+    source_snapshot_id: str | None
+    source_message_count: int
+    last_message_at: datetime | None
+    last_analyzed_at: datetime | None
+    updated_at: datetime
+
+
+@dataclass(slots=True)
+class PersonMemorySnapshotRecord:
+    id: str
+    user_id: UUID
+    person_memory_id: str | None
+    person_key: str
+    contact_name: str
+    contact_phone: str | None
+    chat_jid: str | None
+    source_snapshot_id: str | None
+    profile_summary: str
+    relationship_summary: str
+    salient_facts: list[str]
+    open_loops: list[str]
+    recent_topics: list[str]
+    source_message_count: int
+    window_start: datetime | None
+    window_end: datetime | None
+    created_at: datetime
+
+
+@dataclass(slots=True)
 class ProjectMemorySeed:
     project_name: str
     summary: str
@@ -689,6 +746,197 @@ class SupabaseStore:
                 )
             )
         return snapshots
+
+    def list_person_memories(self, user_id: UUID, *, limit: int = 80) -> list[PersonMemoryRecord]:
+        try:
+            response = (
+                self.client.table("person_memories")
+                .select(
+                    "id,user_id,person_key,contact_name,contact_phone,chat_jid,profile_summary,"
+                    "relationship_summary,salient_facts,open_loops,recent_topics,source_snapshot_id,"
+                    "source_message_count,last_message_at,last_analyzed_at,updated_at"
+                )
+                .eq("user_id", str(user_id))
+                .order("last_message_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "person_memories"):
+                raise
+            return []
+
+        rows = response.data or []
+        records: list[PersonMemoryRecord] = []
+        for row in rows:
+            parsed = self._parse_person_memory(row, fallback_user_id=user_id)
+            if parsed is not None:
+                records.append(parsed)
+        return records
+
+    def list_person_memories_by_keys(
+        self,
+        *,
+        user_id: UUID,
+        person_keys: Sequence[str],
+    ) -> list[PersonMemoryRecord]:
+        cleaned_keys = [key.strip() for key in person_keys if key and key.strip()]
+        if not cleaned_keys:
+            return []
+        try:
+            response = (
+                self.client.table("person_memories")
+                .select(
+                    "id,user_id,person_key,contact_name,contact_phone,chat_jid,profile_summary,"
+                    "relationship_summary,salient_facts,open_loops,recent_topics,source_snapshot_id,"
+                    "source_message_count,last_message_at,last_analyzed_at,updated_at"
+                )
+                .eq("user_id", str(user_id))
+                .in_("person_key", cleaned_keys)
+                .execute()
+            )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "person_memories"):
+                raise
+            return []
+
+        rows = response.data or []
+        records: list[PersonMemoryRecord] = []
+        for row in rows:
+            parsed = self._parse_person_memory(row, fallback_user_id=user_id)
+            if parsed is not None:
+                records.append(parsed)
+        return records
+
+    def upsert_person_memories(
+        self,
+        *,
+        user_id: UUID,
+        source_snapshot_id: str | None,
+        people: Sequence[PersonMemorySeed],
+        observed_at: datetime,
+    ) -> list[PersonMemoryRecord]:
+        normalized_people: list[PersonMemorySeed] = []
+        seen_keys: set[str] = set()
+        for person in people:
+            person_key = person.person_key.strip()
+            profile_summary = person.profile_summary.strip()
+            relationship_summary = person.relationship_summary.strip()
+            if not person_key or not profile_summary:
+                continue
+            if person_key in seen_keys:
+                continue
+            seen_keys.add(person_key)
+            normalized_people.append(
+                PersonMemorySeed(
+                    person_key=person_key,
+                    contact_name=person.contact_name.strip() or person.contact_phone or "Contato",
+                    contact_phone=self._optional_text(person.contact_phone),
+                    chat_jid=self._optional_text(person.chat_jid),
+                    profile_summary=profile_summary,
+                    relationship_summary=relationship_summary,
+                    salient_facts=self._clean_and_unique_string_list(person.salient_facts),
+                    open_loops=self._clean_and_unique_string_list(person.open_loops),
+                    recent_topics=self._clean_and_unique_string_list(person.recent_topics),
+                    source_message_count=max(0, int(person.source_message_count)),
+                    window_start=person.window_start,
+                    window_end=person.window_end,
+                )
+            )
+
+        if not normalized_people:
+            return []
+
+        existing_by_key = {
+            record.person_key: record
+            for record in self.list_person_memories_by_keys(
+                user_id=user_id,
+                person_keys=[person.person_key for person in normalized_people],
+            )
+        }
+
+        records: list[dict[str, Any]] = []
+        snapshot_records: list[dict[str, Any]] = []
+        for person in normalized_people:
+            existing = existing_by_key.get(person.person_key)
+            person_memory_id = existing.id if existing is not None else str(uuid4())
+            merged_contact_name = self._resolve_contact_name(
+                incoming_name=person.contact_name,
+                contact_phone=person.contact_phone,
+                known_name=existing.contact_name if existing is not None else None,
+            )
+            merged_profile_summary = person.profile_summary or (existing.profile_summary if existing is not None else "")
+            merged_relationship_summary = (
+                person.relationship_summary or (existing.relationship_summary if existing is not None else "")
+            )
+            merged_salient_facts = self._merge_unique_string_lists(
+                existing.salient_facts if existing is not None else [],
+                person.salient_facts,
+            )
+            merged_open_loops = self._merge_unique_string_lists(
+                existing.open_loops if existing is not None else [],
+                person.open_loops,
+            )
+            merged_recent_topics = self._merge_unique_string_lists(
+                existing.recent_topics if existing is not None else [],
+                person.recent_topics,
+            )
+            merged_source_message_count = (
+                (existing.source_message_count if existing is not None else 0) + max(0, person.source_message_count)
+            )
+            merged_last_message_at = self._latest_datetime(
+                existing.last_message_at if existing is not None else None,
+                person.window_end,
+            )
+
+            records.append(
+                {
+                    "id": person_memory_id,
+                    "user_id": str(user_id),
+                    "person_key": person.person_key,
+                    "contact_name": merged_contact_name,
+                    "contact_phone": person.contact_phone or (existing.contact_phone if existing is not None else None),
+                    "chat_jid": person.chat_jid or (existing.chat_jid if existing is not None else None),
+                    "profile_summary": merged_profile_summary,
+                    "relationship_summary": merged_relationship_summary,
+                    "salient_facts": merged_salient_facts,
+                    "open_loops": merged_open_loops,
+                    "recent_topics": merged_recent_topics,
+                    "source_snapshot_id": source_snapshot_id,
+                    "source_message_count": merged_source_message_count,
+                    "last_message_at": merged_last_message_at.isoformat() if merged_last_message_at else None,
+                    "last_analyzed_at": observed_at.isoformat(),
+                    "updated_at": observed_at.isoformat(),
+                }
+            )
+            snapshot_records.append(
+                {
+                    "id": str(uuid4()),
+                    "user_id": str(user_id),
+                    "person_memory_id": person_memory_id,
+                    "person_key": person.person_key,
+                    "contact_name": merged_contact_name,
+                    "contact_phone": person.contact_phone or (existing.contact_phone if existing is not None else None),
+                    "chat_jid": person.chat_jid or (existing.chat_jid if existing is not None else None),
+                    "source_snapshot_id": source_snapshot_id,
+                    "profile_summary": merged_profile_summary,
+                    "relationship_summary": merged_relationship_summary,
+                    "salient_facts": merged_salient_facts,
+                    "open_loops": merged_open_loops,
+                    "recent_topics": merged_recent_topics,
+                    "source_message_count": max(0, person.source_message_count),
+                    "window_start": person.window_start.isoformat() if person.window_start else None,
+                    "window_end": person.window_end.isoformat() if person.window_end else None,
+                    "created_at": observed_at.isoformat(),
+                }
+            )
+
+        self.client.table("person_memories").upsert(records, on_conflict="user_id,person_key").execute()
+        self.client.table("person_memory_snapshots").insert(snapshot_records).execute()
+        return self.list_person_memories_by_keys(
+            user_id=user_id,
+            person_keys=[person.person_key for person in normalized_people],
+        )
 
     def upsert_project_memories(
         self,
@@ -2479,6 +2727,31 @@ class SupabaseStore:
                 cleaned.append(text)
         return cleaned
 
+    def _clean_and_unique_string_list(self, items: Sequence[Any], *, limit: int = 8) -> list[str]:
+        cleaned: list[str] = []
+        seen_normalized: set[str] = set()
+        for item in items:
+            if item is None:
+                continue
+            text = str(item).strip()
+            normalized = text.casefold()
+            if not text or normalized in seen_normalized:
+                continue
+            seen_normalized.add(normalized)
+            cleaned.append(text)
+            if len(cleaned) >= limit:
+                break
+        return cleaned
+
+    def _merge_unique_string_lists(
+        self,
+        existing: Sequence[Any],
+        incoming: Sequence[Any],
+        *,
+        limit: int = 8,
+    ) -> list[str]:
+        return self._clean_and_unique_string_list([*existing, *incoming], limit=limit)
+
     def _load_known_contact_names(self, contact_phones: Sequence[str | None]) -> dict[str, str]:
         cleaned_phones = sorted({phone.strip() for phone in contact_phones if phone and phone.strip()})
         if not cleaned_phones:
@@ -2571,6 +2844,37 @@ class SupabaseStore:
         while "--" in collapsed:
             collapsed = collapsed.replace("--", "-")
         return collapsed.strip("-")
+
+    def build_person_key(
+        self,
+        *,
+        contact_phone: str | None,
+        chat_jid: str | None,
+        contact_name: str | None,
+    ) -> str:
+        phone = self._optional_text(contact_phone)
+        if phone:
+            phone_digits = "".join(char for char in phone if char.isdigit())
+            if phone_digits:
+                return f"phone:{phone_digits}"
+
+        jid = self._optional_text(chat_jid)
+        if jid:
+            return f"jid:{jid.strip().lower()}"
+
+        name = self._optional_text(contact_name)
+        if name:
+            normalized_chars = [
+                char.lower() if char.isalnum() else "-"
+                for char in name
+            ]
+            collapsed = "".join(normalized_chars)
+            while "--" in collapsed:
+                collapsed = collapsed.replace("--", "-")
+            collapsed = collapsed.strip("-")
+            if collapsed:
+                return f"name:{collapsed}"
+        return "person:unknown"
 
     def _fetch_existing_message_ids(self, message_ids: Sequence[str]) -> set[str]:
         cleaned_ids = [message_id.strip() for message_id in message_ids if message_id and message_id.strip()]
@@ -2774,6 +3078,31 @@ class SupabaseStore:
             saved_at=self._parse_datetime(value.get("saved_at")) or datetime.now(UTC),
             last_reviewed_at=self._parse_datetime(value.get("last_reviewed_at")),
             discarded_at=self._parse_datetime(value.get("discarded_at")),
+        )
+
+    def _parse_person_memory(self, value: Any, *, fallback_user_id: UUID) -> PersonMemoryRecord | None:
+        if not isinstance(value, dict):
+            return None
+        person_key = self._optional_text(value.get("person_key"))
+        if not person_key:
+            return None
+        return PersonMemoryRecord(
+            id=str(value.get("id") or ""),
+            user_id=self._parse_uuid(value.get("user_id")) or fallback_user_id,
+            person_key=person_key,
+            contact_name=str(value.get("contact_name") or value.get("contact_phone") or "Contato"),
+            contact_phone=self._optional_text(value.get("contact_phone")),
+            chat_jid=self._optional_text(value.get("chat_jid")),
+            profile_summary=str(value.get("profile_summary") or ""),
+            relationship_summary=str(value.get("relationship_summary") or ""),
+            salient_facts=self._parse_string_list(value.get("salient_facts")),
+            open_loops=self._parse_string_list(value.get("open_loops")),
+            recent_topics=self._parse_string_list(value.get("recent_topics")),
+            source_snapshot_id=self._optional_text(value.get("source_snapshot_id")),
+            source_message_count=self._parse_int(value.get("source_message_count")) or 0,
+            last_message_at=self._parse_datetime(value.get("last_message_at")),
+            last_analyzed_at=self._parse_datetime(value.get("last_analyzed_at")),
+            updated_at=self._parse_datetime(value.get("updated_at")) or datetime.now(UTC),
         )
 
     def _normalize_detail_mode(self, value: str) -> str:

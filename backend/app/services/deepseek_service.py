@@ -25,6 +25,16 @@ class DeepSeekProjectMemory(BaseModel):
     evidence: list[str] = Field(default_factory=list)
 
 
+class DeepSeekPersonMemory(BaseModel):
+    person_key: str
+    contact_name: str = ""
+    profile_summary: str
+    relationship_summary: str = ""
+    salient_facts: list[str] = Field(default_factory=list)
+    open_loops: list[str] = Field(default_factory=list)
+    recent_topics: list[str] = Field(default_factory=list)
+
+
 class DeepSeekMemoryResult(BaseModel):
     updated_life_summary: str
     window_summary: str
@@ -34,6 +44,7 @@ class DeepSeekMemoryResult(BaseModel):
     preferences: list[str] = Field(default_factory=list)
     open_questions: list[str] = Field(default_factory=list)
     active_projects: list[DeepSeekProjectMemory] = Field(default_factory=list)
+    contact_memories: list[DeepSeekPersonMemory] = Field(default_factory=list)
 
 
 class DeepSeekMemoryRefinementResult(BaseModel):
@@ -97,6 +108,7 @@ class DeepSeekService:
         *,
         transcript: str,
         conversation_context: str,
+        people_memory_context: str,
         current_life_summary: str,
         prior_analyses_context: str,
         project_context: str,
@@ -110,6 +122,7 @@ class DeepSeekService:
         prompt_preview = self.build_analysis_prompt_preview(
             transcript=transcript,
             conversation_context=conversation_context,
+            people_memory_context=people_memory_context,
             current_life_summary=current_life_summary,
             prior_analyses_context=prior_analyses_context,
             project_context=project_context,
@@ -217,6 +230,7 @@ class DeepSeekService:
         *,
         transcript: str,
         conversation_context: str,
+        people_memory_context: str,
         current_life_summary: str,
         prior_analyses_context: str,
         project_context: str,
@@ -238,6 +252,7 @@ class DeepSeekService:
             user_prompt=self._build_prompt(
                 transcript=transcript,
                 conversation_context=conversation_context,
+                people_memory_context=people_memory_context,
                 current_life_summary=current_life_summary,
                 prior_analyses_context=prior_analyses_context,
                 project_context=project_context,
@@ -316,6 +331,7 @@ class DeepSeekService:
         *,
         transcript: str,
         conversation_context: str,
+        people_memory_context: str,
         current_life_summary: str,
         prior_analyses_context: str,
         project_context: str,
@@ -351,6 +367,9 @@ Conversas recentes com a IA pessoal:
 Contexto por conversa do WhatsApp:
 {conversation_context.strip() or "(nenhum agrupamento adicional de conversa disponivel)"}
 
+Memorias ja consolidadas por pessoa destas conversas:
+{people_memory_context.strip() or "(nenhuma memoria por pessoa consolidada ainda para estes contatos)"}
+
 Transcricao da conversa:
 {transcript}
 
@@ -363,6 +382,7 @@ Retorne um JSON com exatamente estes campos:
 - preferences: string[]
 - open_questions: string[]
 - active_projects: {{ name: string, summary: string, status: string, what_is_being_built: string, built_for: string, next_steps: string[], evidence: string[] }}[]
+- contact_memories: {{ person_key: string, contact_name: string, profile_summary: string, relationship_summary: string, salient_facts: string[], open_loops: string[], recent_topics: string[] }}[]
 
 Formato esperado do JSON:
 {{
@@ -383,6 +403,17 @@ Formato esperado do JSON:
       "next_steps": ["string"],
       "evidence": ["string"]
     }}
+  ],
+  "contact_memories": [
+    {{
+      "person_key": "string",
+      "contact_name": "string",
+      "profile_summary": "string",
+      "relationship_summary": "string",
+      "salient_facts": ["string"],
+      "open_loops": ["string"],
+      "recent_topics": ["string"]
+    }}
   ]
 }}
 
@@ -393,6 +424,7 @@ Regras:
 - Use tambem os projetos ja salvos para manter continuidade entre leituras e evitar perder o fio de frentes recorrentes.
 - Considere tambem o que o dono conversou com a IA no chat para entender melhor prioridades, projetos e como ele pensa.
 - Leia primeiro o bloco de contexto por conversa para entender quem e cada contato, o peso de cada conversa e a relacao mais provavel com o dono.
+- Leia tambem as memorias ja consolidadas por pessoa antes de atualizar os contatos desta janela.
 - Diferencie sinais sobre o dono dos fatos que pertencem ao contato; nao transforme caracteristicas do contato em caracteristicas do dono.
 - Use a direcao das mensagens para separar o que o dono afirma, pede, decide ou promete do que esta sendo dito pelos contatos.
 - Procure entender como o dono do numero age, fala, decide, trabalha, se relaciona e organiza a rotina.
@@ -404,6 +436,11 @@ Regras:
 - Mantenha updated_life_summary factual, claro, conciso e util para um assistente pessoal futuro. Dê mais peso ao que aparece repetido, ao que tem impacto operacional e ao que altera o comportamento do dono.
 - Use os campos de lista para aprendizados concretos, padroes de comportamento e sinais incertos.
 - Se a evidencia for fraca, trate como hipotese e nao como fato consolidado.
+- Preencha contact_memories apenas com pessoas que realmente aparecem nesta janela.
+- Em cada item de contact_memories, person_key deve copiar exatamente um person_key presente no bloco de contexto por conversa.
+- Em contact_memories, profile_summary deve resumir quem e essa pessoa no contexto do dono; relationship_summary deve resumir a dinamica atual entre dono e contato.
+- Em contact_memories, use as memorias anteriores por pessoa para atualizar de forma cumulativa e sem repetir o que ja existe.
+- Em contact_memories, mantenha no maximo 6 fatos, 5 pendencias e 5 topicos por pessoa.
 - Nao mencione que voce e uma IA.
 - Nao inclua markdown fences.
 """.strip()
@@ -642,6 +679,11 @@ Regras:
             raise DeepSeekError("DeepSeek returned an empty consolidated memory.")
         if not parsed.window_summary.strip():
             raise DeepSeekError("DeepSeek returned an empty window summary.")
+        for person in parsed.contact_memories:
+            if not person.person_key.strip():
+                raise DeepSeekError("DeepSeek returned a contact memory without person_key.")
+            if not person.profile_summary.strip():
+                raise DeepSeekError("DeepSeek returned a contact memory without profile_summary.")
 
     def _validate_refinement_result(self, parsed: DeepSeekMemoryRefinementResult) -> None:
         if not parsed.updated_life_summary.strip():
@@ -709,6 +751,7 @@ Regras:
             preferences=self._as_string_list(raw.get("preferences")),
             open_questions=self._as_string_list(raw.get("open_questions")),
             active_projects=self._as_projects(raw.get("active_projects")),
+            contact_memories=self._as_person_memories(raw.get("contact_memories")),
         )
 
     def _parse_refinement_result(self, content: str) -> DeepSeekMemoryRefinementResult:
@@ -815,6 +858,32 @@ Regras:
             if project.name and project.summary:
                 projects.append(project)
         return projects[:6]
+
+    def _as_person_memories(self, value: Any) -> list[DeepSeekPersonMemory]:
+        if not isinstance(value, list):
+            return []
+
+        items: list[DeepSeekPersonMemory] = []
+        seen_keys: set[str] = set()
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            person_key = self._as_text(item.get("person_key"))
+            if not person_key or person_key in seen_keys:
+                continue
+            memory = DeepSeekPersonMemory(
+                person_key=person_key,
+                contact_name=self._as_text(item.get("contact_name")),
+                profile_summary=self._as_text(item.get("profile_summary")),
+                relationship_summary=self._as_text(item.get("relationship_summary")),
+                salient_facts=self._as_string_list(item.get("salient_facts"))[:6],
+                open_loops=self._as_string_list(item.get("open_loops"))[:5],
+                recent_topics=self._as_string_list(item.get("recent_topics"))[:5],
+            )
+            if memory.profile_summary:
+                items.append(memory)
+                seen_keys.add(person_key)
+        return items[:24]
 
     def _as_important_messages(self, value: Any) -> list[DeepSeekImportantMessageCandidate]:
         if not isinstance(value, list):

@@ -6,7 +6,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "AuraCore | Segundo Cerebro Pessoal",
   description:
-    "Interface em abas para conectar o WhatsApp observador, consolidar memoria, acompanhar projetos e conversar com a IA pessoal.",
+    "Interface em abas para conectar o WhatsApp observador, consolidar memoria, acompanhar projetos e conversar com contexto persistido.",
   icons: {
     icon: "/favicon.svg",
   },

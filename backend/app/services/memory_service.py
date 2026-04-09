@@ -17,6 +17,8 @@ from app.services.supabase_store import (
     ImportantMessageSeed,
     MemorySnapshotRecord,
     MessageRetentionStateRecord,
+    PersonMemoryRecord,
+    PersonMemorySeed,
     PersonaRecord,
     ProjectMemoryRecord,
     ProjectMemorySeed,
@@ -119,6 +121,7 @@ class FixedAnalysisPlan:
     source_messages: list[StoredMessageRecord]
     transcript: str
     conversation_context: str
+    people_memory_context: str
     window_hours: int
     window_start: datetime
     window_end: datetime
@@ -217,9 +220,11 @@ class MemoryAnalysisService:
         )
         chat_context = self._build_chat_context()
         conversation_context = self._build_conversation_context(included_messages)
+        people_memory_context = self._build_people_memory_context(included_messages)
         deepseek_result = await self.deepseek_service.analyze_memory(
             transcript=transcript,
             conversation_context=conversation_context,
+            people_memory_context=people_memory_context,
             current_life_summary=current_summary,
             prior_analyses_context=prior_analyses_context,
             project_context=project_context,
@@ -242,6 +247,12 @@ class MemoryAnalysisService:
         persona = self.store.persist_memory_analysis(
             snapshot=snapshot,
             updated_life_summary=deepseek_result.updated_life_summary,
+            analyzed_at=window_end,
+        )
+        self._persist_person_memories(
+            messages=included_messages,
+            deepseek_result=deepseek_result,
+            source_snapshot_id=snapshot.id,
             analyzed_at=window_end,
         )
         projects = self.store.upsert_project_memories(
@@ -317,9 +328,11 @@ class MemoryAnalysisService:
         )
         chat_context = self._build_chat_context()
         conversation_context = self._build_conversation_context(included_messages)
+        people_memory_context = self._build_people_memory_context(included_messages)
         deepseek_result = await self.deepseek_service.analyze_memory(
             transcript=transcript,
             conversation_context=conversation_context,
+            people_memory_context=people_memory_context,
             current_life_summary=current_summary,
             prior_analyses_context=prior_analyses_context,
             project_context=project_context,
@@ -342,6 +355,12 @@ class MemoryAnalysisService:
         persona = self.store.persist_memory_analysis(
             snapshot=snapshot,
             updated_life_summary=deepseek_result.updated_life_summary,
+            analyzed_at=window_end,
+        )
+        self._persist_person_memories(
+            messages=included_messages,
+            deepseek_result=deepseek_result,
+            source_snapshot_id=snapshot.id,
             analyzed_at=window_end,
         )
         projects = self.store.upsert_project_memories(
@@ -423,9 +442,11 @@ class MemoryAnalysisService:
         )
         chat_context = self._build_chat_context()
         conversation_context = self._build_conversation_context(included_messages)
+        people_memory_context = self._build_people_memory_context(included_messages)
         prompt_preview = self.deepseek_service.build_analysis_prompt_preview(
             transcript=transcript,
             conversation_context=conversation_context,
+            people_memory_context=people_memory_context,
             current_life_summary=current_persona.life_summary,
             prior_analyses_context=prior_analyses_context,
             project_context=project_context,
@@ -607,6 +628,7 @@ class MemoryAnalysisService:
 
         transcript = self._build_full_transcript(selected_messages)
         conversation_context = self._build_conversation_context(selected_messages)
+        people_memory_context = self._build_people_memory_context(selected_messages)
         window_start = selected_messages[0].timestamp
         window_end = selected_messages[-1].timestamp
         window_hours = max(1, ceil(max(0.0, (window_end - window_start).total_seconds()) / 3600))
@@ -622,6 +644,7 @@ class MemoryAnalysisService:
         prompt_preview = self.deepseek_service.build_analysis_prompt_preview(
             transcript=transcript,
             conversation_context=conversation_context,
+            people_memory_context=people_memory_context,
             current_life_summary=current_persona.life_summary,
             prior_analyses_context=prior_analyses_context,
             project_context=project_context,
@@ -658,6 +681,7 @@ class MemoryAnalysisService:
             source_messages=selected_messages,
             transcript=transcript,
             conversation_context=conversation_context,
+            people_memory_context=people_memory_context,
             window_hours=window_hours,
             window_start=window_start,
             window_end=window_end,
@@ -682,6 +706,7 @@ class MemoryAnalysisService:
         deepseek_result = await self.deepseek_service.analyze_memory(
             transcript=plan.transcript,
             conversation_context=plan.conversation_context,
+            people_memory_context=plan.people_memory_context,
             current_life_summary=current_persona.life_summary,
             prior_analyses_context=prior_analyses_context,
             project_context=project_context,
@@ -705,6 +730,12 @@ class MemoryAnalysisService:
         persona = self.store.persist_memory_analysis(
             snapshot=snapshot,
             updated_life_summary=deepseek_result.updated_life_summary,
+            analyzed_at=analyzed_at,
+        )
+        self._persist_person_memories(
+            messages=plan.source_messages,
+            deepseek_result=deepseek_result,
+            source_snapshot_id=snapshot.id,
             analyzed_at=analyzed_at,
         )
         projects = self.store.upsert_project_memories(
@@ -731,6 +762,51 @@ class MemoryAnalysisService:
             source_message_ids=[message.message_id for message in plan.source_messages],
             source_messages=plan.source_messages,
             selected_transcript_chars=plan.selected_transcript_chars,
+        )
+
+    def _persist_person_memories(
+        self,
+        *,
+        messages: list[StoredMessageRecord],
+        deepseek_result: DeepSeekMemoryResult,
+        source_snapshot_id: str | None,
+        analyzed_at: datetime,
+    ) -> list[PersonMemoryRecord]:
+        grouped_messages = self._group_messages_by_person(messages)
+        if not grouped_messages or not deepseek_result.contact_memories:
+            return []
+
+        seeds: list[PersonMemorySeed] = []
+        for person in deepseek_result.contact_memories:
+            grouped = grouped_messages.get(person.person_key)
+            if not grouped:
+                continue
+            last_message = grouped[-1]
+            seeds.append(
+                PersonMemorySeed(
+                    person_key=person.person_key,
+                    contact_name=person.contact_name.strip() or last_message.contact_name,
+                    contact_phone=last_message.contact_phone,
+                    chat_jid=last_message.chat_jid,
+                    profile_summary=person.profile_summary,
+                    relationship_summary=person.relationship_summary,
+                    salient_facts=person.salient_facts,
+                    open_loops=person.open_loops,
+                    recent_topics=person.recent_topics,
+                    source_message_count=len(grouped),
+                    window_start=grouped[0].timestamp,
+                    window_end=grouped[-1].timestamp,
+                )
+            )
+
+        if not seeds:
+            return []
+
+        return self.store.upsert_person_memories(
+            user_id=self.settings.default_user_id,
+            source_snapshot_id=source_snapshot_id,
+            people=seeds,
+            observed_at=analyzed_at,
         )
 
     def list_snapshots(self, *, limit: int = 20) -> list[MemorySnapshotRecord]:
@@ -1023,16 +1099,84 @@ class MemoryAnalysisService:
 
         return "\n".join(sections)
 
+    def _group_messages_by_person(self, messages: list[StoredMessageRecord]) -> dict[str, list[StoredMessageRecord]]:
+        groups: dict[str, list[StoredMessageRecord]] = {}
+        for message in messages:
+            person_key = self.store.build_person_key(
+                contact_phone=message.contact_phone,
+                chat_jid=message.chat_jid,
+                contact_name=message.contact_name,
+            )
+            groups.setdefault(person_key, []).append(message)
+        return groups
+
+    def _build_people_memory_context(self, messages: list[StoredMessageRecord]) -> str:
+        grouped_messages = self._group_messages_by_person(messages)
+        if not grouped_messages:
+            return ""
+
+        memories = self.store.list_person_memories_by_keys(
+            user_id=self.settings.default_user_id,
+            person_keys=list(grouped_messages.keys()),
+        )
+        if not memories:
+            return ""
+
+        memory_by_key = {memory.person_key: memory for memory in memories}
+        sections: list[str] = []
+        current_size = 0
+        char_budget = max(1200, min(5000, self.settings.memory_analysis_snapshot_context_chars))
+
+        for person_key, grouped in grouped_messages.items():
+            memory = memory_by_key.get(person_key)
+            if memory is None:
+                continue
+            contact_name = memory.contact_name or grouped[-1].contact_name or grouped[-1].contact_phone or "Contato"
+            lines = [
+                f"- person_key: {person_key}",
+                f"  Contato: {contact_name}",
+            ]
+            if memory.contact_phone or memory.chat_jid:
+                lines.append(f"  Identificador: {memory.contact_phone or memory.chat_jid}")
+            if memory.last_analyzed_at:
+                lines.append(
+                    f"  Ultima atualizacao: {memory.last_analyzed_at.astimezone(UTC).strftime('%Y-%m-%d %H:%M UTC')}"
+                )
+            if memory.profile_summary:
+                lines.append(f"  Quem e: {memory.profile_summary}")
+            if memory.relationship_summary:
+                lines.append(f"  Relacao com o dono: {memory.relationship_summary}")
+            if memory.salient_facts:
+                lines.append(f"  Fatos marcantes: {'; '.join(memory.salient_facts[:6])}")
+            if memory.open_loops:
+                lines.append(f"  Pendencias abertas: {'; '.join(memory.open_loops[:5])}")
+            if memory.recent_topics:
+                lines.append(f"  Topicos recentes: {'; '.join(memory.recent_topics[:5])}")
+
+            section = "\n".join(lines)
+            projected_size = current_size + len(section) + 2
+            if sections and projected_size > char_budget:
+                break
+            sections.append(section)
+            current_size = projected_size
+
+        return "\n\n".join(sections)
+
     def _build_conversation_context(self, messages: list[StoredMessageRecord]) -> str:
         if not messages:
             return ""
 
         groups: dict[str, dict[str, object]] = {}
         for message in messages:
-            key = message.chat_jid or message.contact_phone or message.contact_name.strip() or "contato-desconhecido"
+            key = self.store.build_person_key(
+                contact_phone=message.contact_phone,
+                chat_jid=message.chat_jid,
+                contact_name=message.contact_name,
+            )
             group = groups.get(key)
             if group is None:
                 group = {
+                    "person_key": key,
                     "contact_name": message.contact_name.strip() or message.contact_phone or "Contato",
                     "contact_phone": message.contact_phone,
                     "chat_jid": message.chat_jid,
@@ -1074,7 +1218,8 @@ class MemoryAnalysisService:
         for group in ordered_groups[:12]:
             total_messages = int(group["inbound_count"]) + int(group["outbound_count"])
             lines = [
-                f"- Conversa: {group['contact_name']}",
+                f"- person_key: {group['person_key']}",
+                f"  Conversa: {group['contact_name']}",
                 f"  Identificador: {group['contact_phone'] or group['chat_jid'] or 'indisponivel'}",
                 (
                     f"  Volume: {total_messages} mensagens "

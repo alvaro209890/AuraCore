@@ -44,7 +44,6 @@ import {
   getMemoryStatus,
   getMemorySnapshots,
   getObserverStatus,
-  previewMemoryAnalysis,
   refreshObserverMessages,
   refineMemory,
   resetObserver,
@@ -60,7 +59,6 @@ import {
   type ChatWorkspace,
   type ImportantMessage,
   type MemoryAnalysisDetailMode,
-  type MemoryAnalysisPreview,
   type MemoryCurrent,
   type MemoryStatus,
   type MemorySnapshot,
@@ -97,12 +95,6 @@ type AgentState = {
   completedAt: string | null;
 };
 
-type MemoryFilters = {
-  targetMessageCount: number;
-  maxLookbackHours: number;
-  detailMode: MemoryAnalysisDetailMode;
-};
-
 type AutomationDraft = {
   auto_sync_enabled: boolean;
   auto_analyze_enabled: boolean;
@@ -137,19 +129,6 @@ type NavItem = {
 
 const POLL_INTERVAL_MS = 5000;
 const QR_REFRESH_INTERVAL_MS = 25000;
-const MESSAGE_TARGET_PRESETS = [80, 140, 200, 250];
-const LOOKBACK_PRESETS = [24, 72, 168];
-const DETAIL_OPTIONS: Array<{
-  value: MemoryAnalysisDetailMode;
-  label: string;
-  description: string;
-  badge: string;
-}> = [
-  { value: "light", label: "Rápida", description: "Leitura leve para checar mudança recente sem empurrar muito contexto.", badge: "~18k chars" },
-  { value: "balanced", label: "Padrão", description: "Equilíbrio entre custo, cobertura do histórico recente e qualidade do retrato.", badge: "~36k chars" },
-  { value: "deep", label: "Profunda", description: "Usa o teto atual da stack quando houve muita novidade ou atraso de consolidação.", badge: "~60k chars" },
-];
-
 const NAV_GROUPS: NavGroup[] = [
   {
     title: "Painel Principal",
@@ -209,8 +188,8 @@ const ANALYZE_STEPS: AgentStep[] = [
   },
   {
     threshold: 78,
-    label: "Consolidando com DeepSeek",
-    detail: "Transformando sinais dispersos em um perfil mais útil e mais fiel ao dono.",
+    label: "Consolidando memoria",
+    detail: "Transformando sinais dispersos em um perfil mais util e mais fiel ao dono.",
   },
   {
     threshold: 94,
@@ -232,7 +211,7 @@ const REFINE_STEPS: AgentStep[] = [
   },
   {
     threshold: 66,
-    label: "Refinando com DeepSeek",
+    label: "Refinando memoria",
     detail: "Melhorando linguagem, prioridades e retrato comportamental do dono.",
   },
   {
@@ -350,16 +329,6 @@ function formatTokenCount(value: number): string {
   return new Intl.NumberFormat("pt-BR").format(value);
 }
 
-function formatUsd(value: number): string {
-  const digits = value < 0.01 ? 4 : 2;
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  }).format(value);
-}
-
 function hasEstablishedMemory(memory: MemoryCurrent | null, latestSnapshot: MemorySnapshot | null): boolean {
   return Boolean(memory?.last_analyzed_at || latestSnapshot?.id);
 }
@@ -378,13 +347,12 @@ function getIntentTitle(intent: AgentIntent | null): string {
 }
 
 function buildActivityThinking(args: {
-  preview: MemoryAnalysisPreview | null;
   intent: AgentIntent | null;
   hasMemory: boolean;
   projectsCount: number;
   snapshotsCount: number;
 }): string[] {
-  const { preview, intent, hasMemory, projectsCount, snapshotsCount } = args;
+  const { intent, hasMemory, projectsCount, snapshotsCount } = args;
   const resolvedIntent = intent ?? (hasMemory ? "improve_memory" : "first_analysis");
   const lines: string[] = [];
 
@@ -402,26 +370,12 @@ function buildActivityThinking(args: {
     );
   }
 
-  if (preview) {
-    lines.push(
-      `A leitura atual consegue encaixar ${preview.selected_message_count} de ${preview.available_message_count} mensagens diretas na janela, respeitando o teto operacional de ${preview.stack_max_message_capacity} mensagens desta stack.`,
-    );
-    lines.push(
-      `O pacote enviado ao ${preview.deepseek_model} usa cerca de ${formatTokenCount(preview.estimated_input_tokens)} tokens de entrada e reserva ${formatTokenCount(preview.request_output_reserve_tokens)} de saida; o custo previsto fica em ${formatUsd(preview.estimated_cost_total_floor_usd)} a ${formatUsd(preview.estimated_cost_total_ceiling_usd)}.`,
-    );
-    lines.push(
-      `Hoje existem ${preview.new_message_count} mensagens novas e ${preview.replaced_message_count} ja ficaram para tras pela retencao; isso ajuda a explicar o score atual de ${preview.recommendation_score}/100.`,
-    );
-  } else {
-    lines.push("Sem preview carregado, o painel mostra apenas o fluxo do agente e aguarda um novo calculo da leitura.");
-  }
-
   if (hasMemory) {
     lines.push(
-      `O agente ainda cruza a janela nova com ${snapshotsCount} snapshots, ${projectsCount} projetos consolidados e o chat pessoal salvo para manter continuidade entre leituras.`,
+      `Hoje a base consolidada cruza ${snapshotsCount} snapshots, ${projectsCount} projetos e o historico do chat pessoal para manter continuidade entre leituras.`,
     );
   } else {
-    lines.push("Como ainda nao existe base consolidada, o modelo usa principalmente a janela atual de mensagens diretas para montar a primeira memoria util.");
+    lines.push("Como ainda nao existe base consolidada, a primeira leitura se apoia principalmente nas mensagens diretas mais recentes para montar a base inicial.");
   }
 
   return lines;
@@ -464,7 +418,7 @@ function buildPersistedActivityLogs(status: AutomationStatus | null): AgentLog[]
     id: `job-${job.id}`,
     tone: (job.status === "failed" ? "error" : job.status === "succeeded" ? "success" : "info") as LogTone,
     createdAt: job.finished_at ?? job.started_at ?? job.created_at,
-    message: `Job ${job.status}: ${getIntentTitle(job.intent as AgentIntent)} em ${job.detail_mode}, alvo ${job.target_message_count} msgs, custo teto ${formatUsd(job.estimated_cost_ceiling_usd)}.`,
+    message: `Job ${job.status}: ${getIntentTitle(job.intent as AgentIntent)} em ${job.detail_mode}, alvo ${job.target_message_count} msgs.`,
   }));
 
   return [...syncLogs, ...decisionLogs, ...jobLogs].sort((left, right) => (
@@ -516,19 +470,6 @@ function makeLog(tone: LogTone, message: string): AgentLog {
   };
 }
 
-function getPreviewTone(score: number): "emerald" | "amber" | "indigo" | "rose" {
-  if (score >= 80) {
-    return "emerald";
-  }
-  if (score >= 60) {
-    return "indigo";
-  }
-  if (score >= 38) {
-    return "amber";
-  }
-  return "rose";
-}
-
 function getSignalMetrics(snapshot: MemorySnapshot | null): InsightMetric[] {
   return [
     {
@@ -552,7 +493,7 @@ function getSignalMetrics(snapshot: MemorySnapshot | null): InsightMetric[] {
     {
       label: "Lacunas Restantes",
       value: snapshot?.open_questions.length ?? 0,
-      description: "Pontos que ainda precisam de mais sinal para a IA ficar melhor.",
+      description: "Pontos que ainda precisam de mais sinal para o retrato ficar mais confiavel.",
       color: "zinc",
     },
   ];
@@ -671,9 +612,9 @@ function SegmentedControl({
 
 // ── Smart context builder ──────────────────────────────────────────────────────
 // Scores important messages, projects, snapshots and memory by relevance to the
-// user's question. Picks the best items across all sources, staying within a
-// tight character budget so token cost stays low.
-// Does NOT include raw WhatsApp messages — that is DeepSeek's job during analysis.
+// user's question. Picks the best items across all sources while keeping the
+// payload short and focused.
+// Does not include raw WhatsApp messages.
 
 const PT_STOPWORDS = new Set([
   "a", "o", "e", "de", "do", "da", "dos", "das", "em", "no", "na", "nos", "nas",
@@ -777,14 +718,14 @@ function buildSmartContextHint(
 
   // Assemble — most relevant first
   if (relevantMessages.length > 0) {
-    addPart("Cofre de mensagens importantes (identificadas pelo DeepSeek nas conversas do WhatsApp):");
+    addPart("Mensagens importantes relacionadas ao pedido:");
     for (const { item: m } of relevantMessages) {
       if (!addPart(`- [${m.category}] ${m.contact_name || "?"}: ${truncateText(m.message_text, 100)}`)) break;
     }
   }
 
   if (relevantProjects.length > 0) {
-    addPart("Projetos relevantes (consolidados pelo DeepSeek):");
+    addPart("Projetos relevantes:");
     for (const { item: p } of relevantProjects) {
       if (!addPart(`- ${p.project_name}: ${truncateText(p.summary, 80)} [${p.status}]`)) break;
       if (p.next_steps.length > 0) addPart(`  Proximos: ${p.next_steps.slice(0, 2).join("; ")}`);
@@ -792,7 +733,7 @@ function buildSmartContextHint(
   }
 
   if (relevantInsights.length > 0) {
-    addPart("Insights do DeepSeek (analises recentes):");
+    addPart("Sinais recentes relevantes:");
     for (const insight of relevantInsights) {
       if (!addPart(`- [${insight.source}] ${truncateText(insight.text, 100)}`)) break;
     }
@@ -823,13 +764,6 @@ export function ConnectionDashboard() {
   const [automationStatus, setAutomationStatus] = useState<AutomationStatus | null>(null);
   const [automationDraft, setAutomationDraft] = useState<AutomationDraft | null>(null);
   const [chatDraft, setChatDraft] = useState("");
-  const [filters, setFilters] = useState<MemoryFilters>({
-    targetMessageCount: 200,
-    maxLookbackHours: 72,
-    detailMode: "balanced",
-  });
-  const [preview, setPreview] = useState<MemoryAnalysisPreview | null>(null);
-  const [previewError, setPreviewError] = useState<string | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [memoryError, setMemoryError] = useState<string | null>(null);
   const [importantMessagesError, setImportantMessagesError] = useState<string | null>(null);
@@ -845,7 +779,6 @@ export function ConnectionDashboard() {
   const [streamingText, setStreamingText] = useState<string | null>(null);
   const [isLoadingChatThread, setIsLoadingChatThread] = useState(false);
   const [isCreatingChatThread, setIsCreatingChatThread] = useState(false);
-  const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [isSavingAutomation, setIsSavingAutomation] = useState(false);
   const [isTickingAutomation, setIsTickingAutomation] = useState(false);
   const [pollingEnabled, setPollingEnabled] = useState(false);
@@ -923,18 +856,6 @@ export function ConnectionDashboard() {
     };
   }, []);
 
-  useEffect(() => {
-    if (isHydrating) {
-      return;
-    }
-
-    const timeoutId = window.setTimeout(() => {
-      void refreshPreview();
-    }, 180);
-
-    return () => window.clearTimeout(timeoutId);
-  }, [filters, isHydrating, memory?.last_analyzed_at]);
-
   function applyChatWorkspace(workspace: ChatWorkspace): void {
     setChatThreads(workspace.threads);
     setActiveChatThreadId(workspace.active_thread_id);
@@ -1008,23 +929,6 @@ export function ConnectionDashboard() {
       setIsRefreshing(false);
     } else {
       setIsHydrating(false);
-    }
-  }
-
-  async function refreshPreview(): Promise<void> {
-    setIsPreviewLoading(true);
-    try {
-      const nextPreview = await previewMemoryAnalysis({
-        target_message_count: filters.targetMessageCount,
-        max_lookback_hours: filters.maxLookbackHours,
-        detail_mode: filters.detailMode,
-      });
-      setPreview(nextPreview);
-      setPreviewError(null);
-    } catch (error) {
-      setPreviewError(getErrorMessage(error));
-    } finally {
-      setIsPreviewLoading(false);
     }
   }
 
@@ -1328,7 +1232,6 @@ export function ConnectionDashboard() {
         }
       }
 
-      await refreshPreview();
     } catch (error) {
       const message = getErrorMessage(error);
       setMemoryError(message);
@@ -1375,7 +1278,7 @@ export function ConnectionDashboard() {
   async function submitChatMessage(): Promise<void> {
     const normalized = chatDraft.trim();
     if (!normalized) {
-      setChatError("Escreva uma mensagem para conversar com a IA.");
+      setChatError("Escreva uma mensagem para enviar.");
       return;
     }
 
@@ -1416,7 +1319,6 @@ export function ConnectionDashboard() {
   }
 
   const currentNavTitle = NAV_ITEMS.find((item) => item.id === activeTab)?.label ?? "AuraCore";
-  const previewTone = getPreviewTone(preview?.recommendation_score ?? 0);
 
   return (
     <div className="ac-layout-shell">
@@ -1540,12 +1442,9 @@ export function ConnectionDashboard() {
                   memory={memory}
                   latestSnapshot={latestSnapshot}
                   projects={projects}
-                  preview={preview}
-                  previewTone={previewTone}
                   status={status}
                   connectionError={connectionError}
                   memoryError={memoryError}
-                  previewError={previewError}
                   insightMetrics={insightMetrics}
                   onGoToObserver={() => setActiveTab("observer")}
                   onGoToMemory={() => setActiveTab("memory")}
@@ -1613,7 +1512,6 @@ export function ConnectionDashboard() {
                   agentState={agentState}
                   steps={currentSteps}
                   logs={activityLogs}
-                  preview={preview}
                   memory={memory}
                   latestSnapshot={latestSnapshot}
                   projectsCount={projects.length}
@@ -1640,7 +1538,6 @@ export function ConnectionDashboard() {
                 <ManualTab
                   status={status}
                   memory={memory}
-                  preview={preview}
                   projects={projects}
                   snapshots={snapshots}
                   importantMessages={importantMessages}
@@ -1661,12 +1558,9 @@ function OverviewTab({
   memory,
   latestSnapshot,
   projects,
-  preview,
-  previewTone,
   status,
   connectionError,
   memoryError,
-  previewError,
   insightMetrics,
   onGoToObserver,
   onGoToMemory,
@@ -1675,18 +1569,20 @@ function OverviewTab({
   memory: MemoryCurrent | null;
   latestSnapshot: MemorySnapshot | null;
   projects: ProjectMemory[];
-  preview: MemoryAnalysisPreview | null;
-  previewTone: "emerald" | "amber" | "indigo" | "rose";
   status: ObserverStatus | null;
   connectionError: string | null;
   memoryError: string | null;
-  previewError: string | null;
   insightMetrics: InsightMetric[];
   onGoToObserver: () => void;
   onGoToMemory: () => void;
   onGoToChat: () => void;
 }) {
-  const [subTab, setSubTab] = useState<"summary" | "mapping" | "engine">("summary");
+  const [subTab, setSubTab] = useState<"summary" | "mapping" | "signals">("summary");
+  const latestUpdateLabel = memory?.last_analyzed_at
+    ? formatShortDateTime(memory.last_analyzed_at)
+    : latestSnapshot?.created_at
+      ? formatShortDateTime(latestSnapshot.created_at)
+      : "Pendente";
 
   return (
     <div className="page-stack">
@@ -1696,11 +1592,8 @@ function OverviewTab({
             <Brain size={14} />
             AuraCore Ativo
           </div>
-          <h3>Seu cérebro expandido está monitorando sinais, extraindo contexto e reorganizando prioridades em tempo real.</h3>
-          <p>
-            O observador captura apenas contatos diretos, a memória consolida padrões do dono e o planejador mostra se
-            uma nova leitura realmente compensa antes de gastar tokens.
-          </p>
+          <h3>Seu painel central do WhatsApp organiza sinais, memórias, contatos importantes e frentes ativas em um só lugar.</h3>
+          <p>O observador lê apenas conversas diretas, a memória consolida o que importa e os lotes novos atualizam o histórico sem complicar a operação.</p>
         </div>
         <div className="hero-actions">
           <button className="ac-secondary-button" onClick={onGoToObserver} type="button">
@@ -1709,25 +1602,25 @@ function OverviewTab({
           </button>
           <button className="ac-secondary-button" onClick={onGoToMemory} type="button">
             <Database size={15} />
-            Planejar Leitura
+            Abrir Memória
           </button>
           <button className="ac-primary-button" onClick={onGoToChat} type="button">
             <MessageSquare size={15} />
-            Falar com IA
+            Abrir Chat
           </button>
         </div>
       </Card>
 
       <div style={{ padding: "0 4px" }}>
         <SegmentedControl
-          options={["Painel de Resumo", "Mapa Estrutural", "Métricas Engine"]}
+          options={["Painel de Resumo", "Mapa Estrutural", "Sinais Recentes"]}
           selected={
-            subTab === "summary" ? "Painel de Resumo" : subTab === "mapping" ? "Mapa Estrutural" : "Métricas Engine"
+            subTab === "summary" ? "Painel de Resumo" : subTab === "mapping" ? "Mapa Estrutural" : "Sinais Recentes"
           }
           onChange={(val) => {
             if (val === "Painel de Resumo") setSubTab("summary");
             if (val === "Mapa Estrutural") setSubTab("mapping");
-            if (val === "Métricas Engine") setSubTab("engine");
+            if (val === "Sinais Recentes") setSubTab("signals");
           }}
         />
       </div>
@@ -1738,27 +1631,27 @@ function OverviewTab({
             <ModernStatCard
               label="Observador"
               value={status?.connected ? "Online" : "Aguardando"}
-              meta={status?.connected ? "Operacional" : "Sem sessão ativa"}
+              meta={status?.connected ? "Captura pronta" : "Sem sessão ativa"}
               icon={Eye}
               tone="emerald"
             />
             <ModernStatCard
-              label="Conexão ativa"
+              label="Número conectado"
               value={status?.owner_number ?? "Sem número"}
-              meta="Dispositivo principal"
+              meta="Dono do observador"
               icon={Smartphone}
             />
             <ModernStatCard
-              label="Próxima leitura"
-              value={preview ? `${preview.recommendation_score}%` : "--"}
-              meta={preview?.recommendation_label ?? "Sem cálculo"}
-              icon={Zap}
-              tone={previewTone}
+              label="Última atualização"
+              value={latestUpdateLabel}
+              meta={memory?.last_analyzed_at ? "Memória consolidada" : "Base inicial pendente"}
+              icon={Clock}
+              tone="amber"
             />
             <ModernStatCard
-              label="Mensagens salvas"
-              value={preview ? String(preview.retained_message_count) : "--"}
-              meta={preview ? `de ${preview.retention_limit} retidas` : "Aguardando preview"}
+              label="Projetos ativos"
+              value={String(projects.length)}
+              meta={projects.length > 0 ? "Frentes consolidadas" : "Ainda sem frentes consolidadas"}
               icon={Database}
               tone="indigo"
             />
@@ -1817,18 +1710,13 @@ function OverviewTab({
         </Card>
       ) : null}
 
-      {subTab === "engine" ? (
+      {subTab === "signals" ? (
         <div className="dual-column-grid">
           <Card className="score-card-modern">
-            <SectionTitle title="Leitura Recomendada" icon={BarChart3} />
-            <div className="score-display-row">
-              <span className="score-big">{preview?.recommendation_score ?? 0}</span>
-              <span className="score-small">/ 100</span>
-            </div>
-            <ProgressBar value={preview?.recommendation_score ?? 0} tone={previewTone} />
+            <SectionTitle title="Resumo da Última Janela" icon={BarChart3} />
             <p className="support-copy">
-              {preview?.recommendation_summary ??
-                "A barra sobe quando o banco acumulou contexto novo suficiente para justificar uma nova leitura do DeepSeek."}
+              {latestSnapshot?.window_summary ??
+                "Quando a primeira leitura concluir, este bloco passa a resumir o momento mais recente consolidado do dono."}
             </p>
           </Card>
 
@@ -1851,7 +1739,6 @@ function OverviewTab({
 
       {connectionError ? <InlineError title="Falha na conexão" message={connectionError} /> : null}
       {memoryError ? <InlineError title="Falha na memória" message={memoryError} /> : null}
-      {previewError ? <InlineError title="Falha no preview" message={previewError} /> : null}
     </div>
   );
 }
@@ -2093,80 +1980,317 @@ function MemoryTab({
 }
 
 function ProjectsTab({ projects }: { projects: ProjectMemory[] }) {
+  const [subTab, setSubTab] = useState<"overview" | "details" | "roadmap">("overview");
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  const totalSteps = projects.reduce((sum, p) => sum + p.next_steps.length, 0);
+  const totalEvidence = projects.reduce((sum, p) => sum + p.evidence.length, 0);
+  const avgStrength = projects.length > 0 ? Math.round(projects.reduce((sum, p) => sum + getProjectStrength(p), 0) / projects.length) : 0;
+  const latestUpdated = projects.length > 0
+    ? projects.reduce((latest, p) => (p.updated_at > latest ? p.updated_at : latest), projects[0].updated_at)
+    : null;
+
+  if (projects.length === 0) {
+    return (
+      <div className="page-stack">
+        <Card className="proj-empty-hero">
+          <div className="proj-empty-icon">
+            <FolderGit2 size={40} />
+          </div>
+          <h3>Nenhum projeto consolidado</h3>
+          <p>Assim que a memória tiver sinal suficiente, as frentes de trabalho reais aparecem aqui com detalhes completos, próximos passos e evidências.</p>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="page-stack">
-      <div className="project-focus-row">
-        {projects.slice(0, 2).map((project, index) => (
-          <Card key={`${project.id}-focus`} className={`project-focus-card${index === 0 ? " project-focus-card-primary" : ""}`}>
-            <div className="project-focus-head">
-              <div>
-                <span>{index === 0 ? "Foco Principal" : "Foco Secundário"}</span>
-                <h3>{project.project_name}</h3>
-              </div>
-              <div className={`micro-status micro-status-${index === 0 ? "emerald" : "amber"}`}>{project.status || "Em progresso"}</div>
-            </div>
-            <ProgressBar value={getProjectStrength(project)} tone={index === 0 ? "indigo" : "zinc"} label="Densidade de sinal da frente" />
-            <p>{project.summary}</p>
-          </Card>
-        ))}
+      {/* ── Hero Stats Row ── */}
+      <div className="proj-stats-row">
+        <ModernStatCard label="Projetos Ativos" value={String(projects.length)} meta="Frentes consolidadas" icon={FolderGit2} tone="indigo" />
+        <ModernStatCard label="Próximos Passos" value={String(totalSteps)} meta="Ações pendentes totais" icon={ChevronRight} tone="amber" />
+        <ModernStatCard label="Evidências" value={String(totalEvidence)} meta="Sinais de progresso" icon={CheckCircle2} tone="emerald" />
+        <ModernStatCard label="Sinal Médio" value={`${avgStrength}%`} meta={latestUpdated ? `Últ. atualização ${formatRelativeTime(latestUpdated)}` : "Sem data"} icon={BarChart3} />
       </div>
 
-      <SectionTitle title="Mapa Detalhado de Projetos" icon={FolderGit2} />
+      {/* ── Sub-tab Selector ── */}
+      <div style={{ padding: "0 4px" }}>
+        <SegmentedControl
+          options={["Visão Geral", "Detalhes Completos", "Roadmap"]}
+          selected={subTab === "overview" ? "Visão Geral" : subTab === "details" ? "Detalhes Completos" : "Roadmap"}
+          onChange={(val) => {
+            if (val === "Visão Geral") setSubTab("overview");
+            if (val === "Detalhes Completos") setSubTab("details");
+            if (val === "Roadmap") setSubTab("roadmap");
+          }}
+        />
+      </div>
 
-      {projects.length === 0 ? (
-        <Card>
-          <div className="empty-hint">
-            <FolderGit2 size={18} />
-            <p>Nenhum projeto consolidado ainda. Assim que a memória tiver mais sinal, as frentes reais aparecem aqui.</p>
-          </div>
-        </Card>
-      ) : (
-        <div className="project-list-stack">
-          {projects.map((project) => (
-            <Card key={project.id} className="project-list-card">
-              <div className="project-list-grid">
-                <div className="project-left-col">
-                  <div className="project-name-line">
-                    <GitBranch size={16} />
+      {/* ═══ SUB-TAB: Visão Geral ═══ */}
+      {subTab === "overview" ? (
+        <>
+          {/* Focus Cards */}
+          <div className="project-focus-row">
+            {projects.slice(0, 2).map((project, index) => (
+              <Card key={`${project.id}-focus`} className={`project-focus-card${index === 0 ? " project-focus-card-primary" : ""}`}>
+                <div className="project-focus-head">
+                  <div>
+                    <span>{index === 0 ? "Foco Principal" : "Foco Secundário"}</span>
                     <h3>{project.project_name}</h3>
                   </div>
-                  <div className="project-seen-row">
+                  <div className={`micro-status micro-status-${index === 0 ? "emerald" : "amber"}`}>{project.status || "Em progresso"}</div>
+                </div>
+                <ProgressBar value={getProjectStrength(project)} tone={index === 0 ? "indigo" : "amber"} label="Densidade de sinal" />
+                <p>{project.summary}</p>
+                <div className="proj-focus-footer">
+                  <div className="proj-focus-meta">
                     <Clock size={12} />
-                    <span>{project.last_seen_at ? `Visto em ${formatShortDateTime(project.last_seen_at)}` : "Sem data recente"}</span>
+                    <span>{project.last_seen_at ? formatRelativeTime(project.last_seen_at) : "Sem data"}</span>
                   </div>
-
-                  <div className="project-core-meta">
-                    <ProjectInfoBlock label="O que está sendo desenvolvido" value={project.what_is_being_built || project.summary} />
-                    <ProjectInfoBlock label="Para quem" value={getAudienceLabel(project)} />
-                  </div>
-                </div>
-
-                <div className="project-right-col">
-                  <div>
-                    <h4>Resumo Atualizado</h4>
-                    <p>{project.summary}</p>
-                  </div>
-
-                  <div className="project-bottom-panels">
-                    <MiniPanel
-                      title="Próximos Passos"
-                      tone="amber"
-                      icon={ChevronRight}
-                      content={project.next_steps[0] ?? "Sem próximo passo consolidado."}
-                    />
-                    <MiniPanel
-                      title="Evidência Recente"
-                      tone="emerald"
-                      icon={CheckCircle2}
-                      content={project.evidence[0] ?? "Sem evidência recente consolidada."}
-                    />
+                  <div className="proj-focus-meta">
+                    <User size={12} />
+                    <span>{getAudienceLabel(project)}</span>
                   </div>
                 </div>
+              </Card>
+            ))}
+          </div>
+
+          {/* Quick Summary Grid for remaining projects */}
+          {projects.length > 2 ? (
+            <>
+              <SectionTitle title={`Outros Projetos (${projects.length - 2})`} icon={GitBranch} />
+              <div className="proj-summary-grid">
+                {projects.slice(2).map((project) => (
+                  <Card key={`${project.id}-summary`} className="proj-summary-card">
+                    <div className="proj-summary-head">
+                      <div className="proj-summary-name">
+                        <GitBranch size={14} />
+                        <h4>{project.project_name}</h4>
+                      </div>
+                      <div className={`micro-status micro-status-${project.status?.toLowerCase().includes("ativo") || project.status?.toLowerCase().includes("andamento") ? "emerald" : "amber"}`}>
+                        {project.status || "Em progresso"}
+                      </div>
+                    </div>
+                    <p className="proj-summary-text">{truncateText(project.summary, 120)}</p>
+                    <div className="proj-summary-footer">
+                      <ProgressBar value={getProjectStrength(project)} tone="zinc" />
+                      <div className="proj-summary-meta">
+                        <span>{project.next_steps.length} passos</span>
+                        <span>•</span>
+                        <span>{project.evidence.length} evidências</span>
+                      </div>
+                    </div>
+                  </Card>
+                ))}
+              </div>
+            </>
+          ) : null}
+        </>
+      ) : null}
+
+      {/* ═══ SUB-TAB: Detalhes Completos ═══ */}
+      {subTab === "details" ? (
+        <div className="proj-details-stack">
+          {projects.map((project) => {
+            const isExpanded = expandedId === project.id;
+            const strength = getProjectStrength(project);
+            return (
+              <Card key={project.id} className={`proj-detail-card${isExpanded ? " proj-detail-card-expanded" : ""}`}>
+                {/* Card Header - always visible */}
+                <button className="proj-detail-header" onClick={() => setExpandedId(isExpanded ? null : project.id)} type="button">
+                  <div className="proj-detail-header-left">
+                    <div className="proj-detail-icon-wrap">
+                      <FolderGit2 size={18} />
+                    </div>
+                    <div>
+                      <h3>{project.project_name}</h3>
+                      <span className="proj-detail-key">{project.project_key}</span>
+                    </div>
+                  </div>
+                  <div className="proj-detail-header-right">
+                    <div className={`micro-status micro-status-${strength >= 60 ? "emerald" : strength >= 40 ? "amber" : "zinc"}`}>
+                      {project.status || "Em progresso"}
+                    </div>
+                    <div className="proj-detail-strength">
+                      <span>{strength}%</span>
+                      <div className="proj-detail-strength-bar">
+                        <div style={{ width: `${strength}%` }} />
+                      </div>
+                    </div>
+                    <ChevronRight size={16} className={`proj-expand-chevron${isExpanded ? " proj-expand-chevron-open" : ""}`} />
+                  </div>
+                </button>
+
+                {/* Expanded Content */}
+                {isExpanded ? (
+                  <div className="proj-detail-body">
+                    {/* Summary Section */}
+                    <div className="proj-detail-section">
+                      <div className="proj-detail-section-title">
+                        <FileText size={14} />
+                        <span>Resumo</span>
+                      </div>
+                      <p>{project.summary}</p>
+                    </div>
+
+                    {/* Two-column info */}
+                    <div className="proj-detail-two-col">
+                      <div className="proj-detail-section">
+                        <div className="proj-detail-section-title">
+                          <Terminal size={14} />
+                          <span>O que está sendo construído</span>
+                        </div>
+                        <p>{project.what_is_being_built || "Sem descrição detalhada ainda."}</p>
+                      </div>
+                      <div className="proj-detail-section">
+                        <div className="proj-detail-section-title">
+                          <User size={14} />
+                          <span>Público-alvo</span>
+                        </div>
+                        <p>{getAudienceLabel(project)}</p>
+                      </div>
+                    </div>
+
+                    {/* Next Steps */}
+                    <div className="proj-detail-section">
+                      <div className="proj-detail-section-title">
+                        <ChevronRight size={14} />
+                        <span>Próximos Passos ({project.next_steps.length})</span>
+                      </div>
+                      {project.next_steps.length > 0 ? (
+                        <ul className="proj-step-list">
+                          {project.next_steps.map((step, i) => (
+                            <li key={`step-${i}`}>
+                              <span className="proj-step-number">{i + 1}</span>
+                              <span>{step}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="proj-detail-empty">Nenhum próximo passo consolidado para este projeto.</p>
+                      )}
+                    </div>
+
+                    {/* Evidence */}
+                    <div className="proj-detail-section">
+                      <div className="proj-detail-section-title">
+                        <CheckCircle2 size={14} />
+                        <span>Evidências ({project.evidence.length})</span>
+                      </div>
+                      {project.evidence.length > 0 ? (
+                        <ul className="proj-evidence-list">
+                          {project.evidence.map((ev, i) => (
+                            <li key={`ev-${i}`}>
+                              <CheckCircle2 size={12} />
+                              <span>{ev}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="proj-detail-empty">Nenhuma evidência recente consolidada.</p>
+                      )}
+                    </div>
+
+                    {/* Footer Metadata */}
+                    <div className="proj-detail-footer-meta">
+                      <div>
+                        <Clock size={12} />
+                        <span>Visto: {project.last_seen_at ? formatShortDateTime(project.last_seen_at) : "—"}</span>
+                      </div>
+                      <div>
+                        <RefreshCw size={12} />
+                        <span>Atualizado: {formatShortDateTime(project.updated_at)}</span>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+              </Card>
+            );
+          })}
+        </div>
+      ) : null}
+
+      {/* ═══ SUB-TAB: Roadmap ═════ */}
+      {subTab === "roadmap" ? (
+        <div className="proj-roadmap-container">
+          <Card>
+            <SectionTitle title="Roadmap de Próximos Passos" icon={Zap} />
+            <p className="support-copy">
+              Visão consolidada de todos os próximos passos pendentes em cada projeto, organizados por prioridade de sinal.
+            </p>
+          </Card>
+
+          <div className="proj-roadmap-timeline">
+            {projects
+              .filter((p) => p.next_steps.length > 0)
+              .sort((a, b) => getProjectStrength(b) - getProjectStrength(a))
+              .map((project) => (
+                <div key={`roadmap-${project.id}`} className="proj-roadmap-project">
+                  <div className="proj-roadmap-project-head">
+                    <div className="proj-roadmap-dot" />
+                    <div className="proj-roadmap-project-info">
+                      <h4>{project.project_name}</h4>
+                      <div className="proj-roadmap-meta-row">
+                        <div className={`micro-status micro-status-${getProjectStrength(project) >= 60 ? "emerald" : "amber"}`}>
+                          {project.status || "Em progresso"}
+                        </div>
+                        <span className="proj-roadmap-strength">{getProjectStrength(project)}% sinal</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="proj-roadmap-steps">
+                    {project.next_steps.map((step, i) => (
+                      <div key={`roadmap-step-${i}`} className="proj-roadmap-step">
+                        <div className="proj-roadmap-step-idx">{i + 1}</div>
+                        <span>{step}</span>
+                      </div>
+                    ))}
+                  </div>
+                  {project.evidence.length > 0 ? (
+                    <div className="proj-roadmap-evidence-block">
+                      <span className="proj-roadmap-evidence-title">
+                        <CheckCircle2 size={12} />
+                        Evidências que sustentam
+                      </span>
+                      {project.evidence.slice(0, 2).map((ev, i) => (
+                        <p key={`roadmap-ev-${i}`} className="proj-roadmap-evidence-text">{ev}</p>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+
+            {projects.filter((p) => p.next_steps.length > 0).length === 0 ? (
+              <Card>
+                <div className="empty-hint">
+                  <Zap size={18} />
+                  <p>Nenhum projeto possui próximos passos definidos. Os passos aparecem conforme a memória consolida mais sinais.</p>
+                </div>
+              </Card>
+            ) : null}
+          </div>
+
+          {/* Projects without next steps */}
+          {projects.filter((p) => p.next_steps.length === 0).length > 0 ? (
+            <Card>
+              <SectionTitle title="Projetos sem Próximos Passos" icon={AlertCircle} />
+              <div className="proj-roadmap-no-steps">
+                {projects
+                  .filter((p) => p.next_steps.length === 0)
+                  .map((project) => (
+                    <div key={`no-steps-${project.id}`} className="proj-roadmap-no-step-item">
+                      <GitBranch size={14} />
+                      <span>{project.project_name}</span>
+                      <span className="proj-roadmap-no-step-hint">Precisa de mais sinal</span>
+                    </div>
+                  ))}
               </div>
             </Card>
-          ))}
+          ) : null}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -2202,8 +2326,8 @@ function ImportantMessagesTab({
           }
         />
         <p className="support-copy">
-          Este cofre recebe automaticamente mensagens que a IA considera duráveis: acessos, dinheiro, projetos,
-          riscos e fatos operacionais que merecem sobreviver além do lote curto de processamento.
+          Este cofre recebe automaticamente mensagens consideradas duráveis: acessos, dinheiro, projetos, riscos e
+          fatos operacionais que merecem sobreviver além do lote curto de processamento.
         </p>
 
         <div className="important-top-grid">
@@ -2241,7 +2365,7 @@ function ImportantMessagesTab({
       <Card>
         <SectionTitle title="Como Isso Funciona" icon={Sparkles} />
         <div className="manual-grid">
-          <ManualInfoCard title="Entrada Automática" text="Depois de cada análise de memória, o DeepSeek escolhe só o que merece virar memória durável." />
+          <ManualInfoCard title="Entrada Automática" text="Depois de cada análise de memória, o sistema separa só o que merece virar memória durável." />
           <ManualInfoCard title="Critério" text="A prioridade é guardar acessos, dinheiro, projetos, clientes, prazos, riscos e fatos operacionais reutilizáveis." />
           <ManualInfoCard title="Revisão Diária" text="O backend revisa esse cofre a partir da virada do dia em São Paulo e tira do uso ativo o que envelheceu ou perdeu valor." />
         </div>
@@ -2473,9 +2597,7 @@ function ChatTab({
               <Send size={18} />
             </button>
           </div>
-          <p className="gpt-composer-note">
-            AuraCore usa sua memória consolidada para responder. Pressione Enter para enviar.
-          </p>
+          <p className="gpt-composer-note">Pressione Enter para enviar.</p>
         </div>
       </section>
     </div>
@@ -2487,7 +2609,6 @@ function ActivityTab({
   agentState,
   steps,
   logs,
-  preview,
   memory,
   latestSnapshot,
   projectsCount,
@@ -2498,7 +2619,6 @@ function ActivityTab({
   agentState: AgentState;
   steps: AgentStep[];
   logs: AgentLog[];
-  preview: MemoryAnalysisPreview | null;
   memory: MemoryCurrent | null;
   latestSnapshot: MemorySnapshot | null;
   projectsCount: number;
@@ -2514,7 +2634,6 @@ function ActivityTab({
   const latestJob = automationStatus?.jobs[0] ?? null;
   const latestModelRun = automationStatus?.model_runs[0] ?? null;
   const thinkingLines = buildActivityThinking({
-    preview,
     intent: resolvedIntent,
     hasMemory: memoryReady,
     projectsCount,
@@ -2523,9 +2642,6 @@ function ActivityTab({
   const resolvedThinking = latestDecision?.explanation
     ? [latestDecision.explanation, ...thinkingLines]
     : thinkingLines;
-  const costRangeLabel = preview
-    ? `${formatUsd(preview.estimated_cost_total_floor_usd)}-${formatUsd(preview.estimated_cost_total_ceiling_usd)}`
-    : "...";
 
   const subTabs = [
     { id: "overview" as const, label: "Visão Geral", icon: BarChart3 },
@@ -2624,29 +2740,25 @@ function ActivityTab({
             />
             <MemorySignalCard
               label="Última decisão"
-              value={latestDecision ? `${latestDecision.score}/100` : "..."}
+              value={latestDecision ? latestDecision.action : "..."}
               meta={latestDecision ? `${latestDecision.action} • ${latestDecision.reason_code}` : "Sem decisão automática persistida ainda"}
               tone="emerald"
             />
             <MemorySignalCard
-              label="Custo do dia"
-              value={automationStatus ? formatUsd(automationStatus.daily_cost_usd) : costRangeLabel}
+              label="Jobs automáticos hoje"
+              value={automationStatus ? String(automationStatus.daily_auto_jobs_count) : "..."}
               meta={
                 automationStatus
-                  ? `${formatTokenCount(automationStatus.daily_auto_jobs_count)} jobs automáticos hoje`
-                  : preview
-                    ? `~${formatTokenCount(preview.estimated_total_tokens)} tokens totais`
-                    : "Aguardando preview"
+                  ? `${automationStatus.queued_jobs_count} item(ns) na fila agora`
+                  : "Aguardando status"
               }
               tone="amber"
             />
           </div>
 
           <Card className="activity-thinking-card">
-            <SectionTitle title="Resumo do Pensamento" icon={Brain} action={<span className="micro-badge">sem CoT bruto</span>} />
-            <p className="support-copy">
-              O painel mostra o raciocinio operacional da execucao e o que o modelo vai considerar. A cadeia de pensamento bruta do `deepseek-reasoner` nao e exposta.
-            </p>
+            <SectionTitle title="Linha Operacional" icon={Brain} />
+            <p className="support-copy">Este bloco resume o estado atual da rotina de leitura e o que foi entendido do processo recente.</p>
             <div className="activity-thinking-list">
               {resolvedThinking.map((line, index) => (
                 <div key={`${line.slice(0, 20)}-${index}`} className="activity-thinking-item">
@@ -2675,19 +2787,19 @@ function ActivityTab({
               tone="zinc"
             />
             <MemorySignalCard
-              label="Último modelo"
-              value={latestModelRun ? latestModelRun.model_name : "..."}
+              label="Último processamento"
+              value={latestJob ? latestJob.status : "..."}
               meta={
-                latestModelRun
-                  ? `${latestModelRun.run_type} • ${latestModelRun.success ? "ok" : "falhou"}`
-                  : "Sem execução de modelo registrada ainda"
+                latestJob
+                  ? `${getIntentTitle(latestJob.intent as AgentIntent)} • ${formatShortDateTime(latestJob.created_at)}`
+                  : "Sem processamento registrado ainda"
               }
               tone="indigo"
             />
             <MemorySignalCard
-              label="Janela útil"
-              value={preview ? `${formatTokenCount(preview.selected_message_count)}/${formatTokenCount(preview.available_message_count)} msgs` : "..."}
-              meta={preview ? `teto operacional de ${formatTokenCount(preview.stack_max_message_capacity)} msgs` : "Aguardando preview"}
+              label="Último snapshot"
+              value={latestSnapshot ? formatShortDateTime(latestSnapshot.created_at) : "..."}
+              meta={latestSnapshot ? `${formatTokenCount(latestSnapshot.source_message_count)} mensagens consolidadas` : "Aguardando primeira leitura"}
               tone="amber"
             />
           </div>
@@ -2731,22 +2843,20 @@ function ActivityTab({
             </Card>
 
             <Card>
-              <SectionTitle title="Execução de Modelo" icon={Cpu} />
+              <SectionTitle title="Execução Recente" icon={Cpu} />
               {latestModelRun ? (
                 <div className="activity-persist-block">
-                  <strong>{latestModelRun.model_name}</strong>
-                  <p>
-                    {latestModelRun.run_type} • {latestModelRun.success ? "sucesso" : "falha"}
-                  </p>
+                  <strong>{latestModelRun.run_type}</strong>
+                  <p>{latestModelRun.success ? "Concluída com sucesso" : "Concluída com falha"}</p>
                   <div className="activity-meta-row">
                     <span>{latestModelRun.latency_ms ? `${latestModelRun.latency_ms} ms` : "latência n/d"}</span>
-                    <span>{latestModelRun.estimated_cost_usd != null ? formatUsd(latestModelRun.estimated_cost_usd) : "custo n/d"}</span>
+                    <span>{formatShortDateTime(latestModelRun.created_at)}</span>
                   </div>
                 </div>
               ) : (
                 <div className="empty-hint">
                   <Cpu size={18} />
-                  <p>Nenhuma execução de modelo registrada ainda.</p>
+                  <p>Nenhuma execução registrada ainda.</p>
                 </div>
               )}
             </Card>
@@ -2831,7 +2941,7 @@ function AutomationTab({
           <MemorySignalCard
             label="Jobs automaticos hoje"
             value={automationStatus ? String(automationStatus.daily_auto_jobs_count) : "..."}
-            meta={automationStatus ? `${formatUsd(automationStatus.daily_cost_usd)} consumidos hoje` : "Aguardando status"}
+            meta={automationStatus ? "Lotes concluidos automaticamente hoje" : "Aguardando status"}
             tone="indigo"
           />
           <MemorySignalCard
@@ -2915,205 +3025,11 @@ function AutomationTab({
       {automationError ? <InlineError title="Falha na automacao" message={automationError} /> : null}
     </div>
   );
-
-  /*
-
-  const settings = automationStatus?.settings ?? null;
-  const draft = automationDraft;
-
-  function updateDraft<K extends keyof AutomationDraft>(key: K, value: AutomationDraft[K]): void {
-    onDraftChange((previous) => {
-      const base = previous ?? (settings ? toAutomationDraft(settings) : null);
-      if (!base) {
-        return previous;
-      }
-      return { ...base, [key]: value };
-    });
-  }
-
-  return (
-    <div className="page-stack">
-      <Card>
-        <SectionTitle
-          title="Automação Controlada"
-          icon={Settings}
-          action={settings ? <span className="micro-badge">{formatShortDateTime(settings.updated_at)}</span> : null}
-        />
-        <p className="support-copy">
-          Esta área controla quando o backend transforma uma sincronização em decisão e quando a decisão vira job automático.
-        </p>
-
-        <div className="automation-top-grid">
-          <MemorySignalCard
-            label="Gasto de hoje"
-            value={automationStatus ? formatUsd(automationStatus.daily_cost_usd) : "..."}
-            meta={automationStatus ? `${automationStatus.daily_auto_jobs_count} jobs automáticos hoje` : "Aguardando status"}
-            accent
-          />
-          <MemorySignalCard
-            label="Fila"
-            value={automationStatus ? String(automationStatus.queued_jobs_count) : "..."}
-            meta={automationStatus?.running_job_id ? "Há job rodando agora" : "Sem job rodando"}
-            tone="indigo"
-          />
-          <MemorySignalCard
-            label="Último sync"
-            value={automationStatus?.sync_runs[0] ? automationStatus.sync_runs[0].status : "..."}
-            meta={automationStatus?.sync_runs[0] ? formatShortDateTime(automationStatus.sync_runs[0].started_at) : "Sem sync persistido"}
-            tone="emerald"
-          />
-          <MemorySignalCard
-            label="Última decisão"
-            value={automationStatus?.decisions[0] ? automationStatus.decisions[0].action : "..."}
-            meta={automationStatus?.decisions[0] ? automationStatus.decisions[0].reason_code : "Sem decisão persistida"}
-            tone="amber"
-          />
-        </div>
-
-        {draft ? (
-          <div className="automation-settings-grid">
-            <div className="automation-setting-card">
-              <SectionTitle title="Chaves de Automação" icon={Zap} />
-              <label className="automation-toggle-row">
-                <span>Auto sync</span>
-                <input
-                  type="checkbox"
-                  checked={draft.auto_sync_enabled}
-                  onChange={(event) => updateDraft("auto_sync_enabled", event.target.checked)}
-                />
-              </label>
-              <label className="automation-toggle-row">
-                <span>Auto analisar</span>
-                <input
-                  type="checkbox"
-                  checked={draft.auto_analyze_enabled}
-                  onChange={(event) => updateDraft("auto_analyze_enabled", event.target.checked)}
-                />
-              </label>
-              <label className="automation-toggle-row">
-                <span>Auto refinar</span>
-                <input
-                  type="checkbox"
-                  checked={draft.auto_refine_enabled}
-                  onChange={(event) => updateDraft("auto_refine_enabled", event.target.checked)}
-                />
-              </label>
-            </div>
-
-            <div className="automation-setting-card">
-              <SectionTitle title="Thresholds" icon={BarChart3} />
-              <AutomationNumberField
-                label="Novas mensagens"
-                value={draft.min_new_messages_threshold}
-                onChange={(value) => updateDraft("min_new_messages_threshold", value)}
-              />
-              <AutomationNumberField
-                label="Stale em horas"
-                value={draft.stale_hours_threshold}
-                onChange={(value) => updateDraft("stale_hours_threshold", value)}
-              />
-              <AutomationNumberField
-                label="Podadas para reagir"
-                value={draft.pruned_messages_threshold}
-                onChange={(value) => updateDraft("pruned_messages_threshold", value)}
-              />
-            </div>
-
-            <div className="automation-setting-card">
-              <SectionTitle title="Configuração Base" icon={Cpu} />
-              <div className="control-block automation-control-block">
-                <div className="control-head">
-                  <label>Profundidade padrão</label>
-                  <span>Usada nos jobs incrementais</span>
-                </div>
-                <SegmentedControl
-                  options={["light", "balanced", "deep"]}
-                  selected={draft.default_detail_mode}
-                  onChange={(value) => updateDraft("default_detail_mode", value as MemoryAnalysisDetailMode)}
-                />
-              </div>
-              <AutomationNumberField
-                label="Alvo padrão"
-                value={draft.default_target_message_count}
-                onChange={(value) => updateDraft("default_target_message_count", value)}
-              />
-              <AutomationNumberField
-                label="Lookback padrão"
-                value={draft.default_lookback_hours}
-                onChange={(value) => updateDraft("default_lookback_hours", value)}
-              />
-            </div>
-
-            <div className="automation-setting-card">
-              <SectionTitle title="Orçamento" icon={Terminal} />
-              <AutomationNumberField
-                label="Budget diário (USD)"
-                value={draft.daily_budget_usd}
-                step="0.01"
-                onChange={(value) => updateDraft("daily_budget_usd", value)}
-              />
-              <AutomationNumberField
-                label="Jobs automáticos/dia"
-                value={draft.max_auto_jobs_per_day}
-                onChange={(value) => updateDraft("max_auto_jobs_per_day", value)}
-              />
-            </div>
-          </div>
-        ) : (
-          <div className="empty-hint">
-            <Settings size={18} />
-            <p>Carregando configuração da automação.</p>
-          </div>
-        )}
-
-        <div className="hero-actions">
-          <button className="ac-secondary-button" onClick={onTick} disabled={isTickingAutomation} type="button">
-            <RefreshCw size={15} className={isTickingAutomation ? "spin" : ""} />
-            {isTickingAutomation ? "Processando..." : "Rodar Tick Agora"}
-          </button>
-          <button className="ac-primary-button" onClick={onSave} disabled={isSavingAutomation || !draft} type="button">
-            <CheckCircle2 size={15} />
-            {isSavingAutomation ? "Salvando..." : "Salvar Configuração"}
-          </button>
-        </div>
-      </Card>
-
-      <Card>
-        <SectionTitle title="Últimos Jobs e Syncs" icon={Activity} />
-        <div className="automation-history-grid">
-          <div className="activity-persist-block">
-            <strong>Jobs recentes</strong>
-            {(automationStatus?.jobs ?? []).slice(0, 4).map((job) => (
-              <div key={job.id} className="activity-meta-row">
-                <span>{getIntentTitle(job.intent as AgentIntent)}</span>
-                <span>{job.status}</span>
-                <span>{formatShortDateTime(job.created_at)}</span>
-              </div>
-            ))}
-          </div>
-          <div className="activity-persist-block">
-            <strong>Syncs recentes</strong>
-            {(automationStatus?.sync_runs ?? []).slice(0, 4).map((syncRun) => (
-              <div key={syncRun.id} className="activity-meta-row">
-                <span>{syncRun.trigger}</span>
-                <span>{syncRun.status}</span>
-                <span>{formatShortDateTime(syncRun.started_at)}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </Card>
-
-      {automationError ? <InlineError title="Falha na automação" message={automationError} /> : null}
-    </div>
-  );
-*/
 }
 
 function ManualTab({
   status,
   memory,
-  preview,
   projects,
   snapshots,
   importantMessages,
@@ -3123,7 +3039,6 @@ function ManualTab({
 }: {
   status: ObserverStatus | null;
   memory: MemoryCurrent | null;
-  preview: MemoryAnalysisPreview | null;
   projects: ProjectMemory[];
   snapshots: MemorySnapshot[];
   importantMessages: ImportantMessage[];
@@ -3137,15 +3052,14 @@ function ManualTab({
         <SectionTitle title="O Que É Este Site" icon={Brain} />
         <div className="manual-grid">
           <div className="manual-list">
-            <p>O AuraCore conecta o WhatsApp, retém apenas chats diretos, monta memória consolidada, organiza projetos, registra atividade e permite conversar com a IA usando esse contexto.</p>
+            <p>O AuraCore conecta o WhatsApp, retém apenas chats diretos, monta memória consolidada, organiza projetos, registra atividade e permite conversar usando esse contexto.</p>
             <p>O backend é FastAPI. O Supabase guarda mensagens diretas, snapshots, persona, projetos, chat, automação e atividade persistida.</p>
-            <p>O `deepseek-reasoner` cuida da trilha crítica da memória. O Groq fica no chat pessoal para resposta rápida.</p>
+            <p>O sistema usa a memória consolidada, os projetos e o histórico do chat para responder e atualizar contexto.</p>
           </div>
           <div className="manual-list">
             <p>Observador: {status?.connected ? "conectado" : "desconectado"}.</p>
             <p>Memória atual: {memory?.last_analyzed_at ? `ativa desde ${formatShortDateTime(memory.last_analyzed_at)}` : "ainda não consolidada"}.</p>
             <p>Projetos salvos: {projects.length}. Snapshots: {snapshots.length}. Threads de chat: {chatThreads.length}. Mensagens na thread ativa: {chatMessages.length}.</p>
-            <p>Preview atual: {preview ? `${preview.selected_message_count}/${preview.available_message_count} mensagens cabem agora` : "ainda não carregado"}.</p>
           </div>
         </div>
       </Card>
@@ -3156,10 +3070,10 @@ function ManualTab({
           <ManualInfoCard title="Visão Geral" text="Resumo rápido do estado da memória, sinais úteis e atalhos para entrar no fluxo principal." />
           <ManualInfoCard title="Observador" text="Conecta o WhatsApp, mostra QR, estado da instância e saúde do gateway." />
           <ManualInfoCard title="Memória" text="Controla puxar mensagens, primeira análise, melhoria incremental e refinamento da memória salva." />
-          <ManualInfoCard title="Importantes" text="Mostra o cofre de mensagens duráveis, alimentado automaticamente pela IA após cada análise." />
-          <ManualInfoCard title="Projetos" text="Mostra o que a IA consolidou como frentes reais, próximos passos, evidências e público." />
+          <ManualInfoCard title="Importantes" text="Mostra o cofre de mensagens duráveis, alimentado automaticamente após cada análise." />
+          <ManualInfoCard title="Projetos" text="Mostra as frentes reais, próximos passos, evidências e público já consolidados." />
           <ManualInfoCard title="Chat Pessoal" text="Agora trabalha com múltiplas threads: você separa estratégia, rotina e projetos sem perder a memória central." />
-          <ManualInfoCard title="Atividade / Automação" text="Mostra syncs, decisões, jobs, runs de modelo, thresholds e orçamento operacional." />
+          <ManualInfoCard title="Atividade / Automação" text="Mostra syncs, decisões, jobs e o estado operacional da fila automática." />
         </div>
       </Card>
 
@@ -3168,11 +3082,11 @@ function ManualTab({
         <div className="manual-sequence">
           <ManualStep title="1. Conectar o observador" text="Leia o QR na aba Observador. Depois disso o gateway começa a ler só conversas diretas úteis." />
           <ManualStep title="2. Puxar mensagens" text="O botão de releitura força uma nova sincronização do WhatsApp. Grupos, broadcast e newsletter não devem subir para o Supabase." />
-          <ManualStep title="3. Fazer a primeira análise" text="Quando ainda não existe memória base, a IA monta o primeiro retrato consolidado do dono." />
-          <ManualStep title="4. Salvar mensagens duráveis" text="Ao fim de cada análise, a IA separa acessos, projetos, dinheiro, riscos e fatos operacionais que merecem virar memória longa." />
+          <ManualStep title="3. Fazer a primeira análise" text="Quando ainda não existe memória base, o sistema monta o primeiro retrato consolidado do dono." />
+          <ManualStep title="4. Salvar mensagens duráveis" text="Ao fim de cada análise, o sistema separa acessos, projetos, dinheiro, riscos e fatos operacionais que merecem virar memória longa." />
           <ManualStep title="5. Melhorar memória" text="Depois da base inicial, novas mensagens são cruzadas com snapshots, projetos e chat para atualizar o perfil." />
           <ManualStep title="6. Conversar por threads" text="Use threads separadas no chat para manter assuntos distintos, sem perder a memória central do dono." />
-          <ManualStep title="7. Acompanhar automação" text="A aba de atividade mostra o que foi sincronizado, o que a IA decidiu e quanto custou." />
+          <ManualStep title="7. Acompanhar automação" text="A aba de atividade mostra o que foi sincronizado, o que entrou na fila e o que já foi processado." />
         </div>
       </Card>
 
@@ -3194,7 +3108,8 @@ function ManualTab({
           <p>`mensagens`: apenas conversas diretas aproveitáveis.</p>
           <p>`important_messages`: o cofre de mensagens importantes, revisado diariamente pelo backend.</p>
           <p>`persona`, `memory_snapshots`, `project_memories`: memória consolidada e evolução do perfil.</p>
-          <p>`chat_threads` e `chat_messages`: múltiplas threads do chat pessoal com a IA.</p>
+          <p>`person_memories` e `person_memory_snapshots`: memória separada por pessoa, com histórico incremental por contato.</p>
+          <p>`chat_threads` e `chat_messages`: múltiplas threads do chat pessoal.</p>
           <p>`wa_sync_runs`, `automation_decisions`, `analysis_jobs`, `model_runs`: auditoria operacional da automação.</p>
         </div>
       </Card>
@@ -3204,7 +3119,7 @@ function ManualTab({
         <div className="manual-list">
           <p>Mensagens de grupo.</p>
           <p>Status, newsletter, broadcast e lixo sem texto útil.</p>
-          <p>Cadeia de pensamento bruta do modelo. A interface mostra só resumo operacional.</p>
+          <p>Mensagens de sistema ou explicações internas desnecessárias. A interface mostra só o que ajuda na operação.</p>
         </div>
       </Card>
 
@@ -3220,11 +3135,11 @@ function ManualTab({
             }
           />
           <ManualInfoCard
-            title="Preview"
+            title="Último snapshot"
             text={
-              preview
-                ? `Leitura atual caberia em ${preview.selected_message_count} mensagens, com score ${preview.recommendation_score}/100 e should_analyze=${preview.should_analyze ? "true" : "false"}.`
-                : "Preview ainda não calculado."
+              snapshots[0]
+                ? `Última janela consolidada em ${formatShortDateTime(snapshots[0].created_at)} com ${snapshots[0].source_message_count} mensagens.`
+                : "Nenhum snapshot consolidado ainda."
             }
           />
           <ManualInfoCard
@@ -3243,7 +3158,7 @@ function ManualTab({
             title="Automação"
             text={
               automationStatus
-                ? `${automationStatus.queued_jobs_count} job(s) na fila e custo diário de ${formatUsd(automationStatus.daily_cost_usd)}.`
+                ? `${automationStatus.queued_jobs_count} job(s) na fila e ${automationStatus.daily_auto_jobs_count} processamento(s) automáticos hoje.`
                 : "Status da automação ainda não carregado."
             }
           />
