@@ -105,12 +105,16 @@ async def analyze_memory(
     current = memory_service.get_current_persona()
     snapshots = memory_service.list_snapshots(limit=1)
     snapshot = snapshots[0] if snapshots else None
-    job = memory_service.store.get_running_job(current.user_id) or memory_service.store.get_latest_job(current.user_id)
+    jobs = memory_service.store.list_analysis_jobs(user_id=current.user_id, limit=5)
+    # Procura um job rodando ou o último concluído
+    running_job = next((j for j in jobs if j.status in ("queued", "running")), None)
+    latest_job = running_job or (jobs[0] if jobs else None)
+    
     return AnalyzeMemoryResponse(
         current=_to_persona_response(current),
         snapshot=_to_snapshot_response(snapshot) if snapshot else None,
         projects=[_to_project_response(project) for project in memory_service.list_projects()],
-        job=_to_job_response(job) if job else None,
+        job=_to_job_response(latest_job) if latest_job else None,
     )
 
 
@@ -295,7 +299,9 @@ def _to_important_message_response(message: ImportantMessageRecord) -> Important
     )
 
 
-def _to_job_response(job) -> AnalysisJobResponse:
+def _to_job_response(job: Any) -> AnalysisJobResponse | None:
+    if job is None:
+        return None
     return AnalysisJobResponse(
         id=job.id,
         intent=job.intent,
