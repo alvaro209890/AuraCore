@@ -257,82 +257,24 @@ class AutomationService:
         )
         return decision, job
 
-    async def run_manual_first_analysis(self) -> tuple[AnalysisJobRecord, MemoryAnalysisOutcome]:
-        self._ensure_no_pending_job()
-        plan = self.memory_service.plan_first_analysis()
-        started_at = datetime.now(UTC)
-        job = self.store.create_analysis_job(
-            user_id=self.settings.default_user_id,
-            intent="first_analysis",
-            status="running",
-            trigger_source="manual",
-            decision_id=None,
-            sync_run_id=None,
-            target_message_count=len(plan.source_messages),
-            max_lookback_hours=0,
-            detail_mode="deep",
-            selected_message_count=len(plan.source_messages),
-            selected_transcript_chars=plan.selected_transcript_chars,
-            estimated_input_tokens=plan.estimated_input_tokens,
-            estimated_output_tokens=plan.estimated_output_tokens,
-            estimated_cost_floor_usd=plan.estimated_cost_floor_usd,
-            estimated_cost_ceiling_usd=plan.estimated_cost_ceiling_usd,
-            started_at=started_at,
-            created_at=started_at,
-        )
-        outcome = await self._execute_fixed_analysis_job(job=job, plan=plan)
-        updated_job = self.store.get_analysis_job(job.id)
-        if updated_job is None:
-            raise RuntimeError("Manual first analysis job disappeared after execution.")
-        return updated_job, outcome
-
-    async def run_manual_next_batch(self) -> tuple[AnalysisJobRecord, MemoryAnalysisOutcome]:
-        self._ensure_no_pending_job()
-        plan = self.memory_service.plan_next_batch()
-        started_at = datetime.now(UTC)
-        job = self.store.create_analysis_job(
-            user_id=self.settings.default_user_id,
-            intent="improve_memory",
-            status="running",
-            trigger_source="manual",
-            decision_id=None,
-            sync_run_id=None,
-            target_message_count=len(plan.source_messages),
-            max_lookback_hours=0,
-            detail_mode="balanced",
-            selected_message_count=len(plan.source_messages),
-            selected_transcript_chars=plan.selected_transcript_chars,
-            estimated_input_tokens=plan.estimated_input_tokens,
-            estimated_output_tokens=plan.estimated_output_tokens,
-            estimated_cost_floor_usd=plan.estimated_cost_floor_usd,
-            estimated_cost_ceiling_usd=plan.estimated_cost_ceiling_usd,
-            started_at=started_at,
-            created_at=started_at,
-        )
-        outcome = await self._execute_fixed_analysis_job(job=job, plan=plan)
-        updated_job = self.store.get_analysis_job(job.id)
-        if updated_job is None:
-            raise RuntimeError("Manual next batch job disappeared after execution.")
-        return updated_job, outcome
-
-    async def run_manual_analysis(
+    async def enqueue_manual_analysis(
         self,
         *,
         intent: AnalysisIntent,
         target_message_count: int,
         max_lookback_hours: int,
         detail_mode: str,
-    ) -> tuple[AnalysisJobRecord, MemoryAnalysisOutcome]:
+    ) -> AnalysisJobRecord:
         preview = await self.memory_service.get_analysis_preview(
             target_message_count=target_message_count,
             max_lookback_hours=max_lookback_hours,
             detail_mode=detail_mode,  # type: ignore[arg-type]
         )
-        started_at = datetime.now(UTC)
+        created_at = datetime.now(UTC)
         job = self.store.create_analysis_job(
             user_id=self.settings.default_user_id,
             intent=intent,
-            status="running",
+            status="queued",
             trigger_source="manual",
             decision_id=None,
             sync_run_id=None,
@@ -345,31 +287,76 @@ class AutomationService:
             estimated_output_tokens=preview.estimated_output_tokens,
             estimated_cost_floor_usd=preview.estimated_cost_total_floor_usd,
             estimated_cost_ceiling_usd=preview.estimated_cost_total_ceiling_usd,
-            started_at=started_at,
-            created_at=started_at,
+            created_at=created_at,
         )
-        outcome = await self._execute_analysis_job(job=job, preview=preview)
+        import asyncio
+        asyncio.create_task(self.tick())
         updated_job = self.store.get_analysis_job(job.id)
         if updated_job is None:
-            raise RuntimeError("Manual analysis job disappeared after execution.")
-        return updated_job, outcome
+            raise RuntimeError("Manual analysis job disappeared.")
+        return updated_job
 
-    async def run_manual_refinement(self) -> tuple[AnalysisJobRecord, MemoryRefinementOutcome]:
-        started_at = datetime.now(UTC)
+    async def enqueue_manual_first_analysis(self) -> AnalysisJobRecord:
+        self._ensure_no_pending_job()
+        plan = self.memory_service.plan_first_analysis()
+        return await self.enqueue_manual_analysis(
+            intent="first_analysis",
+            target_message_count=len(plan.source_messages),
+            max_lookback_hours=0,
+            detail_mode="deep",
+        )
+
+    async def enqueue_manual_next_batch(self) -> AnalysisJobRecord:
+        self._ensure_no_pending_job()
+        plan = self.memory_service.plan_next_batch()
+        created_at = datetime.now(UTC)
+        job = self.store.create_analysis_job(
+            user_id=self.settings.default_user_id,
+            intent="improve_memory",
+            status="queued",
+            trigger_source="manual",
+            decision_id=None,
+            sync_run_id=None,
+            target_message_count=len(plan.source_messages),
+            max_lookback_hours=0,
+            detail_mode="balanced",
+            selected_message_count=len(plan.source_messages),
+            selected_transcript_chars=plan.selected_transcript_chars,
+            estimated_input_tokens=plan.estimated_input_tokens,
+            estimated_output_tokens=plan.estimated_output_tokens,
+            estimated_cost_floor_usd=plan.estimated_cost_floor_usd,
+            estimated_cost_ceiling_usd=plan.estimated_cost_ceiling_usd,
+            created_at=created_at,
+        )
+        import asyncio
+        asyncio.create_task(self.tick())
+        updated_job = self.store.get_analysis_job(job.id)
+        if updated_job is None:
+            raise RuntimeError("Manual next batch job disappeared.")
+        return updated_job
+
+    async def enqueue_manual_refinement(self) -> AnalysisJobRecord:
+        created_at = datetime.now(UTC)
         job = self.store.create_analysis_job(
             user_id=self.settings.default_user_id,
             intent="refine_saved",
-            status="running",
+            status="queued",
             trigger_source="manual",
             decision_id=None,
             sync_run_id=None,
             target_message_count=0,
             max_lookback_hours=0,
             detail_mode="balanced",
-            started_at=started_at,
-            created_at=started_at,
+            created_at=created_at,
         )
+        import asyncio
+        asyncio.create_task(self.tick())
+        updated_job = self.store.get_analysis_job(job.id)
+        if updated_job is None:
+            raise RuntimeError("Manual refinement job disappeared.")
+        return updated_job
 
+    async def _execute_fixed_refinement_job(self, job: AnalysisJobRecord) -> None:
         start_clock = perf_counter()
         try:
             outcome = await self.memory_service.refine_saved_memory()
@@ -419,15 +406,15 @@ class AutomationService:
             error_text=None,
             created_at=datetime.now(UTC),
         )
-        updated_job = self.store.get_analysis_job(job.id)
-        if updated_job is None:
-            raise RuntimeError("Manual refinement job disappeared after execution.")
-        return updated_job, outcome
 
     async def execute_next_job(self) -> AnalysisJobRecord | None:
         job = self.store.claim_next_queued_analysis_job(user_id=self.settings.default_user_id)
         if job is None:
             return None
+
+        if job.intent == "refine_saved":
+            await self._execute_fixed_refinement_job(job=job)
+            return self.store.get_analysis_job(job.id)
 
         if job.max_lookback_hours == 0 and job.intent in {"first_analysis", "improve_memory"}:
             plan = (

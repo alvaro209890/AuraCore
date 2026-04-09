@@ -43,6 +43,8 @@ import {
   getAgentStatus,
   getAgentWorkspace,
   getChatWorkspace,
+  getCurrentMemory,
+  getMemoryProjects,
   getImportantMessages,
   getMemoryStatus,
   getMemorySnapshots,
@@ -923,6 +925,7 @@ export function ConnectionDashboard() {
   const [automationStatus, setAutomationStatus] = useState<AutomationStatus | null>(null);
   const [automationDraft, setAutomationDraft] = useState<AutomationDraft | null>(null);
   const [chatDraft, setChatDraft] = useState("");
+  const [queuedJobId, setQueuedJobId] = useState<string | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [agentConnectionError, setAgentConnectionError] = useState<string | null>(null);
   const [agentMessagesError, setAgentMessagesError] = useState<string | null>(null);
@@ -1416,9 +1419,39 @@ export function ConnectionDashboard() {
     }
 
     if (automationResult.status === "fulfilled") {
-      setAutomationStatus(automationResult.value);
+      const snap = automationResult.value;
+      setAutomationStatus(snap);
       setAutomationError(null);
-      setAutomationDraft((previous) => previous ?? toAutomationDraft(automationResult.value.settings));
+      setAutomationDraft((previous) => previous ?? toAutomationDraft(snap.settings));
+
+      // Se temos um job em fila, verifica se ele terminou
+      if (queuedJobId) {
+        const matchingJob = snap.jobs.find(j => j.id === queuedJobId);
+        if (matchingJob) {
+          if (matchingJob.status === "succeeded") {
+            setQueuedJobId(null);
+            const intent = agentState.intent || "first_analysis";
+            
+            // Recarrega os dados agora que o processo terminou
+            getCurrentMemory().then(setMemory);
+            getMemoryProjects().then(setProjects);
+            getMemoryStatus().then(setMemoryStatus);
+            getImportantMessages(80).then(setImportantMessages).catch(() => {});
+            
+            finishAgentRunSuccess(
+              intent,
+              intent === "first_analysis" 
+                ? "Primeira analise concluida. A base inicial do dono foi criada."
+                : intent === "refine_saved"
+                ? "Refinamento concluido. A memoria consolidada ficou mais precisa."
+                : "Leitura concluida. As mensagens novas foram cruzadas com a memoria existente e o perfil foi melhorado."
+            );
+          } else if (matchingJob.status === "failed") {
+            setQueuedJobId(null);
+            finishAgentRunError(agentState.intent || "first_analysis", matchingJob.error_text || "Ocorreu um erro desconhecido durante a análise.");
+          }
+        }
+      }
     } else {
       setAutomationError(getErrorMessage(automationResult.reason));
     }
@@ -1757,47 +1790,31 @@ export function ConnectionDashboard() {
         const response = intent === "first_analysis"
           ? await runFirstMemoryAnalysis()
           : await runNextMemoryBatch();
-        setMemory(response.current);
-        setProjects(response.projects);
-        setSnapshots((previous) => [response.snapshot, ...previous.filter((snapshot) => snapshot.id !== response.snapshot.id)].slice(0, 6));
-        finishAgentRunSuccess(
-          intent,
-          intent === "first_analysis"
-            ? "Primeira analise concluida. A base inicial do dono foi criada."
-            : "Leitura concluida. As mensagens novas foram cruzadas com a memoria existente e o perfil foi melhorado.",
-        );
-        const [automationSnapshot, nextMemoryStatus, nextImportantMessagesResult] = await Promise.all([
-          getAutomationStatus(),
-          getMemoryStatus(),
-          getImportantMessages(80).then((messages) => ({ ok: true as const, messages })).catch((error: unknown) => ({ ok: false as const, error })),
-        ]);
-        setAutomationStatus(automationSnapshot);
-        setAutomationDraft((previous) => previous ?? toAutomationDraft(automationSnapshot.settings));
-        setMemoryStatus(nextMemoryStatus);
-        if (nextImportantMessagesResult.ok) {
-          setImportantMessages(nextImportantMessagesResult.messages);
-          setImportantMessagesError(null);
+        
+        // Response now contains the queued job
+        if (response.job && response.job.status === "queued") {
+          setQueuedJobId(response.job.id);
+          pushAgentLog("info", "Tarefa registrada na fila do servidor. Iniciando processamento em segundo plano...");
         } else {
-          setImportantMessagesError(getErrorMessage(nextImportantMessagesResult.error));
+           setMemory(response.current);
+           setProjects(response.projects);
+           setSnapshots((previous) => [response.snapshot, ...previous.filter((snapshot) => snapshot.id !== response.snapshot.id)].slice(0, 6));
+           finishAgentRunSuccess(
+             intent,
+             intent === "first_analysis"
+               ? "Primeira analise concluida. A base inicial do dono foi criada."
+               : "Leitura concluida. As mensagens novas foram cruzadas com a memoria existente e o perfil foi melhorado.",
+           );
         }
       } else {
         const response = await refineMemory();
-        setMemory(response.current);
-        setProjects(response.projects);
-        finishAgentRunSuccess("refine_saved", "Refinamento concluido. A memoria consolidada ficou mais precisa.");
-        const [automationSnapshot, nextMemoryStatus, nextImportantMessagesResult] = await Promise.all([
-          getAutomationStatus(),
-          getMemoryStatus(),
-          getImportantMessages(80).then((messages) => ({ ok: true as const, messages })).catch((error: unknown) => ({ ok: false as const, error })),
-        ]);
-        setAutomationStatus(automationSnapshot);
-        setAutomationDraft((previous) => previous ?? toAutomationDraft(automationSnapshot.settings));
-        setMemoryStatus(nextMemoryStatus);
-        if (nextImportantMessagesResult.ok) {
-          setImportantMessages(nextImportantMessagesResult.messages);
-          setImportantMessagesError(null);
+        if (response.job && response.job.status === "queued") {
+          setQueuedJobId(response.job.id);
+          pushAgentLog("info", "Tarefa de refinamento registrada na fila. Otimizando a base de dados nos bastidores...");
         } else {
-          setImportantMessagesError(getErrorMessage(nextImportantMessagesResult.error));
+          setMemory(response.current);
+          setProjects(response.projects);
+          finishAgentRunSuccess("refine_saved", "Refinamento concluido. A memoria consolidada ficou mais precisa.");
         }
       }
 

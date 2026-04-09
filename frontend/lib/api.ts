@@ -528,6 +528,10 @@ export async function getImportantMessages(limit = 80): Promise<ImportantMessage
   }
 }
 
+export async function getMemoryProjects(): Promise<ProjectMemory[]> {
+  return request<ProjectMemory[]>("/api/memories/projects");
+}
+
 export async function analyzeMemory(windowHours: number): Promise<AnalyzeMemoryResponse> {
   return request<AnalyzeMemoryResponse>(`/api/memories/analyze?window_hours=${windowHours}`, {
     method: "POST",

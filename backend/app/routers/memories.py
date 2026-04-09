@@ -77,7 +77,7 @@ async def analyze_memory(
         intent = request.intent or (
             "improve_memory" if memory_service.get_current_persona().last_analyzed_at else "first_analysis"
         )
-        job, outcome = await automation_service.run_manual_analysis(
+        job = await automation_service.enqueue_manual_analysis(
             intent=intent,
             target_message_count=request.target_message_count,
             max_lookback_hours=request.max_lookback_hours or 72,
@@ -96,16 +96,20 @@ async def analyze_memory(
         intent = request.intent or (
             "improve_memory" if memory_service.get_current_persona().last_analyzed_at else "first_analysis"
         )
-        job, outcome = await automation_service.run_manual_analysis(
+        job = await automation_service.enqueue_manual_analysis(
             intent=intent,
             target_message_count=target_message_count,
             max_lookback_hours=resolved_window_hours,
             detail_mode=request.detail_mode if request is not None else "balanced",
         )
+    current = memory_service.get_current_persona()
+    snapshots = memory_service.list_snapshots(limit=1)
+    from datetime import datetime, UTC
+    snapshot = snapshots[0] if snapshots else memory_service.store._default_memory_snapshot_record(current.user_id, datetime.now(UTC))
     return AnalyzeMemoryResponse(
-        current=_to_persona_response(outcome.persona),
-        snapshot=_to_snapshot_response(outcome.snapshot),
-        projects=[_to_project_response(project) for project in outcome.projects],
+        current=_to_persona_response(current),
+        snapshot=_to_snapshot_response(snapshot),
+        projects=[_to_project_response(project) for project in memory_service.list_projects()],
         job=_to_job_response(job),
     )
 
@@ -113,12 +117,17 @@ async def analyze_memory(
 @router.post("/first-analysis", response_model=AnalyzeMemoryResponse)
 async def run_first_memory_analysis(
     automation_service: AutomationService = Depends(get_automation_service),
+    memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
 ) -> AnalyzeMemoryResponse:
-    job, outcome = await automation_service.run_manual_first_analysis()
+    job = await automation_service.enqueue_manual_first_analysis()
+    current = memory_service.get_current_persona()
+    snapshots = memory_service.list_snapshots(limit=1)
+    from datetime import datetime, UTC
+    snapshot = snapshots[0] if snapshots else memory_service.store._default_memory_snapshot_record(current.user_id, datetime.now(UTC))
     return AnalyzeMemoryResponse(
-        current=_to_persona_response(outcome.persona),
-        snapshot=_to_snapshot_response(outcome.snapshot),
-        projects=[_to_project_response(project) for project in outcome.projects],
+        current=_to_persona_response(current),
+        snapshot=_to_snapshot_response(snapshot),
+        projects=[_to_project_response(project) for project in memory_service.list_projects()],
         job=_to_job_response(job),
     )
 
@@ -126,12 +135,17 @@ async def run_first_memory_analysis(
 @router.post("/process-next-batch", response_model=AnalyzeMemoryResponse)
 async def run_next_memory_batch(
     automation_service: AutomationService = Depends(get_automation_service),
+    memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
 ) -> AnalyzeMemoryResponse:
-    job, outcome = await automation_service.run_manual_next_batch()
+    job = await automation_service.enqueue_manual_next_batch()
+    current = memory_service.get_current_persona()
+    snapshots = memory_service.list_snapshots(limit=1)
+    from datetime import datetime, UTC
+    snapshot = snapshots[0] if snapshots else memory_service.store._default_memory_snapshot_record(current.user_id, datetime.now(UTC))
     return AnalyzeMemoryResponse(
-        current=_to_persona_response(outcome.persona),
-        snapshot=_to_snapshot_response(outcome.snapshot),
-        projects=[_to_project_response(project) for project in outcome.projects],
+        current=_to_persona_response(current),
+        snapshot=_to_snapshot_response(snapshot),
+        projects=[_to_project_response(project) for project in memory_service.list_projects()],
         job=_to_job_response(job),
     )
 
@@ -198,15 +212,23 @@ async def preview_memory_analysis(
 @router.post("/refine", response_model=RefineMemoryResponse)
 async def refine_saved_memory(
     automation_service: AutomationService = Depends(get_automation_service),
+    memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
 ) -> RefineMemoryResponse:
-    job, outcome = await automation_service.run_manual_refinement()
+    job = await automation_service.enqueue_manual_refinement()
     return RefineMemoryResponse(
-        current=_to_persona_response(outcome.persona),
-        projects=[_to_project_response(project) for project in outcome.projects],
+        current=_to_persona_response(memory_service.get_current_persona()),
+        projects=[_to_project_response(project) for project in memory_service.list_projects()],
         job=_to_job_response(job),
     )
 
 
+
+@router.get("/projects", response_model=list[ProjectMemoryResponse])
+async def get_memory_projects(
+    memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
+) -> list[ProjectMemoryResponse]:
+    projects = memory_service.list_projects()
+    return [_to_project_response(project) for project in projects]
 def _to_persona_response(persona: PersonaRecord) -> MemoryCurrentResponse:
     return MemoryCurrentResponse(
         user_id=str(persona.user_id),
