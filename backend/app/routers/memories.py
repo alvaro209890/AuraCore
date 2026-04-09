@@ -104,13 +104,13 @@ async def analyze_memory(
         )
     current = memory_service.get_current_persona()
     snapshots = memory_service.list_snapshots(limit=1)
-    from datetime import datetime, UTC
-    snapshot = snapshots[0] if snapshots else memory_service.store._default_memory_snapshot_record(current.user_id, datetime.now(UTC))
+    snapshot = snapshots[0] if snapshots else None
+    job = memory_service.store.get_running_job(current.user_id) or memory_service.store.get_latest_job(current.user_id)
     return AnalyzeMemoryResponse(
         current=_to_persona_response(current),
-        snapshot=_to_snapshot_response(snapshot),
+        snapshot=_to_snapshot_response(snapshot) if snapshot else None,
         projects=[_to_project_response(project) for project in memory_service.list_projects()],
-        job=_to_job_response(job),
+        job=_to_job_response(job) if job else None,
     )
 
 
@@ -122,11 +122,10 @@ async def run_first_memory_analysis(
     job = await automation_service.enqueue_manual_first_analysis()
     current = memory_service.get_current_persona()
     snapshots = memory_service.list_snapshots(limit=1)
-    from datetime import datetime, UTC
-    snapshot = snapshots[0] if snapshots else memory_service.store._default_memory_snapshot_record(current.user_id, datetime.now(UTC))
+    snapshot = snapshots[0] if snapshots else None
     return AnalyzeMemoryResponse(
         current=_to_persona_response(current),
-        snapshot=_to_snapshot_response(snapshot),
+        snapshot=_to_snapshot_response(snapshot) if snapshot else None,
         projects=[_to_project_response(project) for project in memory_service.list_projects()],
         job=_to_job_response(job),
     )
@@ -140,11 +139,10 @@ async def run_next_memory_batch(
     job = await automation_service.enqueue_manual_next_batch()
     current = memory_service.get_current_persona()
     snapshots = memory_service.list_snapshots(limit=1)
-    from datetime import datetime, UTC
-    snapshot = snapshots[0] if snapshots else memory_service.store._default_memory_snapshot_record(current.user_id, datetime.now(UTC))
+    snapshot = snapshots[0] if snapshots else None
     return AnalyzeMemoryResponse(
         current=_to_persona_response(current),
-        snapshot=_to_snapshot_response(snapshot),
+        snapshot=_to_snapshot_response(snapshot) if snapshot else None,
         projects=[_to_project_response(project) for project in memory_service.list_projects()],
         job=_to_job_response(job),
     )

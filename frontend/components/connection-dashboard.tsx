@@ -1798,7 +1798,9 @@ export function ConnectionDashboard() {
         } else {
            setMemory(response.current);
            setProjects(response.projects);
-           setSnapshots((previous) => [response.snapshot, ...previous.filter((snapshot) => snapshot.id !== response.snapshot.id)].slice(0, 6));
+           if (response.snapshot) {
+             setSnapshots((previous) => [response.snapshot, ...previous.filter((snapshot) => snapshot.id !== response.snapshot.id)].slice(0, 6));
+           }
            finishAgentRunSuccess(
              intent,
              intent === "first_analysis"
