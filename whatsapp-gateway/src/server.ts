@@ -2,10 +2,11 @@ import cors from "cors";
 import express, { type NextFunction, type Request, type Response } from "express";
 
 import { config } from "./config";
-import { buildGatewayRunId, WhatsAppObserverGateway } from "./whatsapp";
+import { buildGatewayRunId, WhatsAppGatewayChannel } from "./whatsapp";
 
 const app = express();
-const gateway = new WhatsAppObserverGateway();
+const observerGateway = new WhatsAppGatewayChannel("observer", config.observerInstanceName, config.observerInstanceName);
+const agentGateway = new WhatsAppGatewayChannel("agent", config.agentInstanceName, config.agentInstanceName);
 const runId = buildGatewayRunId();
 
 function requireInternalToken(req: Request, res: Response, next: NextFunction): void {
@@ -27,12 +28,12 @@ app.get("/health", (_req, res) => {
 app.use("/internal", requireInternalToken);
 
 app.get("/internal/observer/status", (_req, res) => {
-  res.json(gateway.getStatus());
+  res.json(observerGateway.getStatus());
 });
 
 app.post("/internal/observer/connect", async (_req, res, next) => {
   try {
-    const status = await gateway.connectObserver();
+    const status = await observerGateway.connectSession();
     res.json(status);
   } catch (error) {
     next(error);
@@ -41,8 +42,8 @@ app.post("/internal/observer/connect", async (_req, res, next) => {
 
 app.post("/internal/observer/reset", async (_req, res, next) => {
   try {
-    await gateway.resetSession();
-    res.json(gateway.getStatus());
+    await observerGateway.resetSession();
+    res.json(observerGateway.getStatus());
   } catch (error) {
     next(error);
   }
@@ -50,8 +51,52 @@ app.post("/internal/observer/reset", async (_req, res, next) => {
 
 app.post("/internal/observer/messages/refresh", async (_req, res, next) => {
   try {
-    const status = await gateway.refreshDirectHistory();
+    const status = await observerGateway.refreshDirectHistory();
     res.json(status);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/internal/observer/send", async (req, res, next) => {
+  try {
+    const chatJid = String(req.body?.chat_jid ?? "").trim();
+    const messageText = String(req.body?.message_text ?? "").trim();
+    const result = await observerGateway.sendTextMessage(chatJid, messageText);
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/internal/agent/status", (_req, res) => {
+  res.json(agentGateway.getStatus());
+});
+
+app.post("/internal/agent/connect", async (_req, res, next) => {
+  try {
+    const status = await agentGateway.connectSession();
+    res.json(status);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/internal/agent/reset", async (_req, res, next) => {
+  try {
+    await agentGateway.resetSession();
+    res.json(agentGateway.getStatus());
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/internal/agent/send", async (req, res, next) => {
+  try {
+    const chatJid = String(req.body?.chat_jid ?? "").trim();
+    const messageText = String(req.body?.message_text ?? "").trim();
+    const result = await agentGateway.sendTextMessage(chatJid, messageText);
+    res.json(result);
   } catch (error) {
     next(error);
   }
@@ -66,14 +111,18 @@ const server = app.listen(config.port, "127.0.0.1", () => {
   console.log(`AuraCore WhatsApp gateway listening on 127.0.0.1:${config.port}`);
 });
 
-void gateway.start().catch((error) => {
+void observerGateway.start().catch((error) => {
   console.error("Failed to start AuraCore WhatsApp gateway", error);
+});
+void agentGateway.start().catch((error) => {
+  console.error("Failed to start AuraCore WhatsApp agent gateway", error);
 });
 
 async function shutdown(signal: string): Promise<void> {
   console.warn(`Received ${signal}; shutting down AuraCore WhatsApp gateway.`);
   server.close();
-  await gateway.shutdown();
+  await observerGateway.shutdown();
+  await agentGateway.shutdown();
   process.exit(0);
 }
 

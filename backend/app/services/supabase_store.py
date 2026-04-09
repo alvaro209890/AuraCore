@@ -8,6 +8,8 @@ from uuid import UUID, uuid4
 from postgrest.exceptions import APIError
 from supabase import Client, create_client
 
+_UNSET = object()
+
 
 @dataclass(slots=True)
 class IngestedMessageRecord:
@@ -270,6 +272,53 @@ class ModelRunRecord:
     reasoning_tokens: int | None
     estimated_cost_usd: float | None
     error_text: str | None
+    created_at: datetime
+
+
+@dataclass(slots=True)
+class WhatsAppAgentSettingsRecord:
+    user_id: UUID
+    auto_reply_enabled: bool
+    allowed_contact_phone: str | None
+    updated_at: datetime
+
+
+@dataclass(slots=True)
+class WhatsAppAgentThreadRecord:
+    id: str
+    user_id: UUID
+    contact_phone: str | None
+    chat_jid: str | None
+    contact_name: str
+    status: str
+    last_message_at: datetime | None
+    last_inbound_at: datetime | None
+    last_outbound_at: datetime | None
+    last_error_at: datetime | None
+    last_error_text: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(slots=True)
+class WhatsAppAgentMessageRecord:
+    id: str
+    user_id: UUID
+    thread_id: str
+    direction: str
+    role: str
+    whatsapp_message_id: str | None
+    source_inbound_message_id: str | None
+    contact_phone: str | None
+    chat_jid: str | None
+    content: str
+    message_timestamp: datetime
+    processing_status: str
+    send_status: str | None
+    error_text: str | None
+    response_latency_ms: int | None
+    model_run_id: str | None
+    metadata: dict[str, Any]
     created_at: datetime
 
 
@@ -808,6 +857,42 @@ class SupabaseStore:
                 records.append(parsed)
         return records
 
+    def search_person_memories(self, user_id: UUID, queries: list[str], *, limit: int = 3) -> list[PersonMemoryRecord]:
+        if not queries:
+            return []
+        try:
+            query = (
+                self.client.table("person_memories")
+                .select(
+                    "id,user_id,person_key,contact_name,contact_phone,chat_jid,profile_summary,"
+                    "relationship_summary,salient_facts,open_loops,recent_topics,source_snapshot_id,"
+                    "source_message_count,last_message_at,last_analyzed_at,updated_at"
+                )
+                .eq("user_id", str(user_id))
+            )
+            or_clauses = []
+            for q in queries:
+                if q.strip():
+                    term = f"%{q.strip()}%"
+                    or_clauses.append(f"contact_name.ilike.{term}")
+                    or_clauses.append(f"profile_summary.ilike.{term}")
+                    or_clauses.append(f"relationship_summary.ilike.{term}")
+            if or_clauses:
+                query = query.or_(",".join(or_clauses))
+            response = query.order("last_message_at", desc=True).limit(limit).execute()
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "person_memories"):
+                raise
+            return []
+
+        rows = response.data or []
+        records: list[PersonMemoryRecord] = []
+        for row in rows:
+            parsed = self._parse_person_memory(row, fallback_user_id=user_id)
+            if parsed is not None:
+                records.append(parsed)
+        return records
+
     def upsert_person_memories(
         self,
         *,
@@ -1137,6 +1222,42 @@ class SupabaseStore:
                 messages.append(parsed)
         return messages
 
+    def search_important_messages(self, user_id: UUID, queries: list[str], *, limit: int = 5) -> list[ImportantMessageRecord]:
+        if not queries:
+            return []
+        try:
+            query = (
+                self.client.table("important_messages")
+                .select(
+                    "id,user_id,source_message_id,contact_name,contact_phone,direction,message_text,"
+                    "message_timestamp,category,importance_reason,confidence,status,review_notes,"
+                    "saved_at,last_reviewed_at,discarded_at"
+                )
+                .eq("user_id", str(user_id))
+                .eq("status", "active")
+            )
+            or_clauses = []
+            for q in queries:
+                if q.strip():
+                    term = f"%{q.strip()}%"
+                    or_clauses.append(f"message_text.ilike.{term}")
+                    or_clauses.append(f"importance_reason.ilike.{term}")
+            if or_clauses:
+                query = query.or_(",".join(or_clauses))
+            response = query.order("message_timestamp", desc=True).limit(limit).execute()
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "important_messages"):
+                raise
+            return []
+
+        rows = response.data or []
+        messages: list[ImportantMessageRecord] = []
+        for row in rows:
+            parsed = self._parse_important_message(row, fallback_user_id=user_id)
+            if parsed is not None:
+                messages.append(parsed)
+        return messages
+
     def list_important_messages_pending_review(
         self,
         *,
@@ -1376,6 +1497,510 @@ class SupabaseStore:
         )
         rows = response.data or []
         return sum(1 for row in rows if isinstance(row, dict))
+
+    def get_whatsapp_agent_settings(self, user_id: UUID) -> WhatsAppAgentSettingsRecord:
+        try:
+            response = (
+                self.client.table("whatsapp_agent_settings")
+                .select("user_id,auto_reply_enabled,allowed_contact_phone,updated_at")
+                .eq("user_id", str(user_id))
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "whatsapp_agent_settings"):
+                raise
+            return self._default_whatsapp_agent_settings(user_id=user_id)
+
+        rows = response.data or []
+        if not rows or not isinstance(rows[0], dict):
+            created_at = datetime.now(UTC)
+            payload = self._default_whatsapp_agent_settings_record(user_id=user_id, updated_at=created_at)
+            try:
+                self.client.table("whatsapp_agent_settings").upsert(payload, on_conflict="user_id").execute()
+            except Exception as exc:
+                if not self._is_missing_table_error(exc, "whatsapp_agent_settings"):
+                    raise
+                return self._default_whatsapp_agent_settings(user_id=user_id)
+            return self._parse_whatsapp_agent_settings(payload, fallback_user_id=user_id) or self._default_whatsapp_agent_settings(user_id=user_id)
+
+        parsed = self._parse_whatsapp_agent_settings(rows[0], fallback_user_id=user_id)
+        return parsed or self._default_whatsapp_agent_settings(user_id=user_id)
+
+    def update_whatsapp_agent_settings(
+        self,
+        *,
+        user_id: UUID,
+        auto_reply_enabled: bool | None = None,
+        allowed_contact_phone: str | None | object = _UNSET,
+        updated_at: datetime | None = None,
+    ) -> WhatsAppAgentSettingsRecord:
+        current = self.get_whatsapp_agent_settings(user_id)
+        resolved_updated_at = updated_at or datetime.now(UTC)
+        payload = {
+            "user_id": str(user_id),
+            "auto_reply_enabled": current.auto_reply_enabled if auto_reply_enabled is None else bool(auto_reply_enabled),
+            "allowed_contact_phone": (
+                current.allowed_contact_phone
+                if allowed_contact_phone is _UNSET
+                else self.normalize_contact_phone(allowed_contact_phone if isinstance(allowed_contact_phone, str) else None)
+            ),
+            "updated_at": resolved_updated_at.isoformat(),
+        }
+        try:
+            self.client.table("whatsapp_agent_settings").upsert(payload, on_conflict="user_id").execute()
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "whatsapp_agent_settings"):
+                raise
+            return self._parse_whatsapp_agent_settings(payload, fallback_user_id=user_id) or self._default_whatsapp_agent_settings(user_id=user_id)
+        return self._parse_whatsapp_agent_settings(payload, fallback_user_id=user_id) or self._default_whatsapp_agent_settings(user_id=user_id)
+
+    def get_whatsapp_agent_thread(self, *, user_id: UUID, thread_id: str) -> WhatsAppAgentThreadRecord | None:
+        try:
+            response = (
+                self.client.table("whatsapp_agent_threads")
+                .select(
+                    "id,user_id,contact_phone,chat_jid,contact_name,status,last_message_at,last_inbound_at,"
+                    "last_outbound_at,last_error_at,last_error_text,created_at,updated_at"
+                )
+                .eq("user_id", str(user_id))
+                .eq("id", thread_id)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "whatsapp_agent_threads"):
+                raise
+            return None
+        rows = response.data or []
+        if not rows:
+            return None
+        return self._parse_whatsapp_agent_thread(rows[0], fallback_user_id=user_id)
+
+    def get_whatsapp_agent_thread_by_contact(
+        self,
+        *,
+        user_id: UUID,
+        contact_phone: str,
+    ) -> WhatsAppAgentThreadRecord | None:
+        normalized_phone = self.normalize_contact_phone(contact_phone)
+        if not normalized_phone:
+            return None
+        try:
+            response = (
+                self.client.table("whatsapp_agent_threads")
+                .select(
+                    "id,user_id,contact_phone,chat_jid,contact_name,status,last_message_at,last_inbound_at,"
+                    "last_outbound_at,last_error_at,last_error_text,created_at,updated_at"
+                )
+                .eq("user_id", str(user_id))
+                .eq("contact_phone", normalized_phone)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "whatsapp_agent_threads"):
+                raise
+            return None
+        rows = response.data or []
+        if not rows:
+            return None
+        return self._parse_whatsapp_agent_thread(rows[0], fallback_user_id=user_id)
+
+    def get_or_create_whatsapp_agent_thread(
+        self,
+        *,
+        user_id: UUID,
+        contact_phone: str,
+        chat_jid: str | None,
+        contact_name: str | None,
+        created_at: datetime | None = None,
+    ) -> WhatsAppAgentThreadRecord:
+        normalized_phone = self.normalize_contact_phone(contact_phone)
+        if not normalized_phone:
+            raise RuntimeError("WhatsApp agent thread requires a valid contact phone.")
+
+        existing = self.get_whatsapp_agent_thread_by_contact(user_id=user_id, contact_phone=normalized_phone)
+        resolved_name = self._resolve_contact_name(
+            incoming_name=contact_name,
+            contact_phone=normalized_phone,
+            known_name=self._load_known_contact_names([normalized_phone]).get(normalized_phone),
+        )
+        resolved_chat_jid = self._optional_text(chat_jid)
+        now = created_at or datetime.now(UTC)
+
+        if existing is not None:
+            payload: dict[str, Any] = {"updated_at": now.isoformat()}
+            if resolved_name and resolved_name != existing.contact_name:
+                payload["contact_name"] = resolved_name
+            if resolved_chat_jid and resolved_chat_jid != existing.chat_jid:
+                payload["chat_jid"] = resolved_chat_jid
+            if payload:
+                try:
+                    self.client.table("whatsapp_agent_threads").update(payload).eq("id", existing.id).execute()
+                except Exception as exc:
+                    if not self._is_missing_table_error(exc, "whatsapp_agent_threads"):
+                        raise
+                    return existing
+                refreshed = self.get_whatsapp_agent_thread(user_id=user_id, thread_id=existing.id)
+                return refreshed or existing
+            return existing
+
+        thread_id = str(uuid4())
+        record = {
+            "id": thread_id,
+            "user_id": str(user_id),
+            "contact_phone": normalized_phone,
+            "chat_jid": resolved_chat_jid,
+            "contact_name": resolved_name,
+            "status": "active",
+            "last_message_at": None,
+            "last_inbound_at": None,
+            "last_outbound_at": None,
+            "last_error_at": None,
+            "last_error_text": None,
+            "created_at": now.isoformat(),
+            "updated_at": now.isoformat(),
+        }
+        try:
+            self.client.table("whatsapp_agent_threads").insert(record).execute()
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "whatsapp_agent_threads"):
+                raise
+            parsed = self._parse_whatsapp_agent_thread(record, fallback_user_id=user_id)
+            if parsed is None:
+                raise RuntimeError("WhatsApp agent thread could not be created.")
+            return parsed
+        created = self.get_whatsapp_agent_thread(user_id=user_id, thread_id=thread_id)
+        if created is None:
+            raise RuntimeError("WhatsApp agent thread could not be created.")
+        return created
+
+    def update_whatsapp_agent_thread(
+        self,
+        *,
+        thread_id: str,
+        contact_name: str | None | object = _UNSET,
+        chat_jid: str | None | object = _UNSET,
+        status: str | None | object = _UNSET,
+        last_message_at: datetime | None | object = _UNSET,
+        last_inbound_at: datetime | None | object = _UNSET,
+        last_outbound_at: datetime | None | object = _UNSET,
+        last_error_at: datetime | None | object = _UNSET,
+        last_error_text: str | None | object = _UNSET,
+        updated_at: datetime | None = None,
+    ) -> WhatsAppAgentThreadRecord | None:
+        current = self.get_whatsapp_agent_thread(user_id=self.default_user_id, thread_id=thread_id)
+        if current is None:
+            return None
+
+        payload: dict[str, Any] = {"updated_at": (updated_at or datetime.now(UTC)).isoformat()}
+        if contact_name is not _UNSET:
+            payload["contact_name"] = self._resolve_contact_name(
+                incoming_name=contact_name if isinstance(contact_name, str) else None,
+                contact_phone=current.contact_phone,
+                known_name=current.contact_name,
+            )
+        if chat_jid is not _UNSET:
+            payload["chat_jid"] = self._optional_text(chat_jid if isinstance(chat_jid, str) else None)
+        if status is not _UNSET:
+            payload["status"] = str(status or "active").strip().lower() or "active"
+        if last_message_at is not _UNSET:
+            payload["last_message_at"] = last_message_at.isoformat() if isinstance(last_message_at, datetime) else None
+        if last_inbound_at is not _UNSET:
+            payload["last_inbound_at"] = last_inbound_at.isoformat() if isinstance(last_inbound_at, datetime) else None
+        if last_outbound_at is not _UNSET:
+            payload["last_outbound_at"] = last_outbound_at.isoformat() if isinstance(last_outbound_at, datetime) else None
+        if last_error_at is not _UNSET:
+            payload["last_error_at"] = last_error_at.isoformat() if isinstance(last_error_at, datetime) else None
+        if last_error_text is not _UNSET:
+            payload["last_error_text"] = self._optional_text(last_error_text)
+
+        try:
+            self.client.table("whatsapp_agent_threads").update(payload).eq("id", thread_id).execute()
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "whatsapp_agent_threads"):
+                raise
+            merged = {
+                "id": current.id,
+                "user_id": str(current.user_id),
+                "contact_phone": current.contact_phone,
+                "chat_jid": payload.get("chat_jid", current.chat_jid),
+                "contact_name": payload.get("contact_name", current.contact_name),
+                "status": payload.get("status", current.status),
+                "last_message_at": payload.get("last_message_at", current.last_message_at.isoformat() if current.last_message_at else None),
+                "last_inbound_at": payload.get("last_inbound_at", current.last_inbound_at.isoformat() if current.last_inbound_at else None),
+                "last_outbound_at": payload.get("last_outbound_at", current.last_outbound_at.isoformat() if current.last_outbound_at else None),
+                "last_error_at": payload.get("last_error_at", current.last_error_at.isoformat() if current.last_error_at else None),
+                "last_error_text": payload.get("last_error_text", current.last_error_text),
+                "created_at": current.created_at.isoformat(),
+                "updated_at": payload["updated_at"],
+            }
+            return self._parse_whatsapp_agent_thread(merged, fallback_user_id=current.user_id)
+
+        return self.get_whatsapp_agent_thread(user_id=current.user_id, thread_id=thread_id)
+
+    def list_whatsapp_agent_threads(self, *, user_id: UUID, limit: int = 24) -> list[WhatsAppAgentThreadRecord]:
+        try:
+            response = (
+                self.client.table("whatsapp_agent_threads")
+                .select(
+                    "id,user_id,contact_phone,chat_jid,contact_name,status,last_message_at,last_inbound_at,"
+                    "last_outbound_at,last_error_at,last_error_text,created_at,updated_at"
+                )
+                .eq("user_id", str(user_id))
+                .order("last_message_at", desc=True)
+                .order("updated_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "whatsapp_agent_threads"):
+                raise
+            return []
+
+        rows = response.data or []
+        threads: list[WhatsAppAgentThreadRecord] = []
+        for row in rows:
+            parsed = self._parse_whatsapp_agent_thread(row, fallback_user_id=user_id)
+            if parsed is not None:
+                threads.append(parsed)
+        return threads
+
+    def get_whatsapp_agent_message_by_whatsapp_id(
+        self,
+        *,
+        user_id: UUID,
+        whatsapp_message_id: str,
+    ) -> WhatsAppAgentMessageRecord | None:
+        normalized_id = self._optional_text(whatsapp_message_id)
+        if not normalized_id:
+            return None
+        try:
+            response = (
+                self.client.table("whatsapp_agent_messages")
+                .select(
+                    "id,user_id,thread_id,direction,role,whatsapp_message_id,source_inbound_message_id,contact_phone,"
+                    "chat_jid,content,message_timestamp,processing_status,send_status,error_text,response_latency_ms,"
+                    "model_run_id,metadata,created_at"
+                )
+                .eq("user_id", str(user_id))
+                .eq("whatsapp_message_id", normalized_id)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "whatsapp_agent_messages"):
+                raise
+            return None
+
+        rows = response.data or []
+        if not rows:
+            return None
+        return self._parse_whatsapp_agent_message(rows[0], fallback_user_id=user_id)
+
+    def get_whatsapp_agent_outbound_for_source_inbound(
+        self,
+        *,
+        user_id: UUID,
+        source_inbound_message_id: str,
+    ) -> WhatsAppAgentMessageRecord | None:
+        normalized_id = self._optional_text(source_inbound_message_id)
+        if not normalized_id:
+            return None
+        try:
+            response = (
+                self.client.table("whatsapp_agent_messages")
+                .select(
+                    "id,user_id,thread_id,direction,role,whatsapp_message_id,source_inbound_message_id,contact_phone,"
+                    "chat_jid,content,message_timestamp,processing_status,send_status,error_text,response_latency_ms,"
+                    "model_run_id,metadata,created_at"
+                )
+                .eq("user_id", str(user_id))
+                .eq("direction", "outbound")
+                .eq("source_inbound_message_id", normalized_id)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "whatsapp_agent_messages"):
+                raise
+            return None
+
+        rows = response.data or []
+        if not rows:
+            return None
+        return self._parse_whatsapp_agent_message(rows[0], fallback_user_id=user_id)
+
+    def append_whatsapp_agent_message(
+        self,
+        *,
+        user_id: UUID,
+        thread_id: str,
+        direction: str,
+        role: str,
+        content: str,
+        message_timestamp: datetime,
+        contact_phone: str | None,
+        chat_jid: str | None,
+        whatsapp_message_id: str | None = None,
+        source_inbound_message_id: str | None = None,
+        processing_status: str = "received",
+        send_status: str | None = None,
+        error_text: str | None = None,
+        response_latency_ms: int | None = None,
+        model_run_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        created_at: datetime | None = None,
+    ) -> WhatsAppAgentMessageRecord:
+        record_id = str(uuid4())
+        resolved_created_at = created_at or datetime.now(UTC)
+        record = {
+            "id": record_id,
+            "user_id": str(user_id),
+            "thread_id": thread_id,
+            "direction": direction,
+            "role": role,
+            "whatsapp_message_id": self._optional_text(whatsapp_message_id),
+            "source_inbound_message_id": self._optional_text(source_inbound_message_id),
+            "contact_phone": self.normalize_contact_phone(contact_phone),
+            "chat_jid": self._optional_text(chat_jid),
+            "content": content.strip(),
+            "message_timestamp": message_timestamp.isoformat(),
+            "processing_status": str(processing_status or "received").strip().lower() or "received",
+            "send_status": self._optional_text(send_status),
+            "error_text": self._optional_text(error_text),
+            "response_latency_ms": response_latency_ms,
+            "model_run_id": self._optional_text(model_run_id),
+            "metadata": metadata or {},
+            "created_at": resolved_created_at.isoformat(),
+        }
+        try:
+            self.client.table("whatsapp_agent_messages").insert(record).execute()
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "whatsapp_agent_messages"):
+                raise
+            parsed = self._parse_whatsapp_agent_message(record, fallback_user_id=user_id)
+            if parsed is None:
+                raise RuntimeError("WhatsApp agent message could not be stored.")
+            return parsed
+        parsed = self.get_whatsapp_agent_message(user_id=user_id, message_id=record_id)
+        if parsed is None:
+            raise RuntimeError("WhatsApp agent message could not be stored.")
+        return parsed
+
+    def get_whatsapp_agent_message(self, *, user_id: UUID, message_id: str) -> WhatsAppAgentMessageRecord | None:
+        try:
+            response = (
+                self.client.table("whatsapp_agent_messages")
+                .select(
+                    "id,user_id,thread_id,direction,role,whatsapp_message_id,source_inbound_message_id,contact_phone,"
+                    "chat_jid,content,message_timestamp,processing_status,send_status,error_text,response_latency_ms,"
+                    "model_run_id,metadata,created_at"
+                )
+                .eq("user_id", str(user_id))
+                .eq("id", message_id)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "whatsapp_agent_messages"):
+                raise
+            return None
+        rows = response.data or []
+        if not rows:
+            return None
+        return self._parse_whatsapp_agent_message(rows[0], fallback_user_id=user_id)
+
+    def update_whatsapp_agent_message(
+        self,
+        *,
+        message_id: str,
+        processing_status: str | None | object = _UNSET,
+        send_status: str | None | object = _UNSET,
+        error_text: str | None | object = _UNSET,
+        response_latency_ms: int | None | object = _UNSET,
+        model_run_id: str | None | object = _UNSET,
+        whatsapp_message_id: str | None | object = _UNSET,
+        metadata: dict[str, Any] | object = _UNSET,
+        message_timestamp: datetime | None | object = _UNSET,
+    ) -> WhatsAppAgentMessageRecord | None:
+        current = self.get_whatsapp_agent_message(user_id=self.default_user_id, message_id=message_id)
+        if current is None:
+            return None
+        payload: dict[str, Any] = {}
+        if processing_status is not _UNSET:
+            payload["processing_status"] = str(processing_status or current.processing_status).strip().lower() or current.processing_status
+        if send_status is not _UNSET:
+            payload["send_status"] = self._optional_text(send_status)
+        if error_text is not _UNSET:
+            payload["error_text"] = self._optional_text(error_text)
+        if response_latency_ms is not _UNSET:
+            payload["response_latency_ms"] = int(response_latency_ms) if isinstance(response_latency_ms, int) else None
+        if model_run_id is not _UNSET:
+            payload["model_run_id"] = self._optional_text(model_run_id)
+        if whatsapp_message_id is not _UNSET:
+            payload["whatsapp_message_id"] = self._optional_text(whatsapp_message_id)
+        if metadata is not _UNSET:
+            payload["metadata"] = metadata if isinstance(metadata, dict) else {}
+        if message_timestamp is not _UNSET:
+            payload["message_timestamp"] = message_timestamp.isoformat() if isinstance(message_timestamp, datetime) else None
+        if not payload:
+            return current
+        try:
+            self.client.table("whatsapp_agent_messages").update(payload).eq("id", message_id).execute()
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "whatsapp_agent_messages"):
+                raise
+            merged = {
+                "id": current.id,
+                "user_id": str(current.user_id),
+                "thread_id": current.thread_id,
+                "direction": current.direction,
+                "role": current.role,
+                "whatsapp_message_id": payload.get("whatsapp_message_id", current.whatsapp_message_id),
+                "source_inbound_message_id": current.source_inbound_message_id,
+                "contact_phone": current.contact_phone,
+                "chat_jid": current.chat_jid,
+                "content": current.content,
+                "message_timestamp": payload.get("message_timestamp", current.message_timestamp.isoformat()),
+                "processing_status": payload.get("processing_status", current.processing_status),
+                "send_status": payload.get("send_status", current.send_status),
+                "error_text": payload.get("error_text", current.error_text),
+                "response_latency_ms": payload.get("response_latency_ms", current.response_latency_ms),
+                "model_run_id": payload.get("model_run_id", current.model_run_id),
+                "metadata": payload.get("metadata", current.metadata),
+                "created_at": current.created_at.isoformat(),
+            }
+            return self._parse_whatsapp_agent_message(merged, fallback_user_id=current.user_id)
+        return self.get_whatsapp_agent_message(user_id=current.user_id, message_id=message_id)
+
+    def list_whatsapp_agent_messages(self, *, thread_id: str, limit: int = 40) -> list[WhatsAppAgentMessageRecord]:
+        try:
+            response = (
+                self.client.table("whatsapp_agent_messages")
+                .select(
+                    "id,user_id,thread_id,direction,role,whatsapp_message_id,source_inbound_message_id,contact_phone,"
+                    "chat_jid,content,message_timestamp,processing_status,send_status,error_text,response_latency_ms,"
+                    "model_run_id,metadata,created_at"
+                )
+                .eq("thread_id", thread_id)
+                .order("message_timestamp", desc=True)
+                .limit(limit)
+                .execute()
+            )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "whatsapp_agent_messages"):
+                raise
+            return []
+
+        rows = response.data or []
+        messages: list[WhatsAppAgentMessageRecord] = []
+        for row in reversed(rows):
+            parsed = self._parse_whatsapp_agent_message(row, fallback_user_id=self.default_user_id)
+            if parsed is not None:
+                messages.append(parsed)
+        return messages
 
     def count_messages(self, user_id: UUID) -> int:
         response = (
@@ -2599,6 +3224,23 @@ class SupabaseStore:
             "updated_at": updated_at.isoformat(),
         }
 
+    def _default_whatsapp_agent_settings_record(self, *, user_id: UUID, updated_at: datetime) -> dict[str, Any]:
+        return {
+            "user_id": str(user_id),
+            "auto_reply_enabled": False,
+            "allowed_contact_phone": None,
+            "updated_at": updated_at.isoformat(),
+        }
+
+    def _default_whatsapp_agent_settings(self, *, user_id: UUID) -> WhatsAppAgentSettingsRecord:
+        parsed = self._parse_whatsapp_agent_settings(
+            self._default_whatsapp_agent_settings_record(user_id=user_id, updated_at=datetime.now(UTC)),
+            fallback_user_id=user_id,
+        )
+        if parsed is None:
+            raise RuntimeError("Could not build default WhatsApp agent settings.")
+        return parsed
+
     def _get_latest_running_sync_run_row(self, user_id: UUID) -> dict[str, Any] | None:
         response = (
             self.client.table("wa_sync_runs")
@@ -2705,6 +3347,14 @@ class SupabaseStore:
             return False
         return None
 
+    def normalize_contact_phone(self, value: str | None) -> str | None:
+        if value is None:
+            return None
+        digits = "".join(char for char in str(value) if char.isdigit())
+        if 8 <= len(digits) <= 15:
+            return digits
+        return None
+
     def _parse_string_list(self, value: Any) -> list[str]:
         if not isinstance(value, list):
             return []
@@ -2803,10 +3453,7 @@ class SupabaseStore:
         return self._is_direct_chat_jid(value)
 
     def _is_normal_contact_phone(self, value: str | None) -> bool:
-        if value is None:
-            return False
-        digits = "".join(char for char in value if char.isdigit())
-        return 8 <= len(digits) <= 15
+        return self.normalize_contact_phone(value) is not None
 
     def _is_direct_chat_jid(self, value: str | None) -> bool:
         if value is None:
@@ -2943,6 +3590,73 @@ class SupabaseStore:
             thread_id=str(value.get("thread_id") or fallback_thread_id),
             role=role,
             content=content,
+            created_at=self._parse_datetime(value.get("created_at")) or datetime.now(UTC),
+        )
+
+    def _parse_whatsapp_agent_settings(self, value: Any, *, fallback_user_id: UUID) -> WhatsAppAgentSettingsRecord | None:
+        if not isinstance(value, dict):
+            return None
+        return WhatsAppAgentSettingsRecord(
+            user_id=self._parse_uuid(value.get("user_id")) or fallback_user_id,
+            auto_reply_enabled=self._parse_bool(value.get("auto_reply_enabled")) if self._parse_bool(value.get("auto_reply_enabled")) is not None else False,
+            allowed_contact_phone=self.normalize_contact_phone(self._optional_text(value.get("allowed_contact_phone"))),
+            updated_at=self._parse_datetime(value.get("updated_at")) or datetime.now(UTC),
+        )
+
+    def _parse_whatsapp_agent_thread(self, value: Any, *, fallback_user_id: UUID) -> WhatsAppAgentThreadRecord | None:
+        if not isinstance(value, dict):
+            return None
+        contact_name = self._resolve_contact_name(
+            incoming_name=self._optional_text(value.get("contact_name")),
+            contact_phone=self._optional_text(value.get("contact_phone")),
+            known_name=self._optional_text(value.get("contact_name")),
+        )
+        return WhatsAppAgentThreadRecord(
+            id=str(value.get("id") or ""),
+            user_id=self._parse_uuid(value.get("user_id")) or fallback_user_id,
+            contact_phone=self.normalize_contact_phone(self._optional_text(value.get("contact_phone"))),
+            chat_jid=self._optional_text(value.get("chat_jid")),
+            contact_name=contact_name,
+            status=str(value.get("status") or "active").strip().lower() or "active",
+            last_message_at=self._parse_datetime(value.get("last_message_at")),
+            last_inbound_at=self._parse_datetime(value.get("last_inbound_at")),
+            last_outbound_at=self._parse_datetime(value.get("last_outbound_at")),
+            last_error_at=self._parse_datetime(value.get("last_error_at")),
+            last_error_text=self._optional_text(value.get("last_error_text")),
+            created_at=self._parse_datetime(value.get("created_at")) or datetime.now(UTC),
+            updated_at=self._parse_datetime(value.get("updated_at")) or datetime.now(UTC),
+        )
+
+    def _parse_whatsapp_agent_message(self, value: Any, *, fallback_user_id: UUID) -> WhatsAppAgentMessageRecord | None:
+        if not isinstance(value, dict):
+            return None
+        role = str(value.get("role") or "").strip().lower()
+        direction = str(value.get("direction") or "").strip().lower()
+        content = self._optional_text(value.get("content"))
+        thread_id = self._optional_text(value.get("thread_id"))
+        if role not in {"user", "assistant"} or direction not in {"inbound", "outbound"} or not content or not thread_id:
+            return None
+        metadata = value.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        return WhatsAppAgentMessageRecord(
+            id=str(value.get("id") or ""),
+            user_id=self._parse_uuid(value.get("user_id")) or fallback_user_id,
+            thread_id=thread_id,
+            direction=direction,
+            role=role,
+            whatsapp_message_id=self._optional_text(value.get("whatsapp_message_id")),
+            source_inbound_message_id=self._optional_text(value.get("source_inbound_message_id")),
+            contact_phone=self.normalize_contact_phone(self._optional_text(value.get("contact_phone"))),
+            chat_jid=self._optional_text(value.get("chat_jid")),
+            content=content,
+            message_timestamp=self._parse_datetime(value.get("message_timestamp")) or datetime.now(UTC),
+            processing_status=str(value.get("processing_status") or "received").strip().lower() or "received",
+            send_status=self._optional_text(value.get("send_status")),
+            error_text=self._optional_text(value.get("error_text")),
+            response_latency_ms=self._parse_int(value.get("response_latency_ms")),
+            model_run_id=self._optional_text(value.get("model_run_id")),
+            metadata=metadata,
             created_at=self._parse_datetime(value.get("created_at")) or datetime.now(UTC),
         )
 

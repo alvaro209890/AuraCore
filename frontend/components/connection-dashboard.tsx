@@ -38,7 +38,10 @@ import {
 import {
   createChatThread,
   getAutomationStatus,
+  connectAgent,
   connectObserver,
+  getAgentStatus,
+  getAgentWorkspace,
   getChatWorkspace,
   getImportantMessages,
   getMemoryStatus,
@@ -46,11 +49,13 @@ import {
   getObserverStatus,
   refreshObserverMessages,
   refineMemory,
+  resetAgent,
   resetObserver,
   runFirstMemoryAnalysis,
   runNextMemoryBatch,
   runAutomationTick,
   sendChatMessageStream,
+  updateAgentSettings,
   updateAutomationSettings,
   type AutomationSettings,
   type AutomationStatus,
@@ -66,6 +71,11 @@ import {
   type MemorySnapshot,
   type ModelRun,
   type ObserverStatus,
+  type WhatsAppAgentMessage,
+  type WhatsAppAgentSettings,
+  type WhatsAppAgentStatus,
+  type WhatsAppAgentThread,
+  type WhatsAppAgentWorkspace,
   type ProjectMemory,
   type WhatsAppSyncRun,
 } from "@/lib/api";
@@ -73,7 +83,17 @@ import {
 type ViewState = "idle" | "loading" | "waiting" | "connected" | "error";
 type AgentMode = "idle" | "analyze" | "refine";
 type AgentIntent = "first_analysis" | "improve_memory" | "refine_saved";
-type TabId = "overview" | "observer" | "memory" | "important" | "projects" | "chat" | "activity" | "automation" | "manual";
+type TabId =
+  | "overview"
+  | "observer"
+  | "agent"
+  | "memory"
+  | "important"
+  | "projects"
+  | "chat"
+  | "activity"
+  | "automation"
+  | "manual";
 type LogTone = "info" | "success" | "error";
 
 type AgentStep = {
@@ -153,6 +173,7 @@ const NAV_GROUPS: NavGroup[] = [
     title: "Inteligência",
     items: [
       { id: "observer", label: "Observador", icon: Eye },
+      { id: "agent", label: "WhatsApp Agente", icon: Bot },
       { id: "memory", label: "Memória", icon: Database },
       { id: "important", label: "Importantes", icon: Archive },
     ],
@@ -852,6 +873,12 @@ export function ConnectionDashboard() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [status, setStatus] = useState<ObserverStatus | null>(null);
   const [viewState, setViewState] = useState<ViewState>("idle");
+  const [agentStatus, setAgentStatus] = useState<WhatsAppAgentStatus | null>(null);
+  const [agentViewState, setAgentViewState] = useState<ViewState>("idle");
+  const [agentSettings, setAgentSettings] = useState<WhatsAppAgentSettings | null>(null);
+  const [agentThreads, setAgentThreads] = useState<WhatsAppAgentThread[]>([]);
+  const [agentMessages, setAgentMessages] = useState<WhatsAppAgentMessage[]>([]);
+  const [activeAgentThreadId, setActiveAgentThreadId] = useState<string | null>(null);
   const [memory, setMemory] = useState<MemoryCurrent | null>(null);
   const [memoryStatus, setMemoryStatus] = useState<MemoryStatus | null>(null);
   const [projects, setProjects] = useState<ProjectMemory[]>([]);
@@ -865,6 +892,8 @@ export function ConnectionDashboard() {
   const [automationDraft, setAutomationDraft] = useState<AutomationDraft | null>(null);
   const [chatDraft, setChatDraft] = useState("");
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [agentConnectionError, setAgentConnectionError] = useState<string | null>(null);
+  const [agentMessagesError, setAgentMessagesError] = useState<string | null>(null);
   const [memoryError, setMemoryError] = useState<string | null>(null);
   const [importantMessagesError, setImportantMessagesError] = useState<string | null>(null);
   const [chatError, setChatError] = useState<string | null>(null);
@@ -873,6 +902,9 @@ export function ConnectionDashboard() {
   const [isHydrating, setIsHydrating] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
+  const [isAgentConnecting, setIsAgentConnecting] = useState(false);
+  const [isAgentResetting, setIsAgentResetting] = useState(false);
+  const [isAgentSaving, setIsAgentSaving] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isRefreshingMessages, setIsRefreshingMessages] = useState(false);
   const [isSendingChat, setIsSendingChat] = useState(false);
@@ -882,6 +914,7 @@ export function ConnectionDashboard() {
   const [isSavingAutomation, setIsSavingAutomation] = useState(false);
   const [isTickingAutomation, setIsTickingAutomation] = useState(false);
   const [pollingEnabled, setPollingEnabled] = useState(false);
+  const [agentPollingEnabled, setAgentPollingEnabled] = useState(false);
   const [agentState, setAgentState] = useState<AgentState>({
     mode: "idle",
     intent: null,
@@ -896,6 +929,7 @@ export function ConnectionDashboard() {
   ]);
 
   const lastQrRefreshAtRef = useRef<number | null>(null);
+  const lastAgentQrRefreshAtRef = useRef<number | null>(null);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const agentTimerRef = useRef<number | null>(null);
   const agentStepIndexRef = useRef(0);
@@ -913,6 +947,13 @@ export function ConnectionDashboard() {
     }
     return status.connected ? "Online" : formatState(status.state);
   }, [status]);
+
+  const agentStatusLabel = useMemo(() => {
+    if (!agentStatus) {
+      return "Pronto para iniciar";
+    }
+    return agentStatus.connected ? "Online" : formatState(agentStatus.state);
+  }, [agentStatus]);
 
   const currentSteps = useMemo(() => getStepsForMode(agentState.mode), [agentState.mode]);
   const insightMetrics = useMemo(() => getSignalMetrics(latestSnapshot), [latestSnapshot]);
@@ -942,6 +983,18 @@ export function ConnectionDashboard() {
   }, [pollingEnabled, status?.connected]);
 
   useEffect(() => {
+    if (!agentPollingEnabled || agentStatus?.connected) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void pollAgentStatus();
+    }, POLL_INTERVAL_MS);
+
+    return () => window.clearInterval(intervalId);
+  }, [agentPollingEnabled, agentStatus?.connected]);
+
+  useEffect(() => {
     if (!chatScrollRef.current) {
       return;
     }
@@ -967,6 +1020,18 @@ export function ConnectionDashboard() {
     setMemoryError(null);
   }
 
+  function applyAgentWorkspace(workspace: WhatsAppAgentWorkspace): void {
+    setAgentStatus(workspace.status);
+    setAgentSettings(workspace.settings);
+    setAgentThreads(workspace.threads);
+    setActiveAgentThreadId(workspace.active_thread_id);
+    setAgentMessages(workspace.messages);
+    setAgentConnectionError(null);
+    setAgentMessagesError(null);
+    setAgentPollingEnabled(!workspace.status.connected);
+    setAgentViewState(workspace.status.connected ? "connected" : "idle");
+  }
+
   async function hydrateDashboard(mode: "initial" | "manual" = "initial"): Promise<void> {
     if (mode === "manual") {
       setIsRefreshing(true);
@@ -974,8 +1039,17 @@ export function ConnectionDashboard() {
       setIsHydrating(true);
     }
 
-    const [statusResult, chatResult, memoryStatusResult, snapshotsResult, importantMessagesResult, automationResult] = await Promise.allSettled([
+    const [
+      statusResult,
+      agentWorkspaceResult,
+      chatResult,
+      memoryStatusResult,
+      snapshotsResult,
+      importantMessagesResult,
+      automationResult,
+    ] = await Promise.allSettled([
       getObserverStatus(false),
+      getAgentWorkspace(activeAgentThreadId ?? undefined),
       getChatWorkspace(activeChatThreadId ?? undefined),
       getMemoryStatus(),
       getMemorySnapshots(6),
@@ -992,6 +1066,15 @@ export function ConnectionDashboard() {
       setPollingEnabled(false);
       setViewState("error");
       setConnectionError(getErrorMessage(statusResult.reason));
+    }
+
+    if (agentWorkspaceResult.status === "fulfilled") {
+      applyAgentWorkspace(agentWorkspaceResult.value);
+    } else {
+      const message = getErrorMessage(agentWorkspaceResult.reason);
+      setAgentConnectionError(message);
+      setAgentViewState("error");
+      setAgentPollingEnabled(false);
     }
 
     if (chatResult.status === "fulfilled") {
@@ -1214,6 +1297,46 @@ export function ConnectionDashboard() {
     }
   }
 
+  async function startAgentConnection(): Promise<void> {
+    setIsAgentConnecting(true);
+    setAgentConnectionError(null);
+    setAgentViewState("loading");
+    try {
+      const nextStatus = await connectAgent();
+      setAgentStatus(nextStatus);
+      setAgentPollingEnabled(!nextStatus.connected);
+      setAgentViewState(nextStatus.connected ? "connected" : "waiting");
+      lastAgentQrRefreshAtRef.current = Date.now();
+      pushAgentLog("info", "Fluxo de conexao iniciado para o WhatsApp agente.");
+    } catch (error) {
+      setAgentPollingEnabled(false);
+      setAgentViewState("error");
+      setAgentConnectionError(getErrorMessage(error));
+    } finally {
+      setIsAgentConnecting(false);
+    }
+  }
+
+  async function resetAgentConnection(): Promise<void> {
+    setIsAgentResetting(true);
+    setAgentConnectionError(null);
+    setAgentViewState("loading");
+    try {
+      const nextStatus = await resetAgent();
+      setAgentStatus(nextStatus);
+      setAgentPollingEnabled(!nextStatus.connected);
+      setAgentViewState(nextStatus.connected ? "connected" : "waiting");
+      lastAgentQrRefreshAtRef.current = Date.now();
+      pushAgentLog("info", "Sessao do agente resetada. Novo QR pronto para leitura.");
+    } catch (error) {
+      setAgentPollingEnabled(false);
+      setAgentViewState("error");
+      setAgentConnectionError(getErrorMessage(error));
+    } finally {
+      setIsAgentResetting(false);
+    }
+  }
+
   async function requestMessageRefresh(): Promise<void> {
     setIsRefreshingMessages(true);
     setMessageRefreshError(null);
@@ -1276,6 +1399,37 @@ export function ConnectionDashboard() {
       setPollingEnabled(false);
       setViewState("error");
       setConnectionError(getErrorMessage(error));
+    }
+  }
+
+  async function pollAgentStatus(): Promise<void> {
+    try {
+      const shouldRefreshQr = Boolean(agentStatus?.qr_code) && (
+        !lastAgentQrRefreshAtRef.current ||
+        Date.now() - lastAgentQrRefreshAtRef.current >= QR_REFRESH_INTERVAL_MS
+      );
+
+      const nextStatus = shouldRefreshQr ? await connectAgent() : await getAgentStatus();
+
+      if (shouldRefreshQr) {
+        lastAgentQrRefreshAtRef.current = Date.now();
+      }
+
+      setAgentStatus(nextStatus);
+      setAgentConnectionError(null);
+
+      if (nextStatus.connected) {
+        setAgentPollingEnabled(false);
+        setAgentViewState("connected");
+        pushAgentLog("success", "WhatsApp agente conectado. Respostas automaticas podem ser ativadas.");
+        return;
+      }
+
+      setAgentViewState("waiting");
+    } catch (error) {
+      setAgentPollingEnabled(false);
+      setAgentViewState("error");
+      setAgentConnectionError(getErrorMessage(error));
     }
   }
 
@@ -1418,6 +1572,48 @@ export function ConnectionDashboard() {
     }
   }
 
+  async function refreshAgentWorkspace(threadId?: string): Promise<void> {
+    try {
+      const workspace = await getAgentWorkspace(threadId ?? undefined);
+      applyAgentWorkspace(workspace);
+    } catch (error) {
+      setAgentConnectionError(getErrorMessage(error));
+    }
+  }
+
+  async function openAgentThread(threadId: string): Promise<void> {
+    if (!threadId || threadId === activeAgentThreadId) {
+      return;
+    }
+    setAgentMessagesError(null);
+    try {
+      const workspace = await getAgentWorkspace(threadId);
+      applyAgentWorkspace(workspace);
+    } catch (error) {
+      setAgentMessagesError(getErrorMessage(error));
+    }
+  }
+
+  async function toggleAgentAutoReply(nextValue: boolean): Promise<void> {
+    setIsAgentSaving(true);
+    setAgentMessagesError(null);
+    try {
+      const settings = await updateAgentSettings({ auto_reply_enabled: nextValue });
+      setAgentSettings(settings);
+      setAgentStatus((previous) => (previous ? { ...previous, auto_reply_enabled: settings.auto_reply_enabled } : previous));
+      pushAgentLog(
+        "success",
+        settings.auto_reply_enabled
+          ? "Resposta automatica do WhatsApp agente ativada."
+          : "Resposta automatica do WhatsApp agente desativada.",
+      );
+    } catch (error) {
+      setAgentMessagesError(getErrorMessage(error));
+    } finally {
+      setIsAgentSaving(false);
+    }
+  }
+
   const currentNavTitle = NAV_ITEMS.find((item) => item.id === activeTab)?.label ?? "AuraCore";
 
   return (
@@ -1471,13 +1667,20 @@ export function ConnectionDashboard() {
         </nav>
 
         <div className="ac-sidebar-footer">
-          <div className="ac-quick-status">
-            <span>Observador</span>
-            <div className={`ac-status-badge status-${viewState}`}>
-              <span className="status-dot" />
-              {statusLabel}
-            </div>
+        <div className="ac-quick-status">
+          <span>Observador</span>
+          <div className={`ac-status-badge status-${viewState}`}>
+            <span className="status-dot" />
+            {statusLabel}
           </div>
+        </div>
+        <div className="ac-quick-status">
+          <span>Agente</span>
+          <div className={`ac-status-badge status-${agentViewState}`}>
+            <span className="status-dot" />
+            {agentStatusLabel}
+          </div>
+        </div>
           <div className="ac-quick-status">
             <span>Mensagens novas</span>
             <strong>{memoryStatus ? formatTokenCount(memoryStatus.pending_new_message_count) : "..."}</strong>
@@ -1543,6 +1746,8 @@ export function ConnectionDashboard() {
                   latestSnapshot={latestSnapshot}
                   projects={projects}
                   status={status}
+                  agentStatus={agentStatus}
+                  agentSettings={agentSettings}
                   connectionError={connectionError}
                   memoryError={memoryError}
                   insightMetrics={insightMetrics}
@@ -1562,6 +1767,28 @@ export function ConnectionDashboard() {
                   connectionError={connectionError}
                   onConnect={() => void startConnection()}
                   onReset={() => void resetConnection()}
+                />
+              ) : null}
+
+              {activeTab === "agent" ? (
+                <AgentTab
+                  status={agentStatus}
+                  statusLabel={agentStatusLabel}
+                  viewState={agentViewState}
+                  settings={agentSettings}
+                  threads={agentThreads}
+                  messages={agentMessages}
+                  activeThreadId={activeAgentThreadId}
+                  isConnecting={isAgentConnecting}
+                  isResetting={isAgentResetting}
+                  isSaving={isAgentSaving}
+                  connectionError={agentConnectionError}
+                  messagesError={agentMessagesError}
+                  onConnect={() => void startAgentConnection()}
+                  onReset={() => void resetAgentConnection()}
+                  onToggleAutoReply={(value) => void toggleAgentAutoReply(value)}
+                  onSelectThread={(threadId) => void openAgentThread(threadId)}
+                  onRefresh={() => void refreshAgentWorkspace(activeAgentThreadId ?? undefined)}
                 />
               ) : null}
 
@@ -1659,6 +1886,8 @@ function OverviewTab({
   latestSnapshot,
   projects,
   status,
+  agentStatus,
+  agentSettings,
   connectionError,
   memoryError,
   insightMetrics,
@@ -1670,6 +1899,8 @@ function OverviewTab({
   latestSnapshot: MemorySnapshot | null;
   projects: ProjectMemory[];
   status: ObserverStatus | null;
+  agentStatus: WhatsAppAgentStatus | null;
+  agentSettings: WhatsAppAgentSettings | null;
   connectionError: string | null;
   memoryError: string | null;
   insightMetrics: InsightMetric[];
@@ -1924,6 +2155,197 @@ function ObserverTab({
       </div>
 
       {connectionError ? <InlineError title={`Falha do observador (${statusLabel})`} message={connectionError} /> : null}
+    </div>
+  );
+}
+
+function AgentTab({
+  status,
+  statusLabel,
+  viewState,
+  settings,
+  threads,
+  messages,
+  activeThreadId,
+  isConnecting,
+  isResetting,
+  isSaving,
+  connectionError,
+  messagesError,
+  onConnect,
+  onReset,
+  onToggleAutoReply,
+  onSelectThread,
+  onRefresh,
+}: {
+  status: WhatsAppAgentStatus | null;
+  statusLabel: string;
+  viewState: ViewState;
+  settings: WhatsAppAgentSettings | null;
+  threads: WhatsAppAgentThread[];
+  messages: WhatsAppAgentMessage[];
+  activeThreadId: string | null;
+  isConnecting: boolean;
+  isResetting: boolean;
+  isSaving: boolean;
+  connectionError: string | null;
+  messagesError: string | null;
+  onConnect: () => void;
+  onReset: () => void;
+  onToggleAutoReply: (value: boolean) => void;
+  onSelectThread: (threadId: string) => void;
+  onRefresh: () => void;
+}) {
+  const autoReplyEnabled = settings?.auto_reply_enabled ?? false;
+  const allowedContact = settings?.allowed_contact_phone ?? status?.allowed_contact_phone ?? "NÃ£o definido";
+  const activeThread = threads.find((thread) => thread.id === activeThreadId) ?? threads[0] ?? null;
+
+  return (
+    <div className="page-stack agent-page">
+      <div className="observer-grid-modern agent-grid-modern">
+        <Card className="observer-qr-card agent-qr-card">
+          <SectionTitle title="WhatsApp Agente" icon={Bot} />
+          <p className="support-copy">
+            Escaneie o QR do agente. Ele responde apenas pelo nÃºmero secundÃ¡rio e sÃ³ conversa com o nÃºmero conectado no observador.
+          </p>
+
+          <div className="qr-display-shell">
+            {status?.qr_code ? (
+              <div className="qr-modern-frame">
+                <img className="qr-modern-image" src={status.qr_code} alt="QR Code do WhatsApp agente" />
+              </div>
+            ) : (
+              <div className="qr-modern-empty">
+                <Bot size={28} />
+                <strong>QR indisponÃ­vel</strong>
+                <p>
+                  {status?.connected
+                    ? "O agente jÃ¡ estÃ¡ conectado. NÃ£o Ã© necessÃ¡rio gerar um novo QR."
+                    : "Gere uma nova sessÃ£o para exibir o QR do agente."}
+                </p>
+              </div>
+            )}
+            <div className="qr-expiry-tag">
+              <Clock size={12} />
+              {status?.connected ? "SessÃ£o ativa" : status?.qr_expires_in_sec ? `Expira em ${status.qr_expires_in_sec}s` : "Sem QR ativo"}
+            </div>
+          </div>
+
+          <div className="observer-actions">
+            <button className="ac-primary-button" onClick={onConnect} disabled={isConnecting || viewState === "connected"} type="button">
+              <RefreshCw size={15} className={isConnecting ? "spin" : ""} />
+              {viewState === "connected" ? "Agente conectado" : isConnecting ? "Gerando QR..." : "Gerar Novo QR"}
+            </button>
+            <button className="ac-secondary-button" onClick={onRefresh} type="button">
+              <RefreshCw size={15} />
+              Atualizar status
+            </button>
+          </div>
+        </Card>
+
+        <Card className="observer-status-card agent-status-card">
+          <SectionTitle title="Status do Agente" icon={Server} />
+
+          <div className="status-line-list">
+            <StatusLine label="Gateway" value={status?.gateway_ready ? "Baileys online" : "IndisponÃ­vel"} tone="emerald" />
+            <StatusLine label="SessÃ£o" value={status?.owner_number ?? "Aguardando leitura"} tone="indigo" />
+            <StatusLine label="Contato permitido" value={allowedContact} tone="amber" />
+            <StatusLine label="Resposta automÃ¡tica" value={autoReplyEnabled ? "Ativa" : "Desativada"} tone="zinc" />
+          </div>
+
+          <div className="agent-action-panel">
+            <button
+              className={autoReplyEnabled ? "ac-danger-button" : "ac-success-button"}
+              onClick={() => onToggleAutoReply(!autoReplyEnabled)}
+              disabled={isSaving || !status?.connected}
+              type="button"
+            >
+              <Bot size={15} />
+              {autoReplyEnabled ? "Desativar respostas" : "Ativar respostas"}
+            </button>
+            <p className="support-copy">
+              O agente responde somente para o nÃºmero conectado no observador. Esse contato Ã© atualizado automaticamente.
+            </p>
+          </div>
+
+          <div className="danger-box">
+            <h4>
+              <AlertCircle size={16} />
+              Zona de perigo
+            </h4>
+            <p>Resetar a sessÃ£o do agente apaga as chaves atuais e exige um novo QR.</p>
+            <button className="ac-danger-button" onClick={onReset} disabled={isResetting} type="button">
+              <XCircle size={15} />
+              {isResetting ? "Resetando..." : "Resetar SessÃ£o do Agente"}
+            </button>
+          </div>
+        </Card>
+      </div>
+
+      <div className="agent-conversation-grid">
+        <Card className="agent-thread-card">
+          <SectionTitle title="Conversas recentes" icon={MessageSquare} />
+          {threads.length === 0 ? (
+            <div className="empty-hint">
+              <Bot size={18} />
+              <p>Nenhuma conversa registrada ainda.</p>
+            </div>
+          ) : (
+            <div className="agent-thread-list">
+              {threads.map((thread) => (
+                <button
+                  key={thread.id}
+                  className={`agent-thread-row${thread.id === activeThread?.id ? " agent-thread-row-active" : ""}`}
+                  onClick={() => onSelectThread(thread.id)}
+                  type="button"
+                >
+                  <div>
+                    <strong>{thread.contact_name || thread.contact_phone || "Contato"}</strong>
+                    <span>{thread.last_message_preview ?? "Sem mensagem recente"}</span>
+                  </div>
+                  <div className="agent-thread-meta">
+                    <span>{thread.status}</span>
+                    <small>{thread.last_message_at ? formatDateTime(thread.last_message_at) : "Sem data"}</small>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </Card>
+
+        <Card className="agent-thread-card">
+          <SectionTitle title="HistÃ³rico do agente" icon={Bot} />
+          {activeThread ? (
+            <div className="agent-message-stack">
+              {messages.length === 0 ? (
+                <div className="empty-hint">
+                  <MessageSquare size={18} />
+                  <p>Sem mensagens ainda para esta conversa.</p>
+                </div>
+              ) : (
+                messages.map((msg) => (
+                  <div key={msg.id} className={`agent-message-bubble agent-message-${msg.role}`}>
+                    <div className="agent-message-top">
+                      <strong>{msg.role === "assistant" ? "Agente" : "Contato"}</strong>
+                      <span>{formatDateTime(msg.message_timestamp)}</span>
+                    </div>
+                    <p>{msg.content}</p>
+                    <small>{msg.processing_status}{msg.send_status ? ` â€¢ ${msg.send_status}` : ""}</small>
+                  </div>
+                ))
+              )}
+            </div>
+          ) : (
+            <div className="empty-hint">
+              <Bot size={18} />
+              <p>Selecione um contato para ver as mensagens.</p>
+            </div>
+          )}
+        </Card>
+      </div>
+
+      {connectionError ? <InlineError title={`Falha do agente (${statusLabel})`} message={connectionError} /> : null}
+      {messagesError ? <InlineError title="Falha nas mensagens do agente" message={messagesError} /> : null}
     </div>
   );
 }
@@ -3388,6 +3810,15 @@ function ManualTab({
               <ManualInfoCard title="Chat Pessoal" text="Thread por assunto usando a memoria central. Bom para separar estrategia, rotina, vendas, produto e operacao." />
               <ManualInfoCard title="Atividade" text="Mostra o pipeline trabalhando: logs, lotes, trilha de execucao e o melhor raciocinio operacional salvo." />
               <ManualInfoCard title="Automacao" text="Mostra a fila automatica e o estado do loop de processamento sem expor configuracoes tecnicas desnecessarias." />
+            </div>
+          </Card>
+
+          <Card>
+            <SectionTitle title="WhatsApp Agente" icon={Bot} />
+            <div className="status-line-list">
+              <StatusLine label="Status" value={agentStatus?.connected ? "Online" : "Pendente"} tone="indigo" />
+              <StatusLine label="Auto-reply" value={agentSettings?.auto_reply_enabled ? "Ativo" : "Desligado"} tone="amber" />
+              <StatusLine label="Contato permitido" value={agentSettings?.allowed_contact_phone ?? "NÃ£o definido"} tone="zinc" />
             </div>
           </Card>
         </>

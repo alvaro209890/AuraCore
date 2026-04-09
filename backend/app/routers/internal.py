@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Header, HTTPException, status
 
-from app.dependencies import get_automation_service, get_settings, get_supabase_store
+from app.dependencies import (
+    get_automation_service,
+    get_settings,
+    get_supabase_store,
+    get_whatsapp_agent_gateway_service,
+)
 from app.schemas import IngestMessagesRequest, IngestMessagesResponse
 from app.services.automation_service import AutomationService
 from app.services.supabase_store import IngestedMessageRecord, SupabaseStore
@@ -21,7 +26,15 @@ async def ingest_messages(
 
     store = get_supabase_store()
     automation_service = get_automation_service()
-    normalized_messages = _build_records(payload, store)
+    blocked_contact_phone: str | None = None
+    try:
+        agent_gateway = get_whatsapp_agent_gateway_service()
+        agent_status = await agent_gateway.get_agent_status()
+        blocked_contact_phone = store.normalize_contact_phone(agent_status.owner_number)
+    except Exception:
+        blocked_contact_phone = None
+
+    normalized_messages = _build_records(payload, store, blocked_contact_phone)
     saved_count = store.save_ingested_messages(normalized_messages)
     ignored_count = max(0, len(payload.messages) - len(normalized_messages))
     automation_service.register_ingest_batch(
@@ -32,7 +45,11 @@ async def ingest_messages(
     return IngestMessagesResponse(accepted_count=saved_count, ignored_count=ignored_count)
 
 
-def _build_records(payload: IngestMessagesRequest, store: SupabaseStore) -> list[IngestedMessageRecord]:
+def _build_records(
+    payload: IngestMessagesRequest,
+    store: SupabaseStore,
+    blocked_contact_phone: str | None,
+) -> list[IngestedMessageRecord]:
     records: list[IngestedMessageRecord] = []
     for item in payload.messages:
         message_text = item.message_text.strip()
@@ -46,6 +63,9 @@ def _build_records(payload: IngestMessagesRequest, store: SupabaseStore) -> list
             or not store.is_normal_contact_phone(contact_phone)
         ):
             continue
+        normalized_phone = store.normalize_contact_phone(contact_phone)
+        if blocked_contact_phone and normalized_phone and normalized_phone == blocked_contact_phone:
+            continue
 
         records.append(
             IngestedMessageRecord(
@@ -54,7 +74,7 @@ def _build_records(payload: IngestMessagesRequest, store: SupabaseStore) -> list
                 direction=item.direction,
                 contact_name=(item.contact_name or contact_phone).strip(),
                 chat_jid=chat_jid,
-                contact_phone=contact_phone,
+                contact_phone=normalized_phone or contact_phone,
                 message_text=message_text,
                 timestamp=item.timestamp,
                 source=item.source.strip() or "baileys",

@@ -3,13 +3,15 @@ from __future__ import annotations
 from functools import lru_cache
 
 from app.services.automation_service import AutomationService
+from app.services.assistant_reply_service import AssistantReplyService
 from app.services.chat_service import ChatAssistantService
 from app.config import Settings
 from app.services.deepseek_service import DeepSeekService
 from app.services.groq_service import GroqChatService
 from app.services.memory_service import MemoryAnalysisService
-from app.services.observer_gateway import ObserverGatewayService
+from app.services.observer_gateway import ObserverGatewayService, WhatsAppAgentGatewayService
 from app.services.supabase_store import SupabaseStore
+from app.services.whatsapp_agent_service import WhatsAppAgentService
 
 
 @lru_cache
@@ -37,6 +39,11 @@ def get_observer_gateway_service() -> ObserverGatewayService:
 
 
 @lru_cache
+def get_whatsapp_agent_gateway_service() -> WhatsAppAgentGatewayService:
+    return WhatsAppAgentGatewayService(settings=get_settings())
+
+
+@lru_cache
 def get_deepseek_service() -> DeepSeekService:
     return DeepSeekService(settings=get_settings())
 
@@ -44,6 +51,15 @@ def get_deepseek_service() -> DeepSeekService:
 @lru_cache
 def get_groq_service() -> GroqChatService:
     return GroqChatService(settings=get_settings())
+
+
+@lru_cache
+def get_assistant_reply_service() -> AssistantReplyService:
+    return AssistantReplyService(
+        settings=get_settings(),
+        store=get_supabase_store(),
+        groq_service=get_groq_service(),
+    )
 
 
 @lru_cache
@@ -62,6 +78,7 @@ def get_chat_assistant_service() -> ChatAssistantService:
         settings=get_settings(),
         store=get_supabase_store(),
         groq_service=get_groq_service(),
+        reply_service=get_assistant_reply_service(),
     )
 
 
@@ -71,4 +88,15 @@ def get_automation_service() -> AutomationService:
         settings=get_settings(),
         store=get_supabase_store(),
         memory_service=get_memory_analysis_service(),
+    )
+
+
+@lru_cache
+def get_whatsapp_agent_service() -> WhatsAppAgentService:
+    return WhatsAppAgentService(
+        settings=get_settings(),
+        store=get_supabase_store(),
+        reply_service=get_assistant_reply_service(),
+        observer_gateway=get_observer_gateway_service(),
+        agent_gateway=get_whatsapp_agent_gateway_service(),
     )

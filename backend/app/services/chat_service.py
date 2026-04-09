@@ -5,11 +5,14 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from app.config import Settings
+from app.services.assistant_reply_service import AssistantReplyService
 from app.services.groq_service import GroqChatService
 from app.services.supabase_store import (
     ChatMessageRecord,
     ChatThreadRecord,
+    ImportantMessageRecord,
     MemorySnapshotRecord,
+    PersonMemoryRecord,
     PersonaRecord,
     ProjectMemoryRecord,
     SupabaseStore,
@@ -50,10 +53,12 @@ class ChatAssistantService:
         settings: Settings,
         store: SupabaseStore,
         groq_service: GroqChatService,
+        reply_service: AssistantReplyService,
     ) -> None:
         self.settings = settings
         self.store = store
         self.groq_service = groq_service
+        self.reply_service = reply_service
 
     def get_session(self, *, thread_id: str | None = None) -> ChatSessionState:
         thread = self._resolve_thread(thread_id=thread_id)
@@ -101,17 +106,10 @@ class ChatAssistantService:
 
         session = self._build_session_state(thread=thread)
         prior_messages = session.messages[:-1] if session.messages and session.messages[-1].role == "user" else session.messages
-        interaction_mode = self._resolve_interaction_mode(normalized_text)
-        use_light_touch_context = interaction_mode == "light_touch"
-
-        assistant_reply = await self.groq_service.generate_reply(
+        assistant_reply = await self.reply_service.generate_reply(
             user_message=normalized_text,
-            current_life_summary="" if use_light_touch_context else session.persona.life_summary,
-            recent_snapshots_context="" if use_light_touch_context else self._build_snapshot_context(),
-            recent_projects_context="" if use_light_touch_context else self._build_project_context(session.projects),
-            recent_chat_context="" if use_light_touch_context else self._build_chat_context(prior_messages),
-            interaction_mode=interaction_mode,
-            context_hint=context_hint or "",
+            recent_messages=prior_messages,
+            context_hint=context_hint,
         )
         self.store.append_chat_message(
             thread_id=thread.id,
@@ -327,3 +325,25 @@ class ChatAssistantService:
             current_size = projected
 
         return "\n\n".join(parts)
+
+    def _format_search_people(self, people: list[PersonMemoryRecord]) -> str:
+        blocks = []
+        for p in people:
+            lines = [f"- Nome: {p.contact_name}"]
+            if p.profile_summary: lines.append(f"  Quem e: {p.profile_summary}")
+            if p.relationship_summary: lines.append(f"  Relacao: {p.relationship_summary}")
+            if p.salient_facts: lines.append(f"  Fatos: {'; '.join(p.salient_facts[:4])}")
+            blocks.append("\n".join(lines))
+        return "\n\n".join(blocks)
+
+    def _format_search_vault(self, messages: list[ImportantMessageRecord]) -> str:
+        blocks = []
+        for m in messages:
+            date_str = m.message_timestamp.astimezone(UTC).strftime('%d/%m/%Y')
+            lines = [
+                f"- Mensagem de {m.contact_name} em {date_str}:",
+                f"  Conteudo: {m.message_text}",
+                f"  Por que e importante: {m.importance_reason}"
+            ]
+            blocks.append("\n".join(lines))
+        return "\n\n".join(blocks)

@@ -12,9 +12,11 @@ from fastapi.responses import JSONResponse
 from app.routers.chat import router as chat_router
 from app.dependencies import get_automation_service, get_settings
 from app.routers.automation import router as automation_router
+from app.routers.internal_agent import router as internal_agent_router
 from app.routers.internal import router as internal_router
 from app.routers.memories import router as memories_router
 from app.routers.observer import router as observer_router
+from app.routers.whatsapp_agent import router as whatsapp_agent_router
 from app.services.automation_service import AutomationService
 from app.services.chat_service import ChatServiceError
 from app.services.deepseek_service import DeepSeekError
@@ -54,7 +56,9 @@ app.include_router(observer_router)
 app.include_router(memories_router)
 app.include_router(chat_router)
 app.include_router(internal_router)
+app.include_router(internal_agent_router)
 app.include_router(automation_router)
+app.include_router(whatsapp_agent_router)
 
 
 @app.get("/", tags=["meta"])

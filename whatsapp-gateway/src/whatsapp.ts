@@ -30,9 +30,15 @@ export type GatewayObserverStatus = {
   last_error: string | null;
 };
 
+export type GatewaySendResult = {
+  message_id: string | null;
+  timestamp: string | null;
+};
+
 type IngestMessagePayload = {
   message_id: string;
   direction: "inbound" | "outbound";
+  from_me: boolean;
   contact_name: string;
   chat_jid: string;
   contact_phone: string;
@@ -115,13 +121,8 @@ function asDisconnectCode(error: unknown): number | null {
   return typeof statusCode === "number" ? statusCode : null;
 }
 
-export class WhatsAppObserverGateway {
-  private readonly authStore = new SupabaseAuthStateStore(
-    config.instanceName,
-    config.supabaseUrl,
-    config.supabaseServiceRoleKey,
-    logger,
-  );
+export class WhatsAppGatewayChannel {
+  private readonly authStore: SupabaseAuthStateStore;
   private socket: WASocket | null = null;
   private state: ObserverState = "connecting";
   private connected = false;
@@ -138,6 +139,19 @@ export class WhatsAppObserverGateway {
   private readonly processedOrder: string[] = [];
   private readonly knownContactNames = new Map<string, string>();
 
+  constructor(
+    private readonly channelName: "observer" | "agent",
+    private readonly sessionId: string,
+    private readonly instanceName: string,
+  ) {
+    this.authStore = new SupabaseAuthStateStore(
+      sessionId,
+      config.supabaseUrl,
+      config.supabaseServiceRoleKey,
+      logger,
+    );
+  }
+
   async start(): Promise<void> {
     if (this.running) return;
     this.running = true;
@@ -153,7 +167,7 @@ export class WhatsAppObserverGateway {
 
   getStatus(): GatewayObserverStatus {
     return {
-      instance_name: config.instanceName,
+      instance_name: this.instanceName,
       connected: this.connected,
       state: this.state,
       owner_number: this.ownerNumber,
@@ -164,7 +178,7 @@ export class WhatsAppObserverGateway {
     };
   }
 
-  async connectObserver(): Promise<GatewayObserverStatus> {
+  async connectSession(): Promise<GatewayObserverStatus> {
     if (!this.running) {
       await this.start();
       return this.getStatus();
@@ -180,7 +194,7 @@ export class WhatsAppObserverGateway {
   }
 
   async resetSession(): Promise<void> {
-    logger.warn("Resetting WhatsApp observer session.");
+    logger.warn({ channel: this.channelName }, "Resetting WhatsApp session.");
     this.allowReconnect = false;
     this.clearReconnectTimer();
     await this.cleanupSocket(false);
@@ -228,9 +242,9 @@ export class WhatsAppObserverGateway {
       version,
       logger: baileysLogger,
       printQRInTerminal: false,
-      syncFullHistory: true,
+      syncFullHistory: this.channelName === "observer",
       shouldIgnoreJid: (jid) => !isDirectUserJid(jid),
-      browser: Browsers.macOS(`AuraCore-${config.instanceName}`),
+      browser: Browsers.macOS(`AuraCore-${this.instanceName}`),
     });
 
     this.socket = socket;
@@ -278,7 +292,7 @@ export class WhatsAppObserverGateway {
       this.ownerNumber = jidToPhone(this.socket?.user?.id);
       this.lastError = null;
       this.clearQr();
-      logger.info({ ownerNumber: this.ownerNumber }, "WhatsApp observer connected.");
+      logger.info({ channel: this.channelName, ownerNumber: this.ownerNumber }, "WhatsApp channel connected.");
       return;
     }
 
@@ -301,7 +315,7 @@ export class WhatsAppObserverGateway {
 
       logger.warn(
         { disconnectCode, lastError: this.lastError, shouldReconnect },
-        "WhatsApp observer connection closed.",
+        "WhatsApp channel connection closed.",
       );
 
       if (shouldReconnect) {
@@ -345,8 +359,13 @@ export class WhatsAppObserverGateway {
       return;
     }
 
+    const ingestPath =
+      this.channelName === "observer"
+        ? "/api/internal/observer/messages/ingest"
+        : "/api/internal/agent/messages/inbound";
+
     try {
-      const response = await fetch(`${config.auracoreApiBaseUrl}/api/internal/observer/messages/ingest`, {
+      const response = await fetch(`${config.auracoreApiBaseUrl}${ingestPath}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -358,15 +377,21 @@ export class WhatsAppObserverGateway {
       if (!response.ok) {
         const detail = await response.text();
         logger.error(
-          { sourceEvent, count: batch.length, status: response.status, detail },
+          { channel: this.channelName, sourceEvent, count: batch.length, status: response.status, detail },
           "AuraCore backend rejected the message batch.",
         );
         return;
       }
 
-      logger.info({ sourceEvent, count: batch.length }, "Delivered message batch to AuraCore backend.");
+      logger.info(
+        { channel: this.channelName, sourceEvent, count: batch.length },
+        "Delivered message batch to AuraCore backend.",
+      );
     } catch (error) {
-      logger.error({ error, sourceEvent, count: batch.length }, "Failed to deliver messages to AuraCore backend.");
+      logger.error(
+        { channel: this.channelName, error, sourceEvent, count: batch.length },
+        "Failed to deliver messages to AuraCore backend.",
+      );
     }
   }
 
@@ -399,6 +424,7 @@ export class WhatsAppObserverGateway {
     return {
       message_id: key.id,
       direction: key.fromMe ? "outbound" : "inbound",
+      from_me: Boolean(key.fromMe),
       contact_name: contactName || contactPhone,
       chat_jid: remoteJid,
       contact_phone: contactPhone,
@@ -478,7 +504,7 @@ export class WhatsAppObserverGateway {
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       void this.connect().catch((error) => {
-        logger.error({ error }, "Failed to reconnect WhatsApp observer.");
+        logger.error({ channel: this.channelName, error }, "Failed to reconnect WhatsApp channel.");
         this.scheduleReconnect();
       });
     }, config.reconnectDelayMs);
@@ -534,6 +560,24 @@ export class WhatsAppObserverGateway {
     }
 
     this.socket = null;
+  }
+
+  async sendTextMessage(chatJid: string, messageText: string): Promise<GatewaySendResult> {
+    const socket = this.socket;
+    if (!socket || !this.connected) {
+      throw new Error("WhatsApp channel is not connected.");
+    }
+    const trimmed = messageText.trim();
+    if (!trimmed) {
+      throw new Error("Cannot send empty WhatsApp message.");
+    }
+    const result = await socket.sendMessage(chatJid, { text: trimmed });
+    const messageId = result?.key?.id ?? null;
+    const timestamp = result?.messageTimestamp ? toIsoTimestamp(result.messageTimestamp) : new Date().toISOString();
+    return {
+      message_id: messageId,
+      timestamp,
+    };
   }
 }
 

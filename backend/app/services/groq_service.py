@@ -14,6 +14,12 @@ class GroqChatError(RuntimeError):
 
 
 @dataclass(slots=True)
+class GroqChatSearchIntent:
+    has_queries: bool
+    contact_queries: list[str]
+    vault_queries: list[str]
+
+@dataclass(slots=True)
 class GroqPreviewDecision:
     score: int
     label: str
@@ -172,6 +178,102 @@ class GroqChatService:
             fallback_label=fallback_label,
         )
 
+    async def extract_chat_search_intent(self, user_message: str) -> GroqChatSearchIntent:
+        if not self.settings.groq_api_key:
+            raise GroqChatError("GROQ_API_KEY nao configurada na Render.")
+
+        headers = {
+            "Authorization": f"Bearer {self.settings.groq_api_key}",
+            "Content-Type": "application/json",
+        }
+        
+        system_content = (
+            "Voce avalia se uma nova mensagem do usuario exige consultar o banco de dados (RAG) para obter mais contexto sobre CONTATOS ou DOCUMENTOS DO COFRE. "
+            "Responda EXCLUSIVAMENTE em JSON valido com as chaves: "
+            "'has_queries' (boolean, true se houver buscas), "
+            "'contact_queries' (lista de strings, nomes de pessoas citadas, max 3), "
+            "'vault_queries' (lista de strings, nomes de assuntos/documentos, max 3). "
+            "Exemplo: se o usuario disser 'como ta a ficha do joao paulo?', retorne {'has_queries': true, 'contact_queries': ['joao paulo'], 'vault_queries': []}. "
+            "Exemplo: 'qual era o cnpj da minha empresa mesmo?', retorne {'has_queries': true, 'contact_queries': [], 'vault_queries': ['cnpj', 'empresa']}. "
+            "Exemplo: 'bom dia, tudo bem?', retorne {'has_queries': false, 'contact_queries': [], 'vault_queries': []}."
+        )
+
+        payload = {
+            "model": "llama-3.3-70b-versatile",
+            "temperature": 0.05,
+            "max_tokens": 120,
+            "messages": [
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": f"Mensagem do usuario:\n{user_message}"},
+            ],
+        }
+
+        import httpx
+        async with httpx.AsyncClient(
+            base_url=self.settings.normalized_groq_api_base_url,
+            timeout=max(5, self.settings.groq_timeout_seconds // 2),
+        ) as client:
+            response = await client.post("/chat/completions", headers=headers, json=payload)
+
+        if response.status_code >= 400:
+            detail = response.text.strip() or "Unexpected Groq error."
+            raise GroqChatError(f"Groq intent extraction failed ({response.status_code}): {detail}")
+
+        data = response.json()
+        content = self._extract_content(data)
+        if not content.strip():
+            return GroqChatSearchIntent(has_queries=False, contact_queries=[], vault_queries=[])
+            
+        return self._parse_search_intent(content)
+
+    async def extract_chat_search_intent(self, user_message: str) -> GroqChatSearchIntent:
+        if not self.settings.groq_api_key:
+            raise GroqChatError("GROQ_API_KEY nao configurada na Render.")
+
+        headers = {
+            "Authorization": f"Bearer {self.settings.groq_api_key}",
+            "Content-Type": "application/json",
+        }
+        
+        system_content = (
+            "Voce avalia se uma nova mensagem do usuario exige consultar o banco de dados (RAG) para obter mais contexto sobre CONTATOS ou DOCUMENTOS DO COFRE. "
+            "Responda EXCLUSIVAMENTE em JSON valido com as chaves: "
+            "'has_queries' (boolean, true se houver buscas), "
+            "'contact_queries' (lista de strings, nomes de pessoas citadas, max 3), "
+            "'vault_queries' (lista de strings, nomes de assuntos/documentos, max 3). "
+            "Exemplo: se o usuario disser 'como ta a ficha do joao paulo?', retorne {'has_queries': true, 'contact_queries': ['joao paulo'], 'vault_queries': []}. "
+            "Exemplo: 'qual era o cnpj da minha empresa mesmo?', retorne {'has_queries': true, 'contact_queries': [], 'vault_queries': ['cnpj', 'empresa']}. "
+            "Exemplo: 'bom dia, tudo bem?', retorne {'has_queries': false, 'contact_queries': [], 'vault_queries': []}."
+        )
+
+        payload = {
+            "model": "llama-3.3-70b-versatile",
+            "temperature": 0.05,
+            "max_tokens": 120,
+            "messages": [
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": f"Mensagem do usuario:\n{user_message}"},
+            ],
+        }
+
+        import httpx
+        async with httpx.AsyncClient(
+            base_url=self.settings.normalized_groq_api_base_url,
+            timeout=max(5, self.settings.groq_timeout_seconds // 2),
+        ) as client:
+            response = await client.post("/chat/completions", headers=headers, json=payload)
+
+        if response.status_code >= 400:
+            detail = response.text.strip() or "Unexpected Groq error."
+            raise GroqChatError(f"Groq intent extraction failed ({response.status_code}): {detail}")
+
+        data = response.json()
+        content = self._extract_content(data)
+        if not content.strip():
+            return GroqChatSearchIntent(has_queries=False, contact_queries=[], vault_queries=[])
+            
+        return self._parse_search_intent(content)
+
     def _build_prompt(
         self,
         *,
@@ -251,6 +353,82 @@ Regras:
             return "\n".join(text_parts).strip()
 
         raise GroqChatError("Groq returned an empty content payload.")
+
+    def _parse_search_intent(self, content: str) -> GroqChatSearchIntent:
+        cleaned = content.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.strip("`")
+            if "\n" in cleaned:
+                cleaned = cleaned.split("\n", 1)[1]
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3]
+            cleaned = cleaned.strip()
+
+        import json
+        try:
+            payload = json.loads(cleaned)
+            if not isinstance(payload, dict):
+                return GroqChatSearchIntent(has_queries=False, contact_queries=[], vault_queries=[])
+            
+            contact_queries = payload.get("contact_queries", [])
+            vault_queries = payload.get("vault_queries", [])
+            has_queries = payload.get("has_queries", False)
+            
+            if not isinstance(contact_queries, list): contact_queries = []
+            if not isinstance(vault_queries, list): vault_queries = []
+            
+            contact_queries = [str(q).strip() for q in contact_queries if str(q).strip()]
+            vault_queries = [str(q).strip() for q in vault_queries if str(q).strip()]
+            
+            is_valid = bool(contact_queries or vault_queries)
+            if has_queries and not is_valid:
+                has_queries = False
+                
+            return GroqChatSearchIntent(
+                has_queries=has_queries,
+                contact_queries=contact_queries,
+                vault_queries=vault_queries
+            )
+        except json.JSONDecodeError:
+            return GroqChatSearchIntent(has_queries=False, contact_queries=[], vault_queries=[])
+
+    def _parse_search_intent(self, content: str) -> GroqChatSearchIntent:
+        cleaned = content.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.strip("`")
+            if "\n" in cleaned:
+                cleaned = cleaned.split("\n", 1)[1]
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3]
+            cleaned = cleaned.strip()
+
+        import json
+        try:
+            payload = json.loads(cleaned)
+            if not isinstance(payload, dict):
+                return GroqChatSearchIntent(has_queries=False, contact_queries=[], vault_queries=[])
+            
+            contact_queries = payload.get("contact_queries", [])
+            vault_queries = payload.get("vault_queries", [])
+            has_queries = payload.get("has_queries", False)
+            
+            if not isinstance(contact_queries, list): contact_queries = []
+            if not isinstance(vault_queries, list): vault_queries = []
+            
+            contact_queries = [str(q).strip() for q in contact_queries if str(q).strip()]
+            vault_queries = [str(q).strip() for q in vault_queries if str(q).strip()]
+            
+            is_valid = bool(contact_queries or vault_queries)
+            if has_queries and not is_valid:
+                has_queries = False
+                
+            return GroqChatSearchIntent(
+                has_queries=has_queries,
+                contact_queries=contact_queries,
+                vault_queries=vault_queries
+            )
+        except json.JSONDecodeError:
+            return GroqChatSearchIntent(has_queries=False, contact_queries=[], vault_queries=[])
 
     def _parse_preview_decision(
         self,

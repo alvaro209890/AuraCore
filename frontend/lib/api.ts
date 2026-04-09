@@ -19,6 +19,72 @@ export type ObserverMessageRefreshResponse = {
   sync_run_id: string | null;
 };
 
+export type WhatsAppAgentStatus = {
+  instance_name: string;
+  connected: boolean;
+  state: string;
+  gateway_ready: boolean;
+  auto_reply_enabled: boolean;
+  owner_number: string | null;
+  allowed_contact_phone: string | null;
+  qr_code: string | null;
+  qr_expires_in_sec: number | null;
+  last_seen_at: string | null;
+  last_error: string | null;
+};
+
+export type WhatsAppAgentSettings = {
+  user_id: string;
+  auto_reply_enabled: boolean;
+  allowed_contact_phone: string | null;
+  updated_at: string;
+};
+
+export type WhatsAppAgentThread = {
+  id: string;
+  contact_name: string;
+  contact_phone: string | null;
+  chat_jid: string | null;
+  status: string;
+  last_message_preview: string | null;
+  last_message_at: string | null;
+  last_inbound_at: string | null;
+  last_outbound_at: string | null;
+  last_error_at: string | null;
+  last_error_text: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type WhatsAppAgentMessage = {
+  id: string;
+  thread_id: string;
+  direction: "inbound" | "outbound";
+  role: "user" | "assistant";
+  whatsapp_message_id: string | null;
+  source_inbound_message_id: string | null;
+  contact_phone: string | null;
+  chat_jid: string | null;
+  content: string;
+  message_timestamp: string;
+  processing_status: string;
+  send_status: string | null;
+  error_text: string | null;
+  response_latency_ms: number | null;
+  model_run_id: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+};
+
+export type WhatsAppAgentWorkspace = {
+  status: WhatsAppAgentStatus;
+  settings: WhatsAppAgentSettings;
+  observer_status: ObserverStatus;
+  active_thread_id: string | null;
+  threads: WhatsAppAgentThread[];
+  messages: WhatsAppAgentMessage[];
+};
+
 export type MemoryCurrent = {
   user_id: string;
   life_summary: string;
@@ -343,6 +409,42 @@ export async function refreshObserverMessages(): Promise<ObserverMessageRefreshR
   return request<ObserverMessageRefreshResponse>("/api/observer/messages/refresh", {
     method: "POST",
   });
+}
+
+export async function connectAgent(): Promise<WhatsAppAgentStatus> {
+  return request<WhatsAppAgentStatus>("/api/whatsapp-agent/connect", { method: "POST" });
+}
+
+export async function resetAgent(): Promise<WhatsAppAgentStatus> {
+  return request<WhatsAppAgentStatus>("/api/whatsapp-agent/reset", { method: "POST" });
+}
+
+export async function getAgentStatus(): Promise<WhatsAppAgentStatus> {
+  return request<WhatsAppAgentStatus>("/api/whatsapp-agent/status");
+}
+
+export async function getAgentWorkspace(threadId?: string): Promise<WhatsAppAgentWorkspace> {
+  const query = threadId ? `?thread_id=${encodeURIComponent(threadId)}` : "";
+  return request<WhatsAppAgentWorkspace>(`/api/whatsapp-agent/workspace${query}`);
+}
+
+export async function updateAgentSettings(input: Partial<WhatsAppAgentSettings>): Promise<WhatsAppAgentSettings> {
+  return request<WhatsAppAgentSettings>("/api/whatsapp-agent/settings", {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function listAgentThreads(limit = 24): Promise<WhatsAppAgentThread[]> {
+  const response = await request<{ threads: WhatsAppAgentThread[] }>(`/api/whatsapp-agent/threads?limit=${limit}`);
+  return response.threads;
+}
+
+export async function listAgentMessages(threadId: string, limit = 40): Promise<WhatsAppAgentMessage[]> {
+  const response = await request<{ messages: WhatsAppAgentMessage[] }>(
+    `/api/whatsapp-agent/messages?thread_id=${encodeURIComponent(threadId)}&limit=${limit}`,
+  );
+  return response.messages;
 }
 
 export async function getCurrentMemory(): Promise<MemoryCurrent> {

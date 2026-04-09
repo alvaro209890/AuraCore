@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -27,6 +27,84 @@ class ObserverMessageRefreshResponse(BaseModel):
     sync_run_id: str | None = None
 
 
+class WhatsAppAgentStatusResponse(BaseModel):
+    instance_name: str
+    connected: bool
+    state: str
+    gateway_ready: bool
+    auto_reply_enabled: bool
+    owner_number: str | None = None
+    allowed_contact_phone: str | None = None
+    qr_code: str | None = None
+    qr_expires_in_sec: int | None = None
+    last_seen_at: datetime | None = None
+    last_error: str | None = None
+
+
+class WhatsAppAgentSettingsResponse(BaseModel):
+    user_id: str
+    auto_reply_enabled: bool
+    allowed_contact_phone: str | None = None
+    updated_at: datetime
+
+
+class UpdateWhatsAppAgentSettingsRequest(BaseModel):
+    auto_reply_enabled: bool | None = None
+
+
+class WhatsAppAgentMessageResponse(BaseModel):
+    id: str
+    thread_id: str
+    direction: Literal["inbound", "outbound"]
+    role: Literal["user", "assistant"]
+    whatsapp_message_id: str | None = None
+    source_inbound_message_id: str | None = None
+    contact_phone: str | None = None
+    chat_jid: str | None = None
+    content: str
+    message_timestamp: datetime
+    processing_status: str
+    send_status: str | None = None
+    error_text: str | None = None
+    response_latency_ms: int | None = None
+    model_run_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class WhatsAppAgentThreadResponse(BaseModel):
+    id: str
+    contact_name: str
+    contact_phone: str | None = None
+    chat_jid: str | None = None
+    status: str
+    last_message_preview: str | None = None
+    last_message_at: datetime | None = None
+    last_inbound_at: datetime | None = None
+    last_outbound_at: datetime | None = None
+    last_error_at: datetime | None = None
+    last_error_text: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class WhatsAppAgentThreadsListResponse(BaseModel):
+    threads: list[WhatsAppAgentThreadResponse] = Field(default_factory=list)
+
+
+class WhatsAppAgentMessagesListResponse(BaseModel):
+    messages: list[WhatsAppAgentMessageResponse] = Field(default_factory=list)
+
+
+class WhatsAppAgentWorkspaceResponse(BaseModel):
+    status: WhatsAppAgentStatusResponse
+    settings: WhatsAppAgentSettingsResponse
+    observer_status: ObserverStatusResponse
+    active_thread_id: str | None = None
+    threads: list[WhatsAppAgentThreadResponse] = Field(default_factory=list)
+    messages: list[WhatsAppAgentMessageResponse] = Field(default_factory=list)
+
+
 class IngestMessageRequestItem(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -45,6 +123,38 @@ class IngestMessagesRequest(BaseModel):
 
 
 class IngestMessagesResponse(BaseModel):
+    ok: bool = True
+    accepted_count: int = Field(default=0, ge=0)
+    ignored_count: int = Field(default=0, ge=0)
+
+
+class WhatsAppAgentInboundMessageRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    message_id: str = Field(min_length=1)
+    direction: Literal["inbound", "outbound"] = "inbound"
+    from_me: bool = False
+    contact_name: str | None = None
+    chat_jid: str = Field(min_length=1)
+    contact_phone: str = Field(min_length=1)
+    message_text: str = Field(min_length=1)
+    timestamp: datetime
+    source: str = Field(default="baileys", min_length=1)
+
+
+class WhatsAppAgentInboundMessagesRequest(BaseModel):
+    messages: list[WhatsAppAgentInboundMessageRequest] = Field(default_factory=list)
+
+
+class WhatsAppAgentInboundMessageResponse(BaseModel):
+    ok: bool = True
+    action: str
+    thread_id: str | None = None
+    inbound_message_id: str | None = None
+    outbound_message_id: str | None = None
+
+
+class WhatsAppAgentInboundMessagesResponse(BaseModel):
     ok: bool = True
     accepted_count: int = Field(default=0, ge=0)
     ignored_count: int = Field(default=0, ge=0)
