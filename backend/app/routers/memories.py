@@ -10,6 +10,7 @@ from app.schemas import (
     MemorySnapshotResponse,
     MemorySnapshotsListResponse,
     ProjectMemoryResponse,
+    RefineMemoryResponse,
 )
 from app.services.memory_service import MemoryAnalysisService
 from app.services.supabase_store import MemorySnapshotRecord, PersonaRecord, ProjectMemoryRecord
@@ -45,6 +46,17 @@ async def analyze_memory(
     return AnalyzeMemoryResponse(
         current=_to_persona_response(outcome.persona),
         snapshot=_to_snapshot_response(outcome.snapshot),
+        projects=[_to_project_response(project) for project in outcome.projects],
+    )
+
+
+@router.post("/refine", response_model=RefineMemoryResponse)
+async def refine_saved_memory(
+    memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
+) -> RefineMemoryResponse:
+    outcome = await memory_service.refine_saved_memory()
+    return RefineMemoryResponse(
+        current=_to_persona_response(outcome.persona),
         projects=[_to_project_response(project) for project in outcome.projects],
     )
 

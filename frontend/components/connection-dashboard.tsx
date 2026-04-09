@@ -9,6 +9,7 @@ import {
   getCurrentMemory,
   getMemorySnapshots,
   getObserverStatus,
+  refineMemory,
   resetObserver,
   sendChatMessage,
   type ChatMessage,
@@ -77,6 +78,7 @@ export function ConnectionDashboard() {
   const [isResetting, setIsResetting] = useState(false);
   const [isHydrating, setIsHydrating] = useState(true);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isRefining, setIsRefining] = useState(false);
   const [isSendingChat, setIsSendingChat] = useState(false);
   const [pollingEnabled, setPollingEnabled] = useState(false);
   const [memory, setMemory] = useState<MemoryCurrent | null>(null);
@@ -269,6 +271,21 @@ export function ConnectionDashboard() {
     }
   }
 
+  async function refineSavedMemoryAction(): Promise<void> {
+    setIsRefining(true);
+    setMemoryError(null);
+
+    try {
+      const response = await refineMemory();
+      setMemory(response.current);
+      setProjects(response.projects);
+    } catch (error) {
+      setMemoryError(getErrorMessage(error));
+    } finally {
+      setIsRefining(false);
+    }
+  }
+
   async function submitChatMessage(): Promise<void> {
     const normalized = chatDraft.trim();
     if (!normalized) {
@@ -423,14 +440,24 @@ export function ConnectionDashboard() {
             <span className="panel-kicker">Memoria Manual</span>
             <h2>Consolidar o que a IA aprendeu</h2>
           </div>
-          <button
-            className="analyze-button"
-            onClick={() => void analyzeSelectedWindow()}
-            disabled={isAnalyzing || !selectedWindowHours}
-            type="button"
-          >
-            {isAnalyzing ? "Analisando..." : "Analisar mensagens"}
-          </button>
+          <div className="connection-actions">
+            <button
+              className="reset-button"
+              onClick={() => void refineSavedMemoryAction()}
+              disabled={isRefining}
+              type="button"
+            >
+              {isRefining ? "Refinando..." : "Refinar memoria salva"}
+            </button>
+            <button
+              className="analyze-button"
+              onClick={() => void analyzeSelectedWindow()}
+              disabled={isAnalyzing || !selectedWindowHours}
+              type="button"
+            >
+              {isAnalyzing ? "Analisando..." : "Analisar mensagens"}
+            </button>
+          </div>
         </div>
 
         <div className="analysis-controls">

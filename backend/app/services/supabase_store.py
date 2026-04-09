@@ -216,6 +216,28 @@ class SupabaseStore:
             raise RuntimeError("Memory analysis persisted but persona record could not be fetched.")
         return persona
 
+    def update_persona_summary(
+        self,
+        *,
+        user_id: UUID,
+        updated_life_summary: str,
+        analyzed_at: datetime,
+    ) -> PersonaRecord:
+        current = self.get_persona(user_id)
+        persona_record = {
+            "user_id": str(user_id),
+            "life_summary": updated_life_summary,
+            "last_analyzed_at": analyzed_at.isoformat(),
+            "last_snapshot_id": current.last_snapshot_id if current else None,
+            "updated_at": analyzed_at.isoformat(),
+        }
+        self.client.table("persona").upsert(persona_record, on_conflict="user_id").execute()
+
+        persona = self.get_persona(user_id)
+        if persona is None:
+            raise RuntimeError("Persona summary was updated but could not be fetched afterwards.")
+        return persona
+
     def list_memory_snapshots(self, user_id: UUID, *, limit: int = 20) -> list[MemorySnapshotRecord]:
         response = (
             self.client.table("memory_snapshots")
@@ -258,7 +280,7 @@ class SupabaseStore:
         self,
         *,
         user_id: UUID,
-        source_snapshot_id: str,
+        source_snapshot_id: str | None,
         projects: Sequence[ProjectMemorySeed],
         observed_at: datetime,
     ) -> list[ProjectMemoryRecord]:

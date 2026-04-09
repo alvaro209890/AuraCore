@@ -86,6 +86,11 @@ class AnalyzeMemoryResponse(BaseModel):
     projects: list[ProjectMemoryResponse] = Field(default_factory=list)
 
 
+class RefineMemoryResponse(BaseModel):
+    current: MemoryCurrentResponse
+    projects: list[ProjectMemoryResponse] = Field(default_factory=list)
+
+
 class MemorySnapshotsListResponse(BaseModel):
     snapshots: list[MemorySnapshotResponse] = Field(default_factory=list)
 

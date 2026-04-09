@@ -59,6 +59,11 @@ export type AnalyzeMemoryResponse = {
   projects: ProjectMemory[];
 };
 
+export type RefineMemoryResponse = {
+  current: MemoryCurrent;
+  projects: ProjectMemory[];
+};
+
 export type MemorySnapshotsListResponse = {
   snapshots: MemorySnapshot[];
 };
@@ -132,6 +137,12 @@ export async function getMemorySnapshots(limit = 20): Promise<MemorySnapshot[]> 
 
 export async function analyzeMemory(windowHours: number): Promise<AnalyzeMemoryResponse> {
   return request<AnalyzeMemoryResponse>(`/api/memories/analyze?window_hours=${windowHours}`, {
+    method: "POST",
+  });
+}
+
+export async function refineMemory(): Promise<RefineMemoryResponse> {
+  return request<RefineMemoryResponse>("/api/memories/refine", {
     method: "POST",
   });
 }

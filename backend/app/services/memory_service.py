@@ -27,6 +27,12 @@ class MemoryAnalysisOutcome:
     projects: list[ProjectMemoryRecord]
 
 
+@dataclass(slots=True)
+class MemoryRefinementOutcome:
+    persona: PersonaRecord
+    projects: list[ProjectMemoryRecord]
+
+
 class MemoryAnalysisService:
     def __init__(
         self,
@@ -119,12 +125,54 @@ class MemoryAnalysisService:
     def list_projects(self, *, limit: int = 8) -> list[ProjectMemoryRecord]:
         return self.store.list_project_memories(self.settings.default_user_id, limit=limit)
 
+    async def refine_saved_memory(self) -> MemoryRefinementOutcome:
+        current_persona = self.get_current_persona()
+        snapshots = self.store.list_memory_snapshots(self.settings.default_user_id, limit=max(1, self.settings.memory_analysis_context_snapshots))
+        projects = self.store.list_project_memories(self.settings.default_user_id, limit=max(1, self.settings.chat_context_projects))
+
+        if not current_persona.life_summary.strip() and not snapshots and not projects:
+            raise MemoryAnalysisError(
+                "Ainda nao ha memoria suficiente salva no Supabase para refinar. Rode ao menos uma analise primeiro."
+            )
+
+        refined = await self.deepseek_service.refine_saved_memory(
+            current_life_summary=current_persona.life_summary,
+            prior_analyses_context=self._build_prior_analyses_context_from_snapshots(snapshots),
+            project_context=self._build_project_context(projects),
+        )
+
+        refined_at = datetime.now(UTC)
+        persona = self.store.update_persona_summary(
+            user_id=self.settings.default_user_id,
+            updated_life_summary=refined.updated_life_summary,
+            analyzed_at=refined_at,
+        )
+        updated_projects = self.store.upsert_project_memories(
+            user_id=self.settings.default_user_id,
+            source_snapshot_id=persona.last_snapshot_id,
+            projects=[
+                ProjectMemorySeed(
+                    project_name=project.name,
+                    summary=project.summary,
+                    status=project.status,
+                    next_steps=project.next_steps,
+                    evidence=project.evidence,
+                )
+                for project in refined.active_projects
+            ],
+            observed_at=refined_at,
+        )
+        return MemoryRefinementOutcome(persona=persona, projects=updated_projects)
+
     def _build_prior_analyses_context(self) -> str:
         limit = max(0, self.settings.memory_analysis_context_snapshots)
         if limit == 0:
             return ""
 
         snapshots = self.store.list_memory_snapshots(self.settings.default_user_id, limit=limit)
+        return self._build_prior_analyses_context_from_snapshots(snapshots)
+
+    def _build_prior_analyses_context_from_snapshots(self, snapshots: list[MemorySnapshotRecord]) -> str:
         if not snapshots:
             return ""
 
@@ -145,6 +193,35 @@ class MemoryAnalysisService:
                 lines.append(f"  Rotina: {'; '.join(snapshot.routine_signals[:4])}")
             if snapshot.preferences:
                 lines.append(f"  Preferencias: {'; '.join(snapshot.preferences[:4])}")
+
+            section = "\n".join(lines)
+            projected_size = current_size + len(section) + 2
+            if sections and projected_size > char_budget:
+                break
+            sections.append(section)
+            current_size = projected_size
+
+        return "\n\n".join(sections)
+
+    def _build_project_context(self, projects: list[ProjectMemoryRecord]) -> str:
+        if not projects:
+            return ""
+
+        sections: list[str] = []
+        current_size = 0
+        char_budget = max(1000, self.settings.memory_analysis_snapshot_context_chars)
+
+        for project in projects:
+            lines = [
+                f"- Projeto: {project.project_name}",
+                f"  Resumo: {project.summary}",
+            ]
+            if project.status:
+                lines.append(f"  Status: {project.status}")
+            if project.next_steps:
+                lines.append(f"  Proximos passos: {'; '.join(project.next_steps[:4])}")
+            if project.evidence:
+                lines.append(f"  Evidencias: {'; '.join(project.evidence[:4])}")
 
             section = "\n".join(lines)
             projected_size = current_size + len(section) + 2
