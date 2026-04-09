@@ -30,6 +30,10 @@ def get_supabase_store() -> SupabaseStore:
             settings.message_retention_max_rows,
             settings.memory_analysis_max_messages,
         ),
+        first_analysis_queue_limit=min(
+            settings.memory_first_analysis_max_messages,
+            settings.memory_analysis_max_messages,
+        ),
     )
 
 

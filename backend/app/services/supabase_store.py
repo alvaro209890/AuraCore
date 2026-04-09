@@ -25,6 +25,13 @@ class IngestedMessageRecord:
 
 
 @dataclass(slots=True)
+class IngestSaveResult:
+    saved_count: int
+    ignored_count: int
+    trimmed_existing_count: int = 0
+
+
+@dataclass(slots=True)
 class StoredMessageRecord:
     message_id: str
     user_id: UUID
@@ -413,19 +420,29 @@ class SupabaseStore:
         default_user_id: UUID,
         *,
         message_retention_max_rows: int = 5000,
+        first_analysis_queue_limit: int | None = None,
     ) -> None:
         self.client: Client = create_client(supabase_url, supabase_key)
         self.default_user_id = default_user_id
         self.message_retention_max_rows = max(200, message_retention_max_rows)
+        resolved_first_analysis_limit = (
+            first_analysis_queue_limit
+            if first_analysis_queue_limit is not None
+            else self.message_retention_max_rows
+        )
+        self.first_analysis_queue_limit = max(
+            20,
+            min(resolved_first_analysis_limit, self.message_retention_max_rows),
+        )
         self._compat_sync_runs: dict[str, WhatsAppSyncRunRecord] = {}
         self._compat_decisions: dict[str, AutomationDecisionRecord] = {}
         self._compat_analysis_jobs: dict[str, AnalysisJobRecord] = {}
         self._compat_model_runs: dict[str, ModelRunRecord] = {}
 
-    def save_ingested_messages(self, messages: Sequence[IngestedMessageRecord]) -> int:
+    def save_ingested_messages(self, messages: Sequence[IngestedMessageRecord]) -> IngestSaveResult:
         filtered_messages = [message for message in messages if self.is_normal_contact_phone(message.contact_phone)]
         if not filtered_messages:
-            return 0
+            return IngestSaveResult(saved_count=0, ignored_count=0)
 
         known_contact_names = self._load_known_contact_names(
             [message.contact_phone for message in filtered_messages if message.contact_phone]
@@ -436,9 +453,32 @@ class SupabaseStore:
             message for message in filtered_messages
             if message.message_id not in existing_ids and message.message_id not in processed_ids
         ]
+        deduped_ignored_count = max(0, len(filtered_messages) - len(pending_messages))
+        if not pending_messages:
+            return IngestSaveResult(saved_count=0, ignored_count=deduped_ignored_count)
+
+        (
+            pending_messages,
+            overflow_message_ids,
+            trimmed_existing_ids,
+        ) = self._prepare_ingest_batch(pending_messages)
+
+        if overflow_message_ids or trimmed_existing_ids:
+            self.mark_messages_processed(
+                user_id=self.default_user_id,
+                message_ids=[*overflow_message_ids, *trimmed_existing_ids],
+                processed_at=datetime.now(UTC),
+            )
+        if trimmed_existing_ids:
+            self.delete_messages_by_ids(message_ids=trimmed_existing_ids)
+
         new_message_count = len(pending_messages)
         if not pending_messages:
-            return 0
+            return IngestSaveResult(
+                saved_count=0,
+                ignored_count=deduped_ignored_count + len(overflow_message_ids),
+                trimmed_existing_count=len(trimmed_existing_ids),
+            )
 
         records = [
             {
@@ -489,7 +529,60 @@ class SupabaseStore:
                 user_id=self.default_user_id,
                 pruned_increment=pruned_count,
             )
-        return len(records)
+        return IngestSaveResult(
+            saved_count=len(records),
+            ignored_count=deduped_ignored_count + len(overflow_message_ids),
+            trimmed_existing_count=len(trimmed_existing_ids),
+        )
+
+    def _prepare_ingest_batch(
+        self,
+        pending_messages: Sequence[IngestedMessageRecord],
+    ) -> tuple[list[IngestedMessageRecord], list[str], list[str]]:
+        if self._has_initial_memory_analysis():
+            return list(pending_messages), [], []
+
+        existing_pending = self.list_pending_messages(
+            user_id=self.default_user_id,
+            limit=self.message_retention_max_rows,
+            newest_first=True,
+        )
+        combined_by_id: dict[str, StoredMessageRecord | IngestedMessageRecord] = {
+            message.message_id: message
+            for message in existing_pending
+        }
+        for message in pending_messages:
+            combined_by_id[message.message_id] = message
+
+        ordered_messages = sorted(
+            combined_by_id.values(),
+            key=lambda message: (message.timestamp, message.message_id),
+            reverse=True,
+        )
+        keep_ids = {
+            message.message_id
+            for message in ordered_messages[: self.first_analysis_queue_limit]
+        }
+        kept_pending_messages = [
+            message
+            for message in pending_messages
+            if message.message_id in keep_ids
+        ]
+        overflow_message_ids = [
+            message.message_id
+            for message in pending_messages
+            if message.message_id not in keep_ids
+        ]
+        trimmed_existing_ids = [
+            message.message_id
+            for message in existing_pending
+            if message.message_id not in keep_ids
+        ]
+        return kept_pending_messages, overflow_message_ids, trimmed_existing_ids
+
+    def _has_initial_memory_analysis(self) -> bool:
+        persona = self.get_persona(self.default_user_id)
+        return bool(persona and (persona.last_analyzed_at or persona.last_snapshot_id))
 
     def mark_messages_processed(self, *, user_id: UUID, message_ids: Sequence[str], processed_at: datetime | None = None) -> int:
         cleaned_ids = [message_id.strip() for message_id in message_ids if message_id and message_id.strip()]

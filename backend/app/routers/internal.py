@@ -35,14 +35,14 @@ async def ingest_messages(
         blocked_contact_phone = None
 
     normalized_messages = _build_records(payload, store, blocked_contact_phone)
-    saved_count = store.save_ingested_messages(normalized_messages)
-    ignored_count = max(0, len(payload.messages) - len(normalized_messages))
+    save_result = store.save_ingested_messages(normalized_messages)
+    ignored_count = max(0, len(payload.messages) - len(normalized_messages)) + save_result.ignored_count
     automation_service.register_ingest_batch(
-        accepted_count=saved_count,
+        accepted_count=save_result.saved_count,
         ignored_count=ignored_count,
         timestamps=[message.timestamp for message in normalized_messages],
     )
-    return IngestMessagesResponse(accepted_count=saved_count, ignored_count=ignored_count)
+    return IngestMessagesResponse(accepted_count=save_result.saved_count, ignored_count=ignored_count)
 
 
 def _build_records(
