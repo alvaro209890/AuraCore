@@ -49,7 +49,7 @@ import {
   refineMemory,
   resetObserver,
   runAutomationTick,
-  sendChatMessage,
+  sendChatMessageStream,
   updateAutomationSettings,
   type AutomationSettings,
   type AutomationStatus,
@@ -666,6 +666,143 @@ function SegmentedControl({
   );
 }
 
+// ── Smart context builder ──────────────────────────────────────────────────────
+// Scores important messages, projects, snapshots and memory by relevance to the
+// user's question. Picks the best items across all sources, staying within a
+// tight character budget so token cost stays low.
+// Does NOT include raw WhatsApp messages — that is DeepSeek's job during analysis.
+
+const PT_STOPWORDS = new Set([
+  "a", "o", "e", "de", "do", "da", "dos", "das", "em", "no", "na", "nos", "nas",
+  "um", "uma", "uns", "umas", "por", "para", "com", "sem", "que", "se", "eu",
+  "ele", "ela", "eles", "elas", "voce", "meu", "minha", "meus", "minhas", "seu",
+  "sua", "seus", "suas", "como", "qual", "quais", "onde", "quando", "foi", "ser",
+  "ter", "tem", "esta", "isso", "nao", "sim", "mais", "muito", "tambem", "ja",
+  "ainda", "ai", "aqui", "ate", "sobre", "entre", "esse", "essa", "este",
+  "esses", "essas", "porque", "pra", "pro", "mas", "ou", "ao", "aos",
+  "me", "te", "lhe", "vos", "lhes", "oi", "ola",
+]);
+
+function extractKeywords(text: string): string[] {
+  const normalized = text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ");
+  return normalized
+    .split(/\s+/)
+    .filter((word) => word.length >= 2 && !PT_STOPWORDS.has(word));
+}
+
+function scoreByKeywords(text: string, keywords: string[]): number {
+  if (keywords.length === 0) return 0;
+  const normalizedText = text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+  let hits = 0;
+  for (const keyword of keywords) {
+    if (normalizedText.includes(keyword)) hits++;
+  }
+  return hits / keywords.length;
+}
+
+function buildSmartContextHint(
+  userQuestion: string,
+  importantMsgs: ImportantMessage[],
+  allProjects: ProjectMemory[],
+  allSnapshots: MemorySnapshot[],
+  currentMemory: MemoryCurrent | null,
+): string | undefined {
+  const keywords = extractKeywords(userQuestion);
+  if (keywords.length === 0) return undefined;
+
+  const CHAR_BUDGET = 1500;
+  const parts: string[] = [];
+  let charCount = 0;
+
+  const addPart = (line: string): boolean => {
+    if (charCount + line.length + 1 > CHAR_BUDGET) return false;
+    parts.push(line);
+    charCount += line.length + 1;
+    return true;
+  };
+
+  // 1) Score important messages
+  const scoredMessages = importantMsgs.map((m) => ({
+    item: m,
+    score: scoreByKeywords(
+      `${m.category} ${m.contact_name} ${m.message_text} ${m.importance_reason}`,
+      keywords,
+    ),
+  }));
+  scoredMessages.sort((a, b) => b.score - a.score);
+  const relevantMessages = scoredMessages.filter((s) => s.score > 0).slice(0, 4);
+
+  // 2) Score projects
+  const scoredProjects = allProjects.map((p) => ({
+    item: p,
+    score: scoreByKeywords(
+      `${p.project_name} ${p.summary} ${p.status} ${p.what_is_being_built} ${p.built_for} ${p.next_steps.join(" ")}`,
+      keywords,
+    ),
+  }));
+  scoredProjects.sort((a, b) => b.score - a.score);
+  const relevantProjects = scoredProjects.filter((s) => s.score > 0).slice(0, 3);
+
+  // 3) Score snapshot learnings, relationships, routines
+  type ScoredInsight = { text: string; source: string; score: number };
+  const scoredInsights: ScoredInsight[] = [];
+  for (const snap of allSnapshots.slice(0, 5)) {
+    for (const learning of snap.key_learnings) {
+      scoredInsights.push({ text: learning, source: "aprendizado", score: scoreByKeywords(learning, keywords) });
+    }
+    for (const person of snap.people_and_relationships) {
+      scoredInsights.push({ text: person, source: "pessoa", score: scoreByKeywords(person, keywords) });
+    }
+    for (const routine of snap.routine_signals) {
+      scoredInsights.push({ text: routine, source: "rotina", score: scoreByKeywords(routine, keywords) });
+    }
+  }
+  scoredInsights.sort((a, b) => b.score - a.score);
+  const relevantInsights = scoredInsights.filter((s) => s.score > 0).slice(0, 4);
+
+  // 4) Check if life summary is relevant
+  const memoryScore = currentMemory?.life_summary
+    ? scoreByKeywords(currentMemory.life_summary, keywords)
+    : 0;
+
+  // Assemble — most relevant first
+  if (relevantMessages.length > 0) {
+    addPart("Cofre de mensagens importantes (identificadas pelo DeepSeek nas conversas do WhatsApp):");
+    for (const { item: m } of relevantMessages) {
+      if (!addPart(`- [${m.category}] ${m.contact_name || "?"}: ${truncateText(m.message_text, 100)}`)) break;
+    }
+  }
+
+  if (relevantProjects.length > 0) {
+    addPart("Projetos relevantes (consolidados pelo DeepSeek):");
+    for (const { item: p } of relevantProjects) {
+      if (!addPart(`- ${p.project_name}: ${truncateText(p.summary, 80)} [${p.status}]`)) break;
+      if (p.next_steps.length > 0) addPart(`  Proximos: ${p.next_steps.slice(0, 2).join("; ")}`);
+    }
+  }
+
+  if (relevantInsights.length > 0) {
+    addPart("Insights do DeepSeek (analises recentes):");
+    for (const insight of relevantInsights) {
+      if (!addPart(`- [${insight.source}] ${truncateText(insight.text, 100)}`)) break;
+    }
+  }
+
+  if (memoryScore > 0.15 && currentMemory?.life_summary) {
+    addPart("Resumo de vida consolidado (trecho relevante):");
+    addPart(truncateText(currentMemory.life_summary, 250));
+  }
+
+  return parts.length > 0 ? parts.join("\n") : undefined;
+}
+
 export function ConnectionDashboard() {
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -701,6 +838,7 @@ export function ConnectionDashboard() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isRefreshingMessages, setIsRefreshingMessages] = useState(false);
   const [isSendingChat, setIsSendingChat] = useState(false);
+  const [streamingText, setStreamingText] = useState<string | null>(null);
   const [isLoadingChatThread, setIsLoadingChatThread] = useState(false);
   const [isCreatingChatThread, setIsCreatingChatThread] = useState(false);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
@@ -1233,13 +1371,33 @@ export function ConnectionDashboard() {
 
     setIsSendingChat(true);
     setChatError(null);
+    setChatDraft("");
+
+    // ── Smart context builder: scores all knowledge sources by relevance to the user's question ──
+    const contextHint = buildSmartContextHint(normalized, importantMessages, projects, snapshots, memory);
+
+    // Optimistically add user message to the list
+    const tempUserMsg: ChatMessage = {
+      id: `temp-${Date.now()}`,
+      role: "user",
+      content: normalized,
+      created_at: new Date().toISOString(),
+    };
+    setChatMessages((prev) => [...prev, tempUserMsg]);
+    setStreamingText("");
 
     try {
-      const workspace = await sendChatMessage(normalized, activeChatThreadId ?? undefined);
-      applyChatWorkspace(workspace);
-      setChatDraft("");
-      pushAgentLog("info", "Nova conversa salva no chat. Esse contexto entra nas próximas leituras da memória.");
+      for await (const event of sendChatMessageStream(normalized, activeChatThreadId ?? undefined, contextHint)) {
+        if (event.type === "token") {
+          setStreamingText((prev) => (prev ?? "") + event.content);
+        } else if (event.type === "done") {
+          setStreamingText(null);
+          applyChatWorkspace(event.workspace);
+          pushAgentLog("info", "Nova conversa salva no chat. Esse contexto entra nas próximas leituras da memória.");
+        }
+      }
     } catch (error) {
+      setStreamingText(null);
       setChatError(getErrorMessage(error));
       setActiveTab("chat");
     } finally {
@@ -1431,15 +1589,13 @@ export function ConnectionDashboard() {
                 <ChatTab
                   chatThreads={chatThreads}
                   activeChatThread={activeChatThread}
-                  chatThreadTitle={chatThreadTitle}
                   chatMessages={chatMessages}
                   chatDraft={chatDraft}
                   chatError={chatError}
+                  streamingText={streamingText}
                   isSendingChat={isSendingChat}
                   isLoadingChatThread={isLoadingChatThread}
                   isCreatingChatThread={isCreatingChatThread}
-                  memory={memory}
-                  projectsCount={projects.length}
                   chatScrollRef={chatScrollRef}
                   onChatDraftChange={setChatDraft}
                   onSelectThread={(threadId) => void openChatThread(threadId)}
@@ -2428,15 +2584,13 @@ function ImportantMessagesTab({
 function ChatTab({
   chatThreads,
   activeChatThread,
-  chatThreadTitle,
   chatMessages,
   chatDraft,
   chatError,
+  streamingText,
   isSendingChat,
   isLoadingChatThread,
   isCreatingChatThread,
-  memory,
-  projectsCount,
   chatScrollRef,
   onChatDraftChange,
   onSelectThread,
@@ -2446,15 +2600,13 @@ function ChatTab({
 }: {
   chatThreads: ChatThread[];
   activeChatThread: ChatThread | null;
-  chatThreadTitle: string;
   chatMessages: ChatMessage[];
   chatDraft: string;
   chatError: string | null;
+  streamingText: string | null;
   isSendingChat: boolean;
   isLoadingChatThread: boolean;
   isCreatingChatThread: boolean;
-  memory: MemoryCurrent | null;
-  projectsCount: number;
   chatScrollRef: React.RefObject<HTMLDivElement | null>;
   onChatDraftChange: (value: string) => void;
   onSelectThread: (threadId: string) => void;
@@ -2462,191 +2614,143 @@ function ChatTab({
   onApplyPrompt: (value: string) => void;
   onSubmit: () => void;
 }) {
-  const currentThreadMessageCount = activeChatThread?.message_count ?? chatMessages.length;
-  const userMessageCount = chatMessages.filter((message) => message.role === "user").length;
-  const assistantMessageCount = chatMessages.length - userMessageCount;
-  const totalMessageCount = chatThreads.reduce((total, thread) => total + thread.message_count, 0);
-  const lastActivityAt = chatMessages[chatMessages.length - 1]?.created_at ?? activeChatThread?.updated_at ?? null;
   const quickPrompts = [
-    "Me diga o que ficou pendente nos meus projetos nesta semana.",
-    "Resuma meu perfil de decisão com base no que você já sabe.",
-    "Monte um plano curto de prioridade para hoje.",
+    "Me diga o que ficou pendente nos meus projetos.",
+    "Resuma meu perfil de decisão.",
+    "Monte um plano de prioridades para hoje.",
   ];
 
   return (
-    <div className="chat-workspace">
-      <aside className="chat-sidebar-panel">
-        <div className="chat-sidebar-head">
-          <div>
-            <span className="chat-sidebar-kicker">Workspace de Conversas</span>
-            <h3>Chats do dono</h3>
-            <p>Separe estratégia, rotina, projetos e decisões em threads diferentes sem perder o contexto de memória.</p>
-          </div>
-          <button className="ac-primary-button" onClick={onCreateThread} disabled={isCreatingChatThread} type="button">
-            <Plus size={15} />
-            {isCreatingChatThread ? "Criando..." : "Nova Conversa"}
+    <div className="gpt-chat-layout">
+      {/* Thread Sidebar */}
+      <aside className="gpt-thread-sidebar">
+        <div className="gpt-thread-sidebar-top">
+          <button className="gpt-new-chat-btn" onClick={onCreateThread} disabled={isCreatingChatThread} type="button">
+            <Plus size={16} />
+            {isCreatingChatThread ? "Criando..." : "Nova conversa"}
           </button>
         </div>
 
-        <div className="chat-sidebar-stats">
-          <div className="chat-mini-stat">
-            <span>Threads</span>
-            <strong>{chatThreads.length}</strong>
-          </div>
-          <div className="chat-mini-stat">
-            <span>Mensagens</span>
-            <strong>{formatTokenCount(totalMessageCount)}</strong>
-          </div>
-          <div className="chat-mini-stat">
-            <span>Memória</span>
-            <strong>{memory?.last_analyzed_at ? "Ativa" : "Pendente"}</strong>
-          </div>
-        </div>
-
-        <div className="chat-thread-list-modern">
-          {chatThreads.map((thread) => {
-            const active = activeChatThread?.id === thread.id;
-            const preview = thread.last_message_preview || "Thread nova. Comece por aqui.";
-            return (
-              <button
-                key={thread.id}
-                className={`chat-thread-card${active ? " chat-thread-card-active" : ""}`}
-                onClick={() => onSelectThread(thread.id)}
-                type="button"
-              >
-                <div className="chat-thread-card-top">
-                  <strong>{truncateText(thread.title, 42)}</strong>
-                  <span>{formatRelativeTime(thread.last_message_at ?? thread.updated_at)}</span>
-                </div>
-                <p>{preview}</p>
-                <div className="chat-thread-card-meta">
-                  <span>{thread.thread_key === "default" ? "Base" : "Thread"}</span>
-                  <span>{formatTokenCount(thread.message_count)} msgs</span>
-                </div>
-              </button>
-            );
-          })}
+        <div className="gpt-thread-list">
+          {chatThreads.length === 0 ? (
+            <p className="gpt-thread-empty">Nenhuma conversa ainda.</p>
+          ) : (
+            chatThreads.map((thread) => {
+              const active = activeChatThread?.id === thread.id;
+              return (
+                <button
+                  key={thread.id}
+                  className={`gpt-thread-item${active ? " gpt-thread-item-active" : ""}`}
+                  onClick={() => onSelectThread(thread.id)}
+                  type="button"
+                >
+                  <MessageSquare size={14} />
+                  <span className="gpt-thread-title">{truncateText(thread.title, 32)}</span>
+                  <span className="gpt-thread-time">{formatRelativeTime(thread.last_message_at ?? thread.updated_at)}</span>
+                </button>
+              );
+            })
+          )}
         </div>
       </aside>
 
-      <section className="chat-stage-modern">
-        <div className="chat-header-modern">
-          <div className="chat-bot-badge">
-            <div className="chat-bot-avatar">
-              <Bot size={18} />
-            </div>
-            <div>
-              <h3>{chatThreadTitle}</h3>
-              <p>
-                <Database size={10} />
-                Memória ativa · {projectsCount} projetos em contexto
-              </p>
-            </div>
-          </div>
-          <div className="chat-header-pills">
-            <span className="micro-badge">{formatTokenCount(currentThreadMessageCount)} msgs</span>
-            <span className="micro-badge">{lastActivityAt ? `Ativa ${formatRelativeTime(lastActivityAt)}` : "Sem atividade"}</span>
-          </div>
-        </div>
-
-        <div className="chat-stage-metrics">
-          <MetricTile label="Nesta thread" value={formatTokenCount(currentThreadMessageCount)} accent />
-          <MetricTile label="Você enviou" value={formatTokenCount(userMessageCount)} tone="indigo" />
-          <MetricTile label="IA respondeu" value={formatTokenCount(assistantMessageCount)} tone="emerald" />
-          <MetricTile label="Última atividade" value={lastActivityAt ? formatShortDateTime(lastActivityAt) : "Sem data"} tone="amber" />
-        </div>
-
-        <div ref={chatScrollRef} className="chat-scroll-modern">
-          <div className="chat-date-pill">{activeChatThread?.thread_key === "default" ? "Thread base" : "Thread ativa"}</div>
-
-          {isLoadingChatThread ? (
-            <Card className="chat-empty-card">
-              <SectionTitle title="Abrindo conversa" icon={RefreshCw} />
-              <p>Buscando histórico e contexto da thread selecionada.</p>
-            </Card>
-          ) : chatMessages.length === 0 ? (
-            <Card className="chat-empty-card">
-              <SectionTitle title="Thread vazia" icon={Bot} />
-              <p>Use threads separadas para conversar sobre rotina, estratégia, projetos ou revisão de decisões. Tudo continua com memória ativa.</p>
-              <div className="quick-replies">
-                {quickPrompts.map((prompt) => (
-                  <button key={prompt} onClick={() => onApplyPrompt(prompt)} type="button">
-                    {prompt}
-                  </button>
+      {/* Main Chat Area */}
+      <section className="gpt-chat-main">
+        {/* Messages */}
+        <div ref={chatScrollRef} className="gpt-messages-scroll">
+          <div className="gpt-messages-container">
+            {isLoadingChatThread ? (
+              <div className="gpt-empty-state">
+                <RefreshCw size={20} className="spin" />
+                <p>Carregando conversa...</p>
+              </div>
+            ) : chatMessages.length === 0 && streamingText === null ? (
+              <div className="gpt-empty-state">
+                <div className="gpt-empty-icon">
+                  <Brain size={32} />
+                </div>
+                <h3>AuraCore</h3>
+                <p>Como posso ajudar você hoje?</p>
+                <div className="gpt-suggestions">
+                  {quickPrompts.map((prompt) => (
+                    <button key={prompt} onClick={() => onApplyPrompt(prompt)} type="button" className="gpt-suggestion-btn">
+                      <Sparkles size={14} />
+                      {prompt}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <>
+                {chatMessages.map((message) => (
+                  <div key={message.id} className={`gpt-message-row${message.role === "user" ? " gpt-message-user" : ""}`}>
+                    <div className={`gpt-msg-avatar${message.role === "user" ? " gpt-msg-avatar-user" : ""}`}>
+                      {message.role === "assistant" ? <Bot size={16} /> : <User size={16} />}
+                    </div>
+                    <div className="gpt-msg-content">
+                      <div className="gpt-msg-meta">
+                        <strong>{message.role === "assistant" ? "AuraCore" : "Você"}</strong>
+                        <span>{formatShortDateTime(message.created_at)}</span>
+                      </div>
+                      <div className={`gpt-msg-bubble${message.role === "user" ? " gpt-msg-bubble-user" : ""}`}>
+                        <p>{message.content}</p>
+                      </div>
+                    </div>
+                  </div>
                 ))}
-              </div>
-            </Card>
-          ) : (
-            chatMessages.map((message) => (
-              <div
-                key={message.id}
-                className={`chat-row-modern${message.role === "assistant" ? "" : " chat-row-user"}`}
-              >
-                <div className={`chat-avatar-modern${message.role === "assistant" ? "" : " chat-avatar-user"}`}>
-                  {message.role === "assistant" ? <Bot size={16} /> : <User size={16} />}
-                </div>
-                <div className="chat-bubble-stack">
-                  <div className="chat-bubble-meta">
-                    <strong>{message.role === "assistant" ? "AuraCore" : "Você"}</strong>
-                    <span>{formatShortDateTime(message.created_at)}</span>
-                  </div>
-                  <div className={`chat-bubble-modern${message.role === "assistant" ? "" : " chat-bubble-user"}`}>
-                    <p>{message.content}</p>
-                  </div>
-                </div>
-              </div>
-            ))
-          )}
 
-          <div className="quick-replies">
-            {quickPrompts.map((prompt) => (
-              <button key={prompt} onClick={() => onApplyPrompt(prompt)} type="button">
-                {truncateText(prompt, 54)}
-              </button>
-            ))}
+                {/* Streaming response */}
+                {streamingText !== null ? (
+                  <div className="gpt-message-row">
+                    <div className="gpt-msg-avatar">
+                      <Bot size={16} />
+                    </div>
+                    <div className="gpt-msg-content">
+                      <div className="gpt-msg-meta">
+                        <strong>AuraCore</strong>
+                        <span className="gpt-typing-indicator">digitando...</span>
+                      </div>
+                      <div className="gpt-msg-bubble">
+                        <p>{streamingText}<span className="gpt-cursor">▊</span></p>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+              </>
+            )}
           </div>
         </div>
 
-        <div className="chat-composer-modern">
+        {/* Composer */}
+        <div className="gpt-composer-wrap">
           {chatError ? <InlineError title="Falha no chat" message={chatError} /> : null}
-          <div className="chat-composer-toolbar">
-            <span className="chat-composer-label">Sugestões rápidas</span>
-            <div className="chat-composer-chips">
-              <button onClick={() => onApplyPrompt("Quais são meus principais gargalos agora?")} type="button">
-                Gargalos
-              </button>
-              <button onClick={() => onApplyPrompt("Revise minha semana e me diga o que merece foco.")} type="button">
-                Revisar semana
-              </button>
-              <button onClick={() => onApplyPrompt("O que você aprendeu sobre meu jeito de decidir?")} type="button">
-                Meu padrão
-              </button>
-            </div>
-          </div>
-
-          <div className="chat-input-row">
-            <div className="chat-textarea-shell">
-              <textarea
-                rows={1}
-                value={chatDraft}
-                onChange={(event) => onChatDraftChange(event.target.value)}
-                placeholder="Discuta prioridades, status de projetos, decisões ou qualquer thread específica..."
-              />
-            </div>
-            <button className="ac-primary-button" onClick={onSubmit} disabled={isSendingChat} type="button">
-              <Send size={15} />
-              {isSendingChat ? "Enviando..." : "Enviar"}
+          <div className="gpt-composer">
+            <textarea
+              rows={1}
+              value={chatDraft}
+              onChange={(event) => onChatDraftChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  onSubmit();
+                }
+              }}
+              placeholder="Envie uma mensagem..."
+              disabled={isSendingChat}
+            />
+            <button className="gpt-send-btn" onClick={onSubmit} disabled={isSendingChat || !chatDraft.trim()} type="button">
+              <Send size={18} />
             </button>
           </div>
-          <div className="chat-footer-note">
-            <Cpu size={11} />
-            Cada thread usa a memória consolidada do dono, mas mantém histórico separado para não misturar assuntos.
-          </div>
+          <p className="gpt-composer-note">
+            AuraCore usa sua memória consolidada para responder. Pressione Enter para enviar.
+          </p>
         </div>
       </section>
     </div>
   );
 }
+
 
 function ActivityTab({
   agentState,
@@ -2671,6 +2775,7 @@ function ActivityTab({
   automationStatus: AutomationStatus | null;
   automationError: string | null;
 }) {
+  const [activitySubTab, setActivitySubTab] = useState<"overview" | "persist" | "logs">("overview");
   const memoryReady = hasEstablishedMemory(memory, latestSnapshot);
   const resolvedIntent = agentState.intent ?? (memoryReady ? "improve_memory" : "first_analysis");
   const latestDecision = automationStatus?.decisions[0] ?? null;
@@ -2691,8 +2796,33 @@ function ActivityTab({
     ? `${formatUsd(preview.estimated_cost_total_floor_usd)}-${formatUsd(preview.estimated_cost_total_ceiling_usd)}`
     : "...";
 
+  const subTabs = [
+    { id: "overview" as const, label: "Visão Geral", icon: BarChart3 },
+    { id: "persist" as const, label: "Persistência", icon: Database },
+    { id: "logs" as const, label: "Logs", icon: Terminal },
+  ];
+
   return (
     <div className="page-stack narrow-stack">
+      {/* Sub-tab bar */}
+      <div className="activity-subtab-bar">
+        {subTabs.map((tab) => {
+          const Icon = tab.icon;
+          return (
+            <button
+              key={tab.id}
+              className={`activity-subtab${activitySubTab === tab.id ? " activity-subtab-active" : ""}`}
+              onClick={() => setActivitySubTab(tab.id)}
+              type="button"
+            >
+              <Icon size={14} />
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Hero card — always visible */}
       <Card className="activity-hero-card">
         <div className="activity-hero-meter">
           <svg viewBox="0 0 120 120">
@@ -2741,165 +2871,178 @@ function ActivityTab({
         </div>
       </Card>
 
-      <div className="activity-insight-grid">
-        <MemorySignalCard
-          label="Ação atual"
-          value={latestJob ? getIntentTitle(latestJob.intent as AgentIntent) : getIntentTitle(resolvedIntent)}
-          meta={latestJob ? `${latestJob.status} via ${latestJob.trigger_source}` : memoryReady ? "Memória base já existe" : "Ainda sem base consolidada"}
-          accent
-        />
-        <MemorySignalCard
-          label="Último sync"
-          value={latestSyncRun ? `${formatTokenCount(latestSyncRun.messages_saved_count)} salvas` : "..."}
-          meta={
-            latestSyncRun
-              ? `${latestSyncRun.status} • ${formatShortDateTime(latestSyncRun.finished_at ?? latestSyncRun.started_at)}`
-              : "Aguardando primeira sincronização persistida"
-          }
-          tone="indigo"
-        />
-        <MemorySignalCard
-          label="Última decisão"
-          value={latestDecision ? `${latestDecision.score}/100` : "..."}
-          meta={latestDecision ? `${latestDecision.action} • ${latestDecision.reason_code}` : "Sem decisão automática persistida ainda"}
-          tone="emerald"
-        />
-        <MemorySignalCard
-          label="Custo do dia"
-          value={automationStatus ? formatUsd(automationStatus.daily_cost_usd) : costRangeLabel}
-          meta={
-            automationStatus
-              ? `${formatTokenCount(automationStatus.daily_auto_jobs_count)} jobs automáticos hoje`
-              : preview
-                ? `~${formatTokenCount(preview.estimated_total_tokens)} tokens totais`
-                : "Aguardando preview"
-          }
-          tone="amber"
-        />
-      </div>
+      {/* === OVERVIEW sub-tab === */}
+      {activitySubTab === "overview" ? (
+        <>
+          <div className="activity-insight-grid">
+            <MemorySignalCard
+              label="Ação atual"
+              value={latestJob ? getIntentTitle(latestJob.intent as AgentIntent) : getIntentTitle(resolvedIntent)}
+              meta={latestJob ? `${latestJob.status} via ${latestJob.trigger_source}` : memoryReady ? "Memória base já existe" : "Ainda sem base consolidada"}
+              accent
+            />
+            <MemorySignalCard
+              label="Último sync"
+              value={latestSyncRun ? `${formatTokenCount(latestSyncRun.messages_saved_count)} salvas` : "..."}
+              meta={
+                latestSyncRun
+                  ? `${latestSyncRun.status} • ${formatShortDateTime(latestSyncRun.finished_at ?? latestSyncRun.started_at)}`
+                  : "Aguardando primeira sincronização persistida"
+              }
+              tone="indigo"
+            />
+            <MemorySignalCard
+              label="Última decisão"
+              value={latestDecision ? `${latestDecision.score}/100` : "..."}
+              meta={latestDecision ? `${latestDecision.action} • ${latestDecision.reason_code}` : "Sem decisão automática persistida ainda"}
+              tone="emerald"
+            />
+            <MemorySignalCard
+              label="Custo do dia"
+              value={automationStatus ? formatUsd(automationStatus.daily_cost_usd) : costRangeLabel}
+              meta={
+                automationStatus
+                  ? `${formatTokenCount(automationStatus.daily_auto_jobs_count)} jobs automáticos hoje`
+                  : preview
+                    ? `~${formatTokenCount(preview.estimated_total_tokens)} tokens totais`
+                    : "Aguardando preview"
+              }
+              tone="amber"
+            />
+          </div>
 
-      <div className="activity-insight-grid">
-        <MemorySignalCard
-          label="Fila"
-          value={automationStatus ? String(automationStatus.queued_jobs_count) : "..."}
-          meta={automationStatus?.running_job_id ? "Há job rodando agora" : "Sem job em execução"}
-        />
-        <MemorySignalCard
-          label="Base já conhecida"
-          value={`${formatTokenCount(snapshotsCount)} snapshots / ${formatTokenCount(projectsCount)} projetos`}
-          meta={memoryReady ? "Também cruza com o chat pessoal salvo" : "Primeira base ainda será criada"}
-          tone="zinc"
-        />
-        <MemorySignalCard
-          label="Último modelo"
-          value={latestModelRun ? latestModelRun.model_name : "..."}
-          meta={
-            latestModelRun
-              ? `${latestModelRun.run_type} • ${latestModelRun.success ? "ok" : "falhou"}`
-              : "Sem execução de modelo registrada ainda"
-          }
-          tone="indigo"
-        />
-        <MemorySignalCard
-          label="Janela útil"
-          value={preview ? `${formatTokenCount(preview.selected_message_count)}/${formatTokenCount(preview.available_message_count)} msgs` : "..."}
-          meta={preview ? `teto operacional de ${formatTokenCount(preview.stack_max_message_capacity)} msgs` : "Aguardando preview"}
-          tone="amber"
-        />
-      </div>
-
-      <Card className="activity-thinking-card">
-        <SectionTitle title="Resumo do Pensamento" icon={Brain} action={<span className="micro-badge">sem CoT bruto</span>} />
-        <p className="support-copy">
-          O painel mostra o raciocinio operacional da execucao e o que o modelo vai considerar. A cadeia de pensamento bruta do `deepseek-reasoner` nao e exposta.
-        </p>
-        <div className="activity-thinking-list">
-          {resolvedThinking.map((line, index) => (
-            <div key={`${line.slice(0, 20)}-${index}`} className="activity-thinking-item">
-              <span>{index + 1}</span>
-              <p>{line}</p>
+          <Card className="activity-thinking-card">
+            <SectionTitle title="Resumo do Pensamento" icon={Brain} action={<span className="micro-badge">sem CoT bruto</span>} />
+            <p className="support-copy">
+              O painel mostra o raciocinio operacional da execucao e o que o modelo vai considerar. A cadeia de pensamento bruta do `deepseek-reasoner` nao e exposta.
+            </p>
+            <div className="activity-thinking-list">
+              {resolvedThinking.map((line, index) => (
+                <div key={`${line.slice(0, 20)}-${index}`} className="activity-thinking-item">
+                  <span>{index + 1}</span>
+                  <p>{line}</p>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
-      </Card>
+          </Card>
+        </>
+      ) : null}
 
-      <div className="activity-persist-grid">
-        <Card>
-          <SectionTitle title="Sync Persistido" icon={RefreshCw} />
-          {latestSyncRun ? (
-            <div className="activity-persist-list">
-              <StatusLine label="Status" value={latestSyncRun.status} tone={latestSyncRun.status === "failed" ? "amber" : "emerald"} />
-              <StatusLine label="Mensagens vistas" value={formatTokenCount(latestSyncRun.messages_seen_count)} tone="indigo" />
-              <StatusLine label="Salvas" value={formatTokenCount(latestSyncRun.messages_saved_count)} tone="emerald" />
-              <StatusLine label="Podadas" value={formatTokenCount(latestSyncRun.messages_pruned_count)} tone="amber" />
-            </div>
-          ) : (
-            <div className="empty-hint">
-              <RefreshCw size={18} />
-              <p>Nenhum sync persistido ainda.</p>
-            </div>
-          )}
-        </Card>
+      {/* === PERSIST sub-tab === */}
+      {activitySubTab === "persist" ? (
+        <>
+          <div className="activity-insight-grid">
+            <MemorySignalCard
+              label="Fila"
+              value={automationStatus ? String(automationStatus.queued_jobs_count) : "..."}
+              meta={automationStatus?.running_job_id ? "Há job rodando agora" : "Sem job em execução"}
+            />
+            <MemorySignalCard
+              label="Base já conhecida"
+              value={`${formatTokenCount(snapshotsCount)} snapshots / ${formatTokenCount(projectsCount)} projetos`}
+              meta={memoryReady ? "Também cruza com o chat pessoal salvo" : "Primeira base ainda será criada"}
+              tone="zinc"
+            />
+            <MemorySignalCard
+              label="Último modelo"
+              value={latestModelRun ? latestModelRun.model_name : "..."}
+              meta={
+                latestModelRun
+                  ? `${latestModelRun.run_type} • ${latestModelRun.success ? "ok" : "falhou"}`
+                  : "Sem execução de modelo registrada ainda"
+              }
+              tone="indigo"
+            />
+            <MemorySignalCard
+              label="Janela útil"
+              value={preview ? `${formatTokenCount(preview.selected_message_count)}/${formatTokenCount(preview.available_message_count)} msgs` : "..."}
+              meta={preview ? `teto operacional de ${formatTokenCount(preview.stack_max_message_capacity)} msgs` : "Aguardando preview"}
+              tone="amber"
+            />
+          </div>
 
-        <Card>
-          <SectionTitle title="Decisão Persistida" icon={Zap} />
-          {latestDecision ? (
-            <div className="activity-persist-block">
-              <strong>{latestDecision.intent}</strong>
-              <p>{latestDecision.explanation}</p>
-              <div className="activity-meta-row">
-                <span>{latestDecision.action}</span>
-                <span>{latestDecision.reason_code}</span>
-                <span>{latestDecision.score}/100</span>
+          <div className="activity-persist-grid">
+            <Card>
+              <SectionTitle title="Sync Persistido" icon={RefreshCw} />
+              {latestSyncRun ? (
+                <div className="activity-persist-list">
+                  <StatusLine label="Status" value={latestSyncRun.status} tone={latestSyncRun.status === "failed" ? "amber" : "emerald"} />
+                  <StatusLine label="Mensagens vistas" value={formatTokenCount(latestSyncRun.messages_seen_count)} tone="indigo" />
+                  <StatusLine label="Salvas" value={formatTokenCount(latestSyncRun.messages_saved_count)} tone="emerald" />
+                  <StatusLine label="Podadas" value={formatTokenCount(latestSyncRun.messages_pruned_count)} tone="amber" />
+                </div>
+              ) : (
+                <div className="empty-hint">
+                  <RefreshCw size={18} />
+                  <p>Nenhum sync persistido ainda.</p>
+                </div>
+              )}
+            </Card>
+
+            <Card>
+              <SectionTitle title="Decisão Persistida" icon={Zap} />
+              {latestDecision ? (
+                <div className="activity-persist-block">
+                  <strong>{latestDecision.intent}</strong>
+                  <p>{latestDecision.explanation}</p>
+                  <div className="activity-meta-row">
+                    <span>{latestDecision.action}</span>
+                    <span>{latestDecision.reason_code}</span>
+                    <span>{latestDecision.score}/100</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="empty-hint">
+                  <Zap size={18} />
+                  <p>Nenhuma decisão automática persistida ainda.</p>
+                </div>
+              )}
+            </Card>
+
+            <Card>
+              <SectionTitle title="Execução de Modelo" icon={Cpu} />
+              {latestModelRun ? (
+                <div className="activity-persist-block">
+                  <strong>{latestModelRun.model_name}</strong>
+                  <p>
+                    {latestModelRun.run_type} • {latestModelRun.success ? "sucesso" : "falha"}
+                  </p>
+                  <div className="activity-meta-row">
+                    <span>{latestModelRun.latency_ms ? `${latestModelRun.latency_ms} ms` : "latência n/d"}</span>
+                    <span>{latestModelRun.estimated_cost_usd != null ? formatUsd(latestModelRun.estimated_cost_usd) : "custo n/d"}</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="empty-hint">
+                  <Cpu size={18} />
+                  <p>Nenhuma execução de modelo registrada ainda.</p>
+                </div>
+              )}
+            </Card>
+          </div>
+        </>
+      ) : null}
+
+      {/* === LOGS sub-tab === */}
+      {activitySubTab === "logs" ? (
+        <div className="terminal-shell">
+          <div className="terminal-header">
+            <span className="terminal-dot terminal-dot-red" />
+            <span className="terminal-dot terminal-dot-yellow" />
+            <span className="terminal-dot terminal-dot-green" />
+            <span className="terminal-title">execution.log</span>
+          </div>
+          <div className="terminal-body">
+            {logs.map((log) => (
+              <div key={log.id} className="terminal-line">
+                <span className="terminal-time">{formatShortDateTime(log.createdAt)}</span>
+                <span className={`terminal-tag terminal-tag-${log.tone}`}>[{log.tone}]</span>
+                <span className="terminal-message">{log.message}</span>
               </div>
-            </div>
-          ) : (
-            <div className="empty-hint">
-              <Zap size={18} />
-              <p>Nenhuma decisão automática persistida ainda.</p>
-            </div>
-          )}
-        </Card>
-
-        <Card>
-          <SectionTitle title="Execução de Modelo" icon={Cpu} />
-          {latestModelRun ? (
-            <div className="activity-persist-block">
-              <strong>{latestModelRun.model_name}</strong>
-              <p>
-                {latestModelRun.run_type} • {latestModelRun.success ? "sucesso" : "falha"}
-              </p>
-              <div className="activity-meta-row">
-                <span>{latestModelRun.latency_ms ? `${latestModelRun.latency_ms} ms` : "latência n/d"}</span>
-                <span>{latestModelRun.estimated_cost_usd != null ? formatUsd(latestModelRun.estimated_cost_usd) : "custo n/d"}</span>
-              </div>
-            </div>
-          ) : (
-            <div className="empty-hint">
-              <Cpu size={18} />
-              <p>Nenhuma execução de modelo registrada ainda.</p>
-            </div>
-          )}
-        </Card>
-      </div>
-
-      <div className="terminal-shell">
-        <div className="terminal-header">
-          <span className="terminal-dot terminal-dot-red" />
-          <span className="terminal-dot terminal-dot-yellow" />
-          <span className="terminal-dot terminal-dot-green" />
-          <span className="terminal-title">execution.log</span>
+            ))}
+          </div>
         </div>
-        <div className="terminal-body">
-          {logs.map((log) => (
-            <div key={log.id} className="terminal-line">
-              <span className="terminal-time">{formatShortDateTime(log.createdAt)}</span>
-              <span className={`terminal-tag terminal-tag-${log.tone}`}>[{log.tone}]</span>
-              <span className="terminal-message">{log.message}</span>
-            </div>
-          ))}
-        </div>
-      </div>
+      ) : null}
 
       {automationError ? <InlineError title="Falha na automação" message={automationError} /> : null}
     </div>

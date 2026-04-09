@@ -218,6 +218,7 @@ class ChatWorkspaceResponse(BaseModel):
 class SendChatMessageRequest(BaseModel):
     thread_id: str | None = None
     message_text: str = Field(min_length=1, max_length=4000)
+    context_hint: str | None = Field(default=None, max_length=2000)
 
 
 class CreateChatThreadRequest(BaseModel):

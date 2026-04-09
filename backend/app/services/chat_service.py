@@ -79,7 +79,7 @@ class ChatAssistantService:
         )
         return self.get_workspace(thread_id=created_thread.id)
 
-    async def send_message(self, *, message_text: str, thread_id: str | None = None) -> ChatWorkspaceState:
+    async def send_message(self, *, message_text: str, thread_id: str | None = None, context_hint: str | None = None) -> ChatWorkspaceState:
         normalized_text = " ".join(message_text.split()).strip()
         if not normalized_text:
             raise ChatServiceError("Envie uma mensagem com texto.")
@@ -111,6 +111,7 @@ class ChatAssistantService:
             recent_projects_context="" if use_light_touch_context else self._build_project_context(session.projects),
             recent_chat_context="" if use_light_touch_context else self._build_chat_context(prior_messages),
             interaction_mode=interaction_mode,
+            context_hint=context_hint or "",
         )
         self.store.append_chat_message(
             thread_id=thread.id,

@@ -34,6 +34,7 @@ class GroqChatService:
         recent_projects_context: str,
         recent_chat_context: str,
         interaction_mode: str = "contextual",
+        context_hint: str = "",
     ) -> str:
         if not self.settings.groq_api_key:
             raise GroqChatError("GROQ_API_KEY nao configurada na Render.")
@@ -50,14 +51,17 @@ class GroqChatService:
                     "role": "system",
                     "content": (
                         "Voce e o AuraCore, um segundo cerebro digital pessoal. Responda sempre em portugues do "
-                        "Brasil. Sua funcao e ser extremamente util para o dono deste numero, usando o contexto "
-                        "persistido sobre sua rotina, seus projetos, suas preferencias e sua forma de agir. "
-                        "Se faltar contexto, diga isso com clareza em vez de inventar. Seja direto, pessoal e "
-                        "pratico, sem soar generico. Responda como uma IA que ja conhece o dono, seus padroes de "
-                        "decisao e suas frentes ativas, mas sem fingir certeza quando a memoria estiver incompleta. "
+                        "Brasil. Sua funcao e ser extremamente util para o dono deste sistema. "
+                        "Voce NAO conversa diretamente com o dono no WhatsApp. O que voce sabe sobre a vida, rotina, "
+                        "projetos e contatos do dono vem da leitura e analise automatica das conversas dele no WhatsApp, "
+                        "feita por outro modelo (DeepSeek). Esses resumos sao sua base de memoria. "
+                        "Nunca diga 'voce me disse' ou 'voce mencionou' — diga algo como 'pelas suas conversas' "
+                        "ou 'pelo que vi nas suas mensagens' ou simplesmente use a informacao naturalmente. "
+                        "Seja direto, pessoal e pratico, sem soar generico. "
+                        "Se faltar contexto, diga isso com clareza em vez de inventar. "
+                        "Use a memoria como apoio silencioso: so traga lembrancas quando elas ajudarem diretamente a resposta atual. "
                         "Nao transforme cumprimentos simples em um relatorio sobre a vida do dono. "
-                        "Nao abra a resposta listando fatos antigos, projetos, gastos ou historicos que nao foram pedidos. "
-                        "Use a memoria como apoio silencioso: so traga lembrancas quando elas ajudarem diretamente a resposta atual."
+                        "Nao abra a resposta listando fatos antigos, projetos, gastos ou historicos que nao foram pedidos."
                     ),
                 },
                 {
@@ -69,6 +73,7 @@ class GroqChatService:
                         recent_projects_context=recent_projects_context,
                         recent_chat_context=recent_chat_context,
                         interaction_mode=interaction_mode,
+                        context_hint=context_hint,
                     ),
                 },
             ],
@@ -179,6 +184,7 @@ class GroqChatService:
         recent_projects_context: str,
         recent_chat_context: str,
         interaction_mode: str,
+        context_hint: str = "",
     ) -> str:
         return f"""
 Contexto consolidado do dono:
@@ -199,9 +205,12 @@ Mensagem atual do dono:
 Modo de interacao:
 {interaction_mode}
 
+{("Cofre de mensagens importantes do dono (dados que a IA de analise identificou como relevantes nas conversas do WhatsApp):\n" + context_hint.strip()) if context_hint.strip() else ""}
+
 Regras:
 - Responda primeiro ao que o dono acabou de dizer, de forma natural.
-- Responda como uma IA pessoal que ja conhece o dono e seus projetos.
+- Voce NAO conversa diretamente com o dono pelo WhatsApp. Tudo que voce sabe sobre a vida dele vem da leitura automatica das mensagens do WhatsApp, feita pelo DeepSeek. Esses resumos sao sua base de memoria.
+- Nunca fale 'voce me mencionou', 'voce me disse' ou 'voce comentou comigo'. Diga coisas como 'pelas suas conversas', 'pelo que vi no seu historico', 'pelo que aparece nas suas mensagens' — ou simplesmente use a informacao de forma natural sem citar a fonte.
 - Use o resumo consolidado para adaptar tom, prioridade e praticidade da resposta.
 - Priorize contexto pessoal e de trabalho realmente presente no material acima, mas so mencione isso quando for relevante.
 - Se a pergunta tocar em um projeto conhecido, conecte a resposta ao estado atual desse projeto.

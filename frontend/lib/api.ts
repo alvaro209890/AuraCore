@@ -426,9 +426,99 @@ export async function createChatThread(title?: string): Promise<ChatWorkspace> {
   });
 }
 
-export async function sendChatMessage(messageText: string, threadId?: string): Promise<ChatWorkspace> {
+export async function sendChatMessage(messageText: string, threadId?: string, contextHint?: string): Promise<ChatWorkspace> {
+  const body: Record<string, unknown> = { message_text: messageText };
+  if (threadId) body.thread_id = threadId;
+  if (contextHint) body.context_hint = contextHint;
   return request<ChatWorkspace>("/api/chat/messages", {
     method: "POST",
-    body: JSON.stringify({ message_text: messageText, thread_id: threadId }),
+    body: JSON.stringify(body),
   });
+}
+
+export type ChatStreamEvent =
+  | { type: "token"; content: string }
+  | { type: "done"; workspace: ChatWorkspace };
+
+export async function* sendChatMessageStream(
+  messageText: string,
+  threadId?: string,
+  contextHint?: string,
+): AsyncGenerator<ChatStreamEvent> {
+  const url = `${API_BASE_URL}/api/chat/messages/stream`;
+  let response: Response;
+
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      body: JSON.stringify({ message_text: messageText, thread_id: threadId, context_hint: contextHint }),
+      cache: "no-store",
+    });
+  } catch {
+    // Streaming endpoint unavailable – fall back to normal request
+    const workspace = await sendChatMessage(messageText, threadId, contextHint);
+    const lastMsg = workspace.session.messages[workspace.session.messages.length - 1];
+    if (lastMsg?.role === "assistant") {
+      yield { type: "token", content: lastMsg.content };
+    }
+    yield { type: "done", workspace };
+    return;
+  }
+
+  if (!response.ok || !response.body) {
+    // Fallback: non-streaming
+    const workspace = await sendChatMessage(messageText, threadId, contextHint);
+    const lastMsg = workspace.session.messages[workspace.session.messages.length - 1];
+    if (lastMsg?.role === "assistant") {
+      yield { type: "token", content: lastMsg.content };
+    }
+    yield { type: "done", workspace };
+    return;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          const payload = line.slice(6).trim();
+          if (payload === "[DONE]") {
+            // Fetch final workspace state
+            const workspace = await getChatWorkspace(threadId);
+            yield { type: "done", workspace };
+            return;
+          }
+          try {
+            const parsed = JSON.parse(payload) as { token?: string; workspace?: ChatWorkspace };
+            if (parsed.token) {
+              yield { type: "token", content: parsed.token };
+            }
+            if (parsed.workspace) {
+              yield { type: "done", workspace: parsed.workspace };
+              return;
+            }
+          } catch {
+            // Non-JSON data line, treat as raw token
+            yield { type: "token", content: payload };
+          }
+        }
+      }
+    }
+
+    // Stream ended without explicit DONE — fetch workspace
+    const workspace = await getChatWorkspace(threadId);
+    yield { type: "done", workspace };
+  } finally {
+    reader.releaseLock();
+  }
 }

@@ -53,6 +53,7 @@ async def send_chat_message(
     workspace = await chat_service.send_message(
         message_text=request.message_text,
         thread_id=request.thread_id,
+        context_hint=request.context_hint,
     )
     return _to_chat_workspace_response(workspace)
 
