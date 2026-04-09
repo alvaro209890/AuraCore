@@ -27,6 +27,19 @@ class GroqPreviewDecision:
     summary: str
 
 
+@dataclass(slots=True)
+class GroqAgentMemoryDecision:
+    should_update: bool
+    profile_summary: str
+    preferred_tone: str
+    preferences: list[str]
+    objectives: list[str]
+    durable_facts: list[str]
+    constraints: list[str]
+    recurring_instructions: list[str]
+    explanation: str
+
+
 class GroqChatService:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -41,6 +54,9 @@ class GroqChatService:
         recent_chat_context: str,
         interaction_mode: str = "contextual",
         context_hint: str = "",
+        priority_context: str = "",
+        recent_messages_label: str = "Historico recente desta conversa",
+        additional_rules: list[str] | None = None,
     ) -> str:
         if not self.settings.groq_api_key:
             raise GroqChatError("GROQ_API_KEY nao configurada na Render.")
@@ -77,6 +93,9 @@ class GroqChatService:
                         recent_chat_context=recent_chat_context,
                         interaction_mode=interaction_mode,
                         context_hint=context_hint,
+                        priority_context=priority_context,
+                        recent_messages_label=recent_messages_label,
+                        additional_rules=additional_rules or [],
                     ),
                 },
             ],
@@ -186,7 +205,7 @@ class GroqChatService:
             "Authorization": f"Bearer {self.settings.groq_api_key}",
             "Content-Type": "application/json",
         }
-        
+
         system_content = (
             "Voce avalia se uma nova mensagem do usuario exige consultar o banco de dados (RAG) para obter mais contexto sobre CONTATOS ou DOCUMENTOS DO COFRE. "
             "Responda EXCLUSIVAMENTE em JSON valido com as chaves: "
@@ -208,7 +227,6 @@ class GroqChatService:
             ],
         }
 
-        import httpx
         async with httpx.AsyncClient(
             base_url=self.settings.normalized_groq_api_base_url,
             timeout=max(5, self.settings.groq_timeout_seconds // 2),
@@ -223,10 +241,15 @@ class GroqChatService:
         content = self._extract_content(data)
         if not content.strip():
             return GroqChatSearchIntent(has_queries=False, contact_queries=[], vault_queries=[])
-            
+
         return self._parse_search_intent(content)
 
-    async def extract_chat_search_intent(self, user_message: str) -> GroqChatSearchIntent:
+    async def extract_agent_memory(
+        self,
+        *,
+        user_message: str,
+        existing_memory_context: str = "",
+    ) -> GroqAgentMemoryDecision:
         if not self.settings.groq_api_key:
             raise GroqChatError("GROQ_API_KEY nao configurada na Render.")
 
@@ -234,45 +257,61 @@ class GroqChatService:
             "Authorization": f"Bearer {self.settings.groq_api_key}",
             "Content-Type": "application/json",
         }
-        
-        system_content = (
-            "Voce avalia se uma nova mensagem do usuario exige consultar o banco de dados (RAG) para obter mais contexto sobre CONTATOS ou DOCUMENTOS DO COFRE. "
-            "Responda EXCLUSIVAMENTE em JSON valido com as chaves: "
-            "'has_queries' (boolean, true se houver buscas), "
-            "'contact_queries' (lista de strings, nomes de pessoas citadas, max 3), "
-            "'vault_queries' (lista de strings, nomes de assuntos/documentos, max 3). "
-            "Exemplo: se o usuario disser 'como ta a ficha do joao paulo?', retorne {'has_queries': true, 'contact_queries': ['joao paulo'], 'vault_queries': []}. "
-            "Exemplo: 'qual era o cnpj da minha empresa mesmo?', retorne {'has_queries': true, 'contact_queries': [], 'vault_queries': ['cnpj', 'empresa']}. "
-            "Exemplo: 'bom dia, tudo bem?', retorne {'has_queries': false, 'contact_queries': [], 'vault_queries': []}."
-        )
-
         payload = {
             "model": "llama-3.3-70b-versatile",
-            "temperature": 0.05,
-            "max_tokens": 120,
+            "temperature": 0.1,
+            "max_tokens": 400,
             "messages": [
-                {"role": "system", "content": system_content},
-                {"role": "user", "content": f"Mensagem do usuario:\n{user_message}"},
+                {
+                    "role": "system",
+                    "content": (
+                        "Voce extrai memoria duravel a partir de uma mensagem enviada pelo proprio dono ao assistente no WhatsApp. "
+                        "Considere apenas preferencias, tom desejado, objetivos, fatos duraveis, restricoes e instrucoes recorrentes "
+                        "que possam melhorar conversas futuras com esse mesmo dono. "
+                        "Ignore cumprimentos, recados efemeros e pedidos que so fazem sentido nesta unica resposta. "
+                        "Responda EXCLUSIVAMENTE em JSON valido com as chaves should_update, profile_summary, preferred_tone, "
+                        "preferences, objectives, durable_facts, constraints, recurring_instructions e explanation. "
+                        "Se nada for duravel, retorne should_update=false e listas vazias."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "Memoria atual deste contato no agente:\n"
+                        f"{existing_memory_context.strip() or '(sem memoria propria ainda)'}\n\n"
+                        "Nova mensagem do dono:\n"
+                        f"{user_message.strip()}"
+                    ),
+                },
             ],
         }
 
-        import httpx
         async with httpx.AsyncClient(
             base_url=self.settings.normalized_groq_api_base_url,
-            timeout=max(5, self.settings.groq_timeout_seconds // 2),
+            timeout=max(8, self.settings.groq_timeout_seconds),
         ) as client:
             response = await client.post("/chat/completions", headers=headers, json=payload)
 
         if response.status_code >= 400:
             detail = response.text.strip() or "Unexpected Groq error."
-            raise GroqChatError(f"Groq intent extraction failed ({response.status_code}): {detail}")
+            raise GroqChatError(f"Groq agent memory extraction failed ({response.status_code}): {detail}")
 
         data = response.json()
         content = self._extract_content(data)
         if not content.strip():
-            return GroqChatSearchIntent(has_queries=False, contact_queries=[], vault_queries=[])
-            
-        return self._parse_search_intent(content)
+            return GroqAgentMemoryDecision(
+                should_update=False,
+                profile_summary="",
+                preferred_tone="",
+                preferences=[],
+                objectives=[],
+                durable_facts=[],
+                constraints=[],
+                recurring_instructions=[],
+                explanation="Resposta vazia do modelo.",
+            )
+
+        return self._parse_agent_memory(content)
 
     def _build_prompt(
         self,
@@ -284,15 +323,29 @@ class GroqChatService:
         recent_chat_context: str,
         interaction_mode: str,
         context_hint: str = "",
+        priority_context: str = "",
+        recent_messages_label: str = "Historico recente desta conversa",
+        additional_rules: list[str] | None = None,
     ) -> str:
+        priority_context_block = ""
+        if priority_context.strip():
+            priority_context_block = (
+                "Contexto prioritario desta conversa:\n"
+                f"{priority_context.strip()}\n\n"
+            )
         important_messages_context = ""
         if context_hint.strip():
             important_messages_context = (
                 "Contexto adicional relevante:\n"
                 f"{context_hint.strip()}"
             )
+        extra_rules = "\n".join(
+            f"- {rule.strip()}"
+            for rule in (additional_rules or [])
+            if isinstance(rule, str) and rule.strip()
+        )
         return f"""
-Contexto consolidado do dono:
+{priority_context_block}Contexto consolidado do dono:
 {current_life_summary.strip() or "(ainda sem resumo consolidado)"}
 
 Projetos e frentes conhecidos:
@@ -301,7 +354,7 @@ Projetos e frentes conhecidos:
 Analises recentes da memoria:
 {recent_snapshots_context.strip() or "(nenhum snapshot recente)"}
 
-Historico recente desta conversa:
+{recent_messages_label.strip() or "Historico recente desta conversa"}:
 {recent_chat_context.strip() or "(sem conversa anterior nesta thread)"}
 
 Mensagem atual do dono:
@@ -327,6 +380,7 @@ Regras:
 - Evite hiperfoco em um unico tema so porque ele apareceu na memoria.
 - Evite respostas genéricas, longas demais ou com floreio.
 - Nao use markdown fences.
+{extra_rules}
 """.strip()
 
     def _extract_content(self, payload: dict[str, Any]) -> str:
@@ -355,80 +409,60 @@ Regras:
         raise GroqChatError("Groq returned an empty content payload.")
 
     def _parse_search_intent(self, content: str) -> GroqChatSearchIntent:
-        cleaned = content.strip()
-        if cleaned.startswith("```"):
-            cleaned = cleaned.strip("`")
-            if "\n" in cleaned:
-                cleaned = cleaned.split("\n", 1)[1]
-            if cleaned.endswith("```"):
-                cleaned = cleaned[:-3]
-            cleaned = cleaned.strip()
-
-        import json
+        cleaned = self._strip_json_fence(content)
         try:
             payload = json.loads(cleaned)
-            if not isinstance(payload, dict):
-                return GroqChatSearchIntent(has_queries=False, contact_queries=[], vault_queries=[])
-            
-            contact_queries = payload.get("contact_queries", [])
-            vault_queries = payload.get("vault_queries", [])
-            has_queries = payload.get("has_queries", False)
-            
-            if not isinstance(contact_queries, list): contact_queries = []
-            if not isinstance(vault_queries, list): vault_queries = []
-            
-            contact_queries = [str(q).strip() for q in contact_queries if str(q).strip()]
-            vault_queries = [str(q).strip() for q in vault_queries if str(q).strip()]
-            
-            is_valid = bool(contact_queries or vault_queries)
-            if has_queries and not is_valid:
-                has_queries = False
-                
-            return GroqChatSearchIntent(
-                has_queries=has_queries,
-                contact_queries=contact_queries,
-                vault_queries=vault_queries
-            )
         except json.JSONDecodeError:
             return GroqChatSearchIntent(has_queries=False, contact_queries=[], vault_queries=[])
 
-    def _parse_search_intent(self, content: str) -> GroqChatSearchIntent:
-        cleaned = content.strip()
-        if cleaned.startswith("```"):
-            cleaned = cleaned.strip("`")
-            if "\n" in cleaned:
-                cleaned = cleaned.split("\n", 1)[1]
-            if cleaned.endswith("```"):
-                cleaned = cleaned[:-3]
-            cleaned = cleaned.strip()
+        if not isinstance(payload, dict):
+            return GroqChatSearchIntent(has_queries=False, contact_queries=[], vault_queries=[])
 
-        import json
+        contact_queries = payload.get("contact_queries", [])
+        vault_queries = payload.get("vault_queries", [])
+        has_queries = payload.get("has_queries", False)
+
+        if not isinstance(contact_queries, list):
+            contact_queries = []
+        if not isinstance(vault_queries, list):
+            vault_queries = []
+
+        normalized_contacts = [str(query).strip() for query in contact_queries if str(query).strip()]
+        normalized_vault = [str(query).strip() for query in vault_queries if str(query).strip()]
+        has_valid_queries = bool(normalized_contacts or normalized_vault)
+
+        return GroqChatSearchIntent(
+            has_queries=bool(has_queries and has_valid_queries),
+            contact_queries=normalized_contacts[:3],
+            vault_queries=normalized_vault[:3],
+        )
+
+    def _parse_agent_memory(self, content: str) -> GroqAgentMemoryDecision:
+        cleaned = self._strip_json_fence(content)
         try:
             payload = json.loads(cleaned)
-            if not isinstance(payload, dict):
-                return GroqChatSearchIntent(has_queries=False, contact_queries=[], vault_queries=[])
-            
-            contact_queries = payload.get("contact_queries", [])
-            vault_queries = payload.get("vault_queries", [])
-            has_queries = payload.get("has_queries", False)
-            
-            if not isinstance(contact_queries, list): contact_queries = []
-            if not isinstance(vault_queries, list): vault_queries = []
-            
-            contact_queries = [str(q).strip() for q in contact_queries if str(q).strip()]
-            vault_queries = [str(q).strip() for q in vault_queries if str(q).strip()]
-            
-            is_valid = bool(contact_queries or vault_queries)
-            if has_queries and not is_valid:
-                has_queries = False
-                
-            return GroqChatSearchIntent(
-                has_queries=has_queries,
-                contact_queries=contact_queries,
-                vault_queries=vault_queries
-            )
-        except json.JSONDecodeError:
-            return GroqChatSearchIntent(has_queries=False, contact_queries=[], vault_queries=[])
+        except json.JSONDecodeError as exc:
+            raise GroqChatError("Groq retornou JSON invalido para a memoria do agente.") from exc
+
+        if not isinstance(payload, dict):
+            raise GroqChatError("Groq retornou um payload inesperado para a memoria do agente.")
+
+        should_update = bool(payload.get("should_update"))
+        profile_summary = str(payload.get("profile_summary") or "").strip()
+        preferred_tone = str(payload.get("preferred_tone") or "").strip()
+        explanation = str(payload.get("explanation") or "").strip()
+
+        return GroqAgentMemoryDecision(
+            should_update=should_update,
+            profile_summary=profile_summary,
+            preferred_tone=preferred_tone,
+            preferences=self._clean_string_list(payload.get("preferences")),
+            objectives=self._clean_string_list(payload.get("objectives")),
+            durable_facts=self._clean_string_list(payload.get("durable_facts")),
+            constraints=self._clean_string_list(payload.get("constraints")),
+            recurring_instructions=self._clean_string_list(payload.get("recurring_instructions")),
+            explanation=explanation,
+        )
 
     def _parse_preview_decision(
         self,
@@ -484,6 +518,33 @@ Regras:
             should_analyze=resolved_should_analyze,
             summary=summary,
         )
+
+    def _strip_json_fence(self, content: str) -> str:
+        cleaned = content.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.strip("`")
+            if "\n" in cleaned:
+                cleaned = cleaned.split("\n", 1)[1]
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3]
+            cleaned = cleaned.strip()
+        return cleaned
+
+    def _clean_string_list(self, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        items: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            text = str(item or "").strip()
+            normalized = text.casefold()
+            if not text or normalized in seen:
+                continue
+            seen.add(normalized)
+            items.append(text)
+            if len(items) >= 8:
+                break
+        return items
 
     def _normalize_preview_label(self, value: str, *, score: int) -> str:
         normalized = value.strip().lower()

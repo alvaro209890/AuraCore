@@ -97,6 +97,7 @@ def get_whatsapp_agent_service() -> WhatsAppAgentService:
         settings=get_settings(),
         store=get_supabase_store(),
         reply_service=get_assistant_reply_service(),
+        groq_service=get_groq_service(),
         observer_gateway=get_observer_gateway_service(),
         agent_gateway=get_whatsapp_agent_gateway_service(),
     )

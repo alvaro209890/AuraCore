@@ -20,9 +20,20 @@ async def ingest_agent_message(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid internal API token.")
     accepted = 0
     ignored = 0
+    ignored_actions = {
+        "ignored_empty",
+        "ignored_non_direct",
+        "ignored_invalid_contact",
+        "ignored_from_me",
+        "ignored_self",
+        "ignored_missing_allowlist",
+        "ignored_not_allowed",
+        "duplicate_message",
+        "duplicate_reply",
+    }
     for message in payload.messages:
         response = await agent_service.handle_inbound_message(message)
-        if response.action.startswith("ignored"):
+        if response.action in ignored_actions or response.action.startswith("ignored"):
             ignored += 1
         else:
             accepted += 1

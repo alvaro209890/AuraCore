@@ -46,6 +46,9 @@ class AssistantReplyService:
         user_message: str,
         recent_messages: Sequence[ConversationRecord],
         context_hint: str | None = None,
+        priority_context: str | None = None,
+        recent_messages_label: str | None = None,
+        additional_rules: Sequence[str] | None = None,
     ) -> str:
         persona = self.store.get_persona(self.settings.default_user_id) or PersonaRecord(
             user_id=self.settings.default_user_id,
@@ -87,6 +90,9 @@ class AssistantReplyService:
             recent_chat_context="" if use_light_touch_context else self._build_chat_context(normalized_history),
             interaction_mode=interaction_mode,
             context_hint=search_hint,
+            priority_context=priority_context or "",
+            recent_messages_label=recent_messages_label or "Historico recente desta conversa",
+            additional_rules=list(additional_rules or []),
         )
 
     def _normalize_messages(self, messages: Sequence[ConversationRecord]) -> list[AssistantConversationTurn]:

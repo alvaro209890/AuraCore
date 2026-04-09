@@ -40,12 +40,47 @@ export type WhatsAppAgentSettings = {
   updated_at: string;
 };
 
+export type WhatsAppAgentSession = {
+  id: string;
+  thread_id: string;
+  contact_phone: string | null;
+  chat_jid: string | null;
+  started_at: string;
+  last_activity_at: string;
+  ended_at: string | null;
+  reset_reason: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type WhatsAppAgentContactMemory = {
+  id: string;
+  thread_id: string | null;
+  contact_name: string;
+  contact_phone: string | null;
+  chat_jid: string | null;
+  profile_summary: string;
+  preferred_tone: string;
+  preferences: string[];
+  objectives: string[];
+  durable_facts: string[];
+  constraints: string[];
+  recurring_instructions: string[];
+  learned_message_count: number;
+  last_learned_at: string | null;
+  updated_at: string;
+};
+
 export type WhatsAppAgentThread = {
   id: string;
   contact_name: string;
   contact_phone: string | null;
   chat_jid: string | null;
   status: string;
+  active_session_id: string | null;
+  session_started_at: string | null;
+  session_last_activity_at: string | null;
+  session_message_count: number;
   last_message_preview: string | null;
   last_message_at: string | null;
   last_inbound_at: string | null;
@@ -61,6 +96,7 @@ export type WhatsAppAgentMessage = {
   thread_id: string;
   direction: "inbound" | "outbound";
   role: "user" | "assistant";
+  session_id: string | null;
   whatsapp_message_id: string | null;
   source_inbound_message_id: string | null;
   contact_phone: string | null;
@@ -68,10 +104,12 @@ export type WhatsAppAgentMessage = {
   content: string;
   message_timestamp: string;
   processing_status: string;
+  learning_status: string;
   send_status: string | null;
   error_text: string | null;
   response_latency_ms: number | null;
   model_run_id: string | null;
+  learned_at: string | null;
   metadata: Record<string, unknown>;
   created_at: string;
 };
@@ -81,6 +119,8 @@ export type WhatsAppAgentWorkspace = {
   settings: WhatsAppAgentSettings;
   observer_status: ObserverStatus;
   active_thread_id: string | null;
+  active_session: WhatsAppAgentSession | null;
+  contact_memory: WhatsAppAgentContactMemory | null;
   threads: WhatsAppAgentThread[];
   messages: WhatsAppAgentMessage[];
 };

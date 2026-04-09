@@ -48,6 +48,37 @@ class WhatsAppAgentSettingsResponse(BaseModel):
     updated_at: datetime
 
 
+class WhatsAppAgentSessionResponse(BaseModel):
+    id: str
+    thread_id: str
+    contact_phone: str | None = None
+    chat_jid: str | None = None
+    started_at: datetime
+    last_activity_at: datetime
+    ended_at: datetime | None = None
+    reset_reason: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class WhatsAppAgentContactMemoryResponse(BaseModel):
+    id: str
+    thread_id: str | None = None
+    contact_name: str
+    contact_phone: str | None = None
+    chat_jid: str | None = None
+    profile_summary: str
+    preferred_tone: str = ""
+    preferences: list[str] = Field(default_factory=list)
+    objectives: list[str] = Field(default_factory=list)
+    durable_facts: list[str] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
+    recurring_instructions: list[str] = Field(default_factory=list)
+    learned_message_count: int = Field(default=0, ge=0)
+    last_learned_at: datetime | None = None
+    updated_at: datetime
+
+
 class UpdateWhatsAppAgentSettingsRequest(BaseModel):
     auto_reply_enabled: bool | None = None
 
@@ -57,6 +88,7 @@ class WhatsAppAgentMessageResponse(BaseModel):
     thread_id: str
     direction: Literal["inbound", "outbound"]
     role: Literal["user", "assistant"]
+    session_id: str | None = None
     whatsapp_message_id: str | None = None
     source_inbound_message_id: str | None = None
     contact_phone: str | None = None
@@ -64,10 +96,12 @@ class WhatsAppAgentMessageResponse(BaseModel):
     content: str
     message_timestamp: datetime
     processing_status: str
+    learning_status: str = "not_applicable"
     send_status: str | None = None
     error_text: str | None = None
     response_latency_ms: int | None = None
     model_run_id: str | None = None
+    learned_at: datetime | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
 
@@ -78,6 +112,10 @@ class WhatsAppAgentThreadResponse(BaseModel):
     contact_phone: str | None = None
     chat_jid: str | None = None
     status: str
+    active_session_id: str | None = None
+    session_started_at: datetime | None = None
+    session_last_activity_at: datetime | None = None
+    session_message_count: int = Field(default=0, ge=0)
     last_message_preview: str | None = None
     last_message_at: datetime | None = None
     last_inbound_at: datetime | None = None
@@ -101,6 +139,8 @@ class WhatsAppAgentWorkspaceResponse(BaseModel):
     settings: WhatsAppAgentSettingsResponse
     observer_status: ObserverStatusResponse
     active_thread_id: str | None = None
+    active_session: WhatsAppAgentSessionResponse | None = None
+    contact_memory: WhatsAppAgentContactMemoryResponse | None = None
     threads: list[WhatsAppAgentThreadResponse] = Field(default_factory=list)
     messages: list[WhatsAppAgentMessageResponse] = Field(default_factory=list)
 

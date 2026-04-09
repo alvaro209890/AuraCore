@@ -72,6 +72,8 @@ import {
   type ModelRun,
   type ObserverStatus,
   type WhatsAppAgentMessage,
+  type WhatsAppAgentContactMemory,
+  type WhatsAppAgentSession,
   type WhatsAppAgentSettings,
   type WhatsAppAgentStatus,
   type WhatsAppAgentThread,
@@ -878,6 +880,8 @@ export function ConnectionDashboard() {
   const [agentSettings, setAgentSettings] = useState<WhatsAppAgentSettings | null>(null);
   const [agentThreads, setAgentThreads] = useState<WhatsAppAgentThread[]>([]);
   const [agentMessages, setAgentMessages] = useState<WhatsAppAgentMessage[]>([]);
+  const [agentActiveSession, setAgentActiveSession] = useState<WhatsAppAgentSession | null>(null);
+  const [agentContactMemory, setAgentContactMemory] = useState<WhatsAppAgentContactMemory | null>(null);
   const [activeAgentThreadId, setActiveAgentThreadId] = useState<string | null>(null);
   const [memory, setMemory] = useState<MemoryCurrent | null>(null);
   const [memoryStatus, setMemoryStatus] = useState<MemoryStatus | null>(null);
@@ -1025,6 +1029,8 @@ export function ConnectionDashboard() {
     setAgentSettings(workspace.settings);
     setAgentThreads(workspace.threads);
     setActiveAgentThreadId(workspace.active_thread_id);
+    setAgentActiveSession(workspace.active_session);
+    setAgentContactMemory(workspace.contact_memory);
     setAgentMessages(workspace.messages);
     setAgentConnectionError(null);
     setAgentMessagesError(null);
@@ -1776,6 +1782,8 @@ export function ConnectionDashboard() {
                   statusLabel={agentStatusLabel}
                   viewState={agentViewState}
                   settings={agentSettings}
+                  activeSession={agentActiveSession}
+                  contactMemory={agentContactMemory}
                   threads={agentThreads}
                   messages={agentMessages}
                   activeThreadId={activeAgentThreadId}
@@ -1864,6 +1872,8 @@ export function ConnectionDashboard() {
               {activeTab === "manual" ? (
                 <ManualTab
                   status={status}
+                  agentStatus={agentStatus}
+                  agentSettings={agentSettings}
                   memory={memory}
                   projects={projects}
                   snapshots={snapshots}
@@ -2164,6 +2174,8 @@ function AgentTab({
   statusLabel,
   viewState,
   settings,
+  activeSession,
+  contactMemory,
   threads,
   messages,
   activeThreadId,
@@ -2182,6 +2194,8 @@ function AgentTab({
   statusLabel: string;
   viewState: ViewState;
   settings: WhatsAppAgentSettings | null;
+  activeSession: WhatsAppAgentSession | null;
+  contactMemory: WhatsAppAgentContactMemory | null;
   threads: WhatsAppAgentThread[];
   messages: WhatsAppAgentMessage[];
   activeThreadId: string | null;
@@ -2199,6 +2213,14 @@ function AgentTab({
   const autoReplyEnabled = settings?.auto_reply_enabled ?? false;
   const allowedContact = settings?.allowed_contact_phone ?? status?.allowed_contact_phone ?? "NÃ£o definido";
   const activeThread = threads.find((thread) => thread.id === activeThreadId) ?? threads[0] ?? null;
+  const sessionStartedLabel = activeSession?.started_at ? formatDateTime(activeSession.started_at) : "Sem sessao ativa";
+  const sessionLastActivityLabel = activeSession?.last_activity_at ? formatDateTime(activeSession.last_activity_at) : "Sem atividade";
+  const memoryHighlights = [
+    ...(contactMemory?.preferences ?? []),
+    ...(contactMemory?.objectives ?? []),
+    ...(contactMemory?.durable_facts ?? []),
+    ...(contactMemory?.recurring_instructions ?? []),
+  ].slice(0, 6);
 
   return (
     <div className="page-stack agent-page">
@@ -2253,6 +2275,25 @@ function AgentTab({
             <StatusLine label="Resposta automÃ¡tica" value={autoReplyEnabled ? "Ativa" : "Desativada"} tone="zinc" />
           </div>
 
+          <div className="manual-grid">
+            <ManualInfoCard
+              title="Sessao ativa da conversa"
+              text={
+                activeSession
+                  ? `Iniciada em ${sessionStartedLabel} e com ultima atividade em ${sessionLastActivityLabel}.`
+                  : "A proxima mensagem do dono abre uma nova sessao logica. Depois de 10 minutos sem conversa, o contexto reinicia."
+              }
+            />
+            <ManualInfoCard
+              title="Memoria propria do agente"
+              text={
+                contactMemory?.profile_summary?.trim()
+                  ? contactMemory.profile_summary
+                  : "Sem resumo duravel salvo ainda para este contato. Quando o dono disser algo recorrente ou relevante, o agente passa a guardar."
+              }
+            />
+          </div>
+
           <div className="agent-action-panel">
             <button
               className={autoReplyEnabled ? "ac-danger-button" : "ac-success-button"}
@@ -2305,7 +2346,13 @@ function AgentTab({
                   </div>
                   <div className="agent-thread-meta">
                     <span>{thread.status}</span>
-                    <small>{thread.last_message_at ? formatDateTime(thread.last_message_at) : "Sem data"}</small>
+                    <small>
+                      {thread.session_started_at
+                        ? `sessao ${formatDateTime(thread.session_started_at)}`
+                        : thread.last_message_at
+                          ? formatDateTime(thread.last_message_at)
+                          : "Sem data"}
+                    </small>
                   </div>
                 </button>
               ))}
@@ -2315,6 +2362,16 @@ function AgentTab({
 
         <Card className="agent-thread-card">
           <SectionTitle title="HistÃ³rico do agente" icon={Bot} />
+          {memoryHighlights.length > 0 ? (
+            <div className="signal-block signal-block-subtle">
+              <span>Memoria duravel desta relacao</span>
+              <ul>
+                {memoryHighlights.map((item, index) => (
+                  <li key={`${item}-${index}`}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
           {activeThread ? (
             <div className="agent-message-stack">
               {messages.length === 0 ? (
@@ -3688,6 +3745,8 @@ function AutomationTab({
 
 function ManualTab({
   status,
+  agentStatus,
+  agentSettings,
   memory,
   projects,
   snapshots,
@@ -3697,6 +3756,8 @@ function ManualTab({
   automationStatus,
 }: {
   status: ObserverStatus | null;
+  agentStatus: WhatsAppAgentStatus | null;
+  agentSettings: WhatsAppAgentSettings | null;
   memory: MemoryCurrent | null;
   projects: ProjectMemory[];
   snapshots: MemorySnapshot[];

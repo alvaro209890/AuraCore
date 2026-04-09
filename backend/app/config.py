@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     chat_context_projects: int = Field(8, alias="CHAT_CONTEXT_PROJECTS")
     chat_context_chars: int = Field(18000, alias="CHAT_CONTEXT_CHARS")
     chat_max_message_chars: int = Field(2000, alias="CHAT_MAX_MESSAGE_CHARS")
+    whatsapp_agent_idle_timeout_minutes: int = Field(10, alias="WHATSAPP_AGENT_IDLE_TIMEOUT_MINUTES")
     message_retention_max_rows: int = Field(3000, alias="MESSAGE_RETENTION_MAX_ROWS")
     request_timeout_seconds: float = Field(20.0, alias="REQUEST_TIMEOUT_SECONDS")
 

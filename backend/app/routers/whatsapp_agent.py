@@ -64,6 +64,8 @@ async def get_agent_workspace(
         settings=snapshot.settings,
         observer_status=snapshot.observer_status,
         active_thread_id=snapshot.active_thread_id,
+        active_session=_to_session_response(snapshot.active_session),
+        contact_memory=_to_contact_memory_response(snapshot.contact_memory),
         threads=[_to_thread_response(thread, agent_service) for thread in snapshot.threads],
         messages=[_to_message_response(message) for message in snapshot.messages],
     )
@@ -98,6 +100,7 @@ def _to_message_response(message) -> dict:
         "thread_id": message.thread_id,
         "direction": message.direction,
         "role": message.role,
+        "session_id": message.session_id,
         "whatsapp_message_id": message.whatsapp_message_id,
         "source_inbound_message_id": message.source_inbound_message_id,
         "contact_phone": message.contact_phone,
@@ -105,16 +108,19 @@ def _to_message_response(message) -> dict:
         "content": message.content,
         "message_timestamp": message.message_timestamp,
         "processing_status": message.processing_status,
+        "learning_status": message.learning_status,
         "send_status": message.send_status,
         "error_text": message.error_text,
         "response_latency_ms": message.response_latency_ms,
         "model_run_id": message.model_run_id,
+        "learned_at": message.learned_at,
         "metadata": message.metadata,
         "created_at": message.created_at,
     }
 
 
 def _to_thread_response(thread, agent_service: WhatsAppAgentService):
+    active_session = agent_service.get_active_session_for_thread(thread_id=thread.id)
     messages = agent_service.list_messages(thread_id=thread.id, limit=1)
     last_message = messages[-1] if messages else None
     preview = None
@@ -128,6 +134,14 @@ def _to_thread_response(thread, agent_service: WhatsAppAgentService):
         "contact_phone": thread.contact_phone,
         "chat_jid": thread.chat_jid,
         "status": thread.status,
+        "active_session_id": active_session.id if active_session is not None else None,
+        "session_started_at": active_session.started_at if active_session is not None else None,
+        "session_last_activity_at": active_session.last_activity_at if active_session is not None else None,
+        "session_message_count": (
+            agent_service.store.count_whatsapp_agent_session_messages(session_id=active_session.id)
+            if active_session is not None
+            else 0
+        ),
         "last_message_preview": preview,
         "last_message_at": thread.last_message_at,
         "last_inbound_at": thread.last_inbound_at,
@@ -136,4 +150,43 @@ def _to_thread_response(thread, agent_service: WhatsAppAgentService):
         "last_error_text": thread.last_error_text,
         "created_at": thread.created_at,
         "updated_at": thread.updated_at,
+    }
+
+
+def _to_session_response(session) -> dict | None:
+    if session is None:
+        return None
+    return {
+        "id": session.id,
+        "thread_id": session.thread_id,
+        "contact_phone": session.contact_phone,
+        "chat_jid": session.chat_jid,
+        "started_at": session.started_at,
+        "last_activity_at": session.last_activity_at,
+        "ended_at": session.ended_at,
+        "reset_reason": session.reset_reason,
+        "created_at": session.created_at,
+        "updated_at": session.updated_at,
+    }
+
+
+def _to_contact_memory_response(memory) -> dict | None:
+    if memory is None:
+        return None
+    return {
+        "id": memory.id,
+        "thread_id": memory.thread_id,
+        "contact_name": memory.contact_name,
+        "contact_phone": memory.contact_phone,
+        "chat_jid": memory.chat_jid,
+        "profile_summary": memory.profile_summary,
+        "preferred_tone": memory.preferred_tone,
+        "preferences": memory.preferences,
+        "objectives": memory.objectives,
+        "durable_facts": memory.durable_facts,
+        "constraints": memory.constraints,
+        "recurring_instructions": memory.recurring_instructions,
+        "learned_message_count": memory.learned_message_count,
+        "last_learned_at": memory.last_learned_at,
+        "updated_at": memory.updated_at,
     }
