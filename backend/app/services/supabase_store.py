@@ -4280,12 +4280,30 @@ class SupabaseStore:
         variants = {digits}
 
         # Mirror the SaldoPro strategy for Brazilian WhatsApp numbers:
-        # keep the DDD intact and only toggle the mobile "9" digit.
-        if len(digits) == 11 and digits[2] == "9":
-            variants.add(f"{digits[:2]}{digits[3:]}")
-        elif len(digits) == 10:
-            variants.add(f"{digits[:2]}9{digits[2:]}")
-        elif len(digits) == 9 and digits[0] == "9":
+        # generate the four common variants with/without country code 55
+        # and with/without the mobile "9" while keeping the DDD intact.
+        if len(digits) in {10, 11}:
+            area_code = digits[:2]
+            local_number = digits[2:]
+
+            if len(local_number) == 9 and local_number.startswith("9"):
+                base8 = local_number[1:]
+            elif len(local_number) == 8:
+                base8 = local_number
+            else:
+                return variants
+
+            variants.update(
+                {
+                    f"55{area_code}9{base8}",
+                    f"55{area_code}{base8}",
+                    f"{area_code}9{base8}",
+                    f"{area_code}{base8}",
+                }
+            )
+            return variants
+
+        if len(digits) == 9 and digits.startswith("9"):
             variants.add(digits[1:])
         elif len(digits) == 8:
             variants.add(f"9{digits}")
