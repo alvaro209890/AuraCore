@@ -1493,6 +1493,8 @@ function OverviewTab({
   onGoToMemory: () => void;
   onGoToChat: () => void;
 }) {
+  const [subTab, setSubTab] = useState<"summary" | "mapping" | "engine">("summary");
+
   return (
     <div className="page-stack">
       <Card className="hero-panel">
@@ -1523,38 +1525,52 @@ function OverviewTab({
         </div>
       </Card>
 
-      <div className="stats-grid modern-stats-grid">
-        <ModernStatCard
-          label="Observador"
-          value={status?.connected ? "Online" : "Aguardando"}
-          meta={status?.connected ? "Operacional" : "Sem sessão ativa"}
-          icon={Eye}
-          tone="emerald"
-        />
-        <ModernStatCard
-          label="Conexão ativa"
-          value={status?.owner_number ?? "Sem número"}
-          meta="Dispositivo principal"
-          icon={Smartphone}
-        />
-        <ModernStatCard
-          label="Próxima leitura"
-          value={preview ? `${preview.recommendation_score}%` : "--"}
-          meta={preview?.recommendation_label ?? "Sem cálculo"}
-          icon={Zap}
-          tone={previewTone}
-        />
-        <ModernStatCard
-          label="Mensagens salvas"
-          value={preview ? String(preview.retained_message_count) : "--"}
-          meta={preview ? `de ${preview.retention_limit} retidas` : "Aguardando preview"}
-          icon={Database}
-          tone="indigo"
+      <div style={{ padding: "0 4px" }}>
+        <SegmentedControl
+          options={["Painel de Resumo", "Mapa Estrutural", "Métricas Engine"]}
+          selected={
+            subTab === "summary" ? "Painel de Resumo" : subTab === "mapping" ? "Mapa Estrutural" : "Métricas Engine"
+          }
+          onChange={(val) => {
+            if (val === "Painel de Resumo") setSubTab("summary");
+            if (val === "Mapa Estrutural") setSubTab("mapping");
+            if (val === "Métricas Engine") setSubTab("engine");
+          }}
         />
       </div>
 
-      <div className="overview-grid">
-        <div className="overview-main-stack">
+      {subTab === "summary" ? (
+        <>
+          <div className="stats-grid modern-stats-grid">
+            <ModernStatCard
+              label="Observador"
+              value={status?.connected ? "Online" : "Aguardando"}
+              meta={status?.connected ? "Operacional" : "Sem sessão ativa"}
+              icon={Eye}
+              tone="emerald"
+            />
+            <ModernStatCard
+              label="Conexão ativa"
+              value={status?.owner_number ?? "Sem número"}
+              meta="Dispositivo principal"
+              icon={Smartphone}
+            />
+            <ModernStatCard
+              label="Próxima leitura"
+              value={preview ? `${preview.recommendation_score}%` : "--"}
+              meta={preview?.recommendation_label ?? "Sem cálculo"}
+              icon={Zap}
+              tone={previewTone}
+            />
+            <ModernStatCard
+              label="Mensagens salvas"
+              value={preview ? String(preview.retained_message_count) : "--"}
+              meta={preview ? `de ${preview.retention_limit} retidas` : "Aguardando preview"}
+              icon={Database}
+              tone="indigo"
+            />
+          </div>
+
           <Card>
             <SectionTitle title="Resumo do Dono (Atual)" icon={Fingerprint} />
             <p className="lead-copy">
@@ -1563,49 +1579,53 @@ function OverviewTab({
                 : "Ainda não existe um perfil consolidado. Conecte o observador, deixe sinais suficientes chegarem e execute a primeira leitura."}
             </p>
           </Card>
+        </>
+      ) : null}
 
-          <Card>
-            <SectionTitle title="Mapeamento Estrutural" icon={Brain} />
-            <div className="dual-column-grid">
-              <div className="signal-cluster">
-                <h4>Áreas Fortes</h4>
-                <SignalBlock
-                  title="Aprendizados Recentes"
-                  lines={latestSnapshot?.key_learnings ?? []}
-                  emptyLabel="Sem aprendizados recentes consolidados."
-                />
-                <SignalBlock
-                  title="Rotina Detectada"
-                  lines={latestSnapshot?.routine_signals ?? []}
-                  emptyLabel="Sem sinais fortes de rotina ainda."
-                />
-                <SignalBlock
-                  title="Preferências Operacionais"
-                  lines={latestSnapshot?.preferences ?? []}
-                  emptyLabel="Sem preferências consolidadas ainda."
-                />
-              </div>
-
-              <div className="signal-cluster">
-                <h4 className="amber">Pontos Frágeis</h4>
-                <SignalBlock
-                  title="Lacunas Atuais"
-                  lines={latestSnapshot?.open_questions ?? []}
-                  emptyLabel="Sem lacunas críticas no momento."
-                  subtle
-                />
-                <SignalBlock
-                  title="Projetos em Contexto"
-                  lines={projects.slice(0, 3).map((project) => `${project.project_name}: ${project.status || "sem status claro"}`)}
-                  emptyLabel="Nenhum projeto relevante foi consolidado ainda."
-                  subtle
-                />
-              </div>
+      {subTab === "mapping" ? (
+        <Card>
+          <SectionTitle title="Mapeamento Estrutural" icon={Brain} />
+          <div className="dual-column-grid">
+            <div className="signal-cluster">
+              <h4>Áreas Fortes</h4>
+              <SignalBlock
+                title="Aprendizados Recentes"
+                lines={latestSnapshot?.key_learnings ?? []}
+                emptyLabel="Sem aprendizados recentes consolidados."
+              />
+              <SignalBlock
+                title="Rotina Detectada"
+                lines={latestSnapshot?.routine_signals ?? []}
+                emptyLabel="Sem sinais fortes de rotina ainda."
+              />
+              <SignalBlock
+                title="Preferências Operacionais"
+                lines={latestSnapshot?.preferences ?? []}
+                emptyLabel="Sem preferências consolidadas ainda."
+              />
             </div>
-          </Card>
-        </div>
 
-        <div className="overview-side-stack">
+            <div className="signal-cluster">
+              <h4 className="amber">Pontos Frágeis</h4>
+              <SignalBlock
+                title="Lacunas Atuais"
+                lines={latestSnapshot?.open_questions ?? []}
+                emptyLabel="Sem lacunas críticas no momento."
+                subtle
+              />
+              <SignalBlock
+                title="Projetos em Contexto"
+                lines={projects.slice(0, 3).map((project) => `${project.project_name}: ${project.status || "sem status claro"}`)}
+                emptyLabel="Nenhum projeto relevante foi consolidado ainda."
+                subtle
+              />
+            </div>
+          </div>
+        </Card>
+      ) : null}
+
+      {subTab === "engine" ? (
+        <div className="dual-column-grid">
           <Card className="score-card-modern">
             <SectionTitle title="Leitura Recomendada" icon={BarChart3} />
             <div className="score-display-row">
@@ -1634,7 +1654,7 @@ function OverviewTab({
             </div>
           </Card>
         </div>
-      </div>
+      ) : null}
 
       {connectionError ? <InlineError title="Falha na conexão" message={connectionError} /> : null}
       {memoryError ? <InlineError title="Falha na memória" message={memoryError} /> : null}

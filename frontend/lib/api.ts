@@ -345,8 +345,16 @@ export async function getMemorySnapshots(limit = 20): Promise<MemorySnapshot[]> 
 }
 
 export async function getImportantMessages(limit = 80): Promise<ImportantMessage[]> {
-  const response = await request<ImportantMessagesListResponse>(`/api/memories/important?limit=${limit}`);
-  return response.messages;
+  try {
+    const response = await request<ImportantMessagesListResponse>(`/api/memories/important?limit=${limit}`);
+    return response.messages;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/status 404|not found/i.test(message)) {
+      return [];
+    }
+    throw error;
+  }
 }
 
 export async function analyzeMemory(windowHours: number): Promise<AnalyzeMemoryResponse> {
