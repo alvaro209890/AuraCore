@@ -101,12 +101,21 @@ class ChatMessageRecord:
 
 
 class SupabaseStore:
-    def __init__(self, supabase_url: str, supabase_key: str, default_user_id: UUID) -> None:
+    def __init__(
+        self,
+        supabase_url: str,
+        supabase_key: str,
+        default_user_id: UUID,
+        *,
+        message_retention_max_rows: int = 3000,
+    ) -> None:
         self.client: Client = create_client(supabase_url, supabase_key)
         self.default_user_id = default_user_id
+        self.message_retention_max_rows = max(200, message_retention_max_rows)
 
     def save_ingested_messages(self, messages: Sequence[IngestedMessageRecord]) -> int:
-        if not messages:
+        filtered_messages = [message for message in messages if self.is_normal_contact_phone(message.contact_phone)]
+        if not filtered_messages:
             return 0
 
         records = [
@@ -121,10 +130,12 @@ class SupabaseStore:
                 "source": message.source,
                 "embedding": None,
             }
-            for message in messages
+            for message in filtered_messages
         ]
 
         self.client.table("mensagens").upsert(records, on_conflict="id").execute()
+        self.prune_non_direct_messages(self.default_user_id)
+        self.prune_old_messages(self.default_user_id)
         return len(records)
 
     def list_messages_in_window(
@@ -150,7 +161,8 @@ class SupabaseStore:
             if not isinstance(row, dict):
                 continue
             message_text = str(row.get("message_text") or "").strip()
-            if not message_text:
+            contact_phone = self._optional_text(row.get("contact_phone"))
+            if not message_text or not self.is_normal_contact_phone(contact_phone):
                 continue
             messages.append(
                 StoredMessageRecord(
@@ -158,13 +170,57 @@ class SupabaseStore:
                     user_id=self._parse_uuid(row.get("user_id")) or user_id,
                     direction=str(row.get("direction") or "inbound"),
                     contact_name=str(row.get("contact_name") or row.get("contact_phone") or "Contato"),
-                    contact_phone=self._optional_text(row.get("contact_phone")),
+                    contact_phone=contact_phone,
                     message_text=message_text,
                     timestamp=self._parse_datetime(row.get("timestamp")) or datetime.now(UTC),
                     source=str(row.get("source") or "unknown"),
                 )
             )
         return messages
+
+    def prune_non_direct_messages(self, user_id: UUID) -> None:
+        while True:
+            response = (
+                self.client.table("mensagens")
+                .select("id,contact_phone")
+                .eq("user_id", str(user_id))
+                .limit(5000)
+                .execute()
+            )
+
+            rows = response.data or []
+            delete_ids: list[str] = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                message_id = str(row.get("id") or "").strip()
+                contact_phone = self._optional_text(row.get("contact_phone"))
+                if message_id and not self.is_normal_contact_phone(contact_phone):
+                    delete_ids.append(message_id)
+
+            if not delete_ids:
+                break
+
+            self.client.table("mensagens").delete().in_("id", delete_ids).execute()
+
+    def prune_old_messages(self, user_id: UUID) -> None:
+        offset = self.message_retention_max_rows
+        while True:
+            response = (
+                self.client.table("mensagens")
+                .select("id")
+                .eq("user_id", str(user_id))
+                .order("timestamp", desc=True)
+                .range(offset, offset + 999)
+                .execute()
+            )
+
+            rows = response.data or []
+            delete_ids = [str(row.get("id") or "").strip() for row in rows if isinstance(row, dict) and str(row.get("id") or "").strip()]
+            if not delete_ids:
+                break
+
+            self.client.table("mensagens").delete().in_("id", delete_ids).execute()
 
     def get_persona(self, user_id: UUID) -> PersonaRecord | None:
         response = (
@@ -517,6 +573,15 @@ class SupabaseStore:
             if text:
                 cleaned.append(text)
         return cleaned
+
+    def is_normal_contact_phone(self, value: str | None) -> bool:
+        return self._is_normal_contact_phone(value)
+
+    def _is_normal_contact_phone(self, value: str | None) -> bool:
+        if value is None:
+            return False
+        digits = "".join(char for char in value if char.isdigit())
+        return 8 <= len(digits) <= 15
 
     def _normalize_project_key(self, value: str) -> str:
         normalized_chars = [

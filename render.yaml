@@ -48,6 +48,8 @@ services:
         value: "18000"
       - key: CHAT_MAX_MESSAGE_CHARS
         value: "2000"
+      - key: MESSAGE_RETENTION_MAX_ROWS
+        value: "3000"
       - key: REQUEST_TIMEOUT_SECONDS
         value: "20"
       - key: FRONTEND_ORIGINS

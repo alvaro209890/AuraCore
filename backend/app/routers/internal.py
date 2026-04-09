@@ -30,7 +30,7 @@ def _build_records(payload: IngestMessagesRequest, store: SupabaseStore) -> list
     for item in payload.messages:
         message_text = item.message_text.strip()
         contact_phone = item.contact_phone.strip()
-        if not message_text or not contact_phone:
+        if not message_text or not contact_phone or not store.is_normal_contact_phone(contact_phone):
             continue
 
         records.append(
@@ -46,4 +46,3 @@ def _build_records(payload: IngestMessagesRequest, store: SupabaseStore) -> list
             )
         )
     return records
-

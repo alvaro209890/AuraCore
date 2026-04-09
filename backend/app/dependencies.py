@@ -23,6 +23,7 @@ def get_supabase_store() -> SupabaseStore:
         supabase_url=settings.supabase_url,
         supabase_key=settings.supabase_service_role_key,
         default_user_id=settings.default_user_id,
+        message_retention_max_rows=settings.message_retention_max_rows,
     )
 
 
