@@ -255,9 +255,10 @@ textarea {
   justify-content: space-between;
   gap: 16px;
   padding: 0 20px;
-  border-bottom: 1px solid rgba(63, 63, 70, 0.55);
-  background: rgba(9, 9, 11, 0.88);
-  backdrop-filter: blur(16px);
+  border-bottom: 1px solid rgba(59, 130, 246, 0.15);
+  background: rgba(8, 14, 26, 0.65);
+  backdrop-filter: blur(36px);
+  -webkit-backdrop-filter: blur(36px);
 }
 
 .ac-topbar-left {
@@ -329,11 +330,12 @@ textarea {
   padding: 24px;
   border-radius: 24px;
   background:
-    radial-gradient(circle at top right, rgba(99, 102, 241, 0.15), transparent 26%),
-    linear-gradient(135deg, rgba(18, 18, 21, 0.6), rgba(24, 24, 27, 0.7));
-  backdrop-filter: blur(28px);
-  border: 1px solid rgba(82, 82, 91, 0.4);
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    radial-gradient(100% 100% at 100% 0%, rgba(59, 130, 246, 0.2), transparent 40%),
+    linear-gradient(135deg, rgba(8, 14, 26, 0.6), rgba(12, 18, 34, 0.75));
+  backdrop-filter: blur(40px);
+  -webkit-backdrop-filter: blur(40px);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3), inset 0 1px 1px rgba(255, 255, 255, 0.1);
 }
 
 .hero-copy {
@@ -433,10 +435,17 @@ textarea {
 .modern-stat-card {
   padding: 16px;
   border-radius: 20px;
-  background: linear-gradient(180deg, rgba(24, 24, 27, 0.6), rgba(14, 14, 18, 0.7));
-  backdrop-filter: blur(20px);
-  border: 1px solid rgba(82, 82, 91, 0.3);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  background: linear-gradient(180deg, rgba(14, 22, 38, 0.65), rgba(8, 12, 22, 0.8));
+  backdrop-filter: blur(36px);
+  -webkit-backdrop-filter: blur(36px);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25), inset 0 1px 1px rgba(255, 255, 255, 0.08);
+  transition: transform 200ms ease, box-shadow 200ms ease;
+}
+.modern-stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 16px 40px rgba(59, 130, 246, 0.18), inset 0 1px 1px rgba(255, 255, 255, 0.12);
+  border-color: rgba(59, 130, 246, 0.35);
 }
 
 .modern-stat-top {
@@ -641,12 +650,13 @@ textarea {
 .observer-status-card,
 .memory-score-card {
   background:
-    radial-gradient(circle at top center, rgba(79, 70, 229, 0.12), transparent 40%),
-    linear-gradient(180deg, rgba(20, 20, 23, 0.7), rgba(12, 12, 14, 0.8));
-  backdrop-filter: blur(20px);
-  border: 1px solid rgba(82, 82, 91, 0.35);
+    radial-gradient(circle at top center, rgba(59, 130, 246, 0.15), transparent 40%),
+    linear-gradient(180deg, rgba(14, 22, 38, 0.65), rgba(8, 12, 22, 0.85));
+  backdrop-filter: blur(40px);
+  -webkit-backdrop-filter: blur(40px);
+  border: 1px solid rgba(59, 130, 246, 0.2);
   border-radius: 24px;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3), inset 0 1px 1px rgba(255, 255, 255, 0.08);
 }
 
 .memory-deck-copy {
@@ -664,10 +674,11 @@ textarea {
 .memory-signal-card {
   padding: 16px;
   border-radius: 18px;
-  background: linear-gradient(180deg, rgba(39, 39, 42, 0.3), rgba(24, 24, 27, 0.4));
-  border: 1px solid rgba(82, 82, 91, 0.35);
-  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.1);
-  backdrop-filter: blur(8px);
+  background: linear-gradient(180deg, rgba(22, 34, 56, 0.4), rgba(14, 22, 38, 0.6));
+  border: 1px solid rgba(59, 130, 246, 0.15);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.15), 0 8px 24px rgba(0, 0, 0, 0.2);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }
 
 .memory-signal-card span {
@@ -761,11 +772,13 @@ textarea {
   text-align: left;
   padding: 13px;
   border-radius: 14px;
-  border: 1px solid rgba(63, 63, 70, 0.56);
-  background: rgba(9, 9, 11, 0.72);
+  border: 1px solid rgba(59, 130, 246, 0.12);
+  background: rgba(8, 14, 26, 0.6);
   color: var(--muted);
   cursor: pointer;
   transition: border-color 160ms ease, transform 160ms ease, background-color 160ms ease;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
 }
 
 .detail-card:hover {
@@ -773,10 +786,10 @@ textarea {
 }
 
 .detail-card-active {
-  border-color: rgba(99, 102, 241, 0.6);
-  background: linear-gradient(145deg, rgba(79, 70, 229, 0.15), rgba(30, 41, 59, 0.4));
+  border-color: rgba(59, 130, 246, 0.4);
+  background: linear-gradient(145deg, rgba(59, 130, 246, 0.2), rgba(14, 22, 38, 0.8));
   color: var(--text);
-  box-shadow: 0 8px 24px rgba(79, 70, 229, 0.15), inset 0 0 0 1px rgba(99, 102, 241, 0.2);
+  box-shadow: 0 8px 24px rgba(59, 130, 246, 0.2), inset 0 0 0 1px rgba(59, 130, 246, 0.25);
 }
 
 .detail-card-head {
@@ -809,8 +822,8 @@ textarea {
   margin-top: 12px;
   padding: 14px;
   border-radius: 16px;
-  background: rgba(9, 9, 11, 0.62);
-  border: 1px solid rgba(63, 63, 70, 0.48);
+  background: rgba(8, 14, 26, 0.5);
+  border: 1px solid rgba(59, 130, 246, 0.12);
 }
 
 .depth-reality-strip strong {
@@ -842,8 +855,9 @@ textarea {
 .capacity-rail {
   padding: 14px;
   border-radius: 16px;
-  background: rgba(9, 9, 11, 0.66);
-  border: 1px solid rgba(63, 63, 70, 0.48);
+  background: rgba(8, 14, 26, 0.55);
+  border: 1px solid rgba(59, 130, 246, 0.15);
+  backdrop-filter: blur(12px);
 }
 
 .capacity-rail-head {
@@ -878,8 +892,9 @@ textarea {
 .metric-tile {
   padding: 14px;
   border-radius: 14px;
-  background: rgba(9, 9, 11, 0.72);
-  border: 1px solid rgba(63, 63, 70, 0.52);
+  background: rgba(8, 14, 26, 0.65);
+  border: 1px solid rgba(59, 130, 246, 0.18);
+  backdrop-filter: blur(16px);
 }
 
 .metric-tile span {
@@ -1106,11 +1121,11 @@ textarea {
 }
 
 .project-focus-card {
-  background: linear-gradient(180deg, rgba(24, 24, 27, 0.88), rgba(24, 24, 27, 0.68));
+  background: linear-gradient(180deg, rgba(14, 22, 38, 0.85), rgba(8, 14, 26, 0.75));
 }
 
 .project-focus-card-primary {
-  background: linear-gradient(180deg, rgba(49, 46, 129, 0.26), rgba(24, 24, 27, 0.82));
+  background: linear-gradient(180deg, rgba(30, 58, 138, 0.4), rgba(14, 22, 38, 0.85));
 }
 
 .project-focus-head {
