@@ -1596,7 +1596,7 @@ export function ConnectionDashboard() {
       intent,
       running: false,
       progress: 0,
-      status: "A atualização falhou antes de concluir.",
+      status: `A atualização falhou: ${message}`,
       error: message,
       completedAt: null,
     });
@@ -1786,7 +1786,6 @@ export function ConnectionDashboard() {
     startAgentRun(intent);
 
     try {
-      if (intent === "first_analysis" || intent === "improve_memory") {
         const response = intent === "first_analysis"
           ? await runFirstMemoryAnalysis()
           : await runNextMemoryBatch();
@@ -3152,11 +3151,11 @@ function MemoryTab({
             <button
               className="ac-success-button"
               onClick={onInitialAnalysis}
-              disabled={agentState.running || !canRunFirstAnalysis}
+              disabled={agentState.running || !!queuedJobId || !canRunFirstAnalysis}
               type="button"
             >
               <Play size={15} />
-              {agentState.running && agentState.intent === "first_analysis" ? "Executando..." : firstAnalysisLabel}
+              {agentState.running && agentState.intent === "first_analysis" ? "Executando..." : !!queuedJobId ? "Aguardando fila..." : firstAnalysisLabel}
             </button>
           </>
         ) : (
@@ -3167,11 +3166,11 @@ function MemoryTab({
             <button
               className="ac-primary-button"
               onClick={onImproveMemory}
-              disabled={agentState.running || !canRunNextBatch}
+              disabled={agentState.running || !!queuedJobId || !canRunNextBatch}
               type="button"
             >
               <Sparkles size={15} />
-              {agentState.running && agentState.intent === "improve_memory" ? "Processando..." : nextBatchLabel}
+              {agentState.running && agentState.intent === "improve_memory" ? "Processando..." : !!queuedJobId ? "Fila ativa..." : nextBatchLabel}
             </button>
           </>
         )}

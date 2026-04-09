@@ -883,13 +883,21 @@ class MemoryAnalysisService:
                 user_id=self.settings.default_user_id,
                 limit=min(
                     self.settings.message_retention_max_rows,
-                    max(self._resolve_first_analysis_limit() * 2, min(pending_count, self._resolve_first_analysis_limit() * 4)),
+                    max(self._resolve_first_analysis_limit() * 4, min(pending_count, self._resolve_first_analysis_limit() * 8)),
                 ),
                 newest_first=True,
             )
+            # Prioriza mensagens que tenham texto útil
+            textual_candidates = [m for m in candidate_messages if m.message_text.strip()]
+            
+            if not textual_candidates and pending_count > 0:
+                raise MemoryAnalysisError(
+                    f"Encontrei {pending_count} mensagens pendentes, mas nenhuma delas contém texto analisável (apenas imagens, áudios ou figurinhas)."
+                )
+
             selected_messages = self._select_balanced_messages(
-                candidate_messages,
-                max_messages=min(self._resolve_first_analysis_limit(), pending_count),
+                textual_candidates,
+                max_messages=min(self._resolve_first_analysis_limit(), len(textual_candidates)),
                 prefer_recent=True,
             )
             intent: Literal["first_analysis", "improve_memory"] = "first_analysis"
@@ -905,13 +913,21 @@ class MemoryAnalysisService:
                 user_id=self.settings.default_user_id,
                 limit=min(
                     self.settings.message_retention_max_rows,
-                    max(self._resolve_incremental_batch_size() * 2, min(pending_count, self._resolve_incremental_batch_size() * 4)),
+                    max(self._resolve_incremental_batch_size() * 4, min(pending_count, self._resolve_incremental_batch_size() * 8)),
                 ),
                 newest_first=False,
             )
+            # Prioriza mensagens que tenham texto útil
+            textual_candidates = [m for m in candidate_messages if m.message_text.strip()]
+            
+            if not textual_candidates and pending_count >= self._resolve_incremental_min_messages():
+                 raise MemoryAnalysisError(
+                    f"Existem mensagens pendentes ({pending_count}), mas nenhuma delas possui texto útil para o processamento incremental."
+                )
+
             selected_messages = self._select_balanced_messages(
-                candidate_messages,
-                max_messages=min(self._resolve_incremental_batch_size(), pending_count),
+                textual_candidates,
+                max_messages=min(self._resolve_incremental_batch_size(), len(textual_candidates)),
                 prefer_recent=False,
             )
             intent = "improve_memory"

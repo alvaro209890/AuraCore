@@ -461,9 +461,20 @@ class AutomationService:
 
     def _ensure_no_pending_job(self) -> None:
         recent_jobs = self.store.list_analysis_jobs(user_id=self.settings.default_user_id, limit=20)
-        has_pending_job = any(job.status in {"queued", "running"} for job in recent_jobs)
-        if has_pending_job:
-            raise MemoryAnalysisError("Ja existe uma leitura em andamento ou na fila. Aguarde a conclusao antes de iniciar outra.")
+        now = datetime.now(UTC)
+        stagnant_threshold = timedelta(minutes=15)
+        
+        pending_jobs = [
+            job for job in recent_jobs 
+            if job.status in {"queued", "running"} 
+            and (now - job.created_at) < stagnant_threshold
+        ]
+        
+        if pending_jobs:
+            raise MemoryAnalysisError(
+                "Ja existe uma leitura em andamento ou recentemente agendada. "
+                "Aguarde a conclusao ou tente novamente em alguns minutos."
+            )
 
     async def _execute_analysis_job(
         self,
