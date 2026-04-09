@@ -20,11 +20,11 @@ class IngestedMessageRecord:
     user_id: UUID
     direction: str
     contact_name: str
-    contact_name_source: str = "unknown"
     chat_jid: str
     contact_phone: str | None
     message_text: str
     timestamp: datetime
+    contact_name_source: str = "unknown"
     source: str = "baileys"
     source_event: str | None = None
 
