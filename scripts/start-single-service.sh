@@ -58,14 +58,17 @@ cleanup() {
 
 trap cleanup EXIT SIGINT SIGTERM
 
-cd /app/whatsapp-gateway
-PORT="${WHATSAPP_GATEWAY_PORT}" node dist/server.js &
-gateway_pid="$!"
-
+# O backend responde ao health check da Render, entao ele precisa ser o
+# processo principal do container. O gateway pode falhar sem derrubar o
+# /health durante o bootstrap.
 cd /app/backend
 uvicorn app.main:app --host 0.0.0.0 --port "${PORT}" &
 backend_pid="$!"
 
+cd /app/whatsapp-gateway
+PORT="${WHATSAPP_GATEWAY_PORT}" node dist/server.js &
+gateway_pid="$!"
+
 start_keepalive
 
-wait -n "${gateway_pid}" "${backend_pid}"
+wait "${backend_pid}"

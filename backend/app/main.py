@@ -17,7 +17,6 @@ from app.routers.internal import router as internal_router
 from app.routers.memories import router as memories_router
 from app.routers.observer import router as observer_router
 from app.routers.whatsapp_agent import router as whatsapp_agent_router
-from app.services.automation_service import AutomationService
 from app.services.chat_service import ChatServiceError
 from app.services.deepseek_service import DeepSeekError
 from app.services.groq_service import GroqChatError
@@ -36,8 +35,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     logger.info("Starting AuraCore backend.")
-    automation_service = get_automation_service()
-    task = asyncio.create_task(_automation_loop(automation_service))
+    task = asyncio.create_task(_automation_loop())
     try:
         yield
     finally:
@@ -104,9 +102,12 @@ async def groq_chat_error_handler(_: Request, exc: GroqChatError) -> JSONRespons
     return JSONResponse(status_code=502, content={"detail": str(exc)})
 
 
-async def _automation_loop(automation_service: AutomationService) -> None:
+async def _automation_loop() -> None:
+    # Let the HTTP server finish binding before background automation starts.
+    await asyncio.sleep(2)
     while True:
         try:
+            automation_service = get_automation_service()
             await automation_service.tick()
         except asyncio.CancelledError:
             raise

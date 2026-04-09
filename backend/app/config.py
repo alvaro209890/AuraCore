@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     )
     whatsapp_gateway_url: str = Field(..., alias="WHATSAPP_GATEWAY_URL")
     internal_api_token: str = Field(..., alias="INTERNAL_API_TOKEN")
-    deepseek_api_key: str = Field(..., alias="DEEPSEEK_API_KEY")
+    deepseek_api_key: str | None = Field(default=None, alias="DEEPSEEK_API_KEY")
     deepseek_model: str = Field("deepseek-reasoner", alias="DEEPSEEK_MODEL")
     deepseek_api_base_url: str = Field("https://api.deepseek.com", alias="DEEPSEEK_API_BASE_URL")
     deepseek_timeout_seconds: float = Field(60.0, alias="DEEPSEEK_TIMEOUT_SECONDS")
