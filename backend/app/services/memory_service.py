@@ -7,6 +7,7 @@ from uuid import uuid4
 from app.config import Settings
 from app.services.deepseek_service import DeepSeekMemoryResult, DeepSeekService
 from app.services.supabase_store import (
+    ChatMessageRecord,
     MemorySnapshotRecord,
     PersonaRecord,
     ProjectMemoryRecord,
@@ -71,10 +72,12 @@ class MemoryAnalysisService:
         current_persona = self.store.get_persona(self.settings.default_user_id)
         current_summary = current_persona.life_summary if current_persona else ""
         prior_analyses_context = self._build_prior_analyses_context()
+        chat_context = self._build_chat_context()
         deepseek_result = await self.deepseek_service.analyze_memory(
             transcript=transcript,
             current_life_summary=current_summary,
             prior_analyses_context=prior_analyses_context,
+            chat_context=chat_context,
             window_hours=window_hours,
             window_start=window_start,
             window_end=window_end,
@@ -139,6 +142,7 @@ class MemoryAnalysisService:
             current_life_summary=current_persona.life_summary,
             prior_analyses_context=self._build_prior_analyses_context_from_snapshots(snapshots),
             project_context=self._build_project_context(projects),
+            chat_context=self._build_chat_context(),
         )
 
         refined_at = datetime.now(UTC)
@@ -231,6 +235,33 @@ class MemoryAnalysisService:
             current_size = projected_size
 
         return "\n\n".join(sections)
+
+    def _build_chat_context(self) -> str:
+        thread = self.store.get_or_create_chat_thread(user_id=self.settings.default_user_id)
+        messages = self.store.list_chat_messages(
+            thread.id,
+            limit=max(1, min(self.settings.chat_max_history_messages, 12)),
+        )
+        return self._build_chat_context_from_messages(messages)
+
+    def _build_chat_context_from_messages(self, messages: list[ChatMessageRecord]) -> str:
+        if not messages:
+            return ""
+
+        sections: list[str] = []
+        current_size = 0
+        char_budget = max(1000, self.settings.memory_analysis_snapshot_context_chars)
+
+        for message in messages:
+            role = "Dono" if message.role == "user" else "AuraCore"
+            line = f"- {role}: {message.content}"
+            projected_size = current_size + len(line) + 1
+            if sections and projected_size > char_budget:
+                break
+            sections.append(line)
+            current_size = projected_size
+
+        return "\n".join(sections)
 
     def _build_snapshot(
         self,

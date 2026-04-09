@@ -6,24 +6,55 @@ import {
   analyzeMemory,
   connectObserver,
   getChatSession,
-  getCurrentMemory,
-  getMemorySnapshots,
   getObserverStatus,
   refineMemory,
   resetObserver,
   sendChatMessage,
   type ChatMessage,
   type MemoryCurrent,
-  type MemorySnapshot,
   type ObserverStatus,
   type ProjectMemory,
 } from "@/lib/api";
 
 type ViewState = "idle" | "loading" | "waiting" | "connected" | "error";
+type AgentMode = "analyze" | "refine";
+
+type AgentStep = {
+  threshold: number;
+  label: string;
+};
+
+type AgentState = {
+  mode: AgentMode | null;
+  running: boolean;
+  progress: number;
+  status: string;
+  error: string | null;
+  completedAt: string | null;
+};
 
 const POLL_INTERVAL_MS = 5000;
 const QR_REFRESH_INTERVAL_MS = 25000;
 const WINDOW_PRESETS = [6, 24, 72, 168];
+
+const ANALYZE_STEPS: AgentStep[] = [
+  { threshold: 8, label: "Lendo mensagens observadas do WhatsApp" },
+  { threshold: 22, label: "Filtrando trechos com sinais úteis sobre o dono" },
+  { threshold: 38, label: "Consultando resumo, projetos e memória já salvos" },
+  { threshold: 56, label: "Cruzando o que o dono falou no chat com a IA" },
+  { threshold: 76, label: "Pedindo ao DeepSeek para consolidar comportamento e projetos" },
+  { threshold: 92, label: "Recebendo e aplicando a atualização do perfil" },
+];
+
+const REFINE_STEPS: AgentStep[] = [
+  { threshold: 10, label: "Lendo o resumo consolidado já salvo" },
+  { threshold: 28, label: "Revisando snapshots e projetos persistidos" },
+  { threshold: 48, label: "Considerando as conversas recentes com a IA" },
+  { threshold: 72, label: "Pedindo ao DeepSeek para limpar ruído e contradições" },
+  { threshold: 92, label: "Gravando a versão refinada do perfil no Supabase" },
+];
+
+const IDLE_AGENT_STATUS = "Pronto para atualizar a memória do dono.";
 
 function mergeStatus(previous: ObserverStatus | null, next: ObserverStatus): ObserverStatus {
   return {
@@ -68,6 +99,34 @@ function getErrorMessage(error: unknown): string {
   return "Nao foi possivel concluir a operacao.";
 }
 
+function getAgentSteps(mode: AgentMode | null): AgentStep[] {
+  if (mode === "refine") {
+    return REFINE_STEPS;
+  }
+  return ANALYZE_STEPS;
+}
+
+function getRunningStatus(mode: AgentMode, progress: number): string {
+  const activeStep = [...getAgentSteps(mode)].reverse().find((step) => progress >= step.threshold);
+  return activeStep?.label ?? "Preparando contexto da atualização";
+}
+
+function getProgressIncrement(progress: number): number {
+  if (progress < 20) {
+    return 6;
+  }
+  if (progress < 40) {
+    return 5;
+  }
+  if (progress < 65) {
+    return 4;
+  }
+  if (progress < 82) {
+    return 3;
+  }
+  return 1;
+}
+
 export function ConnectionDashboard() {
   const [status, setStatus] = useState<ObserverStatus | null>(null);
   const [viewState, setViewState] = useState<ViewState>("idle");
@@ -77,19 +136,25 @@ export function ConnectionDashboard() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
   const [isHydrating, setIsHydrating] = useState(true);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [isRefining, setIsRefining] = useState(false);
   const [isSendingChat, setIsSendingChat] = useState(false);
   const [pollingEnabled, setPollingEnabled] = useState(false);
   const [memory, setMemory] = useState<MemoryCurrent | null>(null);
-  const [snapshots, setSnapshots] = useState<MemorySnapshot[]>([]);
   const [projects, setProjects] = useState<ProjectMemory[]>([]);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatThreadTitle, setChatThreadTitle] = useState("Conversa principal");
   const [chatDraft, setChatDraft] = useState("");
   const [windowHoursInput, setWindowHoursInput] = useState("24");
+  const [agentState, setAgentState] = useState<AgentState>({
+    mode: null,
+    running: false,
+    progress: 0,
+    status: IDLE_AGENT_STATUS,
+    error: null,
+    completedAt: null,
+  });
   const lastQrRefreshAtRef = useRef<number | null>(null);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const agentTimerRef = useRef<number | null>(null);
 
   const selectedWindowHours = useMemo(() => {
     const parsed = Number.parseInt(windowHoursInput, 10);
@@ -102,6 +167,8 @@ export function ConnectionDashboard() {
     }
     return status.connected ? "Conectado ao WhatsApp" : formatState(status.state);
   }, [status]);
+
+  const activeAgentSteps = useMemo(() => getAgentSteps(agentState.mode), [agentState.mode]);
 
   useEffect(() => {
     void hydrateDashboard();
@@ -126,13 +193,19 @@ export function ConnectionDashboard() {
     chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
   }, [chatMessages]);
 
+  useEffect(() => {
+    return () => {
+      if (agentTimerRef.current) {
+        window.clearInterval(agentTimerRef.current);
+      }
+    };
+  }, []);
+
   async function hydrateDashboard(): Promise<void> {
     setIsHydrating(true);
 
-    const [statusResult, memoryResult, snapshotsResult, chatResult] = await Promise.allSettled([
+    const [statusResult, chatResult] = await Promise.allSettled([
       getObserverStatus(false),
-      getCurrentMemory(),
-      getMemorySnapshots(),
       getChatSession(),
     ]);
 
@@ -147,35 +220,78 @@ export function ConnectionDashboard() {
       setConnectionError(getErrorMessage(statusResult.reason));
     }
 
-    if (memoryResult.status === "fulfilled") {
-      setMemory(memoryResult.value);
-      setMemoryError(null);
-    } else {
-      setMemoryError(getErrorMessage(memoryResult.reason));
-    }
-
-    if (snapshotsResult.status === "fulfilled") {
-      setSnapshots(snapshotsResult.value);
-      if (memoryResult.status === "fulfilled") {
-        setMemoryError(null);
-      }
-    } else {
-      setMemoryError(getErrorMessage(snapshotsResult.reason));
-    }
-
     if (chatResult.status === "fulfilled") {
       setChatThreadTitle(chatResult.value.title);
       setChatMessages(chatResult.value.messages);
       setProjects(chatResult.value.projects);
-      if (memoryResult.status !== "fulfilled") {
-        setMemory(chatResult.value.current);
-      }
+      setMemory(chatResult.value.current);
       setChatError(null);
+      setMemoryError(null);
     } else {
-      setChatError(getErrorMessage(chatResult.reason));
+      const message = getErrorMessage(chatResult.reason);
+      setChatError(message);
+      setMemoryError(message);
     }
 
     setIsHydrating(false);
+  }
+
+  function startAgentRun(mode: AgentMode): void {
+    if (agentTimerRef.current) {
+      window.clearInterval(agentTimerRef.current);
+    }
+
+    setAgentState({
+      mode,
+      running: true,
+      progress: 4,
+      status: getRunningStatus(mode, 4),
+      error: null,
+      completedAt: null,
+    });
+
+    agentTimerRef.current = window.setInterval(() => {
+      setAgentState((previous) => {
+        if (!previous.running || previous.mode !== mode) {
+          return previous;
+        }
+
+        const nextProgress = Math.min(previous.progress + getProgressIncrement(previous.progress), 94);
+        return {
+          ...previous,
+          progress: nextProgress,
+          status: getRunningStatus(mode, nextProgress),
+        };
+      });
+    }, 520);
+  }
+
+  function finishAgentRunSuccess(mode: AgentMode, statusText: string): void {
+    if (agentTimerRef.current) {
+      window.clearInterval(agentTimerRef.current);
+    }
+    setAgentState({
+      mode,
+      running: false,
+      progress: 100,
+      status: statusText,
+      error: null,
+      completedAt: new Date().toISOString(),
+    });
+  }
+
+  function finishAgentRunError(mode: AgentMode, errorText: string): void {
+    if (agentTimerRef.current) {
+      window.clearInterval(agentTimerRef.current);
+    }
+    setAgentState({
+      mode,
+      running: false,
+      progress: 0,
+      status: "A atualização falhou antes de concluir.",
+      error: errorText,
+      completedAt: null,
+    });
   }
 
   async function startConnection(): Promise<void> {
@@ -253,36 +369,34 @@ export function ConnectionDashboard() {
       return;
     }
 
-    setIsAnalyzing(true);
     setMemoryError(null);
+    startAgentRun("analyze");
 
     try {
       const response = await analyzeMemory(selectedWindowHours);
       setMemory(response.current);
       setProjects(response.projects);
-      setSnapshots((previous) => {
-        const remaining = previous.filter((snapshot) => snapshot.id !== response.snapshot.id);
-        return [response.snapshot, ...remaining];
-      });
+      finishAgentRunSuccess("analyze", "Memória atualizada com a nova leitura do DeepSeek.");
     } catch (error) {
-      setMemoryError(getErrorMessage(error));
-    } finally {
-      setIsAnalyzing(false);
+      const message = getErrorMessage(error);
+      setMemoryError(message);
+      finishAgentRunError("analyze", message);
     }
   }
 
   async function refineSavedMemoryAction(): Promise<void> {
-    setIsRefining(true);
     setMemoryError(null);
+    startAgentRun("refine");
 
     try {
       const response = await refineMemory();
       setMemory(response.current);
       setProjects(response.projects);
+      finishAgentRunSuccess("refine", "Memória refinada com foco no perfil já salvo.");
     } catch (error) {
-      setMemoryError(getErrorMessage(error));
-    } finally {
-      setIsRefining(false);
+      const message = getErrorMessage(error);
+      setMemoryError(message);
+      finishAgentRunError("refine", message);
     }
   }
 
@@ -311,28 +425,28 @@ export function ConnectionDashboard() {
   }
 
   return (
-    <main className="shell">
-      <section className="hero-panel">
-        <div className="eyebrow">AuraCore / Memoria Observadora</div>
-        <h1>Leia o WhatsApp, consolide sinais e converse com uma IA personalizada.</h1>
+    <main className="shell shell-wide">
+      <section className="hero-panel panel-span">
+        <div className="eyebrow">AuraCore / Perfil Vivo</div>
+        <h1>Um segundo cerebro que observa, consolida e conversa como se ja te conhecesse.</h1>
         <p className="hero-copy">
-          O gateway Baileys observa chats diretos do Numero A, o backend persiste as mensagens no
-          Supabase, o DeepSeek transforma janelas de conversa em memoria e projetos, e o Groq usa
-          esse contexto para responder como um segundo cerebro pessoal.
+          O Numero A alimenta a memoria. O DeepSeek consolida comportamento, rotina e projetos. O
+          Groq responde com esse contexto. O painel abaixo mostra a conexao, o perfil atual e o
+          que o agente esta fazendo enquanto a memoria evolui.
         </p>
 
         <div className="metric-strip">
           <div className="metric-card">
-            <span className="metric-label">Instancia</span>
-            <strong>{status?.instance_name ?? "observer"}</strong>
-          </div>
-          <div className="metric-card">
-            <span className="metric-label">Estado</span>
+            <span className="metric-label">Estado do observador</span>
             <strong>{statusLabel}</strong>
           </div>
           <div className="metric-card">
-            <span className="metric-label">Ultima Analise</span>
-            <strong>{memory?.last_analyzed_at ? formatDateTime(memory.last_analyzed_at) : "Nenhuma ainda"}</strong>
+            <span className="metric-label">Projetos rastreados</span>
+            <strong>{projects.length}</strong>
+          </div>
+          <div className="metric-card">
+            <span className="metric-label">Ultima memoria</span>
+            <strong>{memory?.last_analyzed_at ? formatDateTime(memory.last_analyzed_at) : "Ainda sem consolidacao"}</strong>
           </div>
         </div>
       </section>
@@ -378,7 +492,7 @@ export function ConnectionDashboard() {
               <p>
                 {status?.connected
                   ? "A sessao ja esta conectada e nao precisa de um novo QR Code."
-                  : "Clique no botao para abrir uma nova sessao de leitura e gerar o QR Code."}
+                  : "Clique no botao para abrir uma nova sessao e gerar o QR Code."}
               </p>
             </div>
           )}
@@ -387,8 +501,8 @@ export function ConnectionDashboard() {
             <span className={`status-pill status-${viewState}`}>{statusLabel}</span>
             <p>
               {status?.connected
-                ? "O gateway esta online e enviando mensagens diretas para o backend analisar mais tarde."
-                : "Depois de escanear o QR, o painel atualiza automaticamente ate a conexao ficar aberta."}
+                ? "O gateway esta online e os chats diretos passam a alimentar a memoria do dono."
+                : "Depois de escanear o QR, o painel atualiza automaticamente ate a conexao ficar ativa."}
             </p>
           </div>
 
@@ -414,53 +528,39 @@ export function ConnectionDashboard() {
             <dd>{status?.ingestion_ready ? "Pronta" : "Pendente"}</dd>
           </div>
           <div>
-            <dt>Expira em</dt>
-            <dd>
-              {status?.connected
-                ? "Sessao ativa"
-                : status?.qr_expires_in_sec
-                  ? `${status.qr_expires_in_sec}s`
-                  : "Sem QR ativo"}
-            </dd>
-          </div>
-          <div>
             <dt>Ultima atualizacao</dt>
             <dd>{formatDateTime(status?.last_seen_at)}</dd>
-          </div>
-          <div>
-            <dt>Coleta</dt>
-            <dd>Chats diretos, entrada e saida</dd>
           </div>
         </dl>
       </section>
 
-      <section className="memory-panel panel-span">
+      <section className="memory-hub-panel">
         <div className="memory-header">
           <div>
-            <span className="panel-kicker">Memoria Manual</span>
-            <h2>Consolidar o que a IA aprendeu</h2>
+            <span className="panel-kicker">Memoria do Dono</span>
+            <h2>Perfil atual e frentes ativas</h2>
           </div>
           <div className="connection-actions">
             <button
               className="reset-button"
               onClick={() => void refineSavedMemoryAction()}
-              disabled={isRefining}
+              disabled={agentState.running}
               type="button"
             >
-              {isRefining ? "Refinando..." : "Refinar memoria salva"}
+              {agentState.running && agentState.mode === "refine" ? "Refinando..." : "Refinar memoria salva"}
             </button>
             <button
               className="analyze-button"
               onClick={() => void analyzeSelectedWindow()}
-              disabled={isAnalyzing || !selectedWindowHours}
+              disabled={agentState.running || !selectedWindowHours}
               type="button"
             >
-              {isAnalyzing ? "Analisando..." : "Analisar mensagens"}
+              {agentState.running && agentState.mode === "analyze" ? "Analisando..." : "Analisar mensagens"}
             </button>
           </div>
         </div>
 
-        <div className="analysis-controls">
+        <div className="analysis-controls analysis-controls-tight">
           <div className="preset-row">
             {WINDOW_PRESETS.map((hours) => {
               const active = selectedWindowHours === hours;
@@ -478,7 +578,7 @@ export function ConnectionDashboard() {
           </div>
 
           <label className="hours-input-card">
-            <span>Janela personalizada em horas</span>
+            <span>Janela para a proxima leitura</span>
             <input
               type="number"
               min={1}
@@ -490,19 +590,19 @@ export function ConnectionDashboard() {
 
           <div className="analysis-hint">
             {selectedWindowHours
-              ? `A analise vai juntar as mensagens das ultimas ${selectedWindowHours} horas antes de chamar o DeepSeek.`
+              ? `A proxima leitura junta as mensagens das ultimas ${selectedWindowHours} horas e cruza isso com memoria, projetos e chat.`
               : "Informe um numero inteiro de horas para montar a janela de analise."}
           </div>
         </div>
 
         {memoryError ? (
           <div className="error-card memory-error">
-            <strong>Falha na analise de memoria</strong>
+            <strong>Falha na atualizacao da memoria</strong>
             <p>{memoryError}</p>
           </div>
         ) : null}
 
-        <div className="memory-grid">
+        <div className="memory-hub-grid">
           <article className="summary-card">
             <div className="summary-card-head">
               <span className="card-kicker">Resumo atual</span>
@@ -517,42 +617,118 @@ export function ConnectionDashboard() {
             </p>
           </article>
 
-          <article className="snapshot-panel">
+          <article className="project-rail">
             <div className="snapshot-panel-head">
-              <span className="card-kicker">Snapshots</span>
-              <span className="summary-meta">{snapshots.length} analises registradas</span>
+              <span className="card-kicker">Projetos e frentes</span>
+              <span className="summary-meta">{projects.length} itens ativos</span>
             </div>
 
-            {snapshots.length === 0 ? (
+            {projects.length === 0 ? (
               <div className="snapshot-empty">
-                <strong>Nenhum snapshot ainda</strong>
-                <p>Quando voce analisar uma janela, o resultado historico aparece aqui.</p>
+                <strong>Nenhum projeto consolidado ainda</strong>
+                <p>Assim que a memoria ficar mais rica, o DeepSeek passa a destacar as frentes mais recorrentes do dono.</p>
               </div>
             ) : (
-              <div className="snapshot-list">
-                {snapshots.map((snapshot) => (
-                  <article key={snapshot.id} className="snapshot-card">
-                    <div className="snapshot-topline">
-                      <strong>{formatHoursLabel(snapshot.window_hours)}</strong>
-                      <span>{formatDateTime(snapshot.created_at)}</span>
+              <div className="project-mini-list">
+                {projects.map((project) => (
+                  <article key={project.id} className="project-mini-card">
+                    <div className="project-mini-top">
+                      <strong>{project.project_name}</strong>
+                      <span>{project.last_seen_at ? formatDateTime(project.last_seen_at) : "Sem data"}</span>
                     </div>
-                    <p className="snapshot-summary">{snapshot.window_summary}</p>
-                    <div className="snapshot-meta">
-                      <span>{snapshot.source_message_count} mensagens</span>
-                      <span>
-                        {formatDateTime(snapshot.window_start)} ate {formatDateTime(snapshot.window_end)}
-                      </span>
-                    </div>
-
-                    <SignalGroup title="Aprendizados" items={snapshot.key_learnings} />
-                    <SignalGroup title="Pessoas e relacoes" items={snapshot.people_and_relationships} />
-                    <SignalGroup title="Rotina" items={snapshot.routine_signals} />
-                    <SignalGroup title="Preferencias" items={snapshot.preferences} />
-                    <SignalGroup title="Lacunas" items={snapshot.open_questions} />
+                    <p>{project.summary}</p>
+                    {project.status ? <div className="project-mini-status">{project.status}</div> : null}
                   </article>
                 ))}
               </div>
             )}
+          </article>
+        </div>
+      </section>
+
+      <section className="agent-panel panel-span">
+        <div className="memory-header">
+          <div>
+            <span className="panel-kicker">Agente de Memoria</span>
+            <h2>Atualizacao em andamento</h2>
+          </div>
+          <div className="agent-meta">
+            <span>
+              {agentState.mode === null
+                ? "Aguardando comando"
+                : agentState.mode === "refine"
+                  ? "Modo refinamento"
+                  : "Modo leitura"}
+            </span>
+            <strong>{agentState.progress}%</strong>
+          </div>
+        </div>
+
+        <div className="agent-grid">
+          <article className="agent-progress-card">
+            <div className="agent-current-line">
+              <strong>{agentState.running ? "Executando agora" : "Estado atual"}</strong>
+              <span>{agentState.status}</span>
+            </div>
+
+            <div className="progress-track" aria-hidden="true">
+              <div
+                className={`progress-fill${agentState.running ? " progress-fill-running" : ""}`}
+                style={{ width: `${agentState.progress}%` }}
+              />
+            </div>
+
+            <div className="agent-progress-meta">
+              <span>{agentState.running ? "DeepSeek trabalhando com contexto vivo" : "Pronto para a proxima rodada"}</span>
+              <span>{agentState.completedAt ? `Concluido em ${formatDateTime(agentState.completedAt)}` : "Sem rodada concluida agora"}</span>
+            </div>
+
+            {agentState.error ? (
+              <div className="error-card agent-inline-error">
+                <strong>Falha no agente</strong>
+                <p>{agentState.error}</p>
+              </div>
+            ) : null}
+          </article>
+
+          <article className="agent-activity-card">
+            <div className="snapshot-panel-head">
+              <span className="card-kicker">Atividades</span>
+              <span className="summary-meta">
+                {agentState.running ? "Fluxo em execucao" : "Fila aguardando comando"}
+              </span>
+            </div>
+
+            <div className="agent-activity-list">
+              {activeAgentSteps.map((step) => {
+                const isCompleted = agentState.progress >= step.threshold;
+                const isActive =
+                  agentState.running &&
+                  agentState.progress >= step.threshold &&
+                  !activeAgentSteps.some(
+                    (candidate) => candidate.threshold > step.threshold && agentState.progress >= candidate.threshold,
+                  );
+
+                return (
+                  <div
+                    key={step.label}
+                    className={`agent-activity${isCompleted ? " agent-activity-completed" : ""}${isActive ? " agent-activity-active" : ""}`}
+                  >
+                    <span className="agent-activity-dot" />
+                    <div>
+                      <strong>{step.label}</strong>
+                      <p>
+                        {isActive
+                          ? "Etapa atual"
+                          : isCompleted
+                            ? "Concluida nesta rodada"
+                            : "Na fila da atualizacao"}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </article>
         </div>
       </section>
@@ -565,123 +741,67 @@ export function ConnectionDashboard() {
           </div>
           <div className="chat-thread-meta">
             <span>{chatThreadTitle}</span>
-            <strong>{projects.length} projetos mapeados</strong>
+            <strong>{projects.length} projetos no contexto</strong>
           </div>
         </div>
 
-        <div className="chat-grid">
-          <article className="project-panel">
-            <div className="snapshot-panel-head">
-              <span className="card-kicker">Projetos e frentes</span>
-              <span className="summary-meta">Atualizados pelas analises</span>
+        <div className="chat-stage-hint">
+          O que voce conversa aqui tambem passa a influenciar futuras leituras e refinamentos de perfil.
+        </div>
+
+        {chatError ? (
+          <div className="error-card memory-error">
+            <strong>Falha no chat</strong>
+            <p>{chatError}</p>
+          </div>
+        ) : null}
+
+        <div ref={chatScrollRef} className="chat-history">
+          {chatMessages.length === 0 ? (
+            <div className="chat-empty">
+              <strong>Sem conversa ainda</strong>
+              <p>
+                Quando voce enviar a primeira mensagem, o AuraCore responde usando memoria do dono,
+                projetos salvos e o contexto observado no WhatsApp.
+              </p>
             </div>
-
-            {projects.length === 0 ? (
-              <div className="snapshot-empty">
-                <strong>Nenhum projeto consolidado ainda</strong>
-                <p>As proximas analises vao extrair projetos, operacoes e frentes importantes do dono.</p>
-              </div>
-            ) : (
-              <div className="project-list">
-                {projects.map((project) => (
-                  <article key={project.id} className="project-card">
-                    <div className="snapshot-topline">
-                      <strong>{project.project_name}</strong>
-                      <span>{project.last_seen_at ? formatDateTime(project.last_seen_at) : "Sem data"}</span>
-                    </div>
-                    <p className="snapshot-summary">{project.summary}</p>
-                    {project.status ? (
-                      <div className="project-status-row">
-                        <span className="project-status-label">Status</span>
-                        <strong>{project.status}</strong>
-                      </div>
-                    ) : null}
-                    <SignalGroup title="Proximos passos" items={project.next_steps} />
-                    <SignalGroup title="Evidencias" items={project.evidence} />
-                  </article>
-                ))}
-              </div>
-            )}
-          </article>
-
-          <article className="chat-conversation-panel">
-            <div className="snapshot-panel-head">
-              <span className="card-kicker">Conversa com Groq</span>
-              <span className="summary-meta">Respostas personalizadas com memoria + projetos</span>
-            </div>
-
-            {chatError ? (
-              <div className="error-card memory-error">
-                <strong>Falha no chat</strong>
-                <p>{chatError}</p>
-              </div>
-            ) : null}
-
-            <div ref={chatScrollRef} className="chat-history">
-              {chatMessages.length === 0 ? (
-                <div className="chat-empty">
-                  <strong>Sem conversa ainda</strong>
-                  <p>
-                    Assim que voce enviar a primeira mensagem, o AuraCore responde usando o resumo do dono,
-                    os snapshots recentes e os projetos consolidados.
-                  </p>
-                </div>
-              ) : (
-                chatMessages.map((message) => (
-                  <article
-                    key={message.id}
-                    className={`chat-bubble${message.role === "assistant" ? " chat-bubble-assistant" : " chat-bubble-user"}`}
-                  >
-                    <div className="chat-bubble-head">
-                      <strong>{message.role === "assistant" ? "AuraCore" : "Voce"}</strong>
-                      <span>{formatDateTime(message.created_at)}</span>
-                    </div>
-                    <p>{message.content}</p>
-                  </article>
-                ))
-              )}
-            </div>
-
-            <div className="chat-composer">
-              <label className="chat-input-card">
-                <span>Mensagem para a IA</span>
-                <textarea
-                  value={chatDraft}
-                  onChange={(event) => setChatDraft(event.target.value)}
-                  rows={4}
-                  placeholder="Ex.: O que voce entendeu sobre meus projetos esta semana?"
-                />
-              </label>
-
-              <button
-                className="connect-button"
-                onClick={() => void submitChatMessage()}
-                disabled={isSendingChat}
-                type="button"
+          ) : (
+            chatMessages.map((message) => (
+              <article
+                key={message.id}
+                className={`chat-bubble${message.role === "assistant" ? " chat-bubble-assistant" : " chat-bubble-user"}`}
               >
-                {isSendingChat ? "Respondendo..." : "Enviar para a IA"}
-              </button>
-            </div>
-          </article>
+                <div className="chat-bubble-head">
+                  <strong>{message.role === "assistant" ? "AuraCore" : "Voce"}</strong>
+                  <span>{formatDateTime(message.created_at)}</span>
+                </div>
+                <p>{message.content}</p>
+              </article>
+            ))
+          )}
+        </div>
+
+        <div className="chat-composer">
+          <label className="chat-input-card">
+            <span>Mensagem para a IA</span>
+            <textarea
+              value={chatDraft}
+              onChange={(event) => setChatDraft(event.target.value)}
+              rows={4}
+              placeholder="Ex.: O que voce entendeu sobre minha rotina e meus projetos esta semana?"
+            />
+          </label>
+
+          <button
+            className="connect-button"
+            onClick={() => void submitChatMessage()}
+            disabled={isSendingChat}
+            type="button"
+          >
+            {isSendingChat ? "Respondendo..." : "Enviar para a IA"}
+          </button>
         </div>
       </section>
     </main>
-  );
-}
-
-function SignalGroup({ title, items }: { title: string; items: string[] }) {
-  if (!items.length) {
-    return null;
-  }
-
-  return (
-    <section className="signal-group">
-      <h3>{title}</h3>
-      <ul className="signal-list">
-        {items.map((item, index) => (
-          <li key={`${title}-${index}`}>{item}</li>
-        ))}
-      </ul>
-    </section>
   );
 }

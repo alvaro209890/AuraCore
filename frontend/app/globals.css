@@ -64,6 +64,10 @@ input {
   gap: 24px;
 }
 
+.shell-wide {
+  width: min(1340px, calc(100% - 32px));
+}
+
 .panel-span {
   grid-column: 1 / -1;
 }
@@ -71,6 +75,8 @@ input {
 .hero-panel,
 .connection-panel,
 .memory-panel,
+.memory-hub-panel,
+.agent-panel,
 .chat-panel {
   position: relative;
   overflow: hidden;
@@ -84,6 +90,8 @@ input {
 .hero-panel::after,
 .connection-panel::after,
 .memory-panel::after,
+.memory-hub-panel::after,
+.agent-panel::after,
 .chat-panel::after {
   content: "";
   position: absolute;
@@ -101,6 +109,8 @@ input {
 
 .connection-panel,
 .memory-panel,
+.memory-hub-panel,
+.agent-panel,
 .chat-panel {
   padding: 32px;
 }
@@ -159,8 +169,13 @@ input {
 .summary-card,
 .snapshot-panel,
 .snapshot-card,
+.project-rail,
+.project-mini-card,
+.agent-progress-card,
+.agent-activity-card,
 .hours-input-card,
 .analysis-hint,
+.chat-stage-hint,
 .snapshot-empty,
 .error-card {
   border: 1px solid var(--border-strong);
@@ -354,6 +369,16 @@ input {
   background: linear-gradient(180deg, rgba(18, 24, 26, 0.94), rgba(12, 16, 17, 0.9));
 }
 
+.memory-hub-panel {
+  padding: 32px;
+  background: linear-gradient(180deg, rgba(18, 24, 26, 0.95), rgba(10, 15, 17, 0.92));
+}
+
+.agent-panel {
+  padding: 32px;
+  background: linear-gradient(180deg, rgba(19, 23, 29, 0.95), rgba(11, 16, 21, 0.92));
+}
+
 .chat-panel {
   padding: 32px;
   background: linear-gradient(180deg, rgba(14, 21, 22, 0.96), rgba(10, 14, 16, 0.94));
@@ -365,6 +390,10 @@ input {
   grid-template-columns: 1.1fr minmax(220px, 320px) 1fr;
   gap: 14px;
   align-items: stretch;
+}
+
+.analysis-controls-tight {
+  grid-template-columns: 1.2fr minmax(220px, 280px) 1fr;
 }
 
 .preset-row {
@@ -420,10 +449,36 @@ input {
   margin-top: 18px;
 }
 
+.memory-hub-grid {
+  margin-top: 24px;
+  display: grid;
+  grid-template-columns: minmax(0, 0.94fr) minmax(320px, 1.06fr);
+  gap: 18px;
+}
+
 .memory-grid {
   margin-top: 24px;
   display: grid;
   grid-template-columns: minmax(0, 0.86fr) minmax(0, 1.14fr);
+  gap: 18px;
+}
+
+.agent-meta {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  text-align: right;
+}
+
+.agent-meta strong {
+  color: var(--text);
+  font-size: 1.5rem;
+}
+
+.agent-grid {
+  margin-top: 24px;
+  display: grid;
+  grid-template-columns: minmax(0, 0.94fr) minmax(320px, 1.06fr);
   gap: 18px;
 }
 
@@ -448,7 +503,10 @@ input {
 .summary-card,
 .snapshot-panel,
 .project-panel,
-.chat-conversation-panel {
+.chat-conversation-panel,
+.project-rail,
+.agent-progress-card,
+.agent-activity-card {
   padding: 24px;
 }
 
@@ -464,6 +522,46 @@ input {
 .summary-text {
   margin: 18px 0 0;
   font-size: 1.05rem;
+}
+
+.project-mini-list {
+  margin-top: 18px;
+  display: grid;
+  gap: 14px;
+}
+
+.project-mini-card {
+  padding: 18px;
+}
+
+.project-mini-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.project-mini-top span,
+.project-mini-status,
+.agent-progress-meta,
+.agent-current-line span,
+.agent-activity p,
+.chat-stage-hint,
+.chat-bubble-head span {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.project-mini-card p {
+  margin: 14px 0 0;
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.project-mini-status {
+  margin-top: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 .snapshot-list {
@@ -524,6 +622,103 @@ input {
   padding: 20px;
 }
 
+.chat-stage-hint {
+  margin-top: 18px;
+  padding: 16px 18px;
+  line-height: 1.65;
+}
+
+.agent-current-line {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.progress-track {
+  margin-top: 20px;
+  height: 14px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), #eef5ca, var(--accent-strong));
+  box-shadow: 0 0 28px rgba(124, 225, 194, 0.18);
+  transition: width 260ms ease;
+}
+
+.progress-fill-running {
+  background-size: 180% 100%;
+  animation: progress-shift 1.5s linear infinite;
+}
+
+.agent-progress-meta {
+  margin-top: 14px;
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.agent-inline-error {
+  margin-top: 18px;
+}
+
+.agent-activity-list {
+  margin-top: 18px;
+  display: grid;
+  gap: 12px;
+}
+
+.agent-activity {
+  display: grid;
+  grid-template-columns: 16px 1fr;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 14px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.agent-activity-dot {
+  width: 12px;
+  height: 12px;
+  margin-top: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.agent-activity strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.agent-activity p {
+  margin: 0;
+  line-height: 1.55;
+}
+
+.agent-activity-completed .agent-activity-dot {
+  background: linear-gradient(135deg, var(--accent), #eaf0c4);
+  box-shadow: 0 0 14px rgba(124, 225, 194, 0.2);
+}
+
+.agent-activity-active {
+  border-color: rgba(224, 188, 106, 0.26);
+  background: linear-gradient(145deg, rgba(224, 188, 106, 0.14), rgba(255, 255, 255, 0.03));
+}
+
+.agent-activity-active .agent-activity-dot {
+  background: linear-gradient(135deg, var(--accent-strong), #f3e5b8);
+  box-shadow: 0 0 18px rgba(224, 188, 106, 0.28);
+}
+
 .chat-history {
   margin-top: 18px;
   display: grid;
@@ -565,11 +760,6 @@ input {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 10px;
-}
-
-.chat-bubble-head span {
-  color: var(--muted);
-  font-size: 0.84rem;
 }
 
 .chat-bubble p {
@@ -630,8 +820,19 @@ input {
   margin-top: 6px;
 }
 
+@keyframes progress-shift {
+  from {
+    background-position: 0% 0;
+  }
+  to {
+    background-position: 100% 0;
+  }
+}
+
 @media (max-width: 1080px) {
   .shell,
+  .memory-hub-grid,
+  .agent-grid,
   .memory-grid,
   .analysis-controls,
   .chat-grid {
@@ -652,12 +853,17 @@ input {
   .hero-panel,
   .connection-panel,
   .memory-panel,
+  .memory-hub-panel,
+  .agent-panel,
   .chat-panel {
     padding: 22px;
   }
 
   .panel-header,
   .memory-header,
+  .agent-meta,
+  .agent-current-line,
+  .agent-progress-meta,
   .chat-thread-meta,
   .summary-card-head,
   .snapshot-panel-head,

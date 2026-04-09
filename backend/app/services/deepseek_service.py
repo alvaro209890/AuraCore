@@ -48,6 +48,7 @@ class DeepSeekService:
         transcript: str,
         current_life_summary: str,
         prior_analyses_context: str,
+        chat_context: str,
         window_hours: int,
         window_start: datetime,
         window_end: datetime,
@@ -77,6 +78,7 @@ class DeepSeekService:
                         transcript=transcript,
                         current_life_summary=current_life_summary,
                         prior_analyses_context=prior_analyses_context,
+                        chat_context=chat_context,
                         window_hours=window_hours,
                         window_start=window_start,
                         window_end=window_end,
@@ -112,6 +114,7 @@ class DeepSeekService:
         current_life_summary: str,
         prior_analyses_context: str,
         project_context: str,
+        chat_context: str,
     ) -> DeepSeekMemoryRefinementResult:
         headers = {
             "Authorization": f"Bearer {self.settings.deepseek_api_key}",
@@ -137,6 +140,7 @@ class DeepSeekService:
                         current_life_summary=current_life_summary,
                         prior_analyses_context=prior_analyses_context,
                         project_context=project_context,
+                        chat_context=chat_context,
                     ),
                 },
             ],
@@ -165,6 +169,7 @@ class DeepSeekService:
         transcript: str,
         current_life_summary: str,
         prior_analyses_context: str,
+        chat_context: str,
         window_hours: int,
         window_start: datetime,
         window_end: datetime,
@@ -172,6 +177,7 @@ class DeepSeekService:
     ) -> str:
         previous_summary = current_life_summary.strip() or "(memoria consolidada ainda vazia)"
         previous_analyses = prior_analyses_context.strip() or "(nenhuma analise anterior relevante)"
+        recent_chat_context = chat_context.strip() or "(nenhuma conversa relevante com a IA salva ainda)"
         return f"""
 Analise a janela abaixo de conversas diretas e atualize a memoria do usuario.
 
@@ -185,6 +191,9 @@ Resumo consolidado atual:
 
 Analises anteriores relevantes:
 {previous_analyses}
+
+Conversas recentes com a IA pessoal:
+{recent_chat_context}
 
 Transcricao da conversa:
 {transcript}
@@ -202,6 +211,7 @@ Retorne um JSON com exatamente estes campos:
 Regras:
 - updated_life_summary deve ser cumulativo e integrar o resumo atual com esta janela.
 - Use as analises anteriores como contexto, mas corrija ou refine o que parecer fraco, incompleto ou contraditorio.
+- Considere tambem o que o dono conversou com a IA no chat para entender melhor prioridades, projetos e como ele pensa.
 - Procure entender como o dono do numero age, fala, decide, trabalha, se relaciona e organiza a rotina.
 - Priorize sinais comportamentais do dono do numero, nao apenas um inventario de contatos.
 - Preencha active_projects apenas com projetos, trabalhos, produtos, operacoes ou frentes reais que parecam recorrentes ou importantes para o dono.
@@ -219,6 +229,7 @@ Regras:
         current_life_summary: str,
         prior_analyses_context: str,
         project_context: str,
+        chat_context: str,
     ) -> str:
         return f"""
 Refine a memoria consolidada abaixo usando apenas o que ja foi salvo no Supabase.
@@ -232,6 +243,9 @@ Snapshots e analises anteriores:
 Projetos e frentes salvos:
 {project_context.strip() or "(nenhum projeto salvo ainda)"}
 
+Conversas recentes com a IA pessoal:
+{chat_context.strip() or "(nenhuma conversa relevante com a IA salva ainda)"}
+
 Retorne um JSON com exatamente estes campos:
 - updated_life_summary: string
 - active_projects: {{ name: string, summary: string, status: string, next_steps: string[], evidence: string[] }}[]
@@ -239,6 +253,7 @@ Retorne um JSON com exatamente estes campos:
 Regras:
 - O objetivo e melhorar a memoria do dono, nao repetir tudo do mesmo jeito.
 - Corrija contradicoes, reduza ruido e deixe o resumo mais preciso sobre como o dono age, decide, trabalha e se organiza.
+- Considere o que o dono revelou ou pediu no chat com a IA para reforcar prioridades reais e estado de projetos.
 - Se algo estiver fraco ou pouco sustentado, enfraqueça ou remova em vez de inventar complemento.
 - Em active_projects, mantenha so projetos realmente importantes e atuais.
 - Nao inclua markdown fences.
