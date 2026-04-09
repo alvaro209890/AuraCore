@@ -15,7 +15,7 @@ services:
       - key: DEEPSEEK_API_KEY
         sync: false
       - key: DEEPSEEK_MODEL
-        value: deepseek-chat
+        value: deepseek-reasoner
       - key: DEEPSEEK_API_BASE_URL
         value: https://api.deepseek.com
       - key: DEEPSEEK_TIMEOUT_SECONDS
@@ -29,27 +29,27 @@ services:
       - key: GROQ_TIMEOUT_SECONDS
         value: "45"
       - key: MEMORY_ANALYSIS_MAX_MESSAGES
-        value: "360"
+        value: "250"
       - key: MEMORY_ANALYSIS_MAX_CHARS
-        value: "85000"
+        value: "60000"
       - key: MEMORY_ANALYSIS_MAX_WINDOW_HOURS
-        value: "336"
+        value: "168"
       - key: MEMORY_ANALYSIS_CONTEXT_SNAPSHOTS
-        value: "6"
+        value: "5"
       - key: MEMORY_ANALYSIS_SNAPSHOT_CONTEXT_CHARS
         value: "18000"
       - key: CHAT_MAX_HISTORY_MESSAGES
-        value: "20"
+        value: "18"
       - key: CHAT_CONTEXT_SNAPSHOTS
-        value: "6"
+        value: "5"
       - key: CHAT_CONTEXT_PROJECTS
-        value: "10"
+        value: "8"
       - key: CHAT_CONTEXT_CHARS
-        value: "22000"
+        value: "18000"
       - key: CHAT_MAX_MESSAGE_CHARS
         value: "2000"
       - key: MESSAGE_RETENTION_MAX_ROWS
-        value: "5000"
+        value: "3000"
       - key: REQUEST_TIMEOUT_SECONDS
         value: "20"
       - key: FRONTEND_ORIGINS
@@ -64,5 +64,11 @@ services:
         value: "60"
       - key: RECONNECT_DELAY_MS
         value: "5000"
+      - key: RENDER_KEEPALIVE_ENABLED
+        value: "true"
+      - key: RENDER_KEEPALIVE_URL
+        value: https://auracore-backend-82bf2.onrender.com/health
+      - key: RENDER_KEEPALIVE_INTERVAL_SECONDS
+        value: "600"
       - key: NODE_ENV
         value: production

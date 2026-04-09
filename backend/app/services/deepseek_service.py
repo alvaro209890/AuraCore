@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 import httpx
 from pydantic import BaseModel, Field
@@ -40,6 +40,9 @@ class DeepSeekMemoryRefinementResult(BaseModel):
     active_projects: list[DeepSeekProjectMemory] = Field(default_factory=list)
 
 
+ParsedResultT = TypeVar("ParsedResultT")
+
+
 class DeepSeekService:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -57,62 +60,34 @@ class DeepSeekService:
         window_end: datetime,
         source_message_count: int,
     ) -> DeepSeekMemoryResult:
-        headers = {
-            "Authorization": f"Bearer {self.settings.deepseek_api_key}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": self.settings.deepseek_model,
-            "temperature": 0.2,
-            "response_format": {"type": "json_object"},
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "Voce e o analista principal de memoria do AuraCore. Sua funcao e transformar conversas "
-                        "privadas em portugues do Brasil em uma memoria altamente util sobre o dono do numero. "
-                        "Responda sempre em portugues do Brasil e retorne apenas JSON valido. Nunca invente fatos. "
-                        "Priorize sinais sobre identidade, forma de agir, criterio de decisao, ritmo, projetos, "
-                        "responsabilidades e tensoes reais do dono. Quando algo for incerto, trate como sinal ou "
-                        "hipotese nas listas, sem afirmar como certeza no resumo consolidado."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": self._build_prompt(
-                        transcript=transcript,
-                        current_life_summary=current_life_summary,
-                        prior_analyses_context=prior_analyses_context,
-                        project_context=project_context,
-                        chat_context=chat_context,
-                        window_hours=window_hours,
-                        window_start=window_start,
-                        window_end=window_end,
-                        source_message_count=source_message_count,
-                    ),
-                },
-            ],
-        }
+        payload = self._build_completion_payload(
+            system_prompt=(
+                "Voce e o analista principal de memoria do AuraCore. Sua funcao e transformar conversas "
+                "privadas em portugues do Brasil em uma memoria altamente util sobre o dono do numero. "
+                "Retorne apenas JSON valido e estritamente aderente ao schema pedido. Nunca invente fatos. "
+                "Priorize sinais sobre identidade, forma de agir, criterio de decisao, ritmo, projetos, "
+                "responsabilidades e tensoes reais do dono. Quando algo for incerto, trate como sinal ou "
+                "hipotese nas listas, sem afirmar como certeza no resumo consolidado."
+            ),
+            user_prompt=self._build_prompt(
+                transcript=transcript,
+                current_life_summary=current_life_summary,
+                prior_analyses_context=prior_analyses_context,
+                project_context=project_context,
+                chat_context=chat_context,
+                window_hours=window_hours,
+                window_start=window_start,
+                window_end=window_end,
+                source_message_count=source_message_count,
+            ),
+            max_tokens=self._analysis_max_output_tokens(),
+        )
 
-        async with httpx.AsyncClient(
-            base_url=self.settings.normalized_deepseek_api_base_url,
-            timeout=self.settings.deepseek_timeout_seconds,
-        ) as client:
-            response = await client.post("/chat/completions", headers=headers, json=payload)
-
-        if response.status_code >= 400:
-            detail = response.text.strip() or "Unexpected DeepSeek error."
-            raise DeepSeekError(f"DeepSeek request failed ({response.status_code}): {detail}")
-
-        data = response.json()
-        content = self._extract_content(data)
-        parsed = self._parse_result(content)
-        if not parsed.updated_life_summary.strip():
-            raise DeepSeekError("DeepSeek returned an empty consolidated memory.")
-        if not parsed.window_summary.strip():
-            raise DeepSeekError("DeepSeek returned an empty window summary.")
-
-        return parsed
+        return await self._request_parsed_completion(
+            payload=payload,
+            parser=self._parse_result,
+            validator=self._validate_analysis_result,
+        )
 
     async def refine_saved_memory(
         self,
@@ -122,52 +97,27 @@ class DeepSeekService:
         project_context: str,
         chat_context: str,
     ) -> DeepSeekMemoryRefinementResult:
-        headers = {
-            "Authorization": f"Bearer {self.settings.deepseek_api_key}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": self.settings.deepseek_model,
-            "temperature": 0.2,
-            "response_format": {"type": "json_object"},
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "Voce revisa memorias privadas em portugues para melhorar a qualidade do perfil salvo do "
-                        "dono do numero. Responda sempre em portugues do Brasil e retorne apenas JSON valido. "
-                        "Nunca invente fatos. Remova exageros, refine hipoteses fracas, fortaleça padroes "
-                        "recorrentes e deixe a memoria mais util para um assistente pessoal futuro."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": self._build_refinement_prompt(
-                        current_life_summary=current_life_summary,
-                        prior_analyses_context=prior_analyses_context,
-                        project_context=project_context,
-                        chat_context=chat_context,
-                    ),
-                },
-            ],
-        }
+        payload = self._build_completion_payload(
+            system_prompt=(
+                "Voce revisa memorias privadas em portugues para melhorar a qualidade do perfil salvo do "
+                "dono do numero. Retorne apenas JSON valido e estritamente aderente ao schema pedido. "
+                "Nunca invente fatos. Remova exageros, refine hipoteses fracas, fortaleça padroes "
+                "recorrentes e deixe a memoria mais util para um assistente pessoal futuro."
+            ),
+            user_prompt=self._build_refinement_prompt(
+                current_life_summary=current_life_summary,
+                prior_analyses_context=prior_analyses_context,
+                project_context=project_context,
+                chat_context=chat_context,
+            ),
+            max_tokens=self._refinement_max_output_tokens(),
+        )
 
-        async with httpx.AsyncClient(
-            base_url=self.settings.normalized_deepseek_api_base_url,
-            timeout=self.settings.deepseek_timeout_seconds,
-        ) as client:
-            response = await client.post("/chat/completions", headers=headers, json=payload)
-
-        if response.status_code >= 400:
-            detail = response.text.strip() or "Unexpected DeepSeek error."
-            raise DeepSeekError(f"DeepSeek request failed ({response.status_code}): {detail}")
-
-        data = response.json()
-        content = self._extract_content(data)
-        parsed = self._parse_refinement_result(content)
-        if not parsed.updated_life_summary.strip():
-            raise DeepSeekError("DeepSeek retornou uma memoria refinada vazia.")
-        return parsed
+        return await self._request_parsed_completion(
+            payload=payload,
+            parser=self._parse_refinement_result,
+            validator=self._validate_refinement_result,
+        )
 
     def _build_prompt(
         self,
@@ -218,6 +168,28 @@ Retorne um JSON com exatamente estes campos:
 - open_questions: string[]
 - active_projects: {{ name: string, summary: string, status: string, what_is_being_built: string, built_for: string, next_steps: string[], evidence: string[] }}[]
 
+Formato esperado do JSON:
+{{
+  "updated_life_summary": "string",
+  "window_summary": "string",
+  "key_learnings": ["string"],
+  "people_and_relationships": ["string"],
+  "routine_signals": ["string"],
+  "preferences": ["string"],
+  "open_questions": ["string"],
+  "active_projects": [
+    {{
+      "name": "string",
+      "summary": "string",
+      "status": "string",
+      "what_is_being_built": "string",
+      "built_for": "string",
+      "next_steps": ["string"],
+      "evidence": ["string"]
+    }}
+  ]
+}}
+
 Regras:
 - updated_life_summary deve ser cumulativo e integrar o resumo atual com esta janela.
 - Em updated_life_summary, descreva principalmente: quem o dono parece ser, como trabalha e decide, quais frentes estao mais vivas agora e quais tensoes ou prioridades estao guiando o momento.
@@ -263,6 +235,22 @@ Retorne um JSON com exatamente estes campos:
 - updated_life_summary: string
 - active_projects: {{ name: string, summary: string, status: string, what_is_being_built: string, built_for: string, next_steps: string[], evidence: string[] }}[]
 
+Formato esperado do JSON:
+{{
+  "updated_life_summary": "string",
+  "active_projects": [
+    {{
+      "name": "string",
+      "summary": "string",
+      "status": "string",
+      "what_is_being_built": "string",
+      "built_for": "string",
+      "next_steps": ["string"],
+      "evidence": ["string"]
+    }}
+  ]
+}}
+
 Regras:
 - O objetivo e melhorar a memoria do dono, nao repetir tudo do mesmo jeito.
 - Corrija contradicoes, reduza ruido e deixe o resumo mais preciso sobre como o dono age, decide, trabalha e se organiza.
@@ -289,6 +277,88 @@ Regras:
             raise DeepSeekError("DeepSeek returned an empty content payload.")
 
         return content.strip()
+
+    def _build_completion_payload(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": self.settings.deepseek_model,
+            "response_format": {"type": "json_object"},
+            "max_tokens": max_tokens,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": system_prompt,
+                },
+                {
+                    "role": "user",
+                    "content": user_prompt,
+                },
+            ],
+        }
+        if not self._is_reasoning_model():
+            payload["temperature"] = 0.2
+        return payload
+
+    async def _request_parsed_completion(
+        self,
+        *,
+        payload: dict[str, Any],
+        parser: Callable[[str], ParsedResultT],
+        validator: Callable[[ParsedResultT], None],
+    ) -> ParsedResultT:
+        last_error: DeepSeekError | None = None
+        for _attempt in range(2):
+            data = await self._post_completion(payload)
+            try:
+                content = self._extract_content(data)
+                parsed = parser(content)
+                validator(parsed)
+                return parsed
+            except DeepSeekError as exc:
+                last_error = exc
+        raise last_error or DeepSeekError("DeepSeek returned an invalid structured response.")
+
+    async def _post_completion(self, payload: dict[str, Any]) -> dict[str, Any]:
+        headers = {
+            "Authorization": f"Bearer {self.settings.deepseek_api_key}",
+            "Content-Type": "application/json",
+        }
+
+        async with httpx.AsyncClient(
+            base_url=self.settings.normalized_deepseek_api_base_url,
+            timeout=self.settings.deepseek_timeout_seconds,
+        ) as client:
+            response = await client.post("/chat/completions", headers=headers, json=payload)
+
+        if response.status_code >= 400:
+            detail = response.text.strip() or "Unexpected DeepSeek error."
+            raise DeepSeekError(f"DeepSeek request failed ({response.status_code}): {detail}")
+
+        return response.json()
+
+    def _validate_analysis_result(self, parsed: DeepSeekMemoryResult) -> None:
+        if not parsed.updated_life_summary.strip():
+            raise DeepSeekError("DeepSeek returned an empty consolidated memory.")
+        if not parsed.window_summary.strip():
+            raise DeepSeekError("DeepSeek returned an empty window summary.")
+
+    def _validate_refinement_result(self, parsed: DeepSeekMemoryRefinementResult) -> None:
+        if not parsed.updated_life_summary.strip():
+            raise DeepSeekError("DeepSeek retornou uma memoria refinada vazia.")
+
+    def _is_reasoning_model(self) -> bool:
+        return "reasoner" in self.settings.deepseek_model.strip().lower()
+
+    def _analysis_max_output_tokens(self) -> int:
+        return 12000 if self._is_reasoning_model() else 5000
+
+    def _refinement_max_output_tokens(self) -> int:
+        return 8000 if self._is_reasoning_model() else 3500
 
     def _parse_result(self, content: str) -> DeepSeekMemoryResult:
         normalized_content = content.strip()
