@@ -6,8 +6,10 @@ from app.dependencies import get_automation_service, get_memory_analysis_service
 from app.schemas import (
     AnalyzeMemoryRequest,
     AnalyzeMemoryResponse,
-    MemoryCurrentResponse,
+    ImportantMessageResponse,
+    ImportantMessagesListResponse,
     MemoryAnalysisPreviewResponse,
+    MemoryCurrentResponse,
     MemorySnapshotResponse,
     MemorySnapshotsListResponse,
     ProjectMemoryResponse,
@@ -16,7 +18,7 @@ from app.schemas import (
 )
 from app.services.automation_service import AutomationService
 from app.services.memory_service import MemoryAnalysisService
-from app.services.supabase_store import MemorySnapshotRecord, PersonaRecord, ProjectMemoryRecord
+from app.services.supabase_store import ImportantMessageRecord, MemorySnapshotRecord, PersonaRecord, ProjectMemoryRecord
 
 router = APIRouter(prefix="/api/memories", tags=["memories"])
 
@@ -36,6 +38,15 @@ async def get_memory_snapshots(
 ) -> MemorySnapshotsListResponse:
     snapshots = memory_service.list_snapshots(limit=limit)
     return MemorySnapshotsListResponse(snapshots=[_to_snapshot_response(snapshot) for snapshot in snapshots])
+
+
+@router.get("/important", response_model=ImportantMessagesListResponse)
+async def get_important_messages(
+    limit: int = Query(default=80, ge=1, le=200),
+    memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
+) -> ImportantMessagesListResponse:
+    messages = memory_service.list_important_messages(limit=limit)
+    return ImportantMessagesListResponse(messages=[_to_important_message_response(message) for message in messages])
 
 
 @router.post("/analyze", response_model=AnalyzeMemoryResponse)
@@ -193,6 +204,27 @@ def _to_project_response(project: ProjectMemoryRecord) -> ProjectMemoryResponse:
         source_snapshot_id=project.source_snapshot_id,
         last_seen_at=project.last_seen_at,
         updated_at=project.updated_at,
+    )
+
+
+def _to_important_message_response(message: ImportantMessageRecord) -> ImportantMessageResponse:
+    direction = "outbound" if message.direction == "outbound" else "inbound"
+    return ImportantMessageResponse(
+        id=message.id,
+        source_message_id=message.source_message_id,
+        contact_name=message.contact_name,
+        contact_phone=message.contact_phone,
+        direction=direction,
+        message_text=message.message_text,
+        message_timestamp=message.message_timestamp,
+        category=message.category,
+        importance_reason=message.importance_reason,
+        confidence=message.confidence,
+        status=message.status,
+        review_notes=message.review_notes,
+        saved_at=message.saved_at,
+        last_reviewed_at=message.last_reviewed_at,
+        discarded_at=message.discarded_at,
     )
 
 

@@ -11,6 +11,9 @@ from app.services.groq_service import GroqChatService
 from app.services.supabase_store import (
     AutomationSettingsRecord,
     ChatMessageRecord,
+    ImportantMessageRecord,
+    ImportantMessageReviewSeed,
+    ImportantMessageSeed,
     MemorySnapshotRecord,
     MessageRetentionStateRecord,
     PersonaRecord,
@@ -31,6 +34,7 @@ class MemoryAnalysisOutcome:
     snapshot: MemorySnapshotRecord
     projects: list[ProjectMemoryRecord]
     source_message_ids: list[str] = field(default_factory=list)
+    source_messages: list[StoredMessageRecord] = field(default_factory=list)
     selected_transcript_chars: int = 0
 
 
@@ -38,6 +42,14 @@ class MemoryAnalysisOutcome:
 class MemoryRefinementOutcome:
     persona: PersonaRecord
     projects: list[ProjectMemoryRecord]
+
+
+@dataclass(slots=True)
+class ImportantMessagesReviewOutcome:
+    reviewed_count: int
+    kept_count: int
+    discarded_count: int
+    reviewed_at: datetime | None = None
 
 
 @dataclass(slots=True)
@@ -184,6 +196,7 @@ class MemoryAnalysisService:
             snapshot=snapshot,
             projects=projects,
             source_message_ids=[message.message_id for message in included_messages],
+            source_messages=included_messages,
             selected_transcript_chars=len(transcript),
         )
 
@@ -281,6 +294,7 @@ class MemoryAnalysisService:
             snapshot=snapshot,
             projects=projects,
             source_message_ids=[message.message_id for message in included_messages],
+            source_messages=included_messages,
             selected_transcript_chars=len(transcript),
         )
 
@@ -484,6 +498,132 @@ class MemoryAnalysisService:
 
     def list_projects(self, *, limit: int = 8) -> list[ProjectMemoryRecord]:
         return self.store.list_project_memories(self.settings.default_user_id, limit=limit)
+
+    def list_important_messages(self, *, limit: int = 80) -> list[ImportantMessageRecord]:
+        return self.store.list_important_messages(self.settings.default_user_id, limit=limit)
+
+    async def extract_and_store_important_messages(
+        self,
+        *,
+        messages: list[StoredMessageRecord],
+        analyzed_at: datetime | None = None,
+    ) -> int:
+        candidates = [message for message in messages if message.message_text.strip()]
+        if not candidates:
+            return 0
+
+        messages_block = self._build_important_messages_block(candidates)
+        if not messages_block:
+            return 0
+
+        current_persona = self.get_current_persona()
+        project_context = self._build_project_context(
+            self.store.list_project_memories(
+                self.settings.default_user_id,
+                limit=max(1, self.settings.chat_context_projects),
+            )
+        )
+        result = await self.deepseek_service.extract_important_messages(
+            messages_block=messages_block,
+            allowed_message_ids=[message.message_id for message in candidates],
+            current_life_summary=current_persona.life_summary,
+            project_context=project_context,
+        )
+
+        message_by_id = {message.message_id: message for message in candidates}
+        seeds: list[ImportantMessageSeed] = []
+        for candidate in result.important_messages:
+            source = message_by_id.get(candidate.message_id)
+            if source is None or candidate.confidence < 55:
+                continue
+            seeds.append(
+                ImportantMessageSeed(
+                    source_message_id=source.message_id,
+                    contact_name=source.contact_name,
+                    contact_phone=source.contact_phone,
+                    direction=source.direction,
+                    message_text=source.message_text,
+                    message_timestamp=source.timestamp,
+                    category=candidate.category,
+                    importance_reason=candidate.importance_reason,
+                    confidence=candidate.confidence,
+                )
+            )
+
+        return self.store.upsert_important_messages(
+            user_id=self.settings.default_user_id,
+            messages=seeds,
+            saved_at=analyzed_at or datetime.now(UTC),
+        )
+
+    async def review_important_messages(
+        self,
+        *,
+        reviewed_before: datetime,
+        limit: int = 120,
+    ) -> ImportantMessagesReviewOutcome:
+        pending_messages = self.store.list_important_messages_pending_review(
+            user_id=self.settings.default_user_id,
+            reviewed_before=reviewed_before,
+            limit=limit,
+        )
+        if not pending_messages:
+            return ImportantMessagesReviewOutcome(
+                reviewed_count=0,
+                kept_count=0,
+                discarded_count=0,
+                reviewed_at=None,
+            )
+
+        current_persona = self.get_current_persona()
+        project_context = self._build_project_context(
+            self.store.list_project_memories(
+                self.settings.default_user_id,
+                limit=max(1, self.settings.chat_context_projects),
+            )
+        )
+        review_result = await self.deepseek_service.review_important_messages(
+            important_messages_block=self._build_saved_important_messages_block(pending_messages),
+            allowed_message_ids=[message.source_message_id for message in pending_messages],
+            current_life_summary=current_persona.life_summary,
+            project_context=project_context,
+        )
+
+        review_by_id = {review.source_message_id: review for review in review_result.reviews}
+        review_seeds: list[ImportantMessageReviewSeed] = []
+        for message in pending_messages:
+            review = review_by_id.get(message.source_message_id)
+            if review is None:
+                review_seeds.append(
+                    ImportantMessageReviewSeed(
+                        source_message_id=message.source_message_id,
+                        decision="keep",
+                        review_notes="Mantida por seguranca porque a revisao nao devolveu decisao explicita para este item.",
+                        confidence=40,
+                    )
+                )
+                continue
+            review_seeds.append(
+                ImportantMessageReviewSeed(
+                    source_message_id=review.source_message_id,
+                    decision=review.decision,
+                    review_notes=review.review_notes,
+                    confidence=review.confidence,
+                )
+            )
+
+        reviewed_at = datetime.now(UTC)
+        kept_count, discarded_count = self.store.apply_important_message_reviews(
+            user_id=self.settings.default_user_id,
+            reviews=review_seeds,
+            reviewed_at=reviewed_at,
+        )
+        return ImportantMessagesReviewOutcome(
+            reviewed_count=len(review_seeds),
+            kept_count=kept_count,
+            discarded_count=discarded_count,
+            reviewed_at=reviewed_at,
+        )
 
     async def refine_saved_memory(self) -> MemoryRefinementOutcome:
         current_persona = self.get_current_persona()
@@ -708,6 +848,39 @@ class MemoryAnalysisService:
         direction = "user->contact" if message.direction == "outbound" else "contact->user"
         text = " ".join(message.message_text.split())
         return f"[{timestamp} UTC] {direction} | {speaker}: {text}"
+
+    def _build_important_messages_block(self, messages: list[StoredMessageRecord]) -> str:
+        lines: list[str] = []
+        for message in messages:
+            text = " ".join(message.message_text.split())
+            if not text:
+                continue
+            timestamp = message.timestamp.astimezone(UTC).strftime("%Y-%m-%d %H:%M")
+            speaker = message.contact_name.strip() or message.contact_phone or "Contato"
+            direction = "outbound" if message.direction == "outbound" else "inbound"
+            lines.append(
+                f"- message_id={message.message_id} | {timestamp} UTC | {direction} | contato={speaker} | texto={text}"
+            )
+        return "\n".join(lines)
+
+    def _build_saved_important_messages_block(self, messages: list[ImportantMessageRecord]) -> str:
+        lines: list[str] = []
+        for message in messages:
+            text = " ".join(message.message_text.split())
+            if not text:
+                continue
+            timestamp = message.message_timestamp.astimezone(UTC).strftime("%Y-%m-%d %H:%M")
+            reviewed_at = (
+                message.last_reviewed_at.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
+                if message.last_reviewed_at
+                else "never"
+            )
+            lines.append(
+                f"- source_message_id={message.source_message_id} | categoria={message.category} | {timestamp} UTC | "
+                f"contato={message.contact_name} | confianca={message.confidence} | motivo={message.importance_reason} | "
+                f"ultima_revisao={reviewed_at} | texto={text}"
+            )
+        return "\n".join(lines)
 
     def _resolve_char_budget(self, detail_mode: Literal["light", "balanced", "deep"]) -> int:
         presets = {

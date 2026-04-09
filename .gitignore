@@ -14,6 +14,7 @@ dist/
 build/
 .firebase/
 frontend/out/
+*.tsbuildinfo
 whatsapp-gateway/dist/
 whatsapp-gateway/.baileys_auth/
 .DS_Store

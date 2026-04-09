@@ -56,6 +56,24 @@ export type ProjectMemory = {
   updated_at: string;
 };
 
+export type ImportantMessage = {
+  id: string;
+  source_message_id: string;
+  contact_name: string;
+  contact_phone: string | null;
+  direction: "inbound" | "outbound";
+  message_text: string;
+  message_timestamp: string;
+  category: string;
+  importance_reason: string;
+  confidence: number;
+  status: string;
+  review_notes: string | null;
+  saved_at: string;
+  last_reviewed_at: string | null;
+  discarded_at: string | null;
+};
+
 export type MemoryAnalysisDetailMode = "light" | "balanced" | "deep";
 
 export type MemoryAnalysisPreview = {
@@ -140,6 +158,10 @@ export type RefineMemoryResponse = {
 
 export type MemorySnapshotsListResponse = {
   snapshots: MemorySnapshot[];
+};
+
+export type ImportantMessagesListResponse = {
+  messages: ImportantMessage[];
 };
 
 export type ChatSession = {
@@ -320,6 +342,11 @@ export async function getCurrentMemory(): Promise<MemoryCurrent> {
 export async function getMemorySnapshots(limit = 20): Promise<MemorySnapshot[]> {
   const response = await request<MemorySnapshotsListResponse>(`/api/memories/snapshots?limit=${limit}`);
   return response.snapshots;
+}
+
+export async function getImportantMessages(limit = 80): Promise<ImportantMessage[]> {
+  const response = await request<ImportantMessagesListResponse>(`/api/memories/important?limit=${limit}`);
+  return response.messages;
 }
 
 export async function analyzeMemory(windowHours: number): Promise<AnalyzeMemoryResponse> {

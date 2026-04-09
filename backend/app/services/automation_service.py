@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from time import perf_counter
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from app.config import Settings
 from app.services.memory_service import (
@@ -61,6 +62,7 @@ class AutomationService:
         self.settings = settings
         self.store = store
         self.memory_service = memory_service
+        self._important_messages_timezone = ZoneInfo("America/Sao_Paulo")
 
     async def start_manual_sync(self, *, trigger: str = "manual") -> WhatsAppSyncRunRecord:
         started_at = datetime.now(UTC)
@@ -352,6 +354,7 @@ class AutomationService:
         return self.store.get_analysis_job(job.id)
 
     async def tick(self) -> AnalysisJobRecord | None:
+        await self._maybe_review_important_messages()
         await self.settle_sync_runs()
         return await self.execute_next_job()
 
@@ -465,6 +468,46 @@ class AutomationService:
             finished_at=datetime.now(UTC),
         )
         self.store.save_analysis_job_messages(job_id=job.id, message_ids=outcome.source_message_ids)
+        if outcome.source_messages:
+            extract_start = perf_counter()
+            try:
+                important_saved_count = await self.memory_service.extract_and_store_important_messages(
+                    messages=outcome.source_messages,
+                    analyzed_at=datetime.now(UTC),
+                )
+                extract_latency_ms = round((perf_counter() - extract_start) * 1000)
+                self.store.create_model_run(
+                    user_id=self.settings.default_user_id,
+                    job_id=job.id,
+                    provider="deepseek",
+                    model_name=self.settings.deepseek_model,
+                    run_type="important_message_extract",
+                    success=True,
+                    latency_ms=extract_latency_ms,
+                    input_tokens=None,
+                    output_tokens=None,
+                    reasoning_tokens=None,
+                    estimated_cost_usd=None,
+                    error_text=None,
+                    created_at=datetime.now(UTC),
+                )
+            except Exception as error:
+                extract_latency_ms = round((perf_counter() - extract_start) * 1000)
+                self.store.create_model_run(
+                    user_id=self.settings.default_user_id,
+                    job_id=job.id,
+                    provider="deepseek",
+                    model_name=self.settings.deepseek_model,
+                    run_type="important_message_extract",
+                    success=False,
+                    latency_ms=extract_latency_ms,
+                    input_tokens=None,
+                    output_tokens=None,
+                    reasoning_tokens=None,
+                    estimated_cost_usd=None,
+                    error_text=str(error),
+                    created_at=datetime.now(UTC),
+                )
         if outcome.source_message_ids:
             processed_at = datetime.now(UTC)
             marked_count = self.store.mark_messages_processed(
@@ -504,4 +547,54 @@ class AutomationService:
             user_id=self.settings.default_user_id,
             since=day_start,
             trigger_source="automation",
+        )
+
+    async def _maybe_review_important_messages(self) -> None:
+        local_now = datetime.now(self._important_messages_timezone)
+        review_cutoff_local = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        review_cutoff = review_cutoff_local.astimezone(UTC)
+
+        start_clock = perf_counter()
+        try:
+            outcome = await self.memory_service.review_important_messages(
+                reviewed_before=review_cutoff,
+                limit=120,
+            )
+        except Exception as error:
+            latency_ms = round((perf_counter() - start_clock) * 1000)
+            self.store.create_model_run(
+                user_id=self.settings.default_user_id,
+                job_id=None,
+                provider="deepseek",
+                model_name=self.settings.deepseek_model,
+                run_type="important_message_review",
+                success=False,
+                latency_ms=latency_ms,
+                input_tokens=None,
+                output_tokens=None,
+                reasoning_tokens=None,
+                estimated_cost_usd=None,
+                error_text=str(error),
+                created_at=datetime.now(UTC),
+            )
+            return
+
+        if outcome.reviewed_count == 0:
+            return
+
+        latency_ms = round((perf_counter() - start_clock) * 1000)
+        self.store.create_model_run(
+            user_id=self.settings.default_user_id,
+            job_id=None,
+            provider="deepseek",
+            model_name=self.settings.deepseek_model,
+            run_type="important_message_review",
+            success=True,
+            latency_ms=latency_ms,
+            input_tokens=None,
+            output_tokens=None,
+            reasoning_tokens=None,
+            estimated_cost_usd=None,
+            error_text=None,
+            created_at=outcome.reviewed_at or datetime.now(UTC),
         )

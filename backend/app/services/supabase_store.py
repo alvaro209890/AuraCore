@@ -216,6 +216,47 @@ class ModelRunRecord:
     created_at: datetime
 
 
+@dataclass(slots=True)
+class ImportantMessageSeed:
+    source_message_id: str
+    contact_name: str
+    contact_phone: str | None
+    direction: str
+    message_text: str
+    message_timestamp: datetime
+    category: str
+    importance_reason: str
+    confidence: int
+
+
+@dataclass(slots=True)
+class ImportantMessageReviewSeed:
+    source_message_id: str
+    decision: str
+    review_notes: str
+    confidence: int
+
+
+@dataclass(slots=True)
+class ImportantMessageRecord:
+    id: str
+    user_id: UUID
+    source_message_id: str
+    contact_name: str
+    contact_phone: str | None
+    direction: str
+    message_text: str
+    message_timestamp: datetime
+    category: str
+    importance_reason: str
+    confidence: int
+    status: str
+    review_notes: str | None
+    saved_at: datetime
+    last_reviewed_at: datetime | None
+    discarded_at: datetime | None
+
+
 class SupabaseStore:
     def __init__(
         self,
@@ -710,6 +751,151 @@ class SupabaseStore:
                 )
             )
         return projects
+
+    def upsert_important_messages(
+        self,
+        *,
+        user_id: UUID,
+        messages: Sequence[ImportantMessageSeed],
+        saved_at: datetime,
+    ) -> int:
+        records: list[dict[str, Any]] = []
+        seen_source_ids: set[str] = set()
+
+        for message in messages:
+            source_message_id = message.source_message_id.strip()
+            message_text = message.message_text.strip()
+            importance_reason = message.importance_reason.strip()
+            category = self._normalize_importance_category(message.category)
+            if not source_message_id or source_message_id in seen_source_ids:
+                continue
+            if not message_text or not importance_reason:
+                continue
+            seen_source_ids.add(source_message_id)
+            records.append(
+                {
+                    "user_id": str(user_id),
+                    "source_message_id": source_message_id,
+                    "contact_name": message.contact_name.strip() or message.contact_phone or "Contato",
+                    "contact_phone": self._optional_text(message.contact_phone),
+                    "direction": message.direction.strip() or "inbound",
+                    "message_text": message_text,
+                    "message_timestamp": message.message_timestamp.isoformat(),
+                    "category": category,
+                    "importance_reason": importance_reason,
+                    "confidence": max(0, min(100, int(message.confidence))),
+                    "status": "active",
+                    "review_notes": None,
+                    "saved_at": saved_at.isoformat(),
+                    "last_reviewed_at": None,
+                    "discarded_at": None,
+                }
+            )
+
+        if not records:
+            return 0
+
+        try:
+            self.client.table("important_messages").upsert(records, on_conflict="user_id,source_message_id").execute()
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "important_messages"):
+                raise
+            return 0
+        return len(records)
+
+    def list_important_messages(
+        self,
+        user_id: UUID,
+        *,
+        limit: int = 80,
+        include_discarded: bool = False,
+    ) -> list[ImportantMessageRecord]:
+        try:
+            query = (
+                self.client.table("important_messages")
+                .select(
+                    "id,user_id,source_message_id,contact_name,contact_phone,direction,message_text,"
+                    "message_timestamp,category,importance_reason,confidence,status,review_notes,"
+                    "saved_at,last_reviewed_at,discarded_at"
+                )
+                .eq("user_id", str(user_id))
+            )
+            if not include_discarded:
+                query = query.eq("status", "active")
+            response = query.order("message_timestamp", desc=True).limit(limit).execute()
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "important_messages"):
+                raise
+            return []
+
+        rows = response.data or []
+        messages: list[ImportantMessageRecord] = []
+        for row in rows:
+            parsed = self._parse_important_message(row, fallback_user_id=user_id)
+            if parsed is not None:
+                messages.append(parsed)
+        return messages
+
+    def list_important_messages_pending_review(
+        self,
+        *,
+        user_id: UUID,
+        reviewed_before: datetime,
+        limit: int = 120,
+    ) -> list[ImportantMessageRecord]:
+        active_messages = self.list_important_messages(
+            user_id,
+            limit=max(limit * 2, 160),
+            include_discarded=False,
+        )
+        pending = [
+            message
+            for message in active_messages
+            if message.last_reviewed_at is None or message.last_reviewed_at < reviewed_before
+        ]
+        pending.sort(
+            key=lambda message: (
+                message.last_reviewed_at or datetime.min.replace(tzinfo=UTC),
+                message.message_timestamp,
+            )
+        )
+        return pending[:limit]
+
+    def apply_important_message_reviews(
+        self,
+        *,
+        user_id: UUID,
+        reviews: Sequence[ImportantMessageReviewSeed],
+        reviewed_at: datetime,
+    ) -> tuple[int, int]:
+        kept_count = 0
+        discarded_count = 0
+        seen_source_ids: set[str] = set()
+
+        for review in reviews:
+            source_message_id = review.source_message_id.strip()
+            if not source_message_id or source_message_id in seen_source_ids:
+                continue
+            seen_source_ids.add(source_message_id)
+            decision = "discard" if review.decision.strip().lower() == "discard" else "keep"
+            payload = {
+                "status": "discarded" if decision == "discard" else "active",
+                "review_notes": review.review_notes.strip(),
+                "confidence": max(0, min(100, int(review.confidence))),
+                "last_reviewed_at": reviewed_at.isoformat(),
+                "discarded_at": reviewed_at.isoformat() if decision == "discard" else None,
+            }
+            try:
+                self.client.table("important_messages").update(payload).eq("user_id", str(user_id)).eq("source_message_id", source_message_id).execute()
+            except Exception as exc:
+                if not self._is_missing_table_error(exc, "important_messages"):
+                    raise
+                return 0, 0
+            if decision == "discard":
+                discarded_count += 1
+            else:
+                kept_count += 1
+        return kept_count, discarded_count
 
     def get_or_create_chat_thread(
         self,
@@ -2443,11 +2629,49 @@ class SupabaseStore:
             created_at=self._parse_datetime(value.get("created_at")) or datetime.now(UTC),
         )
 
+    def _parse_important_message(self, value: Any, *, fallback_user_id: UUID) -> ImportantMessageRecord | None:
+        if not isinstance(value, dict):
+            return None
+        message_text = self._optional_text(value.get("message_text"))
+        source_message_id = self._optional_text(value.get("source_message_id"))
+        if not message_text or not source_message_id:
+            return None
+        return ImportantMessageRecord(
+            id=str(value.get("id") or ""),
+            user_id=self._parse_uuid(value.get("user_id")) or fallback_user_id,
+            source_message_id=source_message_id,
+            contact_name=str(value.get("contact_name") or value.get("contact_phone") or "Contato"),
+            contact_phone=self._optional_text(value.get("contact_phone")),
+            direction=str(value.get("direction") or "inbound"),
+            message_text=message_text,
+            message_timestamp=self._parse_datetime(value.get("message_timestamp")) or datetime.now(UTC),
+            category=self._normalize_importance_category(self._optional_text(value.get("category")) or "other"),
+            importance_reason=str(value.get("importance_reason") or ""),
+            confidence=max(0, min(100, self._parse_int(value.get("confidence")) or 0)),
+            status=self._normalize_importance_status(self._optional_text(value.get("status")) or "active"),
+            review_notes=self._optional_text(value.get("review_notes")),
+            saved_at=self._parse_datetime(value.get("saved_at")) or datetime.now(UTC),
+            last_reviewed_at=self._parse_datetime(value.get("last_reviewed_at")),
+            discarded_at=self._parse_datetime(value.get("discarded_at")),
+        )
+
     def _normalize_detail_mode(self, value: str) -> str:
         normalized = value.strip().lower()
         if normalized in {"light", "balanced", "deep"}:
             return normalized
         return "balanced"
+
+    def _normalize_importance_category(self, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized in {"credential", "access", "project", "money", "client", "deadline", "document", "risk", "other"}:
+            return normalized
+        return "other"
+
+    def _normalize_importance_status(self, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized in {"active", "discarded"}:
+            return normalized
+        return "active"
 
     def _earliest_datetime(self, first: datetime | None, second: datetime | None) -> datetime | None:
         if first is None:

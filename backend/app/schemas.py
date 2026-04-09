@@ -143,6 +143,28 @@ class ProjectMemoryResponse(BaseModel):
     updated_at: datetime
 
 
+class ImportantMessageResponse(BaseModel):
+    id: str
+    source_message_id: str
+    contact_name: str
+    contact_phone: str | None = None
+    direction: Literal["inbound", "outbound"]
+    message_text: str
+    message_timestamp: datetime
+    category: str
+    importance_reason: str
+    confidence: int = Field(ge=0, le=100)
+    status: str
+    review_notes: str | None = None
+    saved_at: datetime
+    last_reviewed_at: datetime | None = None
+    discarded_at: datetime | None = None
+
+
+class ImportantMessagesListResponse(BaseModel):
+    messages: list[ImportantMessageResponse] = Field(default_factory=list)
+
+
 class AnalyzeMemoryResponse(BaseModel):
     current: MemoryCurrentResponse
     snapshot: MemorySnapshotResponse

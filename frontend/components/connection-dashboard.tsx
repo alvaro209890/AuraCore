@@ -5,6 +5,7 @@ import type { LucideIcon } from "lucide-react";
 import {
   Activity,
   AlertCircle,
+  Archive,
   BarChart3,
   Bot,
   Brain,
@@ -40,6 +41,7 @@ import {
   analyzeMemoryWithFilters,
   connectObserver,
   getChatWorkspace,
+  getImportantMessages,
   getMemorySnapshots,
   getObserverStatus,
   previewMemoryAnalysis,
@@ -54,6 +56,7 @@ import {
   type ChatMessage,
   type ChatThread,
   type ChatWorkspace,
+  type ImportantMessage,
   type MemoryAnalysisDetailMode,
   type MemoryAnalysisPreview,
   type MemoryCurrent,
@@ -65,7 +68,7 @@ import {
 type ViewState = "idle" | "loading" | "waiting" | "connected" | "error";
 type AgentMode = "idle" | "analyze" | "refine";
 type AgentIntent = "first_analysis" | "improve_memory" | "refine_saved";
-type TabId = "overview" | "observer" | "memory" | "projects" | "chat" | "activity" | "automation" | "manual";
+type TabId = "overview" | "observer" | "memory" | "important" | "projects" | "chat" | "activity" | "automation" | "manual";
 type LogTone = "info" | "success" | "error";
 
 type AgentStep = {
@@ -143,6 +146,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: "overview", label: "Visão Geral", icon: Brain },
   { id: "observer", label: "Observador", icon: Eye },
   { id: "memory", label: "Memória", icon: Database },
+  { id: "important", label: "Importantes", icon: Archive },
   { id: "projects", label: "Projetos", icon: FolderGit2 },
   { id: "chat", label: "Chat Pessoal", icon: MessageSquare },
   { id: "activity", label: "Atividade", icon: Activity },
@@ -287,6 +291,29 @@ function formatHoursLabel(hours: number): string {
     return `${hours / 24}d`;
   }
   return `${hours}h`;
+}
+
+function formatImportantCategory(category: string): string {
+  switch (category) {
+    case "credential":
+      return "Credencial";
+    case "access":
+      return "Acesso";
+    case "project":
+      return "Projeto";
+    case "money":
+      return "Dinheiro";
+    case "client":
+      return "Cliente";
+    case "deadline":
+      return "Prazo";
+    case "document":
+      return "Documento";
+    case "risk":
+      return "Risco";
+    default:
+      return "Importante";
+  }
 }
 
 function formatTokenCount(value: number): string {
@@ -620,6 +647,7 @@ export function ConnectionDashboard() {
   const [memory, setMemory] = useState<MemoryCurrent | null>(null);
   const [projects, setProjects] = useState<ProjectMemory[]>([]);
   const [snapshots, setSnapshots] = useState<MemorySnapshot[]>([]);
+  const [importantMessages, setImportantMessages] = useState<ImportantMessage[]>([]);
   const [chatThreads, setChatThreads] = useState<ChatThread[]>([]);
   const [activeChatThreadId, setActiveChatThreadId] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -636,6 +664,7 @@ export function ConnectionDashboard() {
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [memoryError, setMemoryError] = useState<string | null>(null);
+  const [importantMessagesError, setImportantMessagesError] = useState<string | null>(null);
   const [chatError, setChatError] = useState<string | null>(null);
   const [messageRefreshError, setMessageRefreshError] = useState<string | null>(null);
   const [automationError, setAutomationError] = useState<string | null>(null);
@@ -759,10 +788,11 @@ export function ConnectionDashboard() {
       setIsHydrating(true);
     }
 
-    const [statusResult, chatResult, snapshotsResult, automationResult] = await Promise.allSettled([
+    const [statusResult, chatResult, snapshotsResult, importantMessagesResult, automationResult] = await Promise.allSettled([
       getObserverStatus(false),
       getChatWorkspace(activeChatThreadId ?? undefined),
       getMemorySnapshots(6),
+      getImportantMessages(80),
       getAutomationStatus(),
     ]);
 
@@ -787,6 +817,13 @@ export function ConnectionDashboard() {
 
     if (snapshotsResult.status === "fulfilled") {
       setSnapshots(snapshotsResult.value);
+    }
+
+    if (importantMessagesResult.status === "fulfilled") {
+      setImportantMessages(importantMessagesResult.value);
+      setImportantMessagesError(null);
+    } else {
+      setImportantMessagesError(getErrorMessage(importantMessagesResult.reason));
     }
 
     if (automationResult.status === "fulfilled") {
@@ -1085,17 +1122,35 @@ export function ConnectionDashboard() {
             ? "Primeira analise concluida. A base inicial do dono foi criada."
             : "Leitura concluida. As mensagens novas foram cruzadas com a memoria existente e o perfil foi melhorado.",
         );
-        const automationSnapshot = await getAutomationStatus();
+        const [automationSnapshot, nextImportantMessagesResult] = await Promise.all([
+          getAutomationStatus(),
+          getImportantMessages(80).then((messages) => ({ ok: true as const, messages })).catch((error: unknown) => ({ ok: false as const, error })),
+        ]);
         setAutomationStatus(automationSnapshot);
         setAutomationDraft((previous) => previous ?? toAutomationDraft(automationSnapshot.settings));
+        if (nextImportantMessagesResult.ok) {
+          setImportantMessages(nextImportantMessagesResult.messages);
+          setImportantMessagesError(null);
+        } else {
+          setImportantMessagesError(getErrorMessage(nextImportantMessagesResult.error));
+        }
       } else {
         const response = await refineMemory();
         setMemory(response.current);
         setProjects(response.projects);
         finishAgentRunSuccess("refine_saved", "Refinamento concluido. A memoria consolidada ficou mais precisa.");
-        const automationSnapshot = await getAutomationStatus();
+        const [automationSnapshot, nextImportantMessagesResult] = await Promise.all([
+          getAutomationStatus(),
+          getImportantMessages(80).then((messages) => ({ ok: true as const, messages })).catch((error: unknown) => ({ ok: false as const, error })),
+        ]);
         setAutomationStatus(automationSnapshot);
         setAutomationDraft((previous) => previous ?? toAutomationDraft(automationSnapshot.settings));
+        if (nextImportantMessagesResult.ok) {
+          setImportantMessages(nextImportantMessagesResult.messages);
+          setImportantMessagesError(null);
+        } else {
+          setImportantMessagesError(getErrorMessage(nextImportantMessagesResult.error));
+        }
       }
 
       await refreshPreview();
@@ -1328,6 +1383,14 @@ export function ConnectionDashboard() {
                 />
               ) : null}
 
+              {activeTab === "important" ? (
+                <ImportantMessagesTab
+                  messages={importantMessages}
+                  error={importantMessagesError}
+                  onRefresh={() => void hydrateDashboard("manual")}
+                />
+              ) : null}
+
               {activeTab === "projects" ? <ProjectsTab projects={projects} /> : null}
 
               {activeTab === "chat" ? (
@@ -1387,6 +1450,7 @@ export function ConnectionDashboard() {
                   preview={preview}
                   projects={projects}
                   snapshots={snapshots}
+                  importantMessages={importantMessages}
                   chatThreads={chatThreads}
                   chatMessages={chatMessages}
                   automationStatus={automationStatus}
@@ -2166,6 +2230,147 @@ function ProjectsTab({ projects }: { projects: ProjectMemory[] }) {
   );
 }
 
+function ImportantMessagesTab({
+  messages,
+  error,
+  onRefresh,
+}: {
+  messages: ImportantMessage[];
+  error: string | null;
+  onRefresh: () => void;
+}) {
+  const credentialCount = messages.filter((message) => message.category === "credential" || message.category === "access").length;
+  const businessCount = messages.filter((message) => ["project", "money", "client", "deadline"].includes(message.category)).length;
+  const strongSignalsCount = messages.filter((message) => message.confidence >= 80).length;
+  const lastReviewedAt = messages
+    .map((message) => message.last_reviewed_at)
+    .filter((value): value is string => Boolean(value))
+    .sort((left, right) => new Date(right).getTime() - new Date(left).getTime())[0] ?? null;
+
+  return (
+    <div className="page-stack">
+      <Card>
+        <SectionTitle
+          title="Cofre de Mensagens Importantes"
+          icon={Archive}
+          action={
+            <button className="ac-secondary-button" onClick={onRefresh} type="button">
+              <RefreshCw size={14} />
+              Atualizar
+            </button>
+          }
+        />
+        <p className="support-copy">
+          Este cofre recebe automaticamente mensagens que a IA considera duráveis: acessos, dinheiro, projetos,
+          riscos e fatos operacionais que merecem sobreviver além do lote curto de processamento.
+        </p>
+
+        <div className="important-top-grid">
+          <ModernStatCard
+            label="Ativas Agora"
+            value={String(messages.length)}
+            meta="Itens ainda úteis para memória futura"
+            icon={Archive}
+            tone="emerald"
+          />
+          <ModernStatCard
+            label="Acessos & Credenciais"
+            value={String(credentialCount)}
+            meta="Logins, senhas e dados de acesso"
+            icon={CheckCircle2}
+            tone="amber"
+          />
+          <ModernStatCard
+            label="Projetos & Dinheiro"
+            value={String(businessCount)}
+            meta="Operação, clientes, prazos e valores"
+            icon={FolderGit2}
+            tone="indigo"
+          />
+          <ModernStatCard
+            label="Última Revisão"
+            value={lastReviewedAt ? formatShortDateTime(lastReviewedAt) : "Pendente"}
+            meta={lastReviewedAt ? formatRelativeTime(lastReviewedAt) : "Ainda sem revisão diária"}
+            icon={Clock}
+            tone="zinc"
+          />
+        </div>
+      </Card>
+
+      <Card>
+        <SectionTitle title="Como Isso Funciona" icon={Sparkles} />
+        <div className="manual-grid">
+          <ManualInfoCard title="Entrada Automática" text="Depois de cada análise de memória, o DeepSeek escolhe só o que merece virar memória durável." />
+          <ManualInfoCard title="Critério" text="A prioridade é guardar acessos, dinheiro, projetos, clientes, prazos, riscos e fatos operacionais reutilizáveis." />
+          <ManualInfoCard title="Revisão Diária" text="O backend revisa esse cofre a partir da virada do dia em São Paulo e tira do uso ativo o que envelheceu ou perdeu valor." />
+        </div>
+      </Card>
+
+      {messages.length === 0 ? (
+        <Card>
+          <div className="empty-hint">
+            <Archive size={18} />
+            <p>Nenhuma mensagem importante ativa ainda. Assim que uma análise concluir, o cofre começa a ser preenchido automaticamente.</p>
+          </div>
+        </Card>
+      ) : (
+        <div className="important-list">
+          {messages.map((message) => (
+            <Card key={message.id} className="important-card">
+              <div className="important-card-head">
+                <div>
+                  <div className="important-badges">
+                    <span className={`important-category-pill important-category-${message.category}`}>{formatImportantCategory(message.category)}</span>
+                    <span className="micro-badge">{message.direction === "outbound" ? "Saída" : "Entrada"}</span>
+                    <span className="micro-badge">{message.confidence}/100</span>
+                  </div>
+                  <h3>{message.contact_name || message.contact_phone || "Contato"}</h3>
+                </div>
+                <div className="important-card-meta">
+                  <span>Capturada {formatRelativeTime(message.saved_at)}</span>
+                  <strong>{formatShortDateTime(message.message_timestamp)}</strong>
+                </div>
+              </div>
+
+              <p className="important-message-text">{message.message_text}</p>
+
+              <div className="important-review-stack">
+                <MiniPanel
+                  title="Por Que Foi Salva"
+                  tone="emerald"
+                  icon={Sparkles}
+                  content={message.importance_reason}
+                />
+                <MiniPanel
+                  title="Estado da Revisão"
+                  tone="amber"
+                  icon={Clock}
+                  content={
+                    message.last_reviewed_at
+                      ? `Revisada em ${formatShortDateTime(message.last_reviewed_at)}. ${message.review_notes ?? "Mantida no cofre ativo."}`
+                      : "Ainda aguardando a primeira revisão diária automática."
+                  }
+                />
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {error ? <InlineError title="Falha nas mensagens importantes" message={error} /> : null}
+      {messages.length > 0 ? (
+        <Card>
+          <SectionTitle title="Sinal Forte" icon={BarChart3} />
+          <p className="support-copy">
+            Há {strongSignalsCount} item(ns) com confiança acima de 80. Eles costumam ser os melhores candidatos para
+            reaproveitamento futuro em rotinas, projetos, acessos e dinheiro.
+          </p>
+        </Card>
+      ) : null}
+    </div>
+  );
+}
+
 function ChatTab({
   chatThreads,
   activeChatThread,
@@ -2863,6 +3068,7 @@ function ManualTab({
   preview,
   projects,
   snapshots,
+  importantMessages,
   chatThreads,
   chatMessages,
   automationStatus,
@@ -2872,6 +3078,7 @@ function ManualTab({
   preview: MemoryAnalysisPreview | null;
   projects: ProjectMemory[];
   snapshots: MemorySnapshot[];
+  importantMessages: ImportantMessage[];
   chatThreads: ChatThread[];
   chatMessages: ChatMessage[];
   automationStatus: AutomationStatus | null;
@@ -2901,6 +3108,7 @@ function ManualTab({
           <ManualInfoCard title="Visão Geral" text="Resumo rápido do estado da memória, sinais úteis e atalhos para entrar no fluxo principal." />
           <ManualInfoCard title="Observador" text="Conecta o WhatsApp, mostra QR, estado da instância e saúde do gateway." />
           <ManualInfoCard title="Memória" text="Controla puxar mensagens, primeira análise, melhoria incremental e refinamento da memória salva." />
+          <ManualInfoCard title="Importantes" text="Mostra o cofre de mensagens duráveis, alimentado automaticamente pela IA após cada análise." />
           <ManualInfoCard title="Projetos" text="Mostra o que a IA consolidou como frentes reais, próximos passos, evidências e público." />
           <ManualInfoCard title="Chat Pessoal" text="Agora trabalha com múltiplas threads: você separa estratégia, rotina e projetos sem perder a memória central." />
           <ManualInfoCard title="Atividade / Automação" text="Mostra syncs, decisões, jobs, runs de modelo, thresholds e orçamento operacional." />
@@ -2913,9 +3121,10 @@ function ManualTab({
           <ManualStep title="1. Conectar o observador" text="Leia o QR na aba Observador. Depois disso o gateway começa a ler só conversas diretas úteis." />
           <ManualStep title="2. Puxar mensagens" text="O botão de releitura força uma nova sincronização do WhatsApp. Grupos, broadcast e newsletter não devem subir para o Supabase." />
           <ManualStep title="3. Fazer a primeira análise" text="Quando ainda não existe memória base, a IA monta o primeiro retrato consolidado do dono." />
-          <ManualStep title="4. Melhorar memória" text="Depois da base inicial, novas mensagens são cruzadas com snapshots, projetos e chat para atualizar o perfil." />
-          <ManualStep title="5. Conversar por threads" text="Use threads separadas no chat para manter assuntos distintos, sem perder a memória central do dono." />
-          <ManualStep title="6. Acompanhar automação" text="A aba de atividade mostra o que foi sincronizado, o que a IA decidiu e quanto custou." />
+          <ManualStep title="4. Salvar mensagens duráveis" text="Ao fim de cada análise, a IA separa acessos, projetos, dinheiro, riscos e fatos operacionais que merecem virar memória longa." />
+          <ManualStep title="5. Melhorar memória" text="Depois da base inicial, novas mensagens são cruzadas com snapshots, projetos e chat para atualizar o perfil." />
+          <ManualStep title="6. Conversar por threads" text="Use threads separadas no chat para manter assuntos distintos, sem perder a memória central do dono." />
+          <ManualStep title="7. Acompanhar automação" text="A aba de atividade mostra o que foi sincronizado, o que a IA decidiu e quanto custou." />
         </div>
       </Card>
 
@@ -2935,6 +3144,7 @@ function ManualTab({
         <SectionTitle title="O Que Vai Para O Supabase" icon={Server} />
         <div className="manual-list">
           <p>`mensagens`: apenas conversas diretas aproveitáveis.</p>
+          <p>`important_messages`: o cofre de mensagens importantes, revisado diariamente pelo backend.</p>
           <p>`persona`, `memory_snapshots`, `project_memories`: memória consolidada e evolução do perfil.</p>
           <p>`chat_threads` e `chat_messages`: múltiplas threads do chat pessoal com a IA.</p>
           <p>`wa_sync_runs`, `automation_decisions`, `analysis_jobs`, `model_runs`: auditoria operacional da automação.</p>
@@ -2967,6 +3177,14 @@ function ManualTab({
               preview
                 ? `Leitura atual caberia em ${preview.selected_message_count} mensagens, com score ${preview.recommendation_score}/100 e should_analyze=${preview.should_analyze ? "true" : "false"}.`
                 : "Preview ainda não calculado."
+            }
+          />
+          <ManualInfoCard
+            title="Mensagens Importantes"
+            text={
+              importantMessages.length > 0
+                ? `${importantMessages.length} item(ns) ativos no cofre, com revisão diária automática após a virada do dia.`
+                : "Nenhuma mensagem importante ativa ainda."
             }
           />
           <ManualInfoCard
