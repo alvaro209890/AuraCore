@@ -42,6 +42,7 @@ import {
   getMemorySnapshots,
   getObserverStatus,
   previewMemoryAnalysis,
+  refreshObserverMessages,
   refineMemory,
   resetObserver,
   sendChatMessage,
@@ -453,10 +454,12 @@ export function ConnectionDashboard() {
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [memoryError, setMemoryError] = useState<string | null>(null);
   const [chatError, setChatError] = useState<string | null>(null);
+  const [messageRefreshError, setMessageRefreshError] = useState<string | null>(null);
   const [isHydrating, setIsHydrating] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isRefreshingMessages, setIsRefreshingMessages] = useState(false);
   const [isSendingChat, setIsSendingChat] = useState(false);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [pollingEnabled, setPollingEnabled] = useState(false);
@@ -476,6 +479,7 @@ export function ConnectionDashboard() {
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const agentTimerRef = useRef<number | null>(null);
   const agentStepIndexRef = useRef(0);
+  const messageRefreshTimerRef = useRef<number | null>(null);
 
   const latestSnapshot = snapshots[0] ?? null;
 
@@ -516,6 +520,9 @@ export function ConnectionDashboard() {
     return () => {
       if (agentTimerRef.current) {
         window.clearInterval(agentTimerRef.current);
+      }
+      if (messageRefreshTimerRef.current) {
+        window.clearTimeout(messageRefreshTimerRef.current);
       }
     };
   }, []);
@@ -719,11 +726,39 @@ export function ConnectionDashboard() {
     }
   }
 
+  async function requestMessageRefresh(): Promise<void> {
+    setIsRefreshingMessages(true);
+    setMessageRefreshError(null);
+
+    try {
+      const response = await refreshObserverMessages();
+      setStatus((previous) => mergeStatus(previous, response.status));
+      setPollingEnabled(!response.status.connected);
+      setViewState(response.status.connected ? "connected" : "waiting");
+      pushAgentLog("info", response.message);
+
+      if (messageRefreshTimerRef.current) {
+        window.clearTimeout(messageRefreshTimerRef.current);
+      }
+      messageRefreshTimerRef.current = window.setTimeout(() => {
+        void hydrateDashboard("manual");
+        messageRefreshTimerRef.current = null;
+      }, 4500);
+    } catch (error) {
+      const message = getErrorMessage(error);
+      setMessageRefreshError(message);
+      pushAgentLog("error", `A releitura do WhatsApp falhou: ${message}`);
+    } finally {
+      setIsRefreshingMessages(false);
+    }
+  }
+
   async function pollStatus(): Promise<void> {
     try {
-      const shouldRefreshQr =
+      const shouldRefreshQr = Boolean(status?.qr_code) && (
         !lastQrRefreshAtRef.current ||
-        Date.now() - lastQrRefreshAtRef.current >= QR_REFRESH_INTERVAL_MS;
+        Date.now() - lastQrRefreshAtRef.current >= QR_REFRESH_INTERVAL_MS
+      );
 
       const nextStatus = shouldRefreshQr ? await connectObserver() : await getObserverStatus(false);
 
@@ -854,7 +889,7 @@ export function ConnectionDashboard() {
         <div className="ac-sidebar-footer">
           <div className="ac-quick-status">
             <span>Observador</span>
-            <div className={`ac-status-badge status-${viewState === "error" ? "error" : "connected"}`}>
+            <div className={`ac-status-badge status-${viewState}`}>
               <span className="status-dot" />
               {statusLabel}
             </div>
@@ -945,11 +980,14 @@ export function ConnectionDashboard() {
                   previewError={previewError}
                   previewLoading={isPreviewLoading}
                   memoryError={memoryError}
+                  messageRefreshError={messageRefreshError}
                   agentState={agentState}
                   filters={filters}
+                  isRefreshingMessages={isRefreshingMessages}
                   onTargetChange={(targetMessageCount) => setFilters((previous) => ({ ...previous, targetMessageCount }))}
                   onLookbackChange={(maxLookbackHours) => setFilters((previous) => ({ ...previous, maxLookbackHours }))}
                   onDetailChange={(detailMode) => setFilters((previous) => ({ ...previous, detailMode }))}
+                  onRefreshMessages={() => void requestMessageRefresh()}
                   onAnalyze={() => void runMemoryJob("analyze")}
                   onRefine={() => void runMemoryJob("refine")}
                 />
@@ -1256,11 +1294,14 @@ function MemoryTab({
   previewError,
   previewLoading,
   memoryError,
+  messageRefreshError,
   agentState,
   filters,
+  isRefreshingMessages,
   onTargetChange,
   onLookbackChange,
   onDetailChange,
+  onRefreshMessages,
   onAnalyze,
   onRefine,
 }: {
@@ -1270,11 +1311,14 @@ function MemoryTab({
   previewError: string | null;
   previewLoading: boolean;
   memoryError: string | null;
+  messageRefreshError: string | null;
   agentState: AgentState;
   filters: MemoryFilters;
+  isRefreshingMessages: boolean;
   onTargetChange: (value: number) => void;
   onLookbackChange: (value: number) => void;
   onDetailChange: (value: MemoryAnalysisDetailMode) => void;
+  onRefreshMessages: () => void;
   onAnalyze: () => void;
   onRefine: () => void;
 }) {
@@ -1405,6 +1449,15 @@ function MemoryTab({
           </div>
 
           <div className="memory-action-stack">
+            <button
+              className="ac-secondary-button"
+              onClick={onRefreshMessages}
+              disabled={isRefreshingMessages || agentState.running}
+              type="button"
+            >
+              <RefreshCw size={15} className={isRefreshingMessages ? "spin" : ""} />
+              {isRefreshingMessages ? "Relendo WhatsApp..." : "Refazer Leitura do WhatsApp"}
+            </button>
             <button className="ac-success-button" onClick={onAnalyze} disabled={agentState.running || !preview?.selected_message_count} type="button">
               <Play size={15} />
               {agentState.running && agentState.mode === "analyze" ? "Executando..." : "Executar Leitura"}
@@ -1448,6 +1501,7 @@ function MemoryTab({
       </Card>
 
       {previewError ? <InlineError title="Falha no preview" message={previewError} /> : null}
+      {messageRefreshError ? <InlineError title="Falha ao reler o WhatsApp" message={messageRefreshError} /> : null}
       {memoryError ? <InlineError title="Falha na memória" message={memoryError} /> : null}
     </div>
   );

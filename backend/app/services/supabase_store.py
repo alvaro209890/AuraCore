@@ -789,11 +789,28 @@ class SupabaseStore:
     def is_normal_contact_phone(self, value: str | None) -> bool:
         return self._is_normal_contact_phone(value)
 
+    def is_direct_chat_jid(self, value: str | None) -> bool:
+        return self._is_direct_chat_jid(value)
+
     def _is_normal_contact_phone(self, value: str | None) -> bool:
         if value is None:
             return False
         digits = "".join(char for char in value if char.isdigit())
         return 8 <= len(digits) <= 15
+
+    def _is_direct_chat_jid(self, value: str | None) -> bool:
+        if value is None:
+            return False
+        normalized = value.strip().lower()
+        if not normalized or "@" not in normalized:
+            return False
+        if normalized == "status@broadcast":
+            return False
+        return not (
+            normalized.endswith("@g.us")
+            or normalized.endswith("@broadcast")
+            or normalized.endswith("@newsletter")
+        )
 
     def _is_useful_contact_name(self, value: str | None, contact_phone: str | None) -> bool:
         text = self._optional_text(value)

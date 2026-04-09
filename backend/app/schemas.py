@@ -19,12 +19,20 @@ class ObserverStatusResponse(BaseModel):
     last_error: str | None = None
 
 
+class ObserverMessageRefreshResponse(BaseModel):
+    ok: bool = True
+    refresh_started: bool = True
+    status: ObserverStatusResponse
+    message: str
+
+
 class IngestMessageRequestItem(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     message_id: str = Field(min_length=1)
     direction: Literal["inbound", "outbound"]
     contact_name: str | None = None
+    chat_jid: str = Field(min_length=1)
     contact_phone: str = Field(min_length=1)
     message_text: str = Field(min_length=1)
     timestamp: datetime

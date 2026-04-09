@@ -24,6 +24,10 @@ class ObserverGatewayService:
         payload = await self._request("POST", "/internal/observer/reset")
         return self._build_status(payload)
 
+    async def refresh_observer_messages(self) -> ObserverStatusResponse:
+        payload = await self._request("POST", "/internal/observer/messages/refresh")
+        return self._build_status(payload)
+
     async def get_observer_status(self, *, refresh_qr: bool = False) -> ObserverStatusResponse:
         if refresh_qr:
             return await self.connect_observer()

@@ -273,7 +273,7 @@ class MemoryAnalysisService:
             char_budget=resolved_char_budget,
             detail_mode=detail_mode,
         )
-        recommendation_score = self._score_analysis_opportunity(
+        fallback_score = self._score_analysis_opportunity(
             persona=current_persona,
             available_message_count=available_message_count,
             selected_message_count=selected_message_count,
@@ -281,9 +281,13 @@ class MemoryAnalysisService:
             replaced_message_count=replaced_message_count,
             estimated_total_tokens=estimated_total_tokens,
         )
-        recommendation_label = self._label_for_score(recommendation_score)
-        should_analyze = recommendation_score >= 55
-        recommendation_summary = await self._build_preview_summary(
+        fallback_label = self._label_for_score(fallback_score)
+        (
+            recommendation_score,
+            recommendation_label,
+            should_analyze,
+            recommendation_summary,
+        ) = await self._classify_preview_recommendation(
             target_message_count=resolved_target_count,
             max_lookback_hours=max_lookback_hours,
             detail_mode=detail_mode,
@@ -292,8 +296,8 @@ class MemoryAnalysisService:
             new_message_count=new_message_count,
             replaced_message_count=replaced_message_count,
             estimated_total_tokens=estimated_total_tokens,
-            recommendation_score=recommendation_score,
-            recommendation_label=recommendation_label,
+            fallback_score=fallback_score,
+            fallback_label=fallback_label,
         )
 
         return MemoryAnalysisPreview(
@@ -622,7 +626,7 @@ class MemoryAnalysisService:
             return "Pode esperar um pouco"
         return "Ganho baixo agora"
 
-    async def _build_preview_summary(
+    async def _classify_preview_recommendation(
         self,
         *,
         target_message_count: int,
@@ -633,19 +637,26 @@ class MemoryAnalysisService:
         new_message_count: int,
         replaced_message_count: int,
         estimated_total_tokens: int,
-        recommendation_score: int,
-        recommendation_label: str,
-    ) -> str:
+        fallback_score: int,
+        fallback_label: str,
+    ) -> tuple[int, str, bool, str]:
+        fallback_should_analyze = fallback_score >= 55
+        fallback_summary = self._build_fallback_preview_summary(
+            selected_message_count=selected_message_count,
+            new_message_count=new_message_count,
+            replaced_message_count=replaced_message_count,
+            recommendation_label=fallback_label,
+        )
         if self.groq_service is None:
-            return self._build_fallback_preview_summary(
-                selected_message_count=selected_message_count,
-                new_message_count=new_message_count,
-                replaced_message_count=replaced_message_count,
-                recommendation_label=recommendation_label,
+            return (
+                fallback_score,
+                fallback_label,
+                fallback_should_analyze,
+                fallback_summary,
             )
 
         try:
-            return await self.groq_service.generate_analysis_preview_summary(
+            decision = await self.groq_service.classify_analysis_preview(
                 target_message_count=target_message_count,
                 max_lookback_hours=max_lookback_hours,
                 detail_mode=detail_mode,
@@ -654,15 +665,21 @@ class MemoryAnalysisService:
                 new_message_count=new_message_count,
                 replaced_message_count=replaced_message_count,
                 estimated_total_tokens=estimated_total_tokens,
-                recommendation_score=recommendation_score,
-                recommendation_label=recommendation_label,
+                fallback_score=fallback_score,
+                fallback_label=fallback_label,
+            )
+            return (
+                decision.score,
+                decision.label,
+                decision.should_analyze,
+                decision.summary,
             )
         except GroqChatError:
-            return self._build_fallback_preview_summary(
-                selected_message_count=selected_message_count,
-                new_message_count=new_message_count,
-                replaced_message_count=replaced_message_count,
-                recommendation_label=recommendation_label,
+            return (
+                fallback_score,
+                fallback_label,
+                fallback_should_analyze,
+                fallback_summary,
             )
 
     def _build_fallback_preview_summary(

@@ -48,6 +48,15 @@ app.post("/internal/observer/reset", async (_req, res, next) => {
   }
 });
 
+app.post("/internal/observer/messages/refresh", async (_req, res, next) => {
+  try {
+    const status = await gateway.refreshDirectHistory();
+    res.json(status);
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
   const message = error instanceof Error ? error.message : "Internal gateway error.";
   res.status(500).json({ detail: message });

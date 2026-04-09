@@ -1,4 +1,5 @@
 import makeWASocket, {
+  Browsers,
   DisconnectReason,
   fetchLatestBaileysVersion,
   extractMessageContent,
@@ -33,6 +34,7 @@ type IngestMessagePayload = {
   message_id: string;
   direction: "inbound" | "outbound";
   contact_name: string;
+  chat_jid: string;
   contact_phone: string;
   message_text: string;
   timestamp: string;
@@ -192,6 +194,19 @@ export class WhatsAppObserverGateway {
     await this.connect();
   }
 
+  async refreshDirectHistory(): Promise<GatewayObserverStatus> {
+    this.resetProcessedMessageCache();
+
+    if (!this.running) {
+      await this.start();
+      return this.getStatus();
+    }
+
+    this.lastError = null;
+    await this.connect();
+    return this.getStatus();
+  }
+
   private async connect(): Promise<void> {
     const epoch = ++this.connectionEpoch;
     this.connected = false;
@@ -213,8 +228,9 @@ export class WhatsAppObserverGateway {
       version,
       logger: baileysLogger,
       printQRInTerminal: false,
+      syncFullHistory: true,
       shouldIgnoreJid: (jid) => !isDirectUserJid(jid),
-      browser: [`AuraCore-${config.instanceName}`, "Render", "1.0.0"],
+      browser: Browsers.macOS(`AuraCore-${config.instanceName}`),
     });
 
     this.socket = socket;
@@ -384,6 +400,7 @@ export class WhatsAppObserverGateway {
       message_id: key.id,
       direction: key.fromMe ? "outbound" : "inbound",
       contact_name: contactName || contactPhone,
+      chat_jid: remoteJid,
       contact_phone: contactPhone,
       message_text: messageText,
       timestamp: toIsoTimestamp(message.messageTimestamp),
@@ -449,6 +466,11 @@ export class WhatsAppObserverGateway {
       }
     }
     return false;
+  }
+
+  private resetProcessedMessageCache(): void {
+    this.processedIds.clear();
+    this.processedOrder.length = 0;
   }
 
   private scheduleReconnect(): void {

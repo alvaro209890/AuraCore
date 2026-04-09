@@ -11,6 +11,13 @@ export type ObserverStatus = {
   last_error: string | null;
 };
 
+export type ObserverMessageRefreshResponse = {
+  ok: boolean;
+  refresh_started: boolean;
+  status: ObserverStatus;
+  message: string;
+};
+
 export type MemoryCurrent = {
   user_id: string;
   life_summary: string;
@@ -147,6 +154,12 @@ export async function resetObserver(): Promise<ObserverStatus> {
 export async function getObserverStatus(refreshQr = false): Promise<ObserverStatus> {
   const query = refreshQr ? "?refresh_qr=true" : "";
   return request<ObserverStatus>(`/api/observer/status${query}`);
+}
+
+export async function refreshObserverMessages(): Promise<ObserverMessageRefreshResponse> {
+  return request<ObserverMessageRefreshResponse>("/api/observer/messages/refresh", {
+    method: "POST",
+  });
 }
 
 export async function getCurrentMemory(): Promise<MemoryCurrent> {

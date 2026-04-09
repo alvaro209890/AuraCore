@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -9,6 +11,14 @@ from app.config import Settings
 
 class GroqChatError(RuntimeError):
     """Raised when Groq chat completion fails or returns an invalid payload."""
+
+
+@dataclass(slots=True)
+class GroqPreviewDecision:
+    score: int
+    label: str
+    should_analyze: bool
+    summary: str
 
 
 class GroqChatService:
@@ -75,7 +85,7 @@ class GroqChatService:
             raise GroqChatError("Groq retornou uma resposta vazia.")
         return content.strip()
 
-    async def generate_analysis_preview_summary(
+    async def classify_analysis_preview(
         self,
         *,
         target_message_count: int,
@@ -86,9 +96,9 @@ class GroqChatService:
         new_message_count: int,
         replaced_message_count: int,
         estimated_total_tokens: int,
-        recommendation_score: int,
-        recommendation_label: str,
-    ) -> str:
+        fallback_score: int,
+        fallback_label: str,
+    ) -> GroqPreviewDecision:
         if not self.settings.groq_api_key:
             raise GroqChatError("GROQ_API_KEY nao configurada na Render.")
 
@@ -104,9 +114,14 @@ class GroqChatService:
                 {
                     "role": "system",
                     "content": (
-                        "Voce resume, em portugues do Brasil e em no maximo duas frases curtas, se vale a pena "
-                        "rodar uma nova analise de memoria. Use apenas os numeros recebidos. Nao invente contexto "
-                        "das mensagens e nao use markdown."
+                        "Voce classifica se vale a pena rodar uma nova analise de memoria. "
+                        "Responda somente em JSON valido com as chaves score, label, should_analyze e summary. "
+                        "score deve ser um inteiro de 0 a 100. "
+                        "label deve ser exatamente um destes valores: "
+                        "Alta vantagem, Vale rodar, Pode esperar um pouco, Ganho baixo agora. "
+                        "should_analyze deve ser boolean. "
+                        "summary deve estar em portugues do Brasil, sem markdown, em no maximo duas frases curtas. "
+                        "Use apenas os numeros recebidos. Nao invente contexto das mensagens."
                     ),
                 },
                 {
@@ -116,7 +131,11 @@ class GroqChatService:
                         f"Disponiveis: {available_message_count}. Selecionadas: {selected_message_count}. "
                         f"Novas desde a ultima analise: {new_message_count}. Substituidas pela retencao: {replaced_message_count}. "
                         f"Tokens estimados do DeepSeek: {estimated_total_tokens}. "
-                        f"Score atual: {recommendation_score}/100 ({recommendation_label})."
+                        "Regras de decisao: "
+                        "score alto quando houver volume relevante de mensagens novas, substituicoes pela retencao, boa cobertura e custo aceitavel; "
+                        "score baixo quando houver pouco material novo ou ganho fraco. "
+                        f"Referencias heuristicas atuais: {fallback_score}/100 ({fallback_label}). "
+                        "should_analyze deve ser true quando a sua propria classificacao justificar rodar agora."
                     ),
                 },
             ],
@@ -135,8 +154,12 @@ class GroqChatService:
         data = response.json()
         content = self._extract_content(data)
         if not content.strip():
-            raise GroqChatError("Groq retornou um resumo vazio para o preview.")
-        return content.strip()
+            raise GroqChatError("Groq retornou um payload vazio para o preview.")
+        return self._parse_preview_decision(
+            content,
+            fallback_score=fallback_score,
+            fallback_label=fallback_label,
+        )
 
     def _build_prompt(
         self,
@@ -198,3 +221,76 @@ Regras:
             return "\n".join(text_parts).strip()
 
         raise GroqChatError("Groq returned an empty content payload.")
+
+    def _parse_preview_decision(
+        self,
+        content: str,
+        *,
+        fallback_score: int,
+        fallback_label: str,
+    ) -> GroqPreviewDecision:
+        cleaned = content.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.strip("`")
+            if "\n" in cleaned:
+                cleaned = cleaned.split("\n", 1)[1]
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3]
+            cleaned = cleaned.strip()
+
+        try:
+            payload = json.loads(cleaned)
+        except json.JSONDecodeError as exc:
+            raise GroqChatError("Groq retornou JSON invalido para o preview.") from exc
+
+        if not isinstance(payload, dict):
+            raise GroqChatError("Groq retornou um payload inesperado para o preview.")
+
+        score = payload.get("score")
+        try:
+            resolved_score = int(score)
+        except (TypeError, ValueError):
+            resolved_score = fallback_score
+        resolved_score = max(0, min(100, resolved_score))
+
+        raw_label = payload.get("label")
+        resolved_label = self._normalize_preview_label(
+            raw_label if isinstance(raw_label, str) else fallback_label,
+            score=resolved_score,
+        )
+
+        raw_should_analyze = payload.get("should_analyze")
+        resolved_should_analyze = (
+            raw_should_analyze
+            if isinstance(raw_should_analyze, bool)
+            else resolved_score >= 55
+        )
+
+        summary = str(payload.get("summary") or "").strip()
+        if not summary:
+            raise GroqChatError("Groq retornou um resumo vazio no preview.")
+
+        return GroqPreviewDecision(
+            score=resolved_score,
+            label=resolved_label,
+            should_analyze=resolved_should_analyze,
+            summary=summary,
+        )
+
+    def _normalize_preview_label(self, value: str, *, score: int) -> str:
+        normalized = value.strip().lower()
+        if "alta" in normalized:
+            return "Alta vantagem"
+        if "vale" in normalized or "rodar" in normalized:
+            return "Vale rodar"
+        if "esper" in normalized:
+            return "Pode esperar um pouco"
+        if "ganho" in normalized or "baixo" in normalized:
+            return "Ganho baixo agora"
+        if score >= 78:
+            return "Alta vantagem"
+        if score >= 55:
+            return "Vale rodar"
+        if score >= 32:
+            return "Pode esperar um pouco"
+        return "Ganho baixo agora"
