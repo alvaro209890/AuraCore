@@ -337,13 +337,13 @@ class AnalyzeMemoryResponse(BaseModel):
     current: MemoryCurrentResponse
     snapshot: MemorySnapshotResponse | None = None
     projects: list[ProjectMemoryResponse] = Field(default_factory=list)
-    job: AnalysisJobResponse | None = None
+    job: "AnalysisJobResponse | None" = None
 
 
 class RefineMemoryResponse(BaseModel):
     current: MemoryCurrentResponse
     projects: list[ProjectMemoryResponse] = Field(default_factory=list)
-    job: AnalysisJobResponse | None = None
+    job: "AnalysisJobResponse | None" = None
 
 
 class MemorySnapshotsListResponse(BaseModel):
