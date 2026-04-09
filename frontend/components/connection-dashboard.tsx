@@ -36,6 +36,7 @@ import {
 } from "lucide-react";
 
 import {
+  getAutomationStatus,
   analyzeMemoryWithFilters,
   connectObserver,
   getChatSession,
@@ -45,7 +46,11 @@ import {
   refreshObserverMessages,
   refineMemory,
   resetObserver,
+  runAutomationTick,
   sendChatMessage,
+  updateAutomationSettings,
+  type AutomationSettings,
+  type AutomationStatus,
   type ChatMessage,
   type MemoryAnalysisDetailMode,
   type MemoryAnalysisPreview,
@@ -58,7 +63,7 @@ import {
 type ViewState = "idle" | "loading" | "waiting" | "connected" | "error";
 type AgentMode = "idle" | "analyze" | "refine";
 type AgentIntent = "first_analysis" | "improve_memory" | "refine_saved";
-type TabId = "overview" | "observer" | "memory" | "projects" | "chat" | "activity";
+type TabId = "overview" | "observer" | "memory" | "projects" | "chat" | "activity" | "automation";
 type LogTone = "info" | "success" | "error";
 
 type AgentStep = {
@@ -88,6 +93,20 @@ type MemoryFilters = {
   targetMessageCount: number;
   maxLookbackHours: number;
   detailMode: MemoryAnalysisDetailMode;
+};
+
+type AutomationDraft = {
+  auto_sync_enabled: boolean;
+  auto_analyze_enabled: boolean;
+  auto_refine_enabled: boolean;
+  min_new_messages_threshold: number;
+  stale_hours_threshold: number;
+  pruned_messages_threshold: number;
+  default_detail_mode: MemoryAnalysisDetailMode;
+  default_target_message_count: number;
+  default_lookback_hours: number;
+  daily_budget_usd: number;
+  max_auto_jobs_per_day: number;
 };
 
 type InsightMetric = {
@@ -125,6 +144,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: "projects", label: "Projetos", icon: FolderGit2 },
   { id: "chat", label: "Chat Pessoal", icon: MessageSquare },
   { id: "activity", label: "Atividade", icon: Activity },
+  { id: "automation", label: "Automação", icon: Settings },
 ];
 
 const IDLE_AGENT_STATUS = "Nenhuma atualização em andamento.";
@@ -313,6 +333,51 @@ function buildActivityThinking(args: {
   }
 
   return lines;
+}
+
+function toAutomationDraft(settings: AutomationSettings): AutomationDraft {
+  return {
+    auto_sync_enabled: settings.auto_sync_enabled,
+    auto_analyze_enabled: settings.auto_analyze_enabled,
+    auto_refine_enabled: settings.auto_refine_enabled,
+    min_new_messages_threshold: settings.min_new_messages_threshold,
+    stale_hours_threshold: settings.stale_hours_threshold,
+    pruned_messages_threshold: settings.pruned_messages_threshold,
+    default_detail_mode: settings.default_detail_mode,
+    default_target_message_count: settings.default_target_message_count,
+    default_lookback_hours: settings.default_lookback_hours,
+    daily_budget_usd: settings.daily_budget_usd,
+    max_auto_jobs_per_day: settings.max_auto_jobs_per_day,
+  };
+}
+
+function buildPersistedActivityLogs(status: AutomationStatus | null): AgentLog[] {
+  if (!status) {
+    return [];
+  }
+
+  const syncLogs = status.sync_runs.slice(0, 3).map((syncRun) => ({
+    id: `sync-${syncRun.id}`,
+    tone: (syncRun.status === "failed" ? "error" : "info") as LogTone,
+    createdAt: syncRun.finished_at ?? syncRun.last_activity_at ?? syncRun.started_at,
+    message: `Sync ${syncRun.status}: ${syncRun.messages_saved_count} salvas, ${syncRun.messages_ignored_count} ignoradas e ${syncRun.messages_pruned_count} podadas.`,
+  }));
+  const decisionLogs = status.decisions.slice(0, 3).map((decision) => ({
+    id: `decision-${decision.id}`,
+    tone: (decision.action === "queue" ? "success" : "info") as LogTone,
+    createdAt: decision.created_at,
+    message: `Decisao ${decision.action}: ${decision.intent} com score ${decision.score}/100. ${decision.explanation}`,
+  }));
+  const jobLogs = status.jobs.slice(0, 4).map((job) => ({
+    id: `job-${job.id}`,
+    tone: (job.status === "failed" ? "error" : job.status === "succeeded" ? "success" : "info") as LogTone,
+    createdAt: job.finished_at ?? job.started_at ?? job.created_at,
+    message: `Job ${job.status}: ${getIntentTitle(job.intent as AgentIntent)} em ${job.detail_mode}, alvo ${job.target_message_count} msgs, custo teto ${formatUsd(job.estimated_cost_ceiling_usd)}.`,
+  }));
+
+  return [...syncLogs, ...decisionLogs, ...jobLogs].sort((left, right) => (
+    new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
+  ));
 }
 
 function getErrorMessage(error: unknown): string {
@@ -522,6 +587,8 @@ export function ConnectionDashboard() {
   const [snapshots, setSnapshots] = useState<MemorySnapshot[]>([]);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatThreadTitle, setChatThreadTitle] = useState("Conversa principal");
+  const [automationStatus, setAutomationStatus] = useState<AutomationStatus | null>(null);
+  const [automationDraft, setAutomationDraft] = useState<AutomationDraft | null>(null);
   const [chatDraft, setChatDraft] = useState("");
   const [filters, setFilters] = useState<MemoryFilters>({
     targetMessageCount: 200,
@@ -534,6 +601,7 @@ export function ConnectionDashboard() {
   const [memoryError, setMemoryError] = useState<string | null>(null);
   const [chatError, setChatError] = useState<string | null>(null);
   const [messageRefreshError, setMessageRefreshError] = useState<string | null>(null);
+  const [automationError, setAutomationError] = useState<string | null>(null);
   const [isHydrating, setIsHydrating] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
@@ -541,6 +609,8 @@ export function ConnectionDashboard() {
   const [isRefreshingMessages, setIsRefreshingMessages] = useState(false);
   const [isSendingChat, setIsSendingChat] = useState(false);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
+  const [isSavingAutomation, setIsSavingAutomation] = useState(false);
+  const [isTickingAutomation, setIsTickingAutomation] = useState(false);
   const [pollingEnabled, setPollingEnabled] = useState(false);
   const [agentState, setAgentState] = useState<AgentState>({
     mode: "idle",
@@ -573,6 +643,14 @@ export function ConnectionDashboard() {
 
   const currentSteps = useMemo(() => getStepsForMode(agentState.mode), [agentState.mode]);
   const insightMetrics = useMemo(() => getSignalMetrics(latestSnapshot), [latestSnapshot]);
+  const persistedActivityLogs = useMemo(() => buildPersistedActivityLogs(automationStatus), [automationStatus]);
+  const activityLogs = useMemo(
+    () =>
+      [...persistedActivityLogs, ...agentLogs]
+        .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
+        .slice(0, 28),
+    [agentLogs, persistedActivityLogs],
+  );
 
   useEffect(() => {
     void hydrateDashboard();
@@ -627,10 +705,11 @@ export function ConnectionDashboard() {
       setIsHydrating(true);
     }
 
-    const [statusResult, chatResult, snapshotsResult] = await Promise.allSettled([
+    const [statusResult, chatResult, snapshotsResult, automationResult] = await Promise.allSettled([
       getObserverStatus(false),
       getChatSession(),
       getMemorySnapshots(6),
+      getAutomationStatus(),
     ]);
 
     if (statusResult.status === "fulfilled") {
@@ -661,6 +740,14 @@ export function ConnectionDashboard() {
       setSnapshots(snapshotsResult.value);
     }
 
+    if (automationResult.status === "fulfilled") {
+      setAutomationStatus(automationResult.value);
+      setAutomationError(null);
+      setAutomationDraft((previous) => previous ?? toAutomationDraft(automationResult.value.settings));
+    } else {
+      setAutomationError(getErrorMessage(automationResult.reason));
+    }
+
     if (mode === "manual") {
       setIsRefreshing(false);
     } else {
@@ -682,6 +769,58 @@ export function ConnectionDashboard() {
       setPreviewError(getErrorMessage(error));
     } finally {
       setIsPreviewLoading(false);
+    }
+  }
+
+  async function saveAutomationConfig(): Promise<void> {
+    if (!automationDraft) {
+      return;
+    }
+
+    setIsSavingAutomation(true);
+    setAutomationError(null);
+    try {
+      const nextSettings = await updateAutomationSettings(automationDraft);
+      setAutomationStatus((previous) =>
+        previous
+          ? { ...previous, settings: nextSettings }
+          : {
+              settings: nextSettings,
+              sync_runs: [],
+              decisions: [],
+              jobs: [],
+              model_runs: [],
+              daily_cost_usd: 0,
+              daily_auto_jobs_count: 0,
+              queued_jobs_count: 0,
+              running_job_id: null,
+            },
+      );
+      setAutomationDraft(toAutomationDraft(nextSettings));
+      pushAgentLog("success", "Configuração da automação salva no backend.");
+    } catch (error) {
+      const message = getErrorMessage(error);
+      setAutomationError(message);
+      pushAgentLog("error", `Falha ao salvar automação: ${message}`);
+    } finally {
+      setIsSavingAutomation(false);
+    }
+  }
+
+  async function triggerAutomationNow(): Promise<void> {
+    setIsTickingAutomation(true);
+    setAutomationError(null);
+    try {
+      const snapshot = await runAutomationTick();
+      setAutomationStatus(snapshot);
+      setAutomationDraft((previous) => previous ?? toAutomationDraft(snapshot.settings));
+      pushAgentLog("info", "Tick manual da automação executado. Syncs ociosos foram fechados e a fila foi processada.");
+    } catch (error) {
+      const message = getErrorMessage(error);
+      setAutomationError(message);
+      pushAgentLog("error", `Falha ao rodar o tick manual: ${message}`);
+    } finally {
+      setIsTickingAutomation(false);
     }
   }
 
@@ -824,7 +963,10 @@ export function ConnectionDashboard() {
       setStatus((previous) => mergeStatus(previous, response.status));
       setPollingEnabled(!response.status.connected);
       setViewState(response.status.connected ? "connected" : "waiting");
-      pushAgentLog("info", response.message);
+      pushAgentLog(
+        "info",
+        response.sync_run_id ? `${response.message} Sync ${response.sync_run_id.slice(0, 8)} aberto.` : response.message,
+      );
 
       if (messageRefreshTimerRef.current) {
         window.clearTimeout(messageRefreshTimerRef.current);
@@ -880,6 +1022,7 @@ export function ConnectionDashboard() {
     try {
       if (intent !== "refine_saved") {
         const response = await analyzeMemoryWithFilters({
+          intent,
           target_message_count: filters.targetMessageCount,
           max_lookback_hours: filters.maxLookbackHours,
           detail_mode: filters.detailMode,
@@ -893,11 +1036,17 @@ export function ConnectionDashboard() {
             ? "Primeira analise concluida. A base inicial do dono foi criada."
             : "Leitura concluida. As mensagens novas foram cruzadas com a memoria existente e o perfil foi melhorado.",
         );
+        const automationSnapshot = await getAutomationStatus();
+        setAutomationStatus(automationSnapshot);
+        setAutomationDraft((previous) => previous ?? toAutomationDraft(automationSnapshot.settings));
       } else {
         const response = await refineMemory();
         setMemory(response.current);
         setProjects(response.projects);
         finishAgentRunSuccess("refine_saved", "Refinamento concluido. A memoria consolidada ficou mais precisa.");
+        const automationSnapshot = await getAutomationStatus();
+        setAutomationStatus(automationSnapshot);
+        setAutomationDraft((previous) => previous ?? toAutomationDraft(automationSnapshot.settings));
       }
 
       await refreshPreview();
@@ -1116,12 +1265,27 @@ export function ConnectionDashboard() {
                 <ActivityTab
                   agentState={agentState}
                   steps={currentSteps}
-                  logs={agentLogs}
+                  logs={activityLogs}
                   preview={preview}
                   memory={memory}
                   latestSnapshot={latestSnapshot}
                   projectsCount={projects.length}
                   snapshotsCount={snapshots.length}
+                  automationStatus={automationStatus}
+                  automationError={automationError}
+                />
+              ) : null}
+
+              {activeTab === "automation" ? (
+                <AutomationTab
+                  automationStatus={automationStatus}
+                  automationDraft={automationDraft}
+                  automationError={automationError}
+                  isSavingAutomation={isSavingAutomation}
+                  isTickingAutomation={isTickingAutomation}
+                  onDraftChange={setAutomationDraft}
+                  onSave={() => void saveAutomationConfig()}
+                  onTick={() => void triggerAutomationNow()}
                 />
               ) : null}
             </>
@@ -2015,6 +2179,8 @@ function ActivityTab({
   latestSnapshot,
   projectsCount,
   snapshotsCount,
+  automationStatus,
+  automationError,
 }: {
   agentState: AgentState;
   steps: AgentStep[];
@@ -2024,9 +2190,15 @@ function ActivityTab({
   latestSnapshot: MemorySnapshot | null;
   projectsCount: number;
   snapshotsCount: number;
+  automationStatus: AutomationStatus | null;
+  automationError: string | null;
 }) {
   const memoryReady = hasEstablishedMemory(memory, latestSnapshot);
   const resolvedIntent = agentState.intent ?? (memoryReady ? "improve_memory" : "first_analysis");
+  const latestDecision = automationStatus?.decisions[0] ?? null;
+  const latestSyncRun = automationStatus?.sync_runs[0] ?? null;
+  const latestJob = automationStatus?.jobs[0] ?? null;
+  const latestModelRun = automationStatus?.model_runs[0] ?? null;
   const thinkingLines = buildActivityThinking({
     preview,
     intent: resolvedIntent,
@@ -2034,6 +2206,9 @@ function ActivityTab({
     projectsCount,
     snapshotsCount,
   });
+  const resolvedThinking = latestDecision?.explanation
+    ? [latestDecision.explanation, ...thinkingLines]
+    : thinkingLines;
   const costRangeLabel = preview
     ? `${formatUsd(preview.estimated_cost_total_floor_usd)}-${formatUsd(preview.estimated_cost_total_ceiling_usd)}`
     : "...";
@@ -2091,26 +2266,66 @@ function ActivityTab({
       <div className="activity-insight-grid">
         <MemorySignalCard
           label="Ação atual"
-          value={getIntentTitle(resolvedIntent)}
-          meta={memoryReady ? "Memória base já existe" : "Ainda sem base consolidada"}
+          value={latestJob ? getIntentTitle(latestJob.intent as AgentIntent) : getIntentTitle(resolvedIntent)}
+          meta={latestJob ? `${latestJob.status} via ${latestJob.trigger_source}` : memoryReady ? "Memória base já existe" : "Ainda sem base consolidada"}
           accent
+        />
+        <MemorySignalCard
+          label="Último sync"
+          value={latestSyncRun ? `${formatTokenCount(latestSyncRun.messages_saved_count)} salvas` : "..."}
+          meta={
+            latestSyncRun
+              ? `${latestSyncRun.status} • ${formatShortDateTime(latestSyncRun.finished_at ?? latestSyncRun.started_at)}`
+              : "Aguardando primeira sincronização persistida"
+          }
+          tone="indigo"
+        />
+        <MemorySignalCard
+          label="Última decisão"
+          value={latestDecision ? `${latestDecision.score}/100` : "..."}
+          meta={latestDecision ? `${latestDecision.action} • ${latestDecision.reason_code}` : "Sem decisão automática persistida ainda"}
+          tone="emerald"
+        />
+        <MemorySignalCard
+          label="Custo do dia"
+          value={automationStatus ? formatUsd(automationStatus.daily_cost_usd) : costRangeLabel}
+          meta={
+            automationStatus
+              ? `${formatTokenCount(automationStatus.daily_auto_jobs_count)} jobs automáticos hoje`
+              : preview
+                ? `~${formatTokenCount(preview.estimated_total_tokens)} tokens totais`
+                : "Aguardando preview"
+          }
+          tone="amber"
+        />
+      </div>
+
+      <div className="activity-insight-grid">
+        <MemorySignalCard
+          label="Fila"
+          value={automationStatus ? String(automationStatus.queued_jobs_count) : "..."}
+          meta={automationStatus?.running_job_id ? "Há job rodando agora" : "Sem job em execução"}
+        />
+        <MemorySignalCard
+          label="Base já conhecida"
+          value={`${formatTokenCount(snapshotsCount)} snapshots / ${formatTokenCount(projectsCount)} projetos`}
+          meta={memoryReady ? "Também cruza com o chat pessoal salvo" : "Primeira base ainda será criada"}
+          tone="zinc"
+        />
+        <MemorySignalCard
+          label="Último modelo"
+          value={latestModelRun ? latestModelRun.model_name : "..."}
+          meta={
+            latestModelRun
+              ? `${latestModelRun.run_type} • ${latestModelRun.success ? "ok" : "falhou"}`
+              : "Sem execução de modelo registrada ainda"
+          }
+          tone="indigo"
         />
         <MemorySignalCard
           label="Janela útil"
           value={preview ? `${formatTokenCount(preview.selected_message_count)}/${formatTokenCount(preview.available_message_count)} msgs` : "..."}
           meta={preview ? `teto operacional de ${formatTokenCount(preview.stack_max_message_capacity)} msgs` : "Aguardando preview"}
-          tone="indigo"
-        />
-        <MemorySignalCard
-          label="Base já conhecida"
-          value={`${formatTokenCount(snapshotsCount)} snapshots / ${formatTokenCount(projectsCount)} projetos`}
-          meta={memoryReady ? "Tambem cruza com o chat pessoal salvo" : "Primeira base ainda sera criada"}
-          tone="emerald"
-        />
-        <MemorySignalCard
-          label="Custo previsto"
-          value={costRangeLabel}
-          meta={preview ? `~${formatTokenCount(preview.estimated_total_tokens)} tokens totais` : "Aguardando preview"}
           tone="amber"
         />
       </div>
@@ -2121,7 +2336,7 @@ function ActivityTab({
           O painel mostra o raciocinio operacional da execucao e o que o modelo vai considerar. A cadeia de pensamento bruta do `deepseek-reasoner` nao e exposta.
         </p>
         <div className="activity-thinking-list">
-          {thinkingLines.map((line, index) => (
+          {resolvedThinking.map((line, index) => (
             <div key={`${line.slice(0, 20)}-${index}`} className="activity-thinking-item">
               <span>{index + 1}</span>
               <p>{line}</p>
@@ -2129,6 +2344,66 @@ function ActivityTab({
           ))}
         </div>
       </Card>
+
+      <div className="activity-persist-grid">
+        <Card>
+          <SectionTitle title="Sync Persistido" icon={RefreshCw} />
+          {latestSyncRun ? (
+            <div className="activity-persist-list">
+              <StatusLine label="Status" value={latestSyncRun.status} tone={latestSyncRun.status === "failed" ? "amber" : "emerald"} />
+              <StatusLine label="Mensagens vistas" value={formatTokenCount(latestSyncRun.messages_seen_count)} tone="indigo" />
+              <StatusLine label="Salvas" value={formatTokenCount(latestSyncRun.messages_saved_count)} tone="emerald" />
+              <StatusLine label="Podadas" value={formatTokenCount(latestSyncRun.messages_pruned_count)} tone="amber" />
+            </div>
+          ) : (
+            <div className="empty-hint">
+              <RefreshCw size={18} />
+              <p>Nenhum sync persistido ainda.</p>
+            </div>
+          )}
+        </Card>
+
+        <Card>
+          <SectionTitle title="Decisão Persistida" icon={Zap} />
+          {latestDecision ? (
+            <div className="activity-persist-block">
+              <strong>{latestDecision.intent}</strong>
+              <p>{latestDecision.explanation}</p>
+              <div className="activity-meta-row">
+                <span>{latestDecision.action}</span>
+                <span>{latestDecision.reason_code}</span>
+                <span>{latestDecision.score}/100</span>
+              </div>
+            </div>
+          ) : (
+            <div className="empty-hint">
+              <Zap size={18} />
+              <p>Nenhuma decisão automática persistida ainda.</p>
+            </div>
+          )}
+        </Card>
+
+        <Card>
+          <SectionTitle title="Execução de Modelo" icon={Cpu} />
+          {latestModelRun ? (
+            <div className="activity-persist-block">
+              <strong>{latestModelRun.model_name}</strong>
+              <p>
+                {latestModelRun.run_type} • {latestModelRun.success ? "sucesso" : "falha"}
+              </p>
+              <div className="activity-meta-row">
+                <span>{latestModelRun.latency_ms ? `${latestModelRun.latency_ms} ms` : "latência n/d"}</span>
+                <span>{latestModelRun.estimated_cost_usd != null ? formatUsd(latestModelRun.estimated_cost_usd) : "custo n/d"}</span>
+              </div>
+            </div>
+          ) : (
+            <div className="empty-hint">
+              <Cpu size={18} />
+              <p>Nenhuma execução de modelo registrada ainda.</p>
+            </div>
+          )}
+        </Card>
+      </div>
 
       <div className="terminal-shell">
         <div className="terminal-header">
@@ -2147,6 +2422,218 @@ function ActivityTab({
           ))}
         </div>
       </div>
+
+      {automationError ? <InlineError title="Falha na automação" message={automationError} /> : null}
+    </div>
+  );
+}
+
+function AutomationTab({
+  automationStatus,
+  automationDraft,
+  automationError,
+  isSavingAutomation,
+  isTickingAutomation,
+  onDraftChange,
+  onSave,
+  onTick,
+}: {
+  automationStatus: AutomationStatus | null;
+  automationDraft: AutomationDraft | null;
+  automationError: string | null;
+  isSavingAutomation: boolean;
+  isTickingAutomation: boolean;
+  onDraftChange: React.Dispatch<React.SetStateAction<AutomationDraft | null>>;
+  onSave: () => void;
+  onTick: () => void;
+}) {
+  const settings = automationStatus?.settings ?? null;
+  const draft = automationDraft;
+
+  function updateDraft<K extends keyof AutomationDraft>(key: K, value: AutomationDraft[K]): void {
+    onDraftChange((previous) => {
+      const base = previous ?? (settings ? toAutomationDraft(settings) : null);
+      if (!base) {
+        return previous;
+      }
+      return { ...base, [key]: value };
+    });
+  }
+
+  return (
+    <div className="page-stack">
+      <Card>
+        <SectionTitle
+          title="Automação Controlada"
+          icon={Settings}
+          action={settings ? <span className="micro-badge">{formatShortDateTime(settings.updated_at)}</span> : null}
+        />
+        <p className="support-copy">
+          Esta área controla quando o backend transforma uma sincronização em decisão e quando a decisão vira job automático.
+        </p>
+
+        <div className="automation-top-grid">
+          <MemorySignalCard
+            label="Gasto de hoje"
+            value={automationStatus ? formatUsd(automationStatus.daily_cost_usd) : "..."}
+            meta={automationStatus ? `${automationStatus.daily_auto_jobs_count} jobs automáticos hoje` : "Aguardando status"}
+            accent
+          />
+          <MemorySignalCard
+            label="Fila"
+            value={automationStatus ? String(automationStatus.queued_jobs_count) : "..."}
+            meta={automationStatus?.running_job_id ? "Há job rodando agora" : "Sem job rodando"}
+            tone="indigo"
+          />
+          <MemorySignalCard
+            label="Último sync"
+            value={automationStatus?.sync_runs[0] ? automationStatus.sync_runs[0].status : "..."}
+            meta={automationStatus?.sync_runs[0] ? formatShortDateTime(automationStatus.sync_runs[0].started_at) : "Sem sync persistido"}
+            tone="emerald"
+          />
+          <MemorySignalCard
+            label="Última decisão"
+            value={automationStatus?.decisions[0] ? automationStatus.decisions[0].action : "..."}
+            meta={automationStatus?.decisions[0] ? automationStatus.decisions[0].reason_code : "Sem decisão persistida"}
+            tone="amber"
+          />
+        </div>
+
+        {draft ? (
+          <div className="automation-settings-grid">
+            <div className="automation-setting-card">
+              <SectionTitle title="Chaves de Automação" icon={Zap} />
+              <label className="automation-toggle-row">
+                <span>Auto sync</span>
+                <input
+                  type="checkbox"
+                  checked={draft.auto_sync_enabled}
+                  onChange={(event) => updateDraft("auto_sync_enabled", event.target.checked)}
+                />
+              </label>
+              <label className="automation-toggle-row">
+                <span>Auto analisar</span>
+                <input
+                  type="checkbox"
+                  checked={draft.auto_analyze_enabled}
+                  onChange={(event) => updateDraft("auto_analyze_enabled", event.target.checked)}
+                />
+              </label>
+              <label className="automation-toggle-row">
+                <span>Auto refinar</span>
+                <input
+                  type="checkbox"
+                  checked={draft.auto_refine_enabled}
+                  onChange={(event) => updateDraft("auto_refine_enabled", event.target.checked)}
+                />
+              </label>
+            </div>
+
+            <div className="automation-setting-card">
+              <SectionTitle title="Thresholds" icon={BarChart3} />
+              <AutomationNumberField
+                label="Novas mensagens"
+                value={draft.min_new_messages_threshold}
+                onChange={(value) => updateDraft("min_new_messages_threshold", value)}
+              />
+              <AutomationNumberField
+                label="Stale em horas"
+                value={draft.stale_hours_threshold}
+                onChange={(value) => updateDraft("stale_hours_threshold", value)}
+              />
+              <AutomationNumberField
+                label="Podadas para reagir"
+                value={draft.pruned_messages_threshold}
+                onChange={(value) => updateDraft("pruned_messages_threshold", value)}
+              />
+            </div>
+
+            <div className="automation-setting-card">
+              <SectionTitle title="Configuração Base" icon={Cpu} />
+              <div className="control-block automation-control-block">
+                <div className="control-head">
+                  <label>Profundidade padrão</label>
+                  <span>Usada nos jobs incrementais</span>
+                </div>
+                <SegmentedControl
+                  options={["light", "balanced", "deep"]}
+                  selected={draft.default_detail_mode}
+                  onChange={(value) => updateDraft("default_detail_mode", value as MemoryAnalysisDetailMode)}
+                />
+              </div>
+              <AutomationNumberField
+                label="Alvo padrão"
+                value={draft.default_target_message_count}
+                onChange={(value) => updateDraft("default_target_message_count", value)}
+              />
+              <AutomationNumberField
+                label="Lookback padrão"
+                value={draft.default_lookback_hours}
+                onChange={(value) => updateDraft("default_lookback_hours", value)}
+              />
+            </div>
+
+            <div className="automation-setting-card">
+              <SectionTitle title="Orçamento" icon={Terminal} />
+              <AutomationNumberField
+                label="Budget diário (USD)"
+                value={draft.daily_budget_usd}
+                step="0.01"
+                onChange={(value) => updateDraft("daily_budget_usd", value)}
+              />
+              <AutomationNumberField
+                label="Jobs automáticos/dia"
+                value={draft.max_auto_jobs_per_day}
+                onChange={(value) => updateDraft("max_auto_jobs_per_day", value)}
+              />
+            </div>
+          </div>
+        ) : (
+          <div className="empty-hint">
+            <Settings size={18} />
+            <p>Carregando configuração da automação.</p>
+          </div>
+        )}
+
+        <div className="hero-actions">
+          <button className="ac-secondary-button" onClick={onTick} disabled={isTickingAutomation} type="button">
+            <RefreshCw size={15} className={isTickingAutomation ? "spin" : ""} />
+            {isTickingAutomation ? "Processando..." : "Rodar Tick Agora"}
+          </button>
+          <button className="ac-primary-button" onClick={onSave} disabled={isSavingAutomation || !draft} type="button">
+            <CheckCircle2 size={15} />
+            {isSavingAutomation ? "Salvando..." : "Salvar Configuração"}
+          </button>
+        </div>
+      </Card>
+
+      <Card>
+        <SectionTitle title="Últimos Jobs e Syncs" icon={Activity} />
+        <div className="automation-history-grid">
+          <div className="activity-persist-block">
+            <strong>Jobs recentes</strong>
+            {(automationStatus?.jobs ?? []).slice(0, 4).map((job) => (
+              <div key={job.id} className="activity-meta-row">
+                <span>{getIntentTitle(job.intent as AgentIntent)}</span>
+                <span>{job.status}</span>
+                <span>{formatShortDateTime(job.created_at)}</span>
+              </div>
+            ))}
+          </div>
+          <div className="activity-persist-block">
+            <strong>Syncs recentes</strong>
+            {(automationStatus?.sync_runs ?? []).slice(0, 4).map((syncRun) => (
+              <div key={syncRun.id} className="activity-meta-row">
+                <span>{syncRun.trigger}</span>
+                <span>{syncRun.status}</span>
+                <span>{formatShortDateTime(syncRun.started_at)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </Card>
+
+      {automationError ? <InlineError title="Falha na automação" message={automationError} /> : null}
     </div>
   );
 }
@@ -2239,6 +2726,30 @@ function MetricTile({
       <span>{label}</span>
       <strong>{value}</strong>
     </div>
+  );
+}
+
+function AutomationNumberField({
+  label,
+  value,
+  onChange,
+  step = "1",
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+  step?: string;
+}) {
+  return (
+    <label className="automation-number-field">
+      <span>{label}</span>
+      <input
+        type="number"
+        value={value}
+        step={step}
+        onChange={(event) => onChange(Number(event.target.value))}
+      />
+    </label>
   );
 }
 

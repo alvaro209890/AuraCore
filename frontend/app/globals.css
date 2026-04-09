@@ -1832,6 +1832,95 @@ textarea {
   background-color: #71717a;
 }
 
+.activity-persist-grid,
+.automation-top-grid,
+.automation-settings-grid,
+.automation-history-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.activity-persist-list,
+.activity-persist-block {
+  display: grid;
+  gap: 12px;
+}
+
+.activity-persist-block strong {
+  color: #f4f4f5;
+  font-size: 0.95rem;
+}
+
+.activity-persist-block p {
+  margin: 0;
+  color: rgba(228, 228, 231, 0.82);
+  line-height: 1.6;
+}
+
+.activity-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(12, 12, 16, 0.72);
+  border: 1px solid rgba(82, 82, 91, 0.35);
+  color: rgba(228, 228, 231, 0.78);
+  font-size: 0.85rem;
+}
+
+.automation-setting-card {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(24, 24, 27, 0.88), rgba(12, 12, 16, 0.9)),
+    rgba(18, 18, 22, 0.72);
+  border: 1px solid rgba(82, 82, 91, 0.36);
+}
+
+.automation-toggle-row,
+.automation-number-field {
+  display: grid;
+  gap: 8px;
+  color: rgba(244, 244, 245, 0.92);
+  font-size: 0.9rem;
+}
+
+.automation-toggle-row {
+  grid-template-columns: 1fr auto;
+  align-items: center;
+}
+
+.automation-toggle-row input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: #22c55e;
+}
+
+.automation-number-field input {
+  width: 100%;
+  border-radius: 14px;
+  border: 1px solid rgba(82, 82, 91, 0.42);
+  background: rgba(9, 9, 11, 0.88);
+  color: #f4f4f5;
+  padding: 12px 14px;
+  font: inherit;
+}
+
+.automation-number-field input:focus {
+  outline: none;
+  border-color: rgba(59, 130, 246, 0.7);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.14);
+}
+
+.automation-control-block {
+  padding: 0;
+}
+
 @keyframes spin {
   from {
     transform: rotate(0deg);
@@ -1880,6 +1969,10 @@ textarea {
   .memory-economics-grid,
   .memory-doc-grid,
   .activity-insight-grid,
+  .activity-persist-grid,
+  .automation-top-grid,
+  .automation-settings-grid,
+  .automation-history-grid,
   .project-focus-row,
   .project-bottom-panels,
   .detail-card-grid,

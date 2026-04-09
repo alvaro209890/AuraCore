@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Header, HTTPException, status
 
-from app.dependencies import get_settings, get_supabase_store
+from app.dependencies import get_automation_service, get_settings, get_supabase_store
 from app.schemas import IngestMessagesRequest, IngestMessagesResponse
+from app.services.automation_service import AutomationService
 from app.services.supabase_store import IngestedMessageRecord, SupabaseStore
 
 router = APIRouter(prefix="/api/internal/observer", tags=["internal"])
@@ -19,9 +20,15 @@ async def ingest_messages(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid internal API token.")
 
     store = get_supabase_store()
+    automation_service = get_automation_service()
     normalized_messages = _build_records(payload, store)
     saved_count = store.save_ingested_messages(normalized_messages)
     ignored_count = max(0, len(payload.messages) - len(normalized_messages))
+    automation_service.register_ingest_batch(
+        accepted_count=saved_count,
+        ignored_count=ignored_count,
+        timestamps=[message.timestamp for message in normalized_messages],
+    )
     return IngestMessagesResponse(accepted_count=saved_count, ignored_count=ignored_count)
 
 
@@ -46,6 +53,7 @@ def _build_records(payload: IngestMessagesRequest, store: SupabaseStore) -> list
                 user_id=store.default_user_id,
                 direction=item.direction,
                 contact_name=(item.contact_name or contact_phone).strip(),
+                chat_jid=chat_jid,
                 contact_phone=contact_phone,
                 message_text=message_text,
                 timestamp=item.timestamp,

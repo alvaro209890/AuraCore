@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Body, Depends, Query
 
-from app.dependencies import get_memory_analysis_service
+from app.dependencies import get_automation_service, get_memory_analysis_service
 from app.schemas import (
     AnalyzeMemoryRequest,
     AnalyzeMemoryResponse,
@@ -12,7 +12,9 @@ from app.schemas import (
     MemorySnapshotsListResponse,
     ProjectMemoryResponse,
     RefineMemoryResponse,
+    AnalysisJobResponse,
 )
+from app.services.automation_service import AutomationService
 from app.services.memory_service import MemoryAnalysisService
 from app.services.supabase_store import MemorySnapshotRecord, PersonaRecord, ProjectMemoryRecord
 
@@ -40,10 +42,15 @@ async def get_memory_snapshots(
 async def analyze_memory(
     request: AnalyzeMemoryRequest | None = Body(default=None),
     window_hours: int | None = Query(default=None, ge=1),
+    automation_service: AutomationService = Depends(get_automation_service),
     memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
 ) -> AnalyzeMemoryResponse:
     if request is not None and request.target_message_count is not None:
-        outcome = await memory_service.analyze_selection(
+        intent = request.intent or (
+            "improve_memory" if memory_service.get_current_persona().last_analyzed_at else "first_analysis"
+        )
+        job, outcome = await automation_service.run_manual_analysis(
+            intent=intent,
             target_message_count=request.target_message_count,
             max_lookback_hours=request.max_lookback_hours or 72,
             detail_mode=request.detail_mode,
@@ -54,11 +61,24 @@ async def analyze_memory(
             if request is not None and request.window_hours is not None
             else window_hours or 24
         )
-        outcome = await memory_service.analyze_window(window_hours=resolved_window_hours)
+        target_message_count = min(
+            memory_service.settings.memory_analysis_max_messages,
+            max(20, resolved_window_hours * 4),
+        )
+        intent = request.intent or (
+            "improve_memory" if memory_service.get_current_persona().last_analyzed_at else "first_analysis"
+        )
+        job, outcome = await automation_service.run_manual_analysis(
+            intent=intent,
+            target_message_count=target_message_count,
+            max_lookback_hours=resolved_window_hours,
+            detail_mode=request.detail_mode if request is not None else "balanced",
+        )
     return AnalyzeMemoryResponse(
         current=_to_persona_response(outcome.persona),
         snapshot=_to_snapshot_response(outcome.snapshot),
         projects=[_to_project_response(project) for project in outcome.projects],
+        job=_to_job_response(job),
     )
 
 
@@ -123,12 +143,13 @@ async def preview_memory_analysis(
 
 @router.post("/refine", response_model=RefineMemoryResponse)
 async def refine_saved_memory(
-    memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
+    automation_service: AutomationService = Depends(get_automation_service),
 ) -> RefineMemoryResponse:
-    outcome = await memory_service.refine_saved_memory()
+    job, outcome = await automation_service.run_manual_refinement()
     return RefineMemoryResponse(
         current=_to_persona_response(outcome.persona),
         projects=[_to_project_response(project) for project in outcome.projects],
+        job=_to_job_response(job),
     )
 
 
@@ -172,4 +193,29 @@ def _to_project_response(project: ProjectMemoryRecord) -> ProjectMemoryResponse:
         source_snapshot_id=project.source_snapshot_id,
         last_seen_at=project.last_seen_at,
         updated_at=project.updated_at,
+    )
+
+
+def _to_job_response(job) -> AnalysisJobResponse:
+    return AnalysisJobResponse(
+        id=job.id,
+        intent=job.intent,
+        status=job.status,
+        trigger_source=job.trigger_source,
+        decision_id=job.decision_id,
+        sync_run_id=job.sync_run_id,
+        target_message_count=job.target_message_count,
+        max_lookback_hours=job.max_lookback_hours,
+        detail_mode=job.detail_mode,
+        selected_message_count=job.selected_message_count,
+        selected_transcript_chars=job.selected_transcript_chars,
+        estimated_input_tokens=job.estimated_input_tokens,
+        estimated_output_tokens=job.estimated_output_tokens,
+        estimated_cost_floor_usd=job.estimated_cost_floor_usd,
+        estimated_cost_ceiling_usd=job.estimated_cost_ceiling_usd,
+        snapshot_id=job.snapshot_id,
+        error_text=job.error_text,
+        started_at=job.started_at,
+        finished_at=job.finished_at,
+        created_at=job.created_at,
     )

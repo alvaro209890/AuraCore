@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from app.services.automation_service import AutomationService
 from app.services.chat_service import ChatAssistantService
 from app.config import Settings
 from app.services.deepseek_service import DeepSeekService
@@ -61,4 +62,13 @@ def get_chat_assistant_service() -> ChatAssistantService:
         settings=get_settings(),
         store=get_supabase_store(),
         groq_service=get_groq_service(),
+    )
+
+
+@lru_cache
+def get_automation_service() -> AutomationService:
+    return AutomationService(
+        settings=get_settings(),
+        store=get_supabase_store(),
+        memory_service=get_memory_analysis_service(),
     )

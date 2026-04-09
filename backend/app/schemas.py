@@ -24,6 +24,7 @@ class ObserverMessageRefreshResponse(BaseModel):
     refresh_started: bool = True
     status: ObserverStatusResponse
     message: str
+    sync_run_id: str | None = None
 
 
 class IngestMessageRequestItem(BaseModel):
@@ -50,6 +51,7 @@ class IngestMessagesResponse(BaseModel):
 
 
 class AnalyzeMemoryRequest(BaseModel):
+    intent: Literal["first_analysis", "improve_memory"] | None = None
     window_hours: int | None = Field(default=None, ge=1)
     target_message_count: int | None = Field(default=None, ge=20, le=500)
     max_lookback_hours: int | None = Field(default=None, ge=1, le=336)
@@ -145,11 +147,13 @@ class AnalyzeMemoryResponse(BaseModel):
     current: MemoryCurrentResponse
     snapshot: MemorySnapshotResponse
     projects: list[ProjectMemoryResponse] = Field(default_factory=list)
+    job: "AnalysisJobResponse | None" = None
 
 
 class RefineMemoryResponse(BaseModel):
     current: MemoryCurrentResponse
     projects: list[ProjectMemoryResponse] = Field(default_factory=list)
+    job: "AnalysisJobResponse | None" = None
 
 
 class MemorySnapshotsListResponse(BaseModel):
@@ -173,3 +177,130 @@ class ChatSessionResponse(BaseModel):
 
 class SendChatMessageRequest(BaseModel):
     message_text: str = Field(min_length=1, max_length=4000)
+
+
+class AutomationSettingsResponse(BaseModel):
+    user_id: str
+    auto_sync_enabled: bool
+    auto_analyze_enabled: bool
+    auto_refine_enabled: bool
+    min_new_messages_threshold: int = Field(ge=1)
+    stale_hours_threshold: int = Field(ge=1)
+    pruned_messages_threshold: int = Field(ge=0)
+    default_detail_mode: Literal["light", "balanced", "deep"]
+    default_target_message_count: int = Field(ge=20)
+    default_lookback_hours: int = Field(ge=1)
+    daily_budget_usd: float = Field(ge=0)
+    max_auto_jobs_per_day: int = Field(ge=1)
+    updated_at: datetime
+
+
+class UpdateAutomationSettingsRequest(BaseModel):
+    auto_sync_enabled: bool | None = None
+    auto_analyze_enabled: bool | None = None
+    auto_refine_enabled: bool | None = None
+    min_new_messages_threshold: int | None = Field(default=None, ge=1, le=500)
+    stale_hours_threshold: int | None = Field(default=None, ge=1, le=336)
+    pruned_messages_threshold: int | None = Field(default=None, ge=0, le=500)
+    default_detail_mode: Literal["light", "balanced", "deep"] | None = None
+    default_target_message_count: int | None = Field(default=None, ge=20, le=500)
+    default_lookback_hours: int | None = Field(default=None, ge=1, le=336)
+    daily_budget_usd: float | None = Field(default=None, ge=0, le=50)
+    max_auto_jobs_per_day: int | None = Field(default=None, ge=1, le=100)
+
+
+class WhatsAppSyncRunResponse(BaseModel):
+    id: str
+    trigger: str
+    status: str
+    messages_seen_count: int = Field(ge=0)
+    messages_saved_count: int = Field(ge=0)
+    messages_ignored_count: int = Field(ge=0)
+    messages_pruned_count: int = Field(ge=0)
+    oldest_message_at: datetime | None = None
+    newest_message_at: datetime | None = None
+    error_text: str | None = None
+    started_at: datetime
+    finished_at: datetime | None = None
+    last_activity_at: datetime | None = None
+
+
+class AutomationDecisionResponse(BaseModel):
+    id: str
+    sync_run_id: str | None = None
+    intent: str
+    action: str
+    reason_code: str
+    score: int = Field(ge=0, le=100)
+    should_analyze: bool
+    available_message_count: int = Field(ge=0)
+    selected_message_count: int = Field(ge=0)
+    new_message_count: int = Field(ge=0)
+    replaced_message_count: int = Field(ge=0)
+    estimated_total_tokens: int = Field(ge=0)
+    estimated_cost_ceiling_usd: float = Field(ge=0)
+    explanation: str
+    created_at: datetime
+
+
+class AnalysisJobResponse(BaseModel):
+    id: str
+    intent: str
+    status: str
+    trigger_source: str
+    decision_id: str | None = None
+    sync_run_id: str | None = None
+    target_message_count: int = Field(ge=0)
+    max_lookback_hours: int = Field(ge=0)
+    detail_mode: str
+    selected_message_count: int = Field(ge=0)
+    selected_transcript_chars: int = Field(ge=0)
+    estimated_input_tokens: int = Field(ge=0)
+    estimated_output_tokens: int = Field(ge=0)
+    estimated_cost_floor_usd: float = Field(ge=0)
+    estimated_cost_ceiling_usd: float = Field(ge=0)
+    snapshot_id: str | None = None
+    error_text: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    created_at: datetime
+
+
+class ModelRunResponse(BaseModel):
+    id: str
+    job_id: str | None = None
+    provider: str
+    model_name: str
+    run_type: str
+    success: bool
+    latency_ms: int | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    estimated_cost_usd: float | None = None
+    error_text: str | None = None
+    created_at: datetime
+
+
+class AutomationJobsListResponse(BaseModel):
+    jobs: list[AnalysisJobResponse] = Field(default_factory=list)
+
+
+class AutomationDecisionsListResponse(BaseModel):
+    decisions: list[AutomationDecisionResponse] = Field(default_factory=list)
+
+
+class AutomationStatusResponse(BaseModel):
+    settings: AutomationSettingsResponse
+    sync_runs: list[WhatsAppSyncRunResponse] = Field(default_factory=list)
+    decisions: list[AutomationDecisionResponse] = Field(default_factory=list)
+    jobs: list[AnalysisJobResponse] = Field(default_factory=list)
+    model_runs: list[ModelRunResponse] = Field(default_factory=list)
+    daily_cost_usd: float = Field(ge=0)
+    daily_auto_jobs_count: int = Field(ge=0)
+    queued_jobs_count: int = Field(ge=0)
+    running_job_id: str | None = None
+
+
+AnalyzeMemoryResponse.model_rebuild()
+RefineMemoryResponse.model_rebuild()

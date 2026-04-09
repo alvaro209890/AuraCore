@@ -78,6 +78,7 @@ class DeepSeekService:
         prior_analyses_context: str,
         project_context: str,
         chat_context: str,
+        intent: str = "improve_memory",
         window_hours: int,
         window_start: datetime,
         window_end: datetime,
@@ -97,7 +98,7 @@ class DeepSeekService:
         payload = self._build_completion_payload(
             system_prompt=prompt_preview.system_prompt,
             user_prompt=prompt_preview.user_prompt,
-            max_tokens=self._analysis_max_output_tokens(),
+            max_tokens=self._analysis_max_output_tokens(intent=intent),
         )
 
         return await self._request_parsed_completion(
@@ -190,7 +191,8 @@ class DeepSeekService:
             ),
         )
 
-    def get_planning_profile(self) -> DeepSeekPlanningProfile:
+    def get_planning_profile(self, *, intent: str = "improve_memory") -> DeepSeekPlanningProfile:
+        output_reserve_tokens = self._analysis_max_output_tokens(intent=intent)
         if self._is_reasoning_model():
             return DeepSeekPlanningProfile(
                 model_name=self.settings.deepseek_model,
@@ -198,7 +200,7 @@ class DeepSeekService:
                 context_limit_ceiling_tokens=128000,
                 default_output_tokens=32000,
                 maximum_output_tokens=64000,
-                request_output_reserve_tokens=self._analysis_max_output_tokens(),
+                request_output_reserve_tokens=output_reserve_tokens,
                 cache_miss_input_price_floor_per_million=0.28,
                 cache_miss_input_price_ceiling_per_million=0.55,
                 output_price_floor_per_million=0.42,
@@ -219,7 +221,7 @@ class DeepSeekService:
             context_limit_ceiling_tokens=128000,
             default_output_tokens=4000,
             maximum_output_tokens=8000,
-            request_output_reserve_tokens=self._analysis_max_output_tokens(),
+            request_output_reserve_tokens=output_reserve_tokens,
             cache_miss_input_price_floor_per_million=0.28,
             cache_miss_input_price_ceiling_per_million=0.55,
             output_price_floor_per_million=0.42,
@@ -463,8 +465,12 @@ Regras:
     def _is_reasoning_model(self) -> bool:
         return "reasoner" in self.settings.deepseek_model.strip().lower()
 
-    def _analysis_max_output_tokens(self) -> int:
-        return 12000 if self._is_reasoning_model() else 5000
+    def _analysis_max_output_tokens(self, *, intent: str = "improve_memory") -> int:
+        if self._is_reasoning_model():
+            if intent == "first_analysis":
+                return 14000
+            return 12000
+        return 5000
 
     def _refinement_max_output_tokens(self) -> int:
         return 8000 if self._is_reasoning_model() else 3500

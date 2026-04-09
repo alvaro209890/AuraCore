@@ -14,6 +14,7 @@ class IngestedMessageRecord:
     user_id: UUID
     direction: str
     contact_name: str
+    chat_jid: str
     contact_phone: str | None
     message_text: str
     timestamp: datetime
@@ -26,6 +27,7 @@ class StoredMessageRecord:
     user_id: UUID
     direction: str
     contact_name: str
+    chat_jid: str | None
     contact_phone: str | None
     message_text: str
     timestamp: datetime
@@ -115,6 +117,104 @@ class ChatMessageRecord:
     created_at: datetime
 
 
+@dataclass(slots=True)
+class AutomationSettingsRecord:
+    user_id: UUID
+    auto_sync_enabled: bool
+    auto_analyze_enabled: bool
+    auto_refine_enabled: bool
+    min_new_messages_threshold: int
+    stale_hours_threshold: int
+    pruned_messages_threshold: int
+    default_detail_mode: str
+    default_target_message_count: int
+    default_lookback_hours: int
+    daily_budget_usd: float
+    max_auto_jobs_per_day: int
+    updated_at: datetime
+
+
+@dataclass(slots=True)
+class WhatsAppSyncRunRecord:
+    id: str
+    user_id: UUID
+    trigger: str
+    status: str
+    messages_seen_count: int
+    messages_saved_count: int
+    messages_ignored_count: int
+    messages_pruned_count: int
+    oldest_message_at: datetime | None
+    newest_message_at: datetime | None
+    error_text: str | None
+    started_at: datetime
+    finished_at: datetime | None
+    last_activity_at: datetime | None
+
+
+@dataclass(slots=True)
+class AutomationDecisionRecord:
+    id: str
+    user_id: UUID
+    sync_run_id: str | None
+    intent: str
+    action: str
+    reason_code: str
+    score: int
+    should_analyze: bool
+    available_message_count: int
+    selected_message_count: int
+    new_message_count: int
+    replaced_message_count: int
+    estimated_total_tokens: int
+    estimated_cost_ceiling_usd: float
+    explanation: str
+    created_at: datetime
+
+
+@dataclass(slots=True)
+class AnalysisJobRecord:
+    id: str
+    user_id: UUID
+    intent: str
+    status: str
+    trigger_source: str
+    decision_id: str | None
+    sync_run_id: str | None
+    target_message_count: int
+    max_lookback_hours: int
+    detail_mode: str
+    selected_message_count: int
+    selected_transcript_chars: int
+    estimated_input_tokens: int
+    estimated_output_tokens: int
+    estimated_cost_floor_usd: float
+    estimated_cost_ceiling_usd: float
+    snapshot_id: str | None
+    error_text: str | None
+    started_at: datetime | None
+    finished_at: datetime | None
+    created_at: datetime
+
+
+@dataclass(slots=True)
+class ModelRunRecord:
+    id: str
+    user_id: UUID
+    job_id: str | None
+    provider: str
+    model_name: str
+    run_type: str
+    success: bool
+    latency_ms: int | None
+    input_tokens: int | None
+    output_tokens: int | None
+    reasoning_tokens: int | None
+    estimated_cost_usd: float | None
+    error_text: str | None
+    created_at: datetime
+
+
 class SupabaseStore:
     def __init__(
         self,
@@ -148,12 +248,14 @@ class SupabaseStore:
                     contact_phone=message.contact_phone,
                     known_name=known_contact_names.get(message.contact_phone or ""),
                 ),
+                "chat_jid": message.chat_jid,
                 "contact_phone": message.contact_phone,
                 "direction": message.direction,
                 "message_text": message.message_text,
                 "timestamp": message.timestamp.isoformat(),
                 "source": message.source,
                 "embedding": None,
+                "ingested_at": datetime.now(UTC).isoformat(),
             }
             for message in filtered_messages
         ]
@@ -183,7 +285,7 @@ class SupabaseStore:
     ) -> list[StoredMessageRecord]:
         response = (
             self.client.table("mensagens")
-            .select("id,user_id,contact_name,contact_phone,direction,message_text,timestamp,source")
+            .select("id,user_id,contact_name,chat_jid,contact_phone,direction,message_text,timestamp,source")
             .eq("user_id", str(user_id))
             .gte("timestamp", window_start.isoformat())
             .lte("timestamp", window_end.isoformat())
@@ -206,6 +308,7 @@ class SupabaseStore:
                     user_id=self._parse_uuid(row.get("user_id")) or user_id,
                     direction=str(row.get("direction") or "inbound"),
                     contact_name=str(row.get("contact_name") or row.get("contact_phone") or "Contato"),
+                    chat_jid=self._optional_text(row.get("chat_jid")),
                     contact_phone=contact_phone,
                     message_text=message_text,
                     timestamp=self._parse_datetime(row.get("timestamp")) or datetime.now(UTC),
@@ -665,6 +768,654 @@ class SupabaseStore:
             updated_at=updated_at,
         )
 
+    def get_automation_settings(self, user_id: UUID) -> AutomationSettingsRecord:
+        response = (
+            self.client.table("automation_settings")
+            .select(
+                "user_id,auto_sync_enabled,auto_analyze_enabled,auto_refine_enabled,"
+                "min_new_messages_threshold,stale_hours_threshold,pruned_messages_threshold,"
+                "default_detail_mode,default_target_message_count,default_lookback_hours,"
+                "daily_budget_usd,max_auto_jobs_per_day,updated_at"
+            )
+            .eq("user_id", str(user_id))
+            .limit(1)
+            .execute()
+        )
+        rows = response.data or []
+        if rows and isinstance(rows[0], dict):
+            parsed = self._parse_automation_settings(rows[0], fallback_user_id=user_id)
+            if parsed is not None:
+                return parsed
+
+        created_at = datetime.now(UTC)
+        record = self._default_automation_settings_record(user_id=user_id, updated_at=created_at)
+        self.client.table("automation_settings").upsert(record, on_conflict="user_id").execute()
+        return AutomationSettingsRecord(
+            user_id=user_id,
+            auto_sync_enabled=bool(record["auto_sync_enabled"]),
+            auto_analyze_enabled=bool(record["auto_analyze_enabled"]),
+            auto_refine_enabled=bool(record["auto_refine_enabled"]),
+            min_new_messages_threshold=int(record["min_new_messages_threshold"]),
+            stale_hours_threshold=int(record["stale_hours_threshold"]),
+            pruned_messages_threshold=int(record["pruned_messages_threshold"]),
+            default_detail_mode=str(record["default_detail_mode"]),
+            default_target_message_count=int(record["default_target_message_count"]),
+            default_lookback_hours=int(record["default_lookback_hours"]),
+            daily_budget_usd=float(record["daily_budget_usd"]),
+            max_auto_jobs_per_day=int(record["max_auto_jobs_per_day"]),
+            updated_at=created_at,
+        )
+
+    def update_automation_settings(
+        self,
+        *,
+        user_id: UUID,
+        auto_sync_enabled: bool | None = None,
+        auto_analyze_enabled: bool | None = None,
+        auto_refine_enabled: bool | None = None,
+        min_new_messages_threshold: int | None = None,
+        stale_hours_threshold: int | None = None,
+        pruned_messages_threshold: int | None = None,
+        default_detail_mode: str | None = None,
+        default_target_message_count: int | None = None,
+        default_lookback_hours: int | None = None,
+        daily_budget_usd: float | None = None,
+        max_auto_jobs_per_day: int | None = None,
+    ) -> AutomationSettingsRecord:
+        current = self.get_automation_settings(user_id)
+        updated_at = datetime.now(UTC)
+        record = {
+            "user_id": str(user_id),
+            "auto_sync_enabled": current.auto_sync_enabled if auto_sync_enabled is None else bool(auto_sync_enabled),
+            "auto_analyze_enabled": current.auto_analyze_enabled if auto_analyze_enabled is None else bool(auto_analyze_enabled),
+            "auto_refine_enabled": current.auto_refine_enabled if auto_refine_enabled is None else bool(auto_refine_enabled),
+            "min_new_messages_threshold": max(1, min_new_messages_threshold if min_new_messages_threshold is not None else current.min_new_messages_threshold),
+            "stale_hours_threshold": max(1, stale_hours_threshold if stale_hours_threshold is not None else current.stale_hours_threshold),
+            "pruned_messages_threshold": max(0, pruned_messages_threshold if pruned_messages_threshold is not None else current.pruned_messages_threshold),
+            "default_detail_mode": self._normalize_detail_mode(default_detail_mode or current.default_detail_mode),
+            "default_target_message_count": max(20, min(
+                self.message_retention_max_rows,
+                default_target_message_count if default_target_message_count is not None else current.default_target_message_count,
+            )),
+            "default_lookback_hours": max(1, default_lookback_hours if default_lookback_hours is not None else current.default_lookback_hours),
+            "daily_budget_usd": max(0.0, daily_budget_usd if daily_budget_usd is not None else current.daily_budget_usd),
+            "max_auto_jobs_per_day": max(1, max_auto_jobs_per_day if max_auto_jobs_per_day is not None else current.max_auto_jobs_per_day),
+            "updated_at": updated_at.isoformat(),
+        }
+        self.client.table("automation_settings").upsert(record, on_conflict="user_id").execute()
+        refreshed = self.get_automation_settings(user_id)
+        return refreshed
+
+    def create_whatsapp_sync_run(
+        self,
+        *,
+        user_id: UUID,
+        trigger: str,
+        started_at: datetime,
+    ) -> WhatsAppSyncRunRecord:
+        retention_state = self.get_message_retention_state(user_id)
+        sync_run_id = str(uuid4())
+        record = {
+            "id": sync_run_id,
+            "user_id": str(user_id),
+            "trigger": trigger,
+            "status": "running",
+            "messages_seen_count": 0,
+            "messages_saved_count": 0,
+            "messages_ignored_count": 0,
+            "messages_pruned_count": 0,
+            "oldest_message_at": None,
+            "newest_message_at": None,
+            "error_text": None,
+            "baseline_ingested_count": retention_state.total_direct_ingested_count,
+            "baseline_pruned_count": retention_state.total_direct_pruned_count,
+            "last_activity_at": started_at.isoformat(),
+            "started_at": started_at.isoformat(),
+            "finished_at": None,
+        }
+        self.client.table("wa_sync_runs").insert(record).execute()
+        sync_run = self.get_whatsapp_sync_run(sync_run_id)
+        if sync_run is None:
+            raise RuntimeError("WhatsApp sync run could not be created.")
+        return sync_run
+
+    def get_whatsapp_sync_run(self, sync_run_id: str) -> WhatsAppSyncRunRecord | None:
+        response = (
+            self.client.table("wa_sync_runs")
+            .select(
+                "id,user_id,trigger,status,messages_seen_count,messages_saved_count,messages_ignored_count,"
+                "messages_pruned_count,oldest_message_at,newest_message_at,error_text,started_at,finished_at,last_activity_at"
+            )
+            .eq("id", sync_run_id)
+            .limit(1)
+            .execute()
+        )
+        rows = response.data or []
+        if not rows or not isinstance(rows[0], dict):
+            return None
+        return self._parse_whatsapp_sync_run(rows[0], fallback_user_id=self.default_user_id)
+
+    def get_latest_running_sync_run(self, user_id: UUID) -> WhatsAppSyncRunRecord | None:
+        response = (
+            self.client.table("wa_sync_runs")
+            .select(
+                "id,user_id,trigger,status,messages_seen_count,messages_saved_count,messages_ignored_count,"
+                "messages_pruned_count,oldest_message_at,newest_message_at,error_text,started_at,finished_at,last_activity_at"
+            )
+            .eq("user_id", str(user_id))
+            .eq("status", "running")
+            .order("started_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = response.data or []
+        if not rows or not isinstance(rows[0], dict):
+            return None
+        return self._parse_whatsapp_sync_run(rows[0], fallback_user_id=user_id)
+
+    def touch_latest_running_sync_run(
+        self,
+        *,
+        user_id: UUID,
+        seen_increment: int,
+        saved_increment: int,
+        ignored_increment: int,
+        oldest_message_at: datetime | None,
+        newest_message_at: datetime | None,
+        activity_at: datetime,
+    ) -> WhatsAppSyncRunRecord | None:
+        row = self._get_latest_running_sync_run_row(user_id)
+        if row is None:
+            return None
+
+        sync_run_id = str(row.get("id") or "")
+        current_oldest = self._parse_datetime(row.get("oldest_message_at"))
+        current_newest = self._parse_datetime(row.get("newest_message_at"))
+        update_payload = {
+            "messages_seen_count": (self._parse_int(row.get("messages_seen_count")) or 0) + max(0, seen_increment),
+            "messages_saved_count": (self._parse_int(row.get("messages_saved_count")) or 0) + max(0, saved_increment),
+            "messages_ignored_count": (self._parse_int(row.get("messages_ignored_count")) or 0) + max(0, ignored_increment),
+            "oldest_message_at": self._earliest_datetime(current_oldest, oldest_message_at),
+            "newest_message_at": self._latest_datetime(current_newest, newest_message_at),
+            "last_activity_at": activity_at.isoformat(),
+        }
+        if isinstance(update_payload["oldest_message_at"], datetime):
+            update_payload["oldest_message_at"] = update_payload["oldest_message_at"].isoformat()
+        if isinstance(update_payload["newest_message_at"], datetime):
+            update_payload["newest_message_at"] = update_payload["newest_message_at"].isoformat()
+
+        self.client.table("wa_sync_runs").update(update_payload).eq("id", sync_run_id).execute()
+        return self.get_whatsapp_sync_run(sync_run_id)
+
+    def mark_whatsapp_sync_run_failed(self, *, sync_run_id: str, error_text: str, finished_at: datetime) -> WhatsAppSyncRunRecord | None:
+        self.client.table("wa_sync_runs").update(
+            {
+                "status": "failed",
+                "error_text": error_text,
+                "finished_at": finished_at.isoformat(),
+                "last_activity_at": finished_at.isoformat(),
+            }
+        ).eq("id", sync_run_id).execute()
+        return self.get_whatsapp_sync_run(sync_run_id)
+
+    def finalize_idle_sync_runs(self, *, user_id: UUID, idle_before: datetime) -> list[WhatsAppSyncRunRecord]:
+        response = (
+            self.client.table("wa_sync_runs")
+            .select(
+                "id,user_id,trigger,status,messages_seen_count,messages_saved_count,messages_ignored_count,"
+                "messages_pruned_count,oldest_message_at,newest_message_at,error_text,started_at,finished_at,"
+                "last_activity_at,baseline_ingested_count,baseline_pruned_count"
+            )
+            .eq("user_id", str(user_id))
+            .eq("status", "running")
+            .order("started_at", desc=False)
+            .limit(20)
+            .execute()
+        )
+        rows = response.data or []
+        if not rows:
+            return []
+
+        retention_state = self.get_message_retention_state(user_id)
+        finalized: list[WhatsAppSyncRunRecord] = []
+        finished_at = datetime.now(UTC)
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            last_activity_at = self._parse_datetime(row.get("last_activity_at")) or self._parse_datetime(row.get("started_at"))
+            if last_activity_at is not None and last_activity_at > idle_before:
+                continue
+
+            baseline_ingested_count = self._parse_int(row.get("baseline_ingested_count")) or 0
+            baseline_pruned_count = self._parse_int(row.get("baseline_pruned_count")) or 0
+            saved_from_retention = max(0, retention_state.total_direct_ingested_count - baseline_ingested_count)
+            pruned_from_retention = max(0, retention_state.total_direct_pruned_count - baseline_pruned_count)
+
+            sync_run_id = str(row.get("id") or "")
+            self.client.table("wa_sync_runs").update(
+                {
+                    "status": "succeeded",
+                    "messages_saved_count": max(self._parse_int(row.get("messages_saved_count")) or 0, saved_from_retention),
+                    "messages_pruned_count": max(self._parse_int(row.get("messages_pruned_count")) or 0, pruned_from_retention),
+                    "finished_at": finished_at.isoformat(),
+                    "last_activity_at": (last_activity_at or finished_at).isoformat(),
+                }
+            ).eq("id", sync_run_id).execute()
+            resolved = self.get_whatsapp_sync_run(sync_run_id)
+            if resolved is not None:
+                finalized.append(resolved)
+        return finalized
+
+    def list_whatsapp_sync_runs(self, *, user_id: UUID, limit: int = 8) -> list[WhatsAppSyncRunRecord]:
+        response = (
+            self.client.table("wa_sync_runs")
+            .select(
+                "id,user_id,trigger,status,messages_seen_count,messages_saved_count,messages_ignored_count,"
+                "messages_pruned_count,oldest_message_at,newest_message_at,error_text,started_at,finished_at,last_activity_at"
+            )
+            .eq("user_id", str(user_id))
+            .order("started_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        rows = response.data or []
+        runs: list[WhatsAppSyncRunRecord] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            parsed = self._parse_whatsapp_sync_run(row, fallback_user_id=user_id)
+            if parsed is not None:
+                runs.append(parsed)
+        return runs
+
+    def create_automation_decision(
+        self,
+        *,
+        user_id: UUID,
+        sync_run_id: str | None,
+        intent: str,
+        action: str,
+        reason_code: str,
+        score: int,
+        should_analyze: bool,
+        available_message_count: int,
+        selected_message_count: int,
+        new_message_count: int,
+        replaced_message_count: int,
+        estimated_total_tokens: int,
+        estimated_cost_ceiling_usd: float,
+        explanation: str,
+        created_at: datetime,
+    ) -> AutomationDecisionRecord:
+        decision_id = str(uuid4())
+        record = {
+            "id": decision_id,
+            "user_id": str(user_id),
+            "sync_run_id": sync_run_id,
+            "intent": intent,
+            "action": action,
+            "reason_code": reason_code,
+            "score": max(0, min(100, score)),
+            "should_analyze": bool(should_analyze),
+            "available_message_count": max(0, available_message_count),
+            "selected_message_count": max(0, selected_message_count),
+            "new_message_count": max(0, new_message_count),
+            "replaced_message_count": max(0, replaced_message_count),
+            "estimated_total_tokens": max(0, estimated_total_tokens),
+            "estimated_cost_ceiling_usd": max(0.0, estimated_cost_ceiling_usd),
+            "explanation": explanation.strip(),
+            "created_at": created_at.isoformat(),
+        }
+        self.client.table("automation_decisions").insert(record).execute()
+        return AutomationDecisionRecord(
+            id=decision_id,
+            user_id=user_id,
+            sync_run_id=sync_run_id,
+            intent=intent,
+            action=action,
+            reason_code=reason_code,
+            score=int(record["score"]),
+            should_analyze=bool(record["should_analyze"]),
+            available_message_count=int(record["available_message_count"]),
+            selected_message_count=int(record["selected_message_count"]),
+            new_message_count=int(record["new_message_count"]),
+            replaced_message_count=int(record["replaced_message_count"]),
+            estimated_total_tokens=int(record["estimated_total_tokens"]),
+            estimated_cost_ceiling_usd=float(record["estimated_cost_ceiling_usd"]),
+            explanation=str(record["explanation"]),
+            created_at=created_at,
+        )
+
+    def list_automation_decisions(self, *, user_id: UUID, limit: int = 10) -> list[AutomationDecisionRecord]:
+        response = (
+            self.client.table("automation_decisions")
+            .select(
+                "id,user_id,sync_run_id,intent,action,reason_code,score,should_analyze,available_message_count,"
+                "selected_message_count,new_message_count,replaced_message_count,estimated_total_tokens,"
+                "estimated_cost_ceiling_usd,explanation,created_at"
+            )
+            .eq("user_id", str(user_id))
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        rows = response.data or []
+        decisions: list[AutomationDecisionRecord] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            parsed = self._parse_automation_decision(row, fallback_user_id=user_id)
+            if parsed is not None:
+                decisions.append(parsed)
+        return decisions
+
+    def create_analysis_job(
+        self,
+        *,
+        user_id: UUID,
+        intent: str,
+        status: str,
+        trigger_source: str,
+        decision_id: str | None,
+        sync_run_id: str | None,
+        target_message_count: int,
+        max_lookback_hours: int,
+        detail_mode: str,
+        selected_message_count: int = 0,
+        selected_transcript_chars: int = 0,
+        estimated_input_tokens: int = 0,
+        estimated_output_tokens: int = 0,
+        estimated_cost_floor_usd: float = 0.0,
+        estimated_cost_ceiling_usd: float = 0.0,
+        snapshot_id: str | None = None,
+        error_text: str | None = None,
+        started_at: datetime | None = None,
+        finished_at: datetime | None = None,
+        created_at: datetime | None = None,
+    ) -> AnalysisJobRecord:
+        resolved_created_at = created_at or datetime.now(UTC)
+        job_id = str(uuid4())
+        record = {
+            "id": job_id,
+            "user_id": str(user_id),
+            "intent": intent,
+            "status": status,
+            "trigger_source": trigger_source,
+            "decision_id": decision_id,
+            "sync_run_id": sync_run_id,
+            "target_message_count": max(0, target_message_count),
+            "max_lookback_hours": max(0, max_lookback_hours),
+            "detail_mode": self._normalize_detail_mode(detail_mode),
+            "selected_message_count": max(0, selected_message_count),
+            "selected_transcript_chars": max(0, selected_transcript_chars),
+            "estimated_input_tokens": max(0, estimated_input_tokens),
+            "estimated_output_tokens": max(0, estimated_output_tokens),
+            "estimated_cost_floor_usd": max(0.0, estimated_cost_floor_usd),
+            "estimated_cost_ceiling_usd": max(0.0, estimated_cost_ceiling_usd),
+            "snapshot_id": snapshot_id,
+            "error_text": error_text,
+            "started_at": started_at.isoformat() if started_at else None,
+            "finished_at": finished_at.isoformat() if finished_at else None,
+            "created_at": resolved_created_at.isoformat(),
+        }
+        self.client.table("analysis_jobs").insert(record).execute()
+        job = self.get_analysis_job(job_id)
+        if job is None:
+            raise RuntimeError("Analysis job could not be created.")
+        return job
+
+    def get_analysis_job(self, job_id: str) -> AnalysisJobRecord | None:
+        response = (
+            self.client.table("analysis_jobs")
+            .select(
+                "id,user_id,intent,status,trigger_source,decision_id,sync_run_id,target_message_count,"
+                "max_lookback_hours,detail_mode,selected_message_count,selected_transcript_chars,"
+                "estimated_input_tokens,estimated_output_tokens,estimated_cost_floor_usd,"
+                "estimated_cost_ceiling_usd,snapshot_id,error_text,started_at,finished_at,created_at"
+            )
+            .eq("id", job_id)
+            .limit(1)
+            .execute()
+        )
+        rows = response.data or []
+        if not rows or not isinstance(rows[0], dict):
+            return None
+        return self._parse_analysis_job(rows[0], fallback_user_id=self.default_user_id)
+
+    def update_analysis_job(
+        self,
+        *,
+        job_id: str,
+        status: str | None = None,
+        decision_id: str | None = None,
+        sync_run_id: str | None = None,
+        target_message_count: int | None = None,
+        max_lookback_hours: int | None = None,
+        detail_mode: str | None = None,
+        selected_message_count: int | None = None,
+        selected_transcript_chars: int | None = None,
+        estimated_input_tokens: int | None = None,
+        estimated_output_tokens: int | None = None,
+        estimated_cost_floor_usd: float | None = None,
+        estimated_cost_ceiling_usd: float | None = None,
+        snapshot_id: str | None = None,
+        error_text: str | None = None,
+        started_at: datetime | None = None,
+        finished_at: datetime | None = None,
+    ) -> AnalysisJobRecord | None:
+        payload: dict[str, Any] = {}
+        if status is not None:
+            payload["status"] = status
+        if decision_id is not None:
+            payload["decision_id"] = decision_id
+        if sync_run_id is not None:
+            payload["sync_run_id"] = sync_run_id
+        if target_message_count is not None:
+            payload["target_message_count"] = max(0, target_message_count)
+        if max_lookback_hours is not None:
+            payload["max_lookback_hours"] = max(0, max_lookback_hours)
+        if detail_mode is not None:
+            payload["detail_mode"] = self._normalize_detail_mode(detail_mode)
+        if selected_message_count is not None:
+            payload["selected_message_count"] = max(0, selected_message_count)
+        if selected_transcript_chars is not None:
+            payload["selected_transcript_chars"] = max(0, selected_transcript_chars)
+        if estimated_input_tokens is not None:
+            payload["estimated_input_tokens"] = max(0, estimated_input_tokens)
+        if estimated_output_tokens is not None:
+            payload["estimated_output_tokens"] = max(0, estimated_output_tokens)
+        if estimated_cost_floor_usd is not None:
+            payload["estimated_cost_floor_usd"] = max(0.0, estimated_cost_floor_usd)
+        if estimated_cost_ceiling_usd is not None:
+            payload["estimated_cost_ceiling_usd"] = max(0.0, estimated_cost_ceiling_usd)
+        if snapshot_id is not None:
+            payload["snapshot_id"] = snapshot_id
+        if error_text is not None:
+            payload["error_text"] = error_text
+        if started_at is not None:
+            payload["started_at"] = started_at.isoformat()
+        if finished_at is not None:
+            payload["finished_at"] = finished_at.isoformat()
+        if payload:
+            self.client.table("analysis_jobs").update(payload).eq("id", job_id).execute()
+        return self.get_analysis_job(job_id)
+
+    def claim_next_queued_analysis_job(self, *, user_id: UUID) -> AnalysisJobRecord | None:
+        response = (
+            self.client.table("analysis_jobs")
+            .select(
+                "id,user_id,intent,status,trigger_source,decision_id,sync_run_id,target_message_count,"
+                "max_lookback_hours,detail_mode,selected_message_count,selected_transcript_chars,"
+                "estimated_input_tokens,estimated_output_tokens,estimated_cost_floor_usd,"
+                "estimated_cost_ceiling_usd,snapshot_id,error_text,started_at,finished_at,created_at"
+            )
+            .eq("user_id", str(user_id))
+            .eq("status", "queued")
+            .order("created_at", desc=False)
+            .limit(1)
+            .execute()
+        )
+        rows = response.data or []
+        if not rows or not isinstance(rows[0], dict):
+            return None
+        job_id = str(rows[0].get("id") or "")
+        self.client.table("analysis_jobs").update(
+            {
+                "status": "running",
+                "started_at": datetime.now(UTC).isoformat(),
+            }
+        ).eq("id", job_id).execute()
+        return self.get_analysis_job(job_id)
+
+    def list_analysis_jobs(self, *, user_id: UUID, limit: int = 12) -> list[AnalysisJobRecord]:
+        response = (
+            self.client.table("analysis_jobs")
+            .select(
+                "id,user_id,intent,status,trigger_source,decision_id,sync_run_id,target_message_count,"
+                "max_lookback_hours,detail_mode,selected_message_count,selected_transcript_chars,"
+                "estimated_input_tokens,estimated_output_tokens,estimated_cost_floor_usd,"
+                "estimated_cost_ceiling_usd,snapshot_id,error_text,started_at,finished_at,created_at"
+            )
+            .eq("user_id", str(user_id))
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        rows = response.data or []
+        jobs: list[AnalysisJobRecord] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            parsed = self._parse_analysis_job(row, fallback_user_id=user_id)
+            if parsed is not None:
+                jobs.append(parsed)
+        return jobs
+
+    def count_analysis_jobs_since(
+        self,
+        *,
+        user_id: UUID,
+        since: datetime,
+        trigger_source: str | None = None,
+    ) -> int:
+        query = (
+            self.client.table("analysis_jobs")
+            .select("id,trigger_source")
+            .eq("user_id", str(user_id))
+            .gte("created_at", since.isoformat())
+            .limit(500)
+        )
+        if trigger_source is not None:
+            query = query.eq("trigger_source", trigger_source)
+        response = query.execute()
+        rows = response.data or []
+        return sum(1 for row in rows if isinstance(row, dict))
+
+    def save_analysis_job_messages(self, *, job_id: str, message_ids: Sequence[str]) -> None:
+        cleaned = [message_id.strip() for message_id in message_ids if message_id and message_id.strip()]
+        if not cleaned:
+            return
+        records = [
+            {
+                "job_id": job_id,
+                "message_id": message_id,
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+            for message_id in dict.fromkeys(cleaned)
+        ]
+        self.client.table("analysis_job_messages").upsert(records, on_conflict="job_id,message_id").execute()
+
+    def create_model_run(
+        self,
+        *,
+        user_id: UUID,
+        job_id: str | None,
+        provider: str,
+        model_name: str,
+        run_type: str,
+        success: bool,
+        latency_ms: int | None,
+        input_tokens: int | None,
+        output_tokens: int | None,
+        reasoning_tokens: int | None,
+        estimated_cost_usd: float | None,
+        error_text: str | None,
+        created_at: datetime,
+    ) -> ModelRunRecord:
+        model_run_id = str(uuid4())
+        record = {
+            "id": model_run_id,
+            "user_id": str(user_id),
+            "job_id": job_id,
+            "provider": provider,
+            "model_name": model_name,
+            "run_type": run_type,
+            "success": bool(success),
+            "latency_ms": latency_ms,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "reasoning_tokens": reasoning_tokens,
+            "estimated_cost_usd": estimated_cost_usd,
+            "error_text": error_text,
+            "created_at": created_at.isoformat(),
+        }
+        self.client.table("model_runs").insert(record).execute()
+        return ModelRunRecord(
+            id=model_run_id,
+            user_id=user_id,
+            job_id=job_id,
+            provider=provider,
+            model_name=model_name,
+            run_type=run_type,
+            success=bool(success),
+            latency_ms=latency_ms,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            reasoning_tokens=reasoning_tokens,
+            estimated_cost_usd=estimated_cost_usd,
+            error_text=error_text,
+            created_at=created_at,
+        )
+
+    def list_model_runs(self, *, user_id: UUID, limit: int = 12) -> list[ModelRunRecord]:
+        response = (
+            self.client.table("model_runs")
+            .select(
+                "id,user_id,job_id,provider,model_name,run_type,success,latency_ms,input_tokens,"
+                "output_tokens,reasoning_tokens,estimated_cost_usd,error_text,created_at"
+            )
+            .eq("user_id", str(user_id))
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        rows = response.data or []
+        runs: list[ModelRunRecord] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            parsed = self._parse_model_run(row, fallback_user_id=user_id)
+            if parsed is not None:
+                runs.append(parsed)
+        return runs
+
+    def sum_model_run_cost_since(self, *, user_id: UUID, since: datetime) -> float:
+        response = (
+            self.client.table("model_runs")
+            .select("estimated_cost_usd")
+            .eq("user_id", str(user_id))
+            .gte("created_at", since.isoformat())
+            .limit(500)
+            .execute()
+        )
+        rows = response.data or []
+        total = 0.0
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            total += self._parse_float(row.get("estimated_cost_usd")) or 0.0
+        return round(total, 6)
+
     def _insert_memory_snapshot(self, snapshot: MemorySnapshotRecord) -> None:
         record = {
             "id": snapshot.id,
@@ -685,6 +1436,42 @@ class SupabaseStore:
 
     def _delete_memory_snapshot(self, snapshot_id: str) -> None:
         self.client.table("memory_snapshots").delete().eq("id", snapshot_id).execute()
+
+    def _default_automation_settings_record(self, *, user_id: UUID, updated_at: datetime) -> dict[str, Any]:
+        return {
+            "user_id": str(user_id),
+            "auto_sync_enabled": True,
+            "auto_analyze_enabled": True,
+            "auto_refine_enabled": False,
+            "min_new_messages_threshold": 25,
+            "stale_hours_threshold": 24,
+            "pruned_messages_threshold": 1,
+            "default_detail_mode": "balanced",
+            "default_target_message_count": min(200, self.message_retention_max_rows),
+            "default_lookback_hours": 72,
+            "daily_budget_usd": 0.25,
+            "max_auto_jobs_per_day": 4,
+            "updated_at": updated_at.isoformat(),
+        }
+
+    def _get_latest_running_sync_run_row(self, user_id: UUID) -> dict[str, Any] | None:
+        response = (
+            self.client.table("wa_sync_runs")
+            .select(
+                "id,user_id,trigger,status,messages_seen_count,messages_saved_count,messages_ignored_count,"
+                "messages_pruned_count,oldest_message_at,newest_message_at,error_text,started_at,finished_at,"
+                "last_activity_at,baseline_ingested_count,baseline_pruned_count"
+            )
+            .eq("user_id", str(user_id))
+            .eq("status", "running")
+            .order("started_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = response.data or []
+        if not rows or not isinstance(rows[0], dict):
+            return None
+        return rows[0]
 
     def _parse_uuid(self, value: Any) -> UUID | None:
         if value is None:
@@ -719,6 +1506,26 @@ class SupabaseStore:
             return int(value)
         except (TypeError, ValueError):
             return None
+
+    def _parse_float(self, value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _parse_bool(self, value: Any) -> bool | None:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return None
+        text = str(value).strip().lower()
+        if text in {"true", "t", "1", "yes", "y"}:
+            return True
+        if text in {"false", "f", "0", "no", "n"}:
+            return False
+        return None
 
     def _parse_string_list(self, value: Any) -> list[str]:
         if not isinstance(value, list):
@@ -881,3 +1688,131 @@ class SupabaseStore:
             content=content,
             created_at=self._parse_datetime(value.get("created_at")) or datetime.now(UTC),
         )
+
+    def _parse_automation_settings(self, value: Any, *, fallback_user_id: UUID) -> AutomationSettingsRecord | None:
+        if not isinstance(value, dict):
+            return None
+        return AutomationSettingsRecord(
+            user_id=self._parse_uuid(value.get("user_id")) or fallback_user_id,
+            auto_sync_enabled=self._parse_bool(value.get("auto_sync_enabled")) if self._parse_bool(value.get("auto_sync_enabled")) is not None else True,
+            auto_analyze_enabled=self._parse_bool(value.get("auto_analyze_enabled")) if self._parse_bool(value.get("auto_analyze_enabled")) is not None else True,
+            auto_refine_enabled=self._parse_bool(value.get("auto_refine_enabled")) if self._parse_bool(value.get("auto_refine_enabled")) is not None else False,
+            min_new_messages_threshold=self._parse_int(value.get("min_new_messages_threshold")) or 25,
+            stale_hours_threshold=self._parse_int(value.get("stale_hours_threshold")) or 24,
+            pruned_messages_threshold=self._parse_int(value.get("pruned_messages_threshold")) or 1,
+            default_detail_mode=self._normalize_detail_mode(self._optional_text(value.get("default_detail_mode")) or "balanced"),
+            default_target_message_count=self._parse_int(value.get("default_target_message_count")) or min(200, self.message_retention_max_rows),
+            default_lookback_hours=self._parse_int(value.get("default_lookback_hours")) or 72,
+            daily_budget_usd=self._parse_float(value.get("daily_budget_usd")) or 0.25,
+            max_auto_jobs_per_day=self._parse_int(value.get("max_auto_jobs_per_day")) or 4,
+            updated_at=self._parse_datetime(value.get("updated_at")) or datetime.now(UTC),
+        )
+
+    def _parse_whatsapp_sync_run(self, value: Any, *, fallback_user_id: UUID) -> WhatsAppSyncRunRecord | None:
+        if not isinstance(value, dict):
+            return None
+        return WhatsAppSyncRunRecord(
+            id=str(value.get("id") or ""),
+            user_id=self._parse_uuid(value.get("user_id")) or fallback_user_id,
+            trigger=str(value.get("trigger") or "manual"),
+            status=str(value.get("status") or "unknown"),
+            messages_seen_count=self._parse_int(value.get("messages_seen_count")) or 0,
+            messages_saved_count=self._parse_int(value.get("messages_saved_count")) or 0,
+            messages_ignored_count=self._parse_int(value.get("messages_ignored_count")) or 0,
+            messages_pruned_count=self._parse_int(value.get("messages_pruned_count")) or 0,
+            oldest_message_at=self._parse_datetime(value.get("oldest_message_at")),
+            newest_message_at=self._parse_datetime(value.get("newest_message_at")),
+            error_text=self._optional_text(value.get("error_text")),
+            started_at=self._parse_datetime(value.get("started_at")) or datetime.now(UTC),
+            finished_at=self._parse_datetime(value.get("finished_at")),
+            last_activity_at=self._parse_datetime(value.get("last_activity_at")),
+        )
+
+    def _parse_automation_decision(self, value: Any, *, fallback_user_id: UUID) -> AutomationDecisionRecord | None:
+        if not isinstance(value, dict):
+            return None
+        return AutomationDecisionRecord(
+            id=str(value.get("id") or ""),
+            user_id=self._parse_uuid(value.get("user_id")) or fallback_user_id,
+            sync_run_id=self._optional_text(value.get("sync_run_id")),
+            intent=str(value.get("intent") or "improve_memory"),
+            action=str(value.get("action") or "skip"),
+            reason_code=str(value.get("reason_code") or "unknown"),
+            score=self._parse_int(value.get("score")) or 0,
+            should_analyze=bool(self._parse_bool(value.get("should_analyze"))),
+            available_message_count=self._parse_int(value.get("available_message_count")) or 0,
+            selected_message_count=self._parse_int(value.get("selected_message_count")) or 0,
+            new_message_count=self._parse_int(value.get("new_message_count")) or 0,
+            replaced_message_count=self._parse_int(value.get("replaced_message_count")) or 0,
+            estimated_total_tokens=self._parse_int(value.get("estimated_total_tokens")) or 0,
+            estimated_cost_ceiling_usd=self._parse_float(value.get("estimated_cost_ceiling_usd")) or 0.0,
+            explanation=str(value.get("explanation") or ""),
+            created_at=self._parse_datetime(value.get("created_at")) or datetime.now(UTC),
+        )
+
+    def _parse_analysis_job(self, value: Any, *, fallback_user_id: UUID) -> AnalysisJobRecord | None:
+        if not isinstance(value, dict):
+            return None
+        return AnalysisJobRecord(
+            id=str(value.get("id") or ""),
+            user_id=self._parse_uuid(value.get("user_id")) or fallback_user_id,
+            intent=str(value.get("intent") or "improve_memory"),
+            status=str(value.get("status") or "queued"),
+            trigger_source=str(value.get("trigger_source") or "manual"),
+            decision_id=self._optional_text(value.get("decision_id")),
+            sync_run_id=self._optional_text(value.get("sync_run_id")),
+            target_message_count=self._parse_int(value.get("target_message_count")) or 0,
+            max_lookback_hours=self._parse_int(value.get("max_lookback_hours")) or 0,
+            detail_mode=self._normalize_detail_mode(self._optional_text(value.get("detail_mode")) or "balanced"),
+            selected_message_count=self._parse_int(value.get("selected_message_count")) or 0,
+            selected_transcript_chars=self._parse_int(value.get("selected_transcript_chars")) or 0,
+            estimated_input_tokens=self._parse_int(value.get("estimated_input_tokens")) or 0,
+            estimated_output_tokens=self._parse_int(value.get("estimated_output_tokens")) or 0,
+            estimated_cost_floor_usd=self._parse_float(value.get("estimated_cost_floor_usd")) or 0.0,
+            estimated_cost_ceiling_usd=self._parse_float(value.get("estimated_cost_ceiling_usd")) or 0.0,
+            snapshot_id=self._optional_text(value.get("snapshot_id")),
+            error_text=self._optional_text(value.get("error_text")),
+            started_at=self._parse_datetime(value.get("started_at")),
+            finished_at=self._parse_datetime(value.get("finished_at")),
+            created_at=self._parse_datetime(value.get("created_at")) or datetime.now(UTC),
+        )
+
+    def _parse_model_run(self, value: Any, *, fallback_user_id: UUID) -> ModelRunRecord | None:
+        if not isinstance(value, dict):
+            return None
+        return ModelRunRecord(
+            id=str(value.get("id") or ""),
+            user_id=self._parse_uuid(value.get("user_id")) or fallback_user_id,
+            job_id=self._optional_text(value.get("job_id")),
+            provider=str(value.get("provider") or "unknown"),
+            model_name=str(value.get("model_name") or ""),
+            run_type=str(value.get("run_type") or ""),
+            success=bool(self._parse_bool(value.get("success"))),
+            latency_ms=self._parse_int(value.get("latency_ms")),
+            input_tokens=self._parse_int(value.get("input_tokens")),
+            output_tokens=self._parse_int(value.get("output_tokens")),
+            reasoning_tokens=self._parse_int(value.get("reasoning_tokens")),
+            estimated_cost_usd=self._parse_float(value.get("estimated_cost_usd")),
+            error_text=self._optional_text(value.get("error_text")),
+            created_at=self._parse_datetime(value.get("created_at")) or datetime.now(UTC),
+        )
+
+    def _normalize_detail_mode(self, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized in {"light", "balanced", "deep"}:
+            return normalized
+        return "balanced"
+
+    def _earliest_datetime(self, first: datetime | None, second: datetime | None) -> datetime | None:
+        if first is None:
+            return second
+        if second is None:
+            return first
+        return first if first <= second else second
+
+    def _latest_datetime(self, first: datetime | None, second: datetime | None) -> datetime | None:
+        if first is None:
+            return second
+        if second is None:
+            return first
+        return first if first >= second else second

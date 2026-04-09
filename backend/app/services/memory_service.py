@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 from uuid import uuid4
 
 from app.config import Settings
 from app.services.deepseek_service import DeepSeekMemoryResult, DeepSeekService
-from app.services.groq_service import GroqChatError, GroqChatService
+from app.services.groq_service import GroqChatService
 from app.services.supabase_store import (
+    AutomationSettingsRecord,
     ChatMessageRecord,
     MemorySnapshotRecord,
     MessageRetentionStateRecord,
@@ -29,6 +30,8 @@ class MemoryAnalysisOutcome:
     persona: PersonaRecord
     snapshot: MemorySnapshotRecord
     projects: list[ProjectMemoryRecord]
+    source_message_ids: list[str] = field(default_factory=list)
+    selected_transcript_chars: int = 0
 
 
 @dataclass(slots=True)
@@ -139,6 +142,7 @@ class MemoryAnalysisService:
             prior_analyses_context=prior_analyses_context,
             project_context=project_context,
             chat_context=chat_context,
+            intent="improve_memory" if current_persona and current_persona.last_analyzed_at else "first_analysis",
             window_hours=window_hours,
             window_start=window_start,
             window_end=window_end,
@@ -175,7 +179,13 @@ class MemoryAnalysisService:
             ],
             observed_at=window_end,
         )
-        return MemoryAnalysisOutcome(persona=persona, snapshot=snapshot, projects=projects)
+        return MemoryAnalysisOutcome(
+            persona=persona,
+            snapshot=snapshot,
+            projects=projects,
+            source_message_ids=[message.message_id for message in included_messages],
+            selected_transcript_chars=len(transcript),
+        )
 
     async def analyze_selection(
         self,
@@ -229,6 +239,7 @@ class MemoryAnalysisService:
             prior_analyses_context=prior_analyses_context,
             project_context=project_context,
             chat_context=chat_context,
+            intent="improve_memory" if current_persona and current_persona.last_analyzed_at else "first_analysis",
             window_hours=max_lookback_hours,
             window_start=window_start,
             window_end=window_end,
@@ -265,7 +276,13 @@ class MemoryAnalysisService:
             ],
             observed_at=window_end,
         )
-        return MemoryAnalysisOutcome(persona=persona, snapshot=snapshot, projects=projects)
+        return MemoryAnalysisOutcome(
+            persona=persona,
+            snapshot=snapshot,
+            projects=projects,
+            source_message_ids=[message.message_id for message in included_messages],
+            selected_transcript_chars=len(transcript),
+        )
 
     async def get_analysis_preview(
         self,
@@ -291,6 +308,9 @@ class MemoryAnalysisService:
         available_message_count = len(messages)
         retained_message_count = self.store.count_messages(self.settings.default_user_id)
         current_persona = self.get_current_persona()
+        automation_settings = self.store.get_automation_settings(self.settings.default_user_id)
+        has_memory = current_persona.last_analyzed_at is not None or bool(current_persona.last_snapshot_id)
+        resolved_intent = "improve_memory" if has_memory else "first_analysis"
         retention_state = self.store.get_message_retention_state(self.settings.default_user_id)
 
         baseline_ingested = current_persona.last_analyzed_ingested_count or 0
@@ -329,7 +349,7 @@ class MemoryAnalysisService:
         )
         estimated_input_tokens = self._estimate_text_tokens(prompt_preview.system_prompt) + self._estimate_text_tokens(prompt_preview.user_prompt)
         estimated_prompt_context_tokens = max(0, estimated_input_tokens - selected_transcript_tokens)
-        planning_profile = self.deepseek_service.get_planning_profile()
+        planning_profile = self.deepseek_service.get_planning_profile(intent=resolved_intent)
         safe_input_budget_floor_tokens = max(
             0,
             planning_profile.context_limit_floor_tokens - planning_profile.request_output_reserve_tokens,
@@ -386,10 +406,10 @@ class MemoryAnalysisService:
             recommendation_label,
             should_analyze,
             recommendation_summary,
-        ) = await self._classify_preview_recommendation(
-            target_message_count=resolved_target_count,
-            max_lookback_hours=max_lookback_hours,
-            detail_mode=detail_mode,
+        ) = self._build_rule_based_recommendation(
+            automation_settings=automation_settings,
+            persona=current_persona,
+            has_memory=has_memory,
             available_message_count=available_message_count,
             selected_message_count=selected_message_count,
             new_message_count=new_message_count,
@@ -871,12 +891,12 @@ class MemoryAnalysisService:
             return "Pode esperar um pouco"
         return "Ganho baixo agora"
 
-    async def _classify_preview_recommendation(
+    def _build_rule_based_recommendation(
         self,
         *,
-        target_message_count: int,
-        max_lookback_hours: int,
-        detail_mode: Literal["light", "balanced", "deep"],
+        automation_settings: AutomationSettingsRecord,
+        persona: PersonaRecord,
+        has_memory: bool,
         available_message_count: int,
         selected_message_count: int,
         new_message_count: int,
@@ -887,8 +907,72 @@ class MemoryAnalysisService:
         fallback_score: int,
         fallback_label: str,
     ) -> tuple[int, str, bool, str]:
-        fallback_should_analyze = fallback_score >= 55
-        fallback_summary = self._build_fallback_preview_summary(
+        if available_message_count <= 0 or selected_message_count <= 0:
+            return (
+                0,
+                "Sem material",
+                False,
+                "Ainda nao ha mensagens diretas textuais suficientes nessa janela para justificar leitura.",
+            )
+
+        hours_since_last_analysis = None
+        if persona.last_analyzed_at is not None:
+            hours_since_last_analysis = max(
+                0.0,
+                (datetime.now(UTC) - persona.last_analyzed_at).total_seconds() / 3600,
+            )
+
+        if not has_memory:
+            if selected_message_count >= 40:
+                score = max(fallback_score, 84)
+                label = self._label_for_score(score)
+                summary = (
+                    f"Ja existem {selected_message_count} mensagens diretas utilizaveis nesta janela. "
+                    "Isso e suficiente para montar a primeira base consolidada do dono com o reasoner."
+                )
+                return score, label, True, summary
+
+            score = min(max(fallback_score, 26), 54)
+            label = "Aguardar mais sinal"
+            summary = (
+                f"Ainda so cabem {selected_message_count} mensagens diretas uteis na leitura. "
+                "Para a primeira analise, vale esperar um pouco mais de volume antes de gastar tokens."
+            )
+            return score, label, False, summary
+
+        if replaced_message_count >= automation_settings.pruned_messages_threshold:
+            score = max(fallback_score, 88)
+            label = self._label_for_score(score)
+            summary = (
+                f"{replaced_message_count} mensagens ja ficaram para tras pela retencao. "
+                "Vale atualizar a memoria agora para nao perder sinais recentes que mudam o retrato do dono."
+            )
+            return score, label, True, summary
+
+        if new_message_count >= automation_settings.min_new_messages_threshold:
+            score = max(fallback_score, 78)
+            label = self._label_for_score(score)
+            summary = (
+                f"Entraram {new_message_count} mensagens novas desde a ultima consolidacao. "
+                "Ja ha ganho suficiente para reler e melhorar a memoria atual."
+            )
+            return score, label, True, summary
+
+        if (
+            hours_since_last_analysis is not None
+            and hours_since_last_analysis >= automation_settings.stale_hours_threshold
+            and selected_message_count >= 30
+        ):
+            score = max(fallback_score, 66)
+            label = self._label_for_score(score)
+            summary = (
+                f"A ultima analise ja tem {round(hours_since_last_analysis)}h e a janela atual ainda traz "
+                f"{selected_message_count} mensagens diretas aproveitaveis. Vale uma releitura para manter a memoria fresca."
+            )
+            return score, label, True, summary
+
+        score = min(fallback_score, 48)
+        summary = self._build_fallback_preview_summary(
             selected_message_count=selected_message_count,
             new_message_count=new_message_count,
             replaced_message_count=replaced_message_count,
@@ -896,42 +980,7 @@ class MemoryAnalysisService:
             estimated_cost_total_ceiling_usd=estimated_cost_total_ceiling_usd,
             recommendation_label=fallback_label,
         )
-        if self.groq_service is None:
-            return (
-                fallback_score,
-                fallback_label,
-                fallback_should_analyze,
-                fallback_summary,
-            )
-
-        try:
-            decision = await self.groq_service.classify_analysis_preview(
-                target_message_count=target_message_count,
-                max_lookback_hours=max_lookback_hours,
-                detail_mode=detail_mode,
-                available_message_count=available_message_count,
-                selected_message_count=selected_message_count,
-                new_message_count=new_message_count,
-                replaced_message_count=replaced_message_count,
-                estimated_total_tokens=estimated_total_tokens,
-                stack_max_message_capacity=stack_max_message_capacity,
-                estimated_cost_total_ceiling_usd=estimated_cost_total_ceiling_usd,
-                fallback_score=fallback_score,
-                fallback_label=fallback_label,
-            )
-            return (
-                decision.score,
-                decision.label,
-                decision.should_analyze,
-                decision.summary,
-            )
-        except GroqChatError:
-            return (
-                fallback_score,
-                fallback_label,
-                fallback_should_analyze,
-                fallback_summary,
-            )
+        return score, self._label_for_score(score), False, summary
 
     def _build_fallback_preview_summary(
         self,
