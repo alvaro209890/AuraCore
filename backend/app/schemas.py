@@ -167,6 +167,18 @@ class ChatMessageResponse(BaseModel):
     created_at: datetime
 
 
+class ChatThreadResponse(BaseModel):
+    id: str
+    thread_key: str
+    title: str
+    message_count: int = Field(ge=0)
+    last_message_preview: str | None = None
+    last_message_role: Literal["user", "assistant"] | None = None
+    last_message_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
 class ChatSessionResponse(BaseModel):
     thread_id: str
     title: str
@@ -175,8 +187,19 @@ class ChatSessionResponse(BaseModel):
     messages: list[ChatMessageResponse] = Field(default_factory=list)
 
 
+class ChatWorkspaceResponse(BaseModel):
+    active_thread_id: str
+    threads: list[ChatThreadResponse] = Field(default_factory=list)
+    session: ChatSessionResponse
+
+
 class SendChatMessageRequest(BaseModel):
+    thread_id: str | None = None
     message_text: str = Field(min_length=1, max_length=4000)
+
+
+class CreateChatThreadRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=80)
 
 
 class AutomationSettingsResponse(BaseModel):

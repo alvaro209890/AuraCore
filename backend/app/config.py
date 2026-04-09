@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from uuid import UUID
 
 from pydantic import Field
@@ -23,7 +24,7 @@ class Settings(BaseSettings):
         alias="DEFAULT_USER_ID",
     )
     frontend_origins: str = Field(
-        "http://localhost:3000,https://auracore-82bf2.web.app",
+        "http://localhost:3000,https://auracore-82bf2.web.app,https://auracore-82bf2.firebaseapp.com",
         alias="FRONTEND_ORIGINS",
     )
     whatsapp_gateway_url: str = Field(..., alias="WHATSAPP_GATEWAY_URL")
@@ -51,7 +52,15 @@ class Settings(BaseSettings):
 
     @property
     def allowed_origins(self) -> list[str]:
-        return [origin.strip() for origin in self.frontend_origins.split(",") if origin.strip()]
+        raw_items = re.split(r"[\s,;]+", self.frontend_origins)
+        origins = [origin.strip().rstrip("/") for origin in raw_items if origin.strip()]
+        if origins:
+            return origins
+        return [
+            "http://localhost:3000",
+            "https://auracore-82bf2.web.app",
+            "https://auracore-82bf2.firebaseapp.com",
+        ]
 
     @property
     def normalized_whatsapp_gateway_url(self) -> str:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from uuid import uuid4
 
 from app.config import Settings
 from app.services.groq_service import GroqChatService
@@ -27,6 +28,21 @@ class ChatSessionState:
     messages: list[ChatMessageRecord]
 
 
+@dataclass(slots=True)
+class ChatThreadSummary:
+    thread: ChatThreadRecord
+    message_count: int
+    last_message_preview: str | None
+    last_message_role: str | None
+    last_message_at: datetime | None
+
+
+@dataclass(slots=True)
+class ChatWorkspaceState:
+    session: ChatSessionState
+    threads: list[ChatThreadSummary]
+
+
 class ChatAssistantService:
     def __init__(
         self,
@@ -39,11 +55,31 @@ class ChatAssistantService:
         self.store = store
         self.groq_service = groq_service
 
-    def get_session(self) -> ChatSessionState:
-        thread = self.store.get_or_create_chat_thread(user_id=self.settings.default_user_id)
+    def get_session(self, *, thread_id: str | None = None) -> ChatSessionState:
+        thread = self._resolve_thread(thread_id=thread_id)
         return self._build_session_state(thread=thread)
 
-    async def send_message(self, *, message_text: str) -> ChatSessionState:
+    def get_workspace(self, *, thread_id: str | None = None) -> ChatWorkspaceState:
+        thread_summaries = self._list_thread_summaries()
+        resolved_thread = self._resolve_thread(thread_id=thread_id)
+        if not any(summary.thread.id == resolved_thread.id for summary in thread_summaries):
+            thread_summaries.insert(0, self._build_thread_summary(resolved_thread))
+        return ChatWorkspaceState(
+            session=self._build_session_state(thread=resolved_thread),
+            threads=thread_summaries,
+        )
+
+    def create_thread(self, *, title: str | None = None) -> ChatWorkspaceState:
+        created_at = datetime.now(UTC)
+        created_thread = self.store.create_chat_thread(
+            user_id=self.settings.default_user_id,
+            title=self._resolve_new_thread_title(title),
+            thread_key=f"thread-{uuid4().hex}",
+            created_at=created_at,
+        )
+        return self.get_workspace(thread_id=created_thread.id)
+
+    async def send_message(self, *, message_text: str, thread_id: str | None = None) -> ChatWorkspaceState:
         normalized_text = " ".join(message_text.split()).strip()
         if not normalized_text:
             raise ChatServiceError("Envie uma mensagem com texto.")
@@ -53,7 +89,7 @@ class ChatAssistantService:
                 f"A mensagem excede o limite de {self.settings.chat_max_message_chars} caracteres."
             )
 
-        thread = self.store.get_or_create_chat_thread(user_id=self.settings.default_user_id)
+        thread = self._resolve_thread(thread_id=thread_id)
         created_at = datetime.now(UTC)
         self.store.append_chat_message(
             thread_id=thread.id,
@@ -61,6 +97,7 @@ class ChatAssistantService:
             content=normalized_text,
             created_at=created_at,
         )
+        thread = self._maybe_autorename_thread(thread=thread, first_user_message=normalized_text, updated_at=created_at)
 
         session = self._build_session_state(thread=thread)
         prior_messages = session.messages[:-1] if session.messages and session.messages[-1].role == "user" else session.messages
@@ -78,7 +115,7 @@ class ChatAssistantService:
             content=assistant_reply,
             created_at=datetime.now(UTC),
         )
-        return self._build_session_state(thread=thread)
+        return self.get_workspace(thread_id=thread.id)
 
     def _build_session_state(self, *, thread: ChatThreadRecord) -> ChatSessionState:
         persona = self.store.get_persona(self.settings.default_user_id) or PersonaRecord(
@@ -103,6 +140,83 @@ class ChatAssistantService:
             projects=projects,
             messages=messages,
         )
+
+    def _resolve_thread(self, *, thread_id: str | None = None) -> ChatThreadRecord:
+        if thread_id:
+            resolved = self.store.get_chat_thread(
+                user_id=self.settings.default_user_id,
+                thread_id=thread_id,
+            )
+            if resolved is None:
+                raise ChatServiceError("A conversa selecionada nao foi encontrada.")
+            return resolved
+
+        existing = self.store.list_chat_threads(user_id=self.settings.default_user_id, limit=1)
+        if existing:
+            return existing[0]
+        return self.store.get_or_create_chat_thread(user_id=self.settings.default_user_id)
+
+    def _list_thread_summaries(self) -> list[ChatThreadSummary]:
+        threads = self.store.list_chat_threads(user_id=self.settings.default_user_id, limit=24)
+        if not threads:
+            threads = [self.store.get_or_create_chat_thread(user_id=self.settings.default_user_id)]
+        return [self._build_thread_summary(thread) for thread in threads]
+
+    def _build_thread_summary(self, thread: ChatThreadRecord) -> ChatThreadSummary:
+        latest_messages = self.store.list_chat_messages(thread.id, limit=1)
+        latest_message = latest_messages[-1] if latest_messages else None
+        return ChatThreadSummary(
+            thread=thread,
+            message_count=self.store.count_chat_messages(thread.id),
+            last_message_preview=self._build_thread_preview(latest_message.content) if latest_message is not None else None,
+            last_message_role=latest_message.role if latest_message is not None else None,
+            last_message_at=latest_message.created_at if latest_message is not None else None,
+        )
+
+    def _resolve_new_thread_title(self, title: str | None) -> str:
+        normalized_title = " ".join((title or "").split()).strip()
+        if normalized_title:
+            return normalized_title[:80]
+        existing_threads = self.store.list_chat_threads(user_id=self.settings.default_user_id, limit=100)
+        return f"Nova conversa {len(existing_threads) + 1}"
+
+    def _maybe_autorename_thread(
+        self,
+        *,
+        thread: ChatThreadRecord,
+        first_user_message: str,
+        updated_at: datetime,
+    ) -> ChatThreadRecord:
+        if not self._is_generic_thread_title(thread.title):
+            return thread
+        if self.store.count_chat_messages(thread.id) > 1:
+            return thread
+
+        next_title = self._title_from_message(first_user_message)
+        updated = self.store.update_chat_thread(
+            thread_id=thread.id,
+            title=next_title,
+            updated_at=updated_at,
+        )
+        return updated or thread
+
+    def _is_generic_thread_title(self, value: str) -> bool:
+        normalized = " ".join(value.split()).strip().lower()
+        return normalized == "conversa principal" or normalized.startswith("nova conversa")
+
+    def _title_from_message(self, message_text: str) -> str:
+        normalized = " ".join(message_text.split()).strip()
+        if not normalized:
+            return "Nova conversa"
+        if len(normalized) <= 48:
+            return normalized
+        return f"{normalized[:45].rstrip()}..."
+
+    def _build_thread_preview(self, content: str) -> str:
+        normalized = " ".join(content.split()).strip()
+        if len(normalized) <= 84:
+            return normalized
+        return f"{normalized[:81].rstrip()}..."
 
     def _build_snapshot_context(self) -> str:
         limit = max(0, self.settings.chat_context_snapshots)

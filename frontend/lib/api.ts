@@ -113,6 +113,18 @@ export type ChatMessage = {
   created_at: string;
 };
 
+export type ChatThread = {
+  id: string;
+  thread_key: string;
+  title: string;
+  message_count: number;
+  last_message_preview: string | null;
+  last_message_role: "user" | "assistant" | null;
+  last_message_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type AnalyzeMemoryResponse = {
   current: MemoryCurrent;
   snapshot: MemorySnapshot;
@@ -136,6 +148,12 @@ export type ChatSession = {
   current: MemoryCurrent;
   projects: ProjectMemory[];
   messages: ChatMessage[];
+};
+
+export type ChatWorkspace = {
+  active_thread_id: string;
+  threads: ChatThread[];
+  session: ChatSession;
 };
 
 export type AutomationSettings = {
@@ -356,13 +374,26 @@ export async function runAutomationTick(): Promise<AutomationStatus> {
   });
 }
 
-export async function getChatSession(): Promise<ChatSession> {
-  return request<ChatSession>("/api/chat/session");
+export async function getChatSession(threadId?: string): Promise<ChatSession> {
+  const query = threadId ? `?thread_id=${encodeURIComponent(threadId)}` : "";
+  return request<ChatSession>(`/api/chat/session${query}`);
 }
 
-export async function sendChatMessage(messageText: string): Promise<ChatSession> {
-  return request<ChatSession>("/api/chat/messages", {
+export async function getChatWorkspace(threadId?: string): Promise<ChatWorkspace> {
+  const query = threadId ? `?thread_id=${encodeURIComponent(threadId)}` : "";
+  return request<ChatWorkspace>(`/api/chat/workspace${query}`);
+}
+
+export async function createChatThread(title?: string): Promise<ChatWorkspace> {
+  return request<ChatWorkspace>("/api/chat/threads", {
     method: "POST",
-    body: JSON.stringify({ message_text: messageText }),
+    body: JSON.stringify(title ? { title } : {}),
+  });
+}
+
+export async function sendChatMessage(messageText: string, threadId?: string): Promise<ChatWorkspace> {
+  return request<ChatWorkspace>("/api/chat/messages", {
+    method: "POST",
+    body: JSON.stringify({ message_text: messageText, thread_id: threadId }),
   });
 }

@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from typing import Any, Sequence
 from uuid import UUID, uuid4
 
+from postgrest.exceptions import APIError
 from supabase import Client, create_client
 
 
@@ -227,6 +228,10 @@ class SupabaseStore:
         self.client: Client = create_client(supabase_url, supabase_key)
         self.default_user_id = default_user_id
         self.message_retention_max_rows = max(200, message_retention_max_rows)
+        self._compat_sync_runs: dict[str, WhatsAppSyncRunRecord] = {}
+        self._compat_decisions: dict[str, AutomationDecisionRecord] = {}
+        self._compat_analysis_jobs: dict[str, AnalysisJobRecord] = {}
+        self._compat_model_runs: dict[str, ModelRunRecord] = {}
 
     def save_ingested_messages(self, messages: Sequence[IngestedMessageRecord]) -> int:
         filtered_messages = [message for message in messages if self.is_normal_contact_phone(message.contact_phone)]
@@ -260,7 +265,21 @@ class SupabaseStore:
             for message in filtered_messages
         ]
 
-        self.client.table("mensagens").upsert(records, on_conflict="id").execute()
+        try:
+            self.client.table("mensagens").upsert(records, on_conflict="id").execute()
+        except Exception as exc:
+            if not (
+                self._is_missing_column_error(exc, column_name="chat_jid", table_name="mensagens")
+                or self._is_missing_column_error(exc, column_name="ingested_at", table_name="mensagens")
+            ):
+                raise
+            legacy_records = []
+            for record in records:
+                legacy_record = dict(record)
+                legacy_record.pop("chat_jid", None)
+                legacy_record.pop("ingested_at", None)
+                legacy_records.append(legacy_record)
+            self.client.table("mensagens").upsert(legacy_records, on_conflict="id").execute()
         if new_message_count > 0:
             self.bump_message_retention_state(
                 user_id=self.default_user_id,
@@ -283,15 +302,28 @@ class SupabaseStore:
         window_start: datetime,
         window_end: datetime,
     ) -> list[StoredMessageRecord]:
-        response = (
-            self.client.table("mensagens")
-            .select("id,user_id,contact_name,chat_jid,contact_phone,direction,message_text,timestamp,source")
-            .eq("user_id", str(user_id))
-            .gte("timestamp", window_start.isoformat())
-            .lte("timestamp", window_end.isoformat())
-            .order("timestamp", desc=False)
-            .execute()
-        )
+        try:
+            response = (
+                self.client.table("mensagens")
+                .select("id,user_id,contact_name,chat_jid,contact_phone,direction,message_text,timestamp,source")
+                .eq("user_id", str(user_id))
+                .gte("timestamp", window_start.isoformat())
+                .lte("timestamp", window_end.isoformat())
+                .order("timestamp", desc=False)
+                .execute()
+            )
+        except Exception as exc:
+            if not self._is_missing_column_error(exc, column_name="chat_jid", table_name="mensagens"):
+                raise
+            response = (
+                self.client.table("mensagens")
+                .select("id,user_id,contact_name,contact_phone,direction,message_text,timestamp,source")
+                .eq("user_id", str(user_id))
+                .gte("timestamp", window_start.isoformat())
+                .lte("timestamp", window_end.isoformat())
+                .order("timestamp", desc=False)
+                .execute()
+            )
 
         rows = response.data or []
         messages: list[StoredMessageRecord] = []
@@ -368,16 +400,30 @@ class SupabaseStore:
         return deleted_total
 
     def get_persona(self, user_id: UUID) -> PersonaRecord | None:
-        response = (
-            self.client.table("persona")
-            .select(
-                "user_id,life_summary,last_analyzed_at,last_snapshot_id,"
-                "last_analyzed_ingested_count,last_analyzed_pruned_count"
+        try:
+            response = (
+                self.client.table("persona")
+                .select(
+                    "user_id,life_summary,last_analyzed_at,last_snapshot_id,"
+                    "last_analyzed_ingested_count,last_analyzed_pruned_count"
+                )
+                .eq("user_id", str(user_id))
+                .limit(1)
+                .execute()
             )
-            .eq("user_id", str(user_id))
-            .limit(1)
-            .execute()
-        )
+        except Exception as exc:
+            if not (
+                self._is_missing_column_error(exc, column_name="last_analyzed_ingested_count", table_name="persona")
+                or self._is_missing_column_error(exc, column_name="last_analyzed_pruned_count", table_name="persona")
+            ):
+                raise
+            response = (
+                self.client.table("persona")
+                .select("user_id,life_summary,last_analyzed_at,last_snapshot_id")
+                .eq("user_id", str(user_id))
+                .limit(1)
+                .execute()
+            )
 
         rows = response.data or []
         if not rows:
@@ -415,7 +461,18 @@ class SupabaseStore:
                 "last_analyzed_pruned_count": retention_state.total_direct_pruned_count,
                 "updated_at": analyzed_at.isoformat(),
             }
-            self.client.table("persona").upsert(persona_record, on_conflict="user_id").execute()
+            try:
+                self.client.table("persona").upsert(persona_record, on_conflict="user_id").execute()
+            except Exception as exc:
+                if not (
+                    self._is_missing_column_error(exc, column_name="last_analyzed_ingested_count", table_name="persona")
+                    or self._is_missing_column_error(exc, column_name="last_analyzed_pruned_count", table_name="persona")
+                ):
+                    raise
+                legacy_persona_record = dict(persona_record)
+                legacy_persona_record.pop("last_analyzed_ingested_count", None)
+                legacy_persona_record.pop("last_analyzed_pruned_count", None)
+                self.client.table("persona").upsert(legacy_persona_record, on_conflict="user_id").execute()
         except Exception:
             self._delete_memory_snapshot(snapshot.id)
             raise
@@ -443,7 +500,18 @@ class SupabaseStore:
             "last_analyzed_pruned_count": retention_state.total_direct_pruned_count,
             "updated_at": analyzed_at.isoformat(),
         }
-        self.client.table("persona").upsert(persona_record, on_conflict="user_id").execute()
+        try:
+            self.client.table("persona").upsert(persona_record, on_conflict="user_id").execute()
+        except Exception as exc:
+            if not (
+                self._is_missing_column_error(exc, column_name="last_analyzed_ingested_count", table_name="persona")
+                or self._is_missing_column_error(exc, column_name="last_analyzed_pruned_count", table_name="persona")
+            ):
+                raise
+            legacy_persona_record = dict(persona_record)
+            legacy_persona_record.pop("last_analyzed_ingested_count", None)
+            legacy_persona_record.pop("last_analyzed_pruned_count", None)
+            self.client.table("persona").upsert(legacy_persona_record, on_conflict="user_id").execute()
 
         persona = self.get_persona(user_id)
         if persona is None:
@@ -531,21 +599,53 @@ class SupabaseStore:
         if not records:
             return self.list_project_memories(user_id, limit=8)
 
-        self.client.table("project_memories").upsert(records, on_conflict="user_id,project_key").execute()
+        try:
+            self.client.table("project_memories").upsert(records, on_conflict="user_id,project_key").execute()
+        except Exception as exc:
+            if not (
+                self._is_missing_column_error(exc, column_name="what_is_being_built", table_name="project_memories")
+                or self._is_missing_column_error(exc, column_name="built_for", table_name="project_memories")
+            ):
+                raise
+            legacy_records = []
+            for record in records:
+                legacy_record = dict(record)
+                legacy_record.pop("what_is_being_built", None)
+                legacy_record.pop("built_for", None)
+                legacy_records.append(legacy_record)
+            self.client.table("project_memories").upsert(legacy_records, on_conflict="user_id,project_key").execute()
         return self.list_project_memories(user_id, limit=max(8, len(records)))
 
     def list_project_memories(self, user_id: UUID, *, limit: int = 8) -> list[ProjectMemoryRecord]:
-        response = (
-            self.client.table("project_memories")
-            .select(
-                "id,user_id,project_key,project_name,summary,status,what_is_being_built,built_for,next_steps,evidence,"
-                "source_snapshot_id,last_seen_at,updated_at"
+        try:
+            response = (
+                self.client.table("project_memories")
+                .select(
+                    "id,user_id,project_key,project_name,summary,status,what_is_being_built,built_for,next_steps,evidence,"
+                    "source_snapshot_id,last_seen_at,updated_at"
+                )
+                .eq("user_id", str(user_id))
+                .order("last_seen_at", desc=True)
+                .limit(limit)
+                .execute()
             )
-            .eq("user_id", str(user_id))
-            .order("last_seen_at", desc=True)
-            .limit(limit)
-            .execute()
-        )
+        except Exception as exc:
+            if not (
+                self._is_missing_column_error(exc, column_name="what_is_being_built", table_name="project_memories")
+                or self._is_missing_column_error(exc, column_name="built_for", table_name="project_memories")
+            ):
+                raise
+            response = (
+                self.client.table("project_memories")
+                .select(
+                    "id,user_id,project_key,project_name,summary,status,next_steps,evidence,"
+                    "source_snapshot_id,last_seen_at,updated_at"
+                )
+                .eq("user_id", str(user_id))
+                .order("last_seen_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
 
         rows = response.data or []
         projects: list[ProjectMemoryRecord] = []
@@ -621,6 +721,80 @@ class SupabaseStore:
             raise RuntimeError("Default chat thread returned an invalid payload.")
         return parsed
 
+    def get_chat_thread(self, *, user_id: UUID, thread_id: str) -> ChatThreadRecord | None:
+        response = (
+            self.client.table("chat_threads")
+            .select("id,user_id,thread_key,title,created_at,updated_at")
+            .eq("user_id", str(user_id))
+            .eq("id", thread_id)
+            .limit(1)
+            .execute()
+        )
+
+        rows = response.data or []
+        if not rows:
+            return None
+        return self._parse_chat_thread(rows[0], fallback_user_id=user_id)
+
+    def list_chat_threads(self, *, user_id: UUID, limit: int = 24) -> list[ChatThreadRecord]:
+        response = (
+            self.client.table("chat_threads")
+            .select("id,user_id,thread_key,title,created_at,updated_at")
+            .eq("user_id", str(user_id))
+            .order("updated_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+
+        rows = response.data or []
+        threads: list[ChatThreadRecord] = []
+        for row in rows:
+            parsed = self._parse_chat_thread(row, fallback_user_id=user_id)
+            if parsed is not None:
+                threads.append(parsed)
+        return threads
+
+    def create_chat_thread(
+        self,
+        *,
+        user_id: UUID,
+        title: str,
+        thread_key: str,
+        created_at: datetime | None = None,
+    ) -> ChatThreadRecord:
+        resolved_created_at = created_at or datetime.now(UTC)
+        thread_id = str(uuid4())
+        record = {
+            "id": thread_id,
+            "user_id": str(user_id),
+            "thread_key": thread_key,
+            "title": title,
+            "created_at": resolved_created_at.isoformat(),
+            "updated_at": resolved_created_at.isoformat(),
+        }
+        self.client.table("chat_threads").insert(record).execute()
+        created = self.get_chat_thread(user_id=user_id, thread_id=thread_id)
+        if created is None:
+            raise RuntimeError("Chat thread could not be created.")
+        return created
+
+    def update_chat_thread(
+        self,
+        *,
+        thread_id: str,
+        title: str | None = None,
+        updated_at: datetime | None = None,
+    ) -> ChatThreadRecord | None:
+        payload: dict[str, Any] = {}
+        if title is not None:
+            payload["title"] = title
+        if updated_at is not None:
+            payload["updated_at"] = updated_at.isoformat()
+        if not payload:
+            return self.get_chat_thread(user_id=self.default_user_id, thread_id=thread_id)
+        self.client.table("chat_threads").update(payload).eq("id", thread_id).execute()
+        return self.get_chat_thread(user_id=self.default_user_id, thread_id=thread_id)
+
     def list_chat_messages(self, thread_id: str, *, limit: int = 30) -> list[ChatMessageRecord]:
         response = (
             self.client.table("chat_messages")
@@ -665,6 +839,17 @@ class SupabaseStore:
             created_at=created_at,
         )
 
+    def count_chat_messages(self, thread_id: str) -> int:
+        response = (
+            self.client.table("chat_messages")
+            .select("id")
+            .eq("thread_id", thread_id)
+            .limit(5000)
+            .execute()
+        )
+        rows = response.data or []
+        return sum(1 for row in rows if isinstance(row, dict))
+
     def count_messages(self, user_id: UUID) -> int:
         response = (
             self.client.table("mensagens")
@@ -704,13 +889,26 @@ class SupabaseStore:
         return self._parse_datetime(rows[0].get("timestamp"))
 
     def get_message_retention_state(self, user_id: UUID) -> MessageRetentionStateRecord:
-        response = (
-            self.client.table("message_retention_state")
-            .select("user_id,total_direct_ingested_count,total_direct_pruned_count,last_message_at,updated_at")
-            .eq("user_id", str(user_id))
-            .limit(1)
-            .execute()
-        )
+        try:
+            response = (
+                self.client.table("message_retention_state")
+                .select("user_id,total_direct_ingested_count,total_direct_pruned_count,last_message_at,updated_at")
+                .eq("user_id", str(user_id))
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "message_retention_state"):
+                raise
+            current_count = self.count_messages(user_id)
+            last_message_at = self.get_latest_message_timestamp(user_id)
+            return MessageRetentionStateRecord(
+                user_id=user_id,
+                total_direct_ingested_count=current_count,
+                total_direct_pruned_count=0,
+                last_message_at=last_message_at,
+                updated_at=datetime.now(UTC),
+            )
         rows = response.data or []
         if rows and isinstance(rows[0], dict):
             row = rows[0]
@@ -732,7 +930,11 @@ class SupabaseStore:
             "last_message_at": last_message_at.isoformat() if last_message_at else None,
             "updated_at": created_at.isoformat(),
         }
-        self.client.table("message_retention_state").upsert(record, on_conflict="user_id").execute()
+        try:
+            self.client.table("message_retention_state").upsert(record, on_conflict="user_id").execute()
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "message_retention_state"):
+                raise
         return MessageRetentionStateRecord(
             user_id=user_id,
             total_direct_ingested_count=current_count,
@@ -759,7 +961,11 @@ class SupabaseStore:
             "last_message_at": resolved_last_message_at.isoformat() if resolved_last_message_at else None,
             "updated_at": updated_at.isoformat(),
         }
-        self.client.table("message_retention_state").upsert(record, on_conflict="user_id").execute()
+        try:
+            self.client.table("message_retention_state").upsert(record, on_conflict="user_id").execute()
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "message_retention_state"):
+                raise
         return MessageRetentionStateRecord(
             user_id=user_id,
             total_direct_ingested_count=int(record["total_direct_ingested_count"]),
@@ -769,18 +975,39 @@ class SupabaseStore:
         )
 
     def get_automation_settings(self, user_id: UUID) -> AutomationSettingsRecord:
-        response = (
-            self.client.table("automation_settings")
-            .select(
-                "user_id,auto_sync_enabled,auto_analyze_enabled,auto_refine_enabled,"
-                "min_new_messages_threshold,stale_hours_threshold,pruned_messages_threshold,"
-                "default_detail_mode,default_target_message_count,default_lookback_hours,"
-                "daily_budget_usd,max_auto_jobs_per_day,updated_at"
+        try:
+            response = (
+                self.client.table("automation_settings")
+                .select(
+                    "user_id,auto_sync_enabled,auto_analyze_enabled,auto_refine_enabled,"
+                    "min_new_messages_threshold,stale_hours_threshold,pruned_messages_threshold,"
+                    "default_detail_mode,default_target_message_count,default_lookback_hours,"
+                    "daily_budget_usd,max_auto_jobs_per_day,updated_at"
+                )
+                .eq("user_id", str(user_id))
+                .limit(1)
+                .execute()
             )
-            .eq("user_id", str(user_id))
-            .limit(1)
-            .execute()
-        )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "automation_settings"):
+                raise
+            created_at = datetime.now(UTC)
+            record = self._default_automation_settings_record(user_id=user_id, updated_at=created_at)
+            return AutomationSettingsRecord(
+                user_id=user_id,
+                auto_sync_enabled=bool(record["auto_sync_enabled"]),
+                auto_analyze_enabled=bool(record["auto_analyze_enabled"]),
+                auto_refine_enabled=bool(record["auto_refine_enabled"]),
+                min_new_messages_threshold=int(record["min_new_messages_threshold"]),
+                stale_hours_threshold=int(record["stale_hours_threshold"]),
+                pruned_messages_threshold=int(record["pruned_messages_threshold"]),
+                default_detail_mode=str(record["default_detail_mode"]),
+                default_target_message_count=int(record["default_target_message_count"]),
+                default_lookback_hours=int(record["default_lookback_hours"]),
+                daily_budget_usd=float(record["daily_budget_usd"]),
+                max_auto_jobs_per_day=int(record["max_auto_jobs_per_day"]),
+                updated_at=created_at,
+            )
         rows = response.data or []
         if rows and isinstance(rows[0], dict):
             parsed = self._parse_automation_settings(rows[0], fallback_user_id=user_id)
@@ -789,7 +1016,11 @@ class SupabaseStore:
 
         created_at = datetime.now(UTC)
         record = self._default_automation_settings_record(user_id=user_id, updated_at=created_at)
-        self.client.table("automation_settings").upsert(record, on_conflict="user_id").execute()
+        try:
+            self.client.table("automation_settings").upsert(record, on_conflict="user_id").execute()
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "automation_settings"):
+                raise
         return AutomationSettingsRecord(
             user_id=user_id,
             auto_sync_enabled=bool(record["auto_sync_enabled"]),
@@ -842,7 +1073,26 @@ class SupabaseStore:
             "max_auto_jobs_per_day": max(1, max_auto_jobs_per_day if max_auto_jobs_per_day is not None else current.max_auto_jobs_per_day),
             "updated_at": updated_at.isoformat(),
         }
-        self.client.table("automation_settings").upsert(record, on_conflict="user_id").execute()
+        try:
+            self.client.table("automation_settings").upsert(record, on_conflict="user_id").execute()
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "automation_settings"):
+                raise
+            return AutomationSettingsRecord(
+                user_id=user_id,
+                auto_sync_enabled=bool(record["auto_sync_enabled"]),
+                auto_analyze_enabled=bool(record["auto_analyze_enabled"]),
+                auto_refine_enabled=bool(record["auto_refine_enabled"]),
+                min_new_messages_threshold=int(record["min_new_messages_threshold"]),
+                stale_hours_threshold=int(record["stale_hours_threshold"]),
+                pruned_messages_threshold=int(record["pruned_messages_threshold"]),
+                default_detail_mode=str(record["default_detail_mode"]),
+                default_target_message_count=int(record["default_target_message_count"]),
+                default_lookback_hours=int(record["default_lookback_hours"]),
+                daily_budget_usd=float(record["daily_budget_usd"]),
+                max_auto_jobs_per_day=int(record["max_auto_jobs_per_day"]),
+                updated_at=updated_at,
+            )
         refreshed = self.get_automation_settings(user_id)
         return refreshed
 
@@ -873,41 +1123,78 @@ class SupabaseStore:
             "started_at": started_at.isoformat(),
             "finished_at": None,
         }
-        self.client.table("wa_sync_runs").insert(record).execute()
+        try:
+            self.client.table("wa_sync_runs").insert(record).execute()
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "wa_sync_runs"):
+                raise
+            compat_record = WhatsAppSyncRunRecord(
+                id=sync_run_id,
+                user_id=user_id,
+                trigger=trigger,
+                status="running",
+                messages_seen_count=0,
+                messages_saved_count=0,
+                messages_ignored_count=0,
+                messages_pruned_count=0,
+                oldest_message_at=None,
+                newest_message_at=None,
+                error_text=None,
+                started_at=started_at,
+                finished_at=None,
+                last_activity_at=started_at,
+            )
+            self._compat_sync_runs[sync_run_id] = compat_record
+            return compat_record
         sync_run = self.get_whatsapp_sync_run(sync_run_id)
         if sync_run is None:
             raise RuntimeError("WhatsApp sync run could not be created.")
         return sync_run
 
     def get_whatsapp_sync_run(self, sync_run_id: str) -> WhatsAppSyncRunRecord | None:
-        response = (
-            self.client.table("wa_sync_runs")
-            .select(
-                "id,user_id,trigger,status,messages_seen_count,messages_saved_count,messages_ignored_count,"
-                "messages_pruned_count,oldest_message_at,newest_message_at,error_text,started_at,finished_at,last_activity_at"
+        try:
+            response = (
+                self.client.table("wa_sync_runs")
+                .select(
+                    "id,user_id,trigger,status,messages_seen_count,messages_saved_count,messages_ignored_count,"
+                    "messages_pruned_count,oldest_message_at,newest_message_at,error_text,started_at,finished_at,last_activity_at"
+                )
+                .eq("id", sync_run_id)
+                .limit(1)
+                .execute()
             )
-            .eq("id", sync_run_id)
-            .limit(1)
-            .execute()
-        )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "wa_sync_runs"):
+                raise
+            return self._compat_sync_runs.get(sync_run_id)
         rows = response.data or []
         if not rows or not isinstance(rows[0], dict):
             return None
         return self._parse_whatsapp_sync_run(rows[0], fallback_user_id=self.default_user_id)
 
     def get_latest_running_sync_run(self, user_id: UUID) -> WhatsAppSyncRunRecord | None:
-        response = (
-            self.client.table("wa_sync_runs")
-            .select(
-                "id,user_id,trigger,status,messages_seen_count,messages_saved_count,messages_ignored_count,"
-                "messages_pruned_count,oldest_message_at,newest_message_at,error_text,started_at,finished_at,last_activity_at"
+        try:
+            response = (
+                self.client.table("wa_sync_runs")
+                .select(
+                    "id,user_id,trigger,status,messages_seen_count,messages_saved_count,messages_ignored_count,"
+                    "messages_pruned_count,oldest_message_at,newest_message_at,error_text,started_at,finished_at,last_activity_at"
+                )
+                .eq("user_id", str(user_id))
+                .eq("status", "running")
+                .order("started_at", desc=True)
+                .limit(1)
+                .execute()
             )
-            .eq("user_id", str(user_id))
-            .eq("status", "running")
-            .order("started_at", desc=True)
-            .limit(1)
-            .execute()
-        )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "wa_sync_runs"):
+                raise
+            running = [
+                run for run in self._compat_sync_runs.values()
+                if run.user_id == user_id and run.status == "running"
+            ]
+            running.sort(key=lambda run: run.started_at, reverse=True)
+            return running[0] if running else None
         rows = response.data or []
         if not rows or not isinstance(rows[0], dict):
             return None
@@ -924,54 +1211,136 @@ class SupabaseStore:
         newest_message_at: datetime | None,
         activity_at: datetime,
     ) -> WhatsAppSyncRunRecord | None:
-        row = self._get_latest_running_sync_run_row(user_id)
-        if row is None:
-            return None
+        try:
+            row = self._get_latest_running_sync_run_row(user_id)
+            if row is None:
+                return None
 
-        sync_run_id = str(row.get("id") or "")
-        current_oldest = self._parse_datetime(row.get("oldest_message_at"))
-        current_newest = self._parse_datetime(row.get("newest_message_at"))
-        update_payload = {
-            "messages_seen_count": (self._parse_int(row.get("messages_seen_count")) or 0) + max(0, seen_increment),
-            "messages_saved_count": (self._parse_int(row.get("messages_saved_count")) or 0) + max(0, saved_increment),
-            "messages_ignored_count": (self._parse_int(row.get("messages_ignored_count")) or 0) + max(0, ignored_increment),
-            "oldest_message_at": self._earliest_datetime(current_oldest, oldest_message_at),
-            "newest_message_at": self._latest_datetime(current_newest, newest_message_at),
-            "last_activity_at": activity_at.isoformat(),
-        }
-        if isinstance(update_payload["oldest_message_at"], datetime):
-            update_payload["oldest_message_at"] = update_payload["oldest_message_at"].isoformat()
-        if isinstance(update_payload["newest_message_at"], datetime):
-            update_payload["newest_message_at"] = update_payload["newest_message_at"].isoformat()
+            sync_run_id = str(row.get("id") or "")
+            current_oldest = self._parse_datetime(row.get("oldest_message_at"))
+            current_newest = self._parse_datetime(row.get("newest_message_at"))
+            update_payload = {
+                "messages_seen_count": (self._parse_int(row.get("messages_seen_count")) or 0) + max(0, seen_increment),
+                "messages_saved_count": (self._parse_int(row.get("messages_saved_count")) or 0) + max(0, saved_increment),
+                "messages_ignored_count": (self._parse_int(row.get("messages_ignored_count")) or 0) + max(0, ignored_increment),
+                "oldest_message_at": self._earliest_datetime(current_oldest, oldest_message_at),
+                "newest_message_at": self._latest_datetime(current_newest, newest_message_at),
+                "last_activity_at": activity_at.isoformat(),
+            }
+            if isinstance(update_payload["oldest_message_at"], datetime):
+                update_payload["oldest_message_at"] = update_payload["oldest_message_at"].isoformat()
+            if isinstance(update_payload["newest_message_at"], datetime):
+                update_payload["newest_message_at"] = update_payload["newest_message_at"].isoformat()
 
-        self.client.table("wa_sync_runs").update(update_payload).eq("id", sync_run_id).execute()
-        return self.get_whatsapp_sync_run(sync_run_id)
+            self.client.table("wa_sync_runs").update(update_payload).eq("id", sync_run_id).execute()
+            return self.get_whatsapp_sync_run(sync_run_id)
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "wa_sync_runs"):
+                raise
+            current = self.get_latest_running_sync_run(user_id)
+            if current is None:
+                return None
+            updated = WhatsAppSyncRunRecord(
+                id=current.id,
+                user_id=current.user_id,
+                trigger=current.trigger,
+                status=current.status,
+                messages_seen_count=current.messages_seen_count + max(0, seen_increment),
+                messages_saved_count=current.messages_saved_count + max(0, saved_increment),
+                messages_ignored_count=current.messages_ignored_count + max(0, ignored_increment),
+                messages_pruned_count=current.messages_pruned_count,
+                oldest_message_at=self._earliest_datetime(current.oldest_message_at, oldest_message_at),
+                newest_message_at=self._latest_datetime(current.newest_message_at, newest_message_at),
+                error_text=current.error_text,
+                started_at=current.started_at,
+                finished_at=current.finished_at,
+                last_activity_at=activity_at,
+            )
+            self._compat_sync_runs[current.id] = updated
+            return updated
 
     def mark_whatsapp_sync_run_failed(self, *, sync_run_id: str, error_text: str, finished_at: datetime) -> WhatsAppSyncRunRecord | None:
-        self.client.table("wa_sync_runs").update(
-            {
-                "status": "failed",
-                "error_text": error_text,
-                "finished_at": finished_at.isoformat(),
-                "last_activity_at": finished_at.isoformat(),
-            }
-        ).eq("id", sync_run_id).execute()
-        return self.get_whatsapp_sync_run(sync_run_id)
+        try:
+            self.client.table("wa_sync_runs").update(
+                {
+                    "status": "failed",
+                    "error_text": error_text,
+                    "finished_at": finished_at.isoformat(),
+                    "last_activity_at": finished_at.isoformat(),
+                }
+            ).eq("id", sync_run_id).execute()
+            return self.get_whatsapp_sync_run(sync_run_id)
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "wa_sync_runs"):
+                raise
+            current = self._compat_sync_runs.get(sync_run_id)
+            if current is None:
+                return None
+            updated = WhatsAppSyncRunRecord(
+                id=current.id,
+                user_id=current.user_id,
+                trigger=current.trigger,
+                status="failed",
+                messages_seen_count=current.messages_seen_count,
+                messages_saved_count=current.messages_saved_count,
+                messages_ignored_count=current.messages_ignored_count,
+                messages_pruned_count=current.messages_pruned_count,
+                oldest_message_at=current.oldest_message_at,
+                newest_message_at=current.newest_message_at,
+                error_text=error_text,
+                started_at=current.started_at,
+                finished_at=finished_at,
+                last_activity_at=finished_at,
+            )
+            self._compat_sync_runs[sync_run_id] = updated
+            return updated
 
     def finalize_idle_sync_runs(self, *, user_id: UUID, idle_before: datetime) -> list[WhatsAppSyncRunRecord]:
-        response = (
-            self.client.table("wa_sync_runs")
-            .select(
-                "id,user_id,trigger,status,messages_seen_count,messages_saved_count,messages_ignored_count,"
-                "messages_pruned_count,oldest_message_at,newest_message_at,error_text,started_at,finished_at,"
-                "last_activity_at,baseline_ingested_count,baseline_pruned_count"
+        try:
+            response = (
+                self.client.table("wa_sync_runs")
+                .select(
+                    "id,user_id,trigger,status,messages_seen_count,messages_saved_count,messages_ignored_count,"
+                    "messages_pruned_count,oldest_message_at,newest_message_at,error_text,started_at,finished_at,"
+                    "last_activity_at,baseline_ingested_count,baseline_pruned_count"
+                )
+                .eq("user_id", str(user_id))
+                .eq("status", "running")
+                .order("started_at", desc=False)
+                .limit(20)
+                .execute()
             )
-            .eq("user_id", str(user_id))
-            .eq("status", "running")
-            .order("started_at", desc=False)
-            .limit(20)
-            .execute()
-        )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "wa_sync_runs"):
+                raise
+            finalized: list[WhatsAppSyncRunRecord] = []
+            finished_at = datetime.now(UTC)
+            retention_state = self.get_message_retention_state(user_id)
+            for sync_run_id, current in list(self._compat_sync_runs.items()):
+                if current.user_id != user_id or current.status != "running":
+                    continue
+                last_activity = current.last_activity_at or current.started_at
+                if last_activity > idle_before:
+                    continue
+                updated = WhatsAppSyncRunRecord(
+                    id=current.id,
+                    user_id=current.user_id,
+                    trigger=current.trigger,
+                    status="succeeded",
+                    messages_seen_count=current.messages_seen_count,
+                    messages_saved_count=max(current.messages_saved_count, retention_state.total_direct_ingested_count),
+                    messages_ignored_count=current.messages_ignored_count,
+                    messages_pruned_count=max(current.messages_pruned_count, retention_state.total_direct_pruned_count),
+                    oldest_message_at=current.oldest_message_at,
+                    newest_message_at=current.newest_message_at,
+                    error_text=current.error_text,
+                    started_at=current.started_at,
+                    finished_at=finished_at,
+                    last_activity_at=last_activity,
+                )
+                self._compat_sync_runs[sync_run_id] = updated
+                finalized.append(updated)
+            return finalized
         rows = response.data or []
         if not rows:
             return []
@@ -1007,17 +1376,24 @@ class SupabaseStore:
         return finalized
 
     def list_whatsapp_sync_runs(self, *, user_id: UUID, limit: int = 8) -> list[WhatsAppSyncRunRecord]:
-        response = (
-            self.client.table("wa_sync_runs")
-            .select(
-                "id,user_id,trigger,status,messages_seen_count,messages_saved_count,messages_ignored_count,"
-                "messages_pruned_count,oldest_message_at,newest_message_at,error_text,started_at,finished_at,last_activity_at"
+        try:
+            response = (
+                self.client.table("wa_sync_runs")
+                .select(
+                    "id,user_id,trigger,status,messages_seen_count,messages_saved_count,messages_ignored_count,"
+                    "messages_pruned_count,oldest_message_at,newest_message_at,error_text,started_at,finished_at,last_activity_at"
+                )
+                .eq("user_id", str(user_id))
+                .order("started_at", desc=True)
+                .limit(limit)
+                .execute()
             )
-            .eq("user_id", str(user_id))
-            .order("started_at", desc=True)
-            .limit(limit)
-            .execute()
-        )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "wa_sync_runs"):
+                raise
+            runs = [run for run in self._compat_sync_runs.values() if run.user_id == user_id]
+            runs.sort(key=lambda run: run.started_at, reverse=True)
+            return runs[:limit]
         rows = response.data or []
         runs: list[WhatsAppSyncRunRecord] = []
         for row in rows:
@@ -1066,7 +1442,31 @@ class SupabaseStore:
             "explanation": explanation.strip(),
             "created_at": created_at.isoformat(),
         }
-        self.client.table("automation_decisions").insert(record).execute()
+        try:
+            self.client.table("automation_decisions").insert(record).execute()
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "automation_decisions"):
+                raise
+            compat_record = AutomationDecisionRecord(
+                id=decision_id,
+                user_id=user_id,
+                sync_run_id=sync_run_id,
+                intent=intent,
+                action=action,
+                reason_code=reason_code,
+                score=int(record["score"]),
+                should_analyze=bool(record["should_analyze"]),
+                available_message_count=int(record["available_message_count"]),
+                selected_message_count=int(record["selected_message_count"]),
+                new_message_count=int(record["new_message_count"]),
+                replaced_message_count=int(record["replaced_message_count"]),
+                estimated_total_tokens=int(record["estimated_total_tokens"]),
+                estimated_cost_ceiling_usd=float(record["estimated_cost_ceiling_usd"]),
+                explanation=str(record["explanation"]),
+                created_at=created_at,
+            )
+            self._compat_decisions[decision_id] = compat_record
+            return compat_record
         return AutomationDecisionRecord(
             id=decision_id,
             user_id=user_id,
@@ -1087,18 +1487,25 @@ class SupabaseStore:
         )
 
     def list_automation_decisions(self, *, user_id: UUID, limit: int = 10) -> list[AutomationDecisionRecord]:
-        response = (
-            self.client.table("automation_decisions")
-            .select(
-                "id,user_id,sync_run_id,intent,action,reason_code,score,should_analyze,available_message_count,"
-                "selected_message_count,new_message_count,replaced_message_count,estimated_total_tokens,"
-                "estimated_cost_ceiling_usd,explanation,created_at"
+        try:
+            response = (
+                self.client.table("automation_decisions")
+                .select(
+                    "id,user_id,sync_run_id,intent,action,reason_code,score,should_analyze,available_message_count,"
+                    "selected_message_count,new_message_count,replaced_message_count,estimated_total_tokens,"
+                    "estimated_cost_ceiling_usd,explanation,created_at"
+                )
+                .eq("user_id", str(user_id))
+                .order("created_at", desc=True)
+                .limit(limit)
+                .execute()
             )
-            .eq("user_id", str(user_id))
-            .order("created_at", desc=True)
-            .limit(limit)
-            .execute()
-        )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "automation_decisions"):
+                raise
+            decisions = [decision for decision in self._compat_decisions.values() if decision.user_id == user_id]
+            decisions.sort(key=lambda decision: decision.created_at, reverse=True)
+            return decisions[:limit]
         rows = response.data or []
         decisions: list[AutomationDecisionRecord] = []
         for row in rows:
@@ -1158,25 +1565,59 @@ class SupabaseStore:
             "finished_at": finished_at.isoformat() if finished_at else None,
             "created_at": resolved_created_at.isoformat(),
         }
-        self.client.table("analysis_jobs").insert(record).execute()
+        try:
+            self.client.table("analysis_jobs").insert(record).execute()
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "analysis_jobs"):
+                raise
+            compat_job = AnalysisJobRecord(
+                id=job_id,
+                user_id=user_id,
+                intent=intent,
+                status=status,
+                trigger_source=trigger_source,
+                decision_id=decision_id,
+                sync_run_id=sync_run_id,
+                target_message_count=int(record["target_message_count"]),
+                max_lookback_hours=int(record["max_lookback_hours"]),
+                detail_mode=str(record["detail_mode"]),
+                selected_message_count=int(record["selected_message_count"]),
+                selected_transcript_chars=int(record["selected_transcript_chars"]),
+                estimated_input_tokens=int(record["estimated_input_tokens"]),
+                estimated_output_tokens=int(record["estimated_output_tokens"]),
+                estimated_cost_floor_usd=float(record["estimated_cost_floor_usd"]),
+                estimated_cost_ceiling_usd=float(record["estimated_cost_ceiling_usd"]),
+                snapshot_id=snapshot_id,
+                error_text=error_text,
+                started_at=started_at,
+                finished_at=finished_at,
+                created_at=resolved_created_at,
+            )
+            self._compat_analysis_jobs[job_id] = compat_job
+            return compat_job
         job = self.get_analysis_job(job_id)
         if job is None:
             raise RuntimeError("Analysis job could not be created.")
         return job
 
     def get_analysis_job(self, job_id: str) -> AnalysisJobRecord | None:
-        response = (
-            self.client.table("analysis_jobs")
-            .select(
-                "id,user_id,intent,status,trigger_source,decision_id,sync_run_id,target_message_count,"
-                "max_lookback_hours,detail_mode,selected_message_count,selected_transcript_chars,"
-                "estimated_input_tokens,estimated_output_tokens,estimated_cost_floor_usd,"
-                "estimated_cost_ceiling_usd,snapshot_id,error_text,started_at,finished_at,created_at"
+        try:
+            response = (
+                self.client.table("analysis_jobs")
+                .select(
+                    "id,user_id,intent,status,trigger_source,decision_id,sync_run_id,target_message_count,"
+                    "max_lookback_hours,detail_mode,selected_message_count,selected_transcript_chars,"
+                    "estimated_input_tokens,estimated_output_tokens,estimated_cost_floor_usd,"
+                    "estimated_cost_ceiling_usd,snapshot_id,error_text,started_at,finished_at,created_at"
+                )
+                .eq("id", job_id)
+                .limit(1)
+                .execute()
             )
-            .eq("id", job_id)
-            .limit(1)
-            .execute()
-        )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "analysis_jobs"):
+                raise
+            return self._compat_analysis_jobs.get(job_id)
         rows = response.data or []
         if not rows or not isinstance(rows[0], dict):
             return None
@@ -1237,24 +1678,72 @@ class SupabaseStore:
         if finished_at is not None:
             payload["finished_at"] = finished_at.isoformat()
         if payload:
-            self.client.table("analysis_jobs").update(payload).eq("id", job_id).execute()
+            try:
+                self.client.table("analysis_jobs").update(payload).eq("id", job_id).execute()
+            except Exception as exc:
+                if not self._is_missing_table_error(exc, "analysis_jobs"):
+                    raise
+                current = self._compat_analysis_jobs.get(job_id)
+                if current is None:
+                    return None
+                updated = AnalysisJobRecord(
+                    id=current.id,
+                    user_id=current.user_id,
+                    intent=current.intent,
+                    status=str(payload.get("status", current.status)),
+                    trigger_source=current.trigger_source,
+                    decision_id=str(payload.get("decision_id", current.decision_id)) if payload.get("decision_id", current.decision_id) is not None else None,
+                    sync_run_id=str(payload.get("sync_run_id", current.sync_run_id)) if payload.get("sync_run_id", current.sync_run_id) is not None else None,
+                    target_message_count=int(payload.get("target_message_count", current.target_message_count)),
+                    max_lookback_hours=int(payload.get("max_lookback_hours", current.max_lookback_hours)),
+                    detail_mode=str(payload.get("detail_mode", current.detail_mode)),
+                    selected_message_count=int(payload.get("selected_message_count", current.selected_message_count)),
+                    selected_transcript_chars=int(payload.get("selected_transcript_chars", current.selected_transcript_chars)),
+                    estimated_input_tokens=int(payload.get("estimated_input_tokens", current.estimated_input_tokens)),
+                    estimated_output_tokens=int(payload.get("estimated_output_tokens", current.estimated_output_tokens)),
+                    estimated_cost_floor_usd=float(payload.get("estimated_cost_floor_usd", current.estimated_cost_floor_usd)),
+                    estimated_cost_ceiling_usd=float(payload.get("estimated_cost_ceiling_usd", current.estimated_cost_ceiling_usd)),
+                    snapshot_id=str(payload.get("snapshot_id", current.snapshot_id)) if payload.get("snapshot_id", current.snapshot_id) is not None else None,
+                    error_text=str(payload.get("error_text", current.error_text)) if payload.get("error_text", current.error_text) is not None else None,
+                    started_at=self._parse_datetime(payload.get("started_at")) or current.started_at,
+                    finished_at=self._parse_datetime(payload.get("finished_at")) or current.finished_at,
+                    created_at=current.created_at,
+                )
+                self._compat_analysis_jobs[job_id] = updated
+                return updated
         return self.get_analysis_job(job_id)
 
     def claim_next_queued_analysis_job(self, *, user_id: UUID) -> AnalysisJobRecord | None:
-        response = (
-            self.client.table("analysis_jobs")
-            .select(
-                "id,user_id,intent,status,trigger_source,decision_id,sync_run_id,target_message_count,"
-                "max_lookback_hours,detail_mode,selected_message_count,selected_transcript_chars,"
-                "estimated_input_tokens,estimated_output_tokens,estimated_cost_floor_usd,"
-                "estimated_cost_ceiling_usd,snapshot_id,error_text,started_at,finished_at,created_at"
+        try:
+            response = (
+                self.client.table("analysis_jobs")
+                .select(
+                    "id,user_id,intent,status,trigger_source,decision_id,sync_run_id,target_message_count,"
+                    "max_lookback_hours,detail_mode,selected_message_count,selected_transcript_chars,"
+                    "estimated_input_tokens,estimated_output_tokens,estimated_cost_floor_usd,"
+                    "estimated_cost_ceiling_usd,snapshot_id,error_text,started_at,finished_at,created_at"
+                )
+                .eq("user_id", str(user_id))
+                .eq("status", "queued")
+                .order("created_at", desc=False)
+                .limit(1)
+                .execute()
             )
-            .eq("user_id", str(user_id))
-            .eq("status", "queued")
-            .order("created_at", desc=False)
-            .limit(1)
-            .execute()
-        )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "analysis_jobs"):
+                raise
+            queued = [
+                job for job in self._compat_analysis_jobs.values()
+                if job.user_id == user_id and job.status == "queued"
+            ]
+            queued.sort(key=lambda job: job.created_at)
+            if not queued:
+                return None
+            return self.update_analysis_job(
+                job_id=queued[0].id,
+                status="running",
+                started_at=datetime.now(UTC),
+            )
         rows = response.data or []
         if not rows or not isinstance(rows[0], dict):
             return None
@@ -1268,19 +1757,26 @@ class SupabaseStore:
         return self.get_analysis_job(job_id)
 
     def list_analysis_jobs(self, *, user_id: UUID, limit: int = 12) -> list[AnalysisJobRecord]:
-        response = (
-            self.client.table("analysis_jobs")
-            .select(
-                "id,user_id,intent,status,trigger_source,decision_id,sync_run_id,target_message_count,"
-                "max_lookback_hours,detail_mode,selected_message_count,selected_transcript_chars,"
-                "estimated_input_tokens,estimated_output_tokens,estimated_cost_floor_usd,"
-                "estimated_cost_ceiling_usd,snapshot_id,error_text,started_at,finished_at,created_at"
+        try:
+            response = (
+                self.client.table("analysis_jobs")
+                .select(
+                    "id,user_id,intent,status,trigger_source,decision_id,sync_run_id,target_message_count,"
+                    "max_lookback_hours,detail_mode,selected_message_count,selected_transcript_chars,"
+                    "estimated_input_tokens,estimated_output_tokens,estimated_cost_floor_usd,"
+                    "estimated_cost_ceiling_usd,snapshot_id,error_text,started_at,finished_at,created_at"
+                )
+                .eq("user_id", str(user_id))
+                .order("created_at", desc=True)
+                .limit(limit)
+                .execute()
             )
-            .eq("user_id", str(user_id))
-            .order("created_at", desc=True)
-            .limit(limit)
-            .execute()
-        )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "analysis_jobs"):
+                raise
+            jobs = [job for job in self._compat_analysis_jobs.values() if job.user_id == user_id]
+            jobs.sort(key=lambda job: job.created_at, reverse=True)
+            return jobs[:limit]
         rows = response.data or []
         jobs: list[AnalysisJobRecord] = []
         for row in rows:
@@ -1298,18 +1794,29 @@ class SupabaseStore:
         since: datetime,
         trigger_source: str | None = None,
     ) -> int:
-        query = (
-            self.client.table("analysis_jobs")
-            .select("id,trigger_source")
-            .eq("user_id", str(user_id))
-            .gte("created_at", since.isoformat())
-            .limit(500)
-        )
-        if trigger_source is not None:
-            query = query.eq("trigger_source", trigger_source)
-        response = query.execute()
-        rows = response.data or []
-        return sum(1 for row in rows if isinstance(row, dict))
+        try:
+            query = (
+                self.client.table("analysis_jobs")
+                .select("id,trigger_source")
+                .eq("user_id", str(user_id))
+                .gte("created_at", since.isoformat())
+                .limit(500)
+            )
+            if trigger_source is not None:
+                query = query.eq("trigger_source", trigger_source)
+            response = query.execute()
+            rows = response.data or []
+            return sum(1 for row in rows if isinstance(row, dict))
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "analysis_jobs"):
+                raise
+            return sum(
+                1
+                for job in self._compat_analysis_jobs.values()
+                if job.user_id == user_id
+                and job.created_at >= since
+                and (trigger_source is None or job.trigger_source == trigger_source)
+            )
 
     def save_analysis_job_messages(self, *, job_id: str, message_ids: Sequence[str]) -> None:
         cleaned = [message_id.strip() for message_id in message_ids if message_id and message_id.strip()]
@@ -1323,7 +1830,11 @@ class SupabaseStore:
             }
             for message_id in dict.fromkeys(cleaned)
         ]
-        self.client.table("analysis_job_messages").upsert(records, on_conflict="job_id,message_id").execute()
+        try:
+            self.client.table("analysis_job_messages").upsert(records, on_conflict="job_id,message_id").execute()
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "analysis_job_messages"):
+                raise
 
     def create_model_run(
         self,
@@ -1359,7 +1870,29 @@ class SupabaseStore:
             "error_text": error_text,
             "created_at": created_at.isoformat(),
         }
-        self.client.table("model_runs").insert(record).execute()
+        try:
+            self.client.table("model_runs").insert(record).execute()
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "model_runs"):
+                raise
+            compat_run = ModelRunRecord(
+                id=model_run_id,
+                user_id=user_id,
+                job_id=job_id,
+                provider=provider,
+                model_name=model_name,
+                run_type=run_type,
+                success=bool(success),
+                latency_ms=latency_ms,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                reasoning_tokens=reasoning_tokens,
+                estimated_cost_usd=estimated_cost_usd,
+                error_text=error_text,
+                created_at=created_at,
+            )
+            self._compat_model_runs[model_run_id] = compat_run
+            return compat_run
         return ModelRunRecord(
             id=model_run_id,
             user_id=user_id,
@@ -1378,17 +1911,24 @@ class SupabaseStore:
         )
 
     def list_model_runs(self, *, user_id: UUID, limit: int = 12) -> list[ModelRunRecord]:
-        response = (
-            self.client.table("model_runs")
-            .select(
-                "id,user_id,job_id,provider,model_name,run_type,success,latency_ms,input_tokens,"
-                "output_tokens,reasoning_tokens,estimated_cost_usd,error_text,created_at"
+        try:
+            response = (
+                self.client.table("model_runs")
+                .select(
+                    "id,user_id,job_id,provider,model_name,run_type,success,latency_ms,input_tokens,"
+                    "output_tokens,reasoning_tokens,estimated_cost_usd,error_text,created_at"
+                )
+                .eq("user_id", str(user_id))
+                .order("created_at", desc=True)
+                .limit(limit)
+                .execute()
             )
-            .eq("user_id", str(user_id))
-            .order("created_at", desc=True)
-            .limit(limit)
-            .execute()
-        )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "model_runs"):
+                raise
+            runs = [run for run in self._compat_model_runs.values() if run.user_id == user_id]
+            runs.sort(key=lambda run: run.created_at, reverse=True)
+            return runs[:limit]
         rows = response.data or []
         runs: list[ModelRunRecord] = []
         for row in rows:
@@ -1400,21 +1940,31 @@ class SupabaseStore:
         return runs
 
     def sum_model_run_cost_since(self, *, user_id: UUID, since: datetime) -> float:
-        response = (
-            self.client.table("model_runs")
-            .select("estimated_cost_usd")
-            .eq("user_id", str(user_id))
-            .gte("created_at", since.isoformat())
-            .limit(500)
-            .execute()
-        )
-        rows = response.data or []
-        total = 0.0
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            total += self._parse_float(row.get("estimated_cost_usd")) or 0.0
-        return round(total, 6)
+        try:
+            response = (
+                self.client.table("model_runs")
+                .select("estimated_cost_usd")
+                .eq("user_id", str(user_id))
+                .gte("created_at", since.isoformat())
+                .limit(500)
+                .execute()
+            )
+            rows = response.data or []
+            total = 0.0
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                total += self._parse_float(row.get("estimated_cost_usd")) or 0.0
+            return round(total, 6)
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "model_runs"):
+                raise
+            total = 0.0
+            for run in self._compat_model_runs.values():
+                if run.user_id != user_id or run.created_at < since:
+                    continue
+                total += run.estimated_cost_usd or 0.0
+            return round(total, 6)
 
     def _insert_memory_snapshot(self, snapshot: MemorySnapshotRecord) -> None:
         record = {
@@ -1472,6 +2022,39 @@ class SupabaseStore:
         if not rows or not isinstance(rows[0], dict):
             return None
         return rows[0]
+
+    def _api_error_dict(self, exc: Exception) -> dict[str, Any]:
+        if isinstance(exc, APIError) and exc.args:
+            first = exc.args[0]
+            if isinstance(first, dict):
+                return first
+        return {}
+
+    def _api_error_message(self, exc: Exception) -> str:
+        payload = self._api_error_dict(exc)
+        message = payload.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip().lower()
+        return str(exc).strip().lower()
+
+    def _api_error_code(self, exc: Exception) -> str:
+        payload = self._api_error_dict(exc)
+        code = payload.get("code")
+        return str(code or "").strip().upper()
+
+    def _is_missing_table_error(self, exc: Exception, table_name: str) -> bool:
+        message = self._api_error_message(exc)
+        code = self._api_error_code(exc)
+        return code == "42P01" or f"relation {table_name.lower()}" in message or f"table {table_name.lower()}" in message
+
+    def _is_missing_column_error(self, exc: Exception, *, column_name: str, table_name: str | None = None) -> bool:
+        message = self._api_error_message(exc)
+        code = self._api_error_code(exc)
+        if code != "42703" and f"column {column_name.lower()}" not in message:
+            return False
+        if table_name is None:
+            return True
+        return table_name.lower() in message or "does not exist" in message
 
     def _parse_uuid(self, value: Any) -> UUID | None:
         if value is None:

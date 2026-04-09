@@ -600,12 +600,29 @@ class MemoryAnalysisService:
         return "\n\n".join(sections)
 
     def _build_chat_context(self) -> str:
-        thread = self.store.get_or_create_chat_thread(user_id=self.settings.default_user_id)
-        messages = self.store.list_chat_messages(
-            thread.id,
-            limit=max(1, min(self.settings.chat_max_history_messages, 12)),
-        )
-        return self._build_chat_context_from_messages(messages)
+        threads = self.store.list_chat_threads(user_id=self.settings.default_user_id, limit=4)
+        if not threads:
+            threads = [self.store.get_or_create_chat_thread(user_id=self.settings.default_user_id)]
+
+        sections: list[str] = []
+        current_size = 0
+        char_budget = max(1000, self.settings.memory_analysis_snapshot_context_chars)
+        per_thread_limit = max(1, min(self.settings.chat_max_history_messages, 6))
+
+        for thread in threads:
+            messages = self.store.list_chat_messages(thread.id, limit=per_thread_limit)
+            section_body = self._build_chat_context_from_messages(messages)
+            if not section_body:
+                continue
+
+            section = f"[{thread.title}]\n{section_body}"
+            projected_size = current_size + len(section) + 2
+            if sections and projected_size > char_budget:
+                break
+            sections.append(section)
+            current_size = projected_size
+
+        return "\n\n".join(sections)
 
     def _build_chat_context_from_messages(self, messages: list[ChatMessageRecord]) -> str:
         if not messages:
