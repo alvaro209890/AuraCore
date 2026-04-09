@@ -590,7 +590,7 @@ export class WhatsAppGatewayChannel {
     const enrichedKey = key as MessageKeyWithLid;
     const remoteJid = String(key.remoteJid ?? "");
     if (!remoteJid.endsWith("@lid")) {
-      return remoteJid;
+      return this.normalizePhoneJidCandidate(remoteJid) ?? remoteJid;
     }
 
     const candidates = [enrichedKey.remoteJidAlt, enrichedKey.participantPn, key.participant];
@@ -630,10 +630,6 @@ export class WhatsAppGatewayChannel {
     const trimmed = value.trim();
     if (!trimmed || isStatusJid(trimmed) || isGroupJid(trimmed) || trimmed.endsWith("@lid")) {
       return null;
-    }
-
-    if (trimmed.endsWith("@s.whatsapp.net")) {
-      return trimmed;
     }
 
     const phone = jidToPhone(trimmed);
@@ -803,7 +799,12 @@ export class WhatsAppGatewayChannel {
       return exact || base || trimmed;
     }
 
-    if (trimmed.includes("@")) {
+    if (
+      isGroupJid(trimmed) ||
+      isStatusJid(trimmed) ||
+      isBroadcastJid(trimmed) ||
+      isNewsletterJid(trimmed)
+    ) {
       return trimmed;
     }
 

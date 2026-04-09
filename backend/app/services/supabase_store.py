@@ -4306,33 +4306,28 @@ class SupabaseStore:
         if not normalized:
             return set()
 
-        variants = {normalized}
         digits = normalized
-        if len(digits) >= 11:
-            variants.add(digits[-10:])
-            variants.add(digits[-9:])
-            variants.add(digits[-8:])
+        variants = {digits}
+
+        # Mirror the SaldoPro strategy for Brazilian WhatsApp numbers:
+        # keep the DDD intact and only toggle the mobile "9" digit.
+        if len(digits) == 11 and digits[2] == "9":
+            variants.add(f"{digits[:2]}{digits[3:]}")
         elif len(digits) == 10:
-            variants.add(digits[-9:])
-            variants.add(digits[-8:])
-        elif len(digits) == 9:
-            variants.add(digits[-8:])
+            variants.add(f"{digits[:2]}9{digits[2:]}")
+        elif len(digits) == 9 and digits[0] == "9":
+            variants.add(digits[1:])
+        elif len(digits) == 8:
+            variants.add(f"9{digits}")
+
         return {variant for variant in variants if 8 <= len(variant) <= 11}
 
-    def phone_matches(self, left: str | None, right: str | None, *, min_suffix: int = 8) -> bool:
+    def phone_matches(self, left: str | None, right: str | None) -> bool:
         left_variants = self.build_phone_variants(left)
         right_variants = self.build_phone_variants(right)
         if not left_variants or not right_variants:
             return False
-        if left_variants.intersection(right_variants):
-            return True
-
-        for left_value in left_variants:
-            for right_value in right_variants:
-                shared = min(len(left_value), len(right_value))
-                if shared >= min_suffix and left_value[-shared:] == right_value[-shared:]:
-                    return True
-        return False
+        return bool(left_variants.intersection(right_variants))
 
     def _parse_string_list(self, value: Any) -> list[str]:
         if not isinstance(value, list):
