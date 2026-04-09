@@ -57,6 +57,10 @@ create table if not exists public.persona (
   last_snapshot_id uuid,
   last_analyzed_ingested_count bigint,
   last_analyzed_pruned_count bigint,
+  structural_strengths jsonb not null default '[]'::jsonb,
+  structural_routines jsonb not null default '[]'::jsonb,
+  structural_preferences jsonb not null default '[]'::jsonb,
+  structural_open_questions jsonb not null default '[]'::jsonb,
   updated_at timestamptz not null default timezone('utc', now())
 );
 
@@ -389,11 +393,11 @@ create table if not exists public.automation_settings (
   auto_sync_enabled boolean not null default true,
   auto_analyze_enabled boolean not null default true,
   auto_refine_enabled boolean not null default false,
-  min_new_messages_threshold integer not null default 25,
+  min_new_messages_threshold integer not null default 12,
   stale_hours_threshold integer not null default 24,
   pruned_messages_threshold integer not null default 1,
   default_detail_mode text not null default 'balanced',
-  default_target_message_count integer not null default 200,
+  default_target_message_count integer not null default 120,
   default_lookback_hours integer not null default 72,
   daily_budget_usd numeric(12,6) not null default 0.250000,
   max_auto_jobs_per_day integer not null default 4,

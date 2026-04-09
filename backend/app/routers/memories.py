@@ -213,6 +213,10 @@ def _to_persona_response(persona: PersonaRecord) -> MemoryCurrentResponse:
         life_summary=persona.life_summary,
         last_analyzed_at=persona.last_analyzed_at,
         last_snapshot_id=persona.last_snapshot_id,
+        structural_strengths=persona.structural_strengths,
+        structural_routines=persona.structural_routines,
+        structural_preferences=persona.structural_preferences,
+        structural_open_questions=persona.structural_open_questions,
     )
 
 

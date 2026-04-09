@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
   Activity,
@@ -162,8 +162,22 @@ type NavItem = {
   icon: LucideIcon;
 };
 
-const POLL_INTERVAL_MS = 5000;
+const CONNECTING_STATUS_POLL_INTERVAL_MS = 700;
+const LIVE_STATUS_POLL_INTERVAL_MS = 1200;
 const QR_REFRESH_INTERVAL_MS = 25000;
+const ATTENTION_REFRESH_THROTTLE_MS = 800;
+const LIVE_REFRESH_INTERVALS: Record<TabId, number> = {
+  overview: 1800,
+  observer: 1600,
+  agent: 1400,
+  memory: 2200,
+  important: 2400,
+  projects: 2400,
+  chat: 1600,
+  activity: 2200,
+  automation: 2200,
+  manual: 2200,
+};
 const NAV_GROUPS: NavGroup[] = [
   {
     title: "Painel Principal",
@@ -256,6 +270,17 @@ const REFINE_STEPS: AgentStep[] = [
     detail: "Atualizando memória atual e frentes principais sem reprocessar tudo do zero.",
   },
 ];
+
+function getLiveRefreshInterval(tab: TabId): number {
+  return LIVE_REFRESH_INTERVALS[tab];
+}
+
+function isDocumentVisible(): boolean {
+  if (typeof document === "undefined") {
+    return true;
+  }
+  return document.visibilityState === "visible";
+}
 
 function mergeStatus(previous: ObserverStatus | null, next: ObserverStatus): ObserverStatus {
   return {
@@ -932,11 +957,19 @@ export function ConnectionDashboard() {
     makeLog("info", "Painel iniciado. Aguardando a próxima leitura ou refinamento."),
   ]);
 
+  const liveRefreshIntervalMs = useMemo(() => getLiveRefreshInterval(activeTab), [activeTab]);
   const lastQrRefreshAtRef = useRef<number | null>(null);
   const lastAgentQrRefreshAtRef = useRef<number | null>(null);
+  const lastAttentionRefreshAtRef = useRef<number | null>(null);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const agentTimerRef = useRef<number | null>(null);
   const agentStepIndexRef = useRef(0);
+  const observerStatusInFlightRef = useRef(false);
+  const agentStatusInFlightRef = useRef(false);
+  const dashboardRefreshInFlightRef = useRef(false);
+  const pollStatusRef = useRef<((announceTransition?: boolean) => Promise<void>) | null>(null);
+  const pollAgentStatusRef = useRef<((announceTransition?: boolean) => Promise<void>) | null>(null);
+  const refreshLiveDataRef = useRef<(() => Promise<void>) | null>(null);
 
   const latestSnapshot = snapshots[0] ?? null;
   const memoryIsEstablished = memoryStatus?.has_initial_analysis ?? hasEstablishedMemory(memory, latestSnapshot);
@@ -958,6 +991,14 @@ export function ConnectionDashboard() {
     }
     return agentStatus.connected ? "Online" : formatState(agentStatus.state);
   }, [agentStatus]);
+  const observerStatusIntervalMs = useMemo(
+    () => ((pollingEnabled || !status?.connected) ? CONNECTING_STATUS_POLL_INTERVAL_MS : LIVE_STATUS_POLL_INTERVAL_MS),
+    [pollingEnabled, status?.connected],
+  );
+  const agentStatusIntervalMs = useMemo(
+    () => ((agentPollingEnabled || !agentStatus?.connected) ? CONNECTING_STATUS_POLL_INTERVAL_MS : LIVE_STATUS_POLL_INTERVAL_MS),
+    [agentPollingEnabled, agentStatus?.connected],
+  );
 
   const currentSteps = useMemo(() => getStepsForMode(agentState.mode), [agentState.mode]);
   const insightMetrics = useMemo(() => getSignalMetrics(latestSnapshot), [latestSnapshot]);
@@ -970,33 +1011,298 @@ export function ConnectionDashboard() {
     [agentLogs, persistedActivityLogs],
   );
 
+  function applyObserverStatus(nextStatus: ObserverStatus, announceTransition = true): void {
+    const wasConnected = status?.connected ?? false;
+    startTransition(() => {
+      setStatus((previous) => mergeStatus(previous, nextStatus));
+      setPollingEnabled(!nextStatus.connected);
+      setViewState(nextStatus.connected ? "connected" : "waiting");
+      setConnectionError(null);
+    });
+
+    if (announceTransition && nextStatus.connected && !wasConnected) {
+      pushAgentLog("success", "Observador conectado. As mensagens diretas ja podem alimentar a memoria.");
+    }
+  }
+
+  function applyAgentStatus(nextStatus: WhatsAppAgentStatus, announceTransition = true): void {
+    const wasConnected = agentStatus?.connected ?? false;
+    startTransition(() => {
+      setAgentStatus(nextStatus);
+      setAgentPollingEnabled(!nextStatus.connected);
+      setAgentViewState(nextStatus.connected ? "connected" : "waiting");
+      setAgentConnectionError(null);
+    });
+
+    if (announceTransition && nextStatus.connected && !wasConnected) {
+      pushAgentLog("success", "WhatsApp agente conectado. Respostas automaticas podem ser ativadas.");
+    }
+  }
+
+  async function pollStatus(announceTransition = true): Promise<void> {
+    if (observerStatusInFlightRef.current || isSubmitting || isResetting) {
+      return;
+    }
+
+    observerStatusInFlightRef.current = true;
+    try {
+      const shouldRefreshQr = !status?.connected && Boolean(status?.qr_code) && (
+        !lastQrRefreshAtRef.current ||
+        Date.now() - lastQrRefreshAtRef.current >= QR_REFRESH_INTERVAL_MS
+      );
+      const nextStatus = shouldRefreshQr ? await connectObserver() : await getObserverStatus(false);
+
+      if (shouldRefreshQr) {
+        lastQrRefreshAtRef.current = Date.now();
+      }
+
+      applyObserverStatus(nextStatus, announceTransition);
+    } catch (error) {
+      const message = getErrorMessage(error);
+      startTransition(() => {
+        setConnectionError(message);
+        if (!status) {
+          setViewState("error");
+        }
+      });
+    } finally {
+      observerStatusInFlightRef.current = false;
+    }
+  }
+
+  async function pollAgentStatus(announceTransition = true): Promise<void> {
+    if (agentStatusInFlightRef.current || isAgentConnecting || isAgentResetting) {
+      return;
+    }
+
+    agentStatusInFlightRef.current = true;
+    try {
+      const shouldRefreshQr = !agentStatus?.connected && Boolean(agentStatus?.qr_code) && (
+        !lastAgentQrRefreshAtRef.current ||
+        Date.now() - lastAgentQrRefreshAtRef.current >= QR_REFRESH_INTERVAL_MS
+      );
+      const nextStatus = shouldRefreshQr ? await connectAgent() : await getAgentStatus();
+
+      if (shouldRefreshQr) {
+        lastAgentQrRefreshAtRef.current = Date.now();
+      }
+
+      applyAgentStatus(nextStatus, announceTransition);
+    } catch (error) {
+      const message = getErrorMessage(error);
+      startTransition(() => {
+        setAgentConnectionError(message);
+        if (!agentStatus) {
+          setAgentViewState("error");
+        }
+      });
+    } finally {
+      agentStatusInFlightRef.current = false;
+    }
+  }
+
+  async function refreshLiveData(): Promise<void> {
+    if (dashboardRefreshInFlightRef.current || isRefreshing || isRefreshingMessages || !isDocumentVisible()) {
+      return;
+    }
+
+    const shouldRefreshChatWorkspace = (
+      activeTab === "overview" ||
+      activeTab === "manual" ||
+      activeTab === "chat" ||
+      activeTab === "memory" ||
+      activeTab === "projects"
+    ) && !isLoadingChatThread && !isCreatingChatThread && !isSendingChat && streamingText === null;
+    const shouldRefreshAgentWorkspace = (
+      activeTab === "overview" ||
+      activeTab === "manual" ||
+      activeTab === "agent"
+    ) && !isAgentConnecting && !isAgentResetting;
+    const shouldRefreshMemoryStatus = (
+      activeTab === "overview" ||
+      activeTab === "manual" ||
+      activeTab === "observer" ||
+      activeTab === "memory" ||
+      activeTab === "activity" ||
+      activeTab === "automation"
+    );
+    const shouldRefreshSnapshots = activeTab === "overview" || activeTab === "manual" || activeTab === "memory";
+    const shouldRefreshImportantMessages = activeTab === "overview" || activeTab === "manual" || activeTab === "important";
+    const shouldRefreshAutomation = (
+      activeTab === "overview" ||
+      activeTab === "manual" ||
+      activeTab === "activity" ||
+      activeTab === "automation"
+    ) && !isTickingAutomation;
+
+    dashboardRefreshInFlightRef.current = true;
+    try {
+      const [
+        agentWorkspaceResult,
+        chatWorkspaceResult,
+        memoryStatusResult,
+        snapshotsResult,
+        importantMessagesResult,
+        automationResult,
+      ] = await Promise.allSettled([
+        shouldRefreshAgentWorkspace ? getAgentWorkspace(activeAgentThreadId ?? undefined) : Promise.resolve(null),
+        shouldRefreshChatWorkspace ? getChatWorkspace(activeChatThreadId ?? undefined) : Promise.resolve(null),
+        shouldRefreshMemoryStatus ? getMemoryStatus() : Promise.resolve(null),
+        shouldRefreshSnapshots ? getMemorySnapshots(6) : Promise.resolve(null),
+        shouldRefreshImportantMessages ? getImportantMessages(80) : Promise.resolve(null),
+        shouldRefreshAutomation ? getAutomationStatus() : Promise.resolve(null),
+      ]);
+
+      if (agentWorkspaceResult.status === "fulfilled" && agentWorkspaceResult.value) {
+        const nextAgentWorkspace = agentWorkspaceResult.value;
+        startTransition(() => {
+          applyAgentWorkspace(nextAgentWorkspace);
+        });
+      } else if (agentWorkspaceResult.status === "rejected" && shouldRefreshAgentWorkspace) {
+        setAgentConnectionError(getErrorMessage(agentWorkspaceResult.reason));
+      }
+
+      if (chatWorkspaceResult.status === "fulfilled" && chatWorkspaceResult.value) {
+        const nextChatWorkspace = chatWorkspaceResult.value;
+        startTransition(() => {
+          applyChatWorkspace(nextChatWorkspace);
+        });
+      } else if (chatWorkspaceResult.status === "rejected" && shouldRefreshChatWorkspace) {
+        setChatError(getErrorMessage(chatWorkspaceResult.reason));
+      }
+
+      if (memoryStatusResult.status === "fulfilled" && memoryStatusResult.value) {
+        const nextMemoryStatus = memoryStatusResult.value;
+        startTransition(() => {
+          setMemoryStatus(nextMemoryStatus);
+        });
+      }
+
+      if (snapshotsResult.status === "fulfilled" && snapshotsResult.value) {
+        const nextSnapshots = snapshotsResult.value;
+        startTransition(() => {
+          setSnapshots(nextSnapshots);
+        });
+      }
+
+      if (importantMessagesResult.status === "fulfilled" && importantMessagesResult.value) {
+        const nextImportantMessages = importantMessagesResult.value;
+        startTransition(() => {
+          setImportantMessages(nextImportantMessages);
+          setImportantMessagesError(null);
+        });
+      } else if (importantMessagesResult.status === "rejected" && shouldRefreshImportantMessages) {
+        setImportantMessagesError(getErrorMessage(importantMessagesResult.reason));
+      }
+
+      if (automationResult.status === "fulfilled" && automationResult.value) {
+        const nextAutomation = automationResult.value;
+        startTransition(() => {
+          setAutomationStatus(nextAutomation);
+          setAutomationError(null);
+          setAutomationDraft((previous) => previous ?? toAutomationDraft(nextAutomation.settings));
+        });
+      } else if (automationResult.status === "rejected" && shouldRefreshAutomation) {
+        setAutomationError(getErrorMessage(automationResult.reason));
+      }
+    } finally {
+      dashboardRefreshInFlightRef.current = false;
+    }
+  }
+
+  pollStatusRef.current = pollStatus;
+  pollAgentStatusRef.current = pollAgentStatus;
+  refreshLiveDataRef.current = refreshLiveData;
+
   useEffect(() => {
     void hydrateDashboard();
   }, []);
 
   useEffect(() => {
-    if (!pollingEnabled || status?.connected) {
+    if (isHydrating) {
       return;
     }
 
+    void pollStatusRef.current?.(false);
+
     const intervalId = window.setInterval(() => {
-      void pollStatus();
-    }, POLL_INTERVAL_MS);
+      void pollStatusRef.current?.();
+    }, observerStatusIntervalMs);
 
     return () => window.clearInterval(intervalId);
-  }, [pollingEnabled, status?.connected]);
+  }, [isHydrating, observerStatusIntervalMs]);
 
   useEffect(() => {
-    if (!agentPollingEnabled || agentStatus?.connected) {
+    if (isHydrating) {
+      return;
+    }
+
+    void pollAgentStatusRef.current?.(false);
+
+    const intervalId = window.setInterval(() => {
+      void pollAgentStatusRef.current?.();
+    }, agentStatusIntervalMs);
+
+    return () => window.clearInterval(intervalId);
+  }, [agentStatusIntervalMs, isHydrating]);
+
+  useEffect(() => {
+    if (isHydrating) {
+      return;
+    }
+
+    void refreshLiveDataRef.current?.();
+  }, [activeAgentThreadId, activeChatThreadId, activeTab, isHydrating]);
+
+  useEffect(() => {
+    if (isHydrating) {
       return;
     }
 
     const intervalId = window.setInterval(() => {
-      void pollAgentStatus();
-    }, POLL_INTERVAL_MS);
+      void refreshLiveDataRef.current?.();
+    }, liveRefreshIntervalMs);
 
     return () => window.clearInterval(intervalId);
-  }, [agentPollingEnabled, agentStatus?.connected]);
+  }, [isHydrating, liveRefreshIntervalMs]);
+
+  useEffect(() => {
+    if (isHydrating) {
+      return;
+    }
+
+    const refreshOnAttention = (): void => {
+      if (!isDocumentVisible()) {
+        return;
+      }
+
+      const now = Date.now();
+      if (lastAttentionRefreshAtRef.current && now - lastAttentionRefreshAtRef.current < ATTENTION_REFRESH_THROTTLE_MS) {
+        return;
+      }
+
+      lastAttentionRefreshAtRef.current = now;
+      void pollStatusRef.current?.(false);
+      void pollAgentStatusRef.current?.(false);
+      void refreshLiveDataRef.current?.();
+    };
+
+    const handleVisibilityChange = (): void => {
+      if (isDocumentVisible()) {
+        refreshOnAttention();
+      }
+    };
+
+    window.addEventListener("focus", refreshOnAttention);
+    window.addEventListener("online", refreshOnAttention);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("focus", refreshOnAttention);
+      window.removeEventListener("online", refreshOnAttention);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [isHydrating]);
 
   useEffect(() => {
     if (!chatScrollRef.current) {
@@ -1035,7 +1341,7 @@ export function ConnectionDashboard() {
     setAgentConnectionError(null);
     setAgentMessagesError(null);
     setAgentPollingEnabled(!workspace.status.connected);
-    setAgentViewState(workspace.status.connected ? "connected" : "idle");
+    setAgentViewState(workspace.status.connected ? "connected" : "waiting");
   }
 
   async function hydrateDashboard(mode: "initial" | "manual" = "initial"): Promise<void> {
@@ -1066,7 +1372,7 @@ export function ConnectionDashboard() {
     if (statusResult.status === "fulfilled") {
       setStatus(statusResult.value);
       setPollingEnabled(!statusResult.value.connected);
-      setViewState(statusResult.value.connected ? "connected" : "idle");
+      setViewState(statusResult.value.connected ? "connected" : "waiting");
       setConnectionError(null);
     } else {
       setPollingEnabled(false);
@@ -1377,7 +1683,7 @@ export function ConnectionDashboard() {
     }
   }
 
-  async function pollStatus(): Promise<void> {
+  async function legacyPollStatus(): Promise<void> {
     try {
       const shouldRefreshQr = Boolean(status?.qr_code) && (
         !lastQrRefreshAtRef.current ||
@@ -1408,7 +1714,7 @@ export function ConnectionDashboard() {
     }
   }
 
-  async function pollAgentStatus(): Promise<void> {
+  async function legacyPollAgentStatus(): Promise<void> {
     try {
       const shouldRefreshQr = Boolean(agentStatus?.qr_code) && (
         !lastAgentQrRefreshAtRef.current ||
@@ -1919,6 +2225,10 @@ function OverviewTab({
   onGoToChat: () => void;
 }) {
   const [subTab, setSubTab] = useState<"summary" | "mapping" | "signals">("summary");
+  const structuralStrengths = memory?.structural_strengths?.length ? memory.structural_strengths : (latestSnapshot?.key_learnings ?? []);
+  const structuralRoutines = memory?.structural_routines?.length ? memory.structural_routines : (latestSnapshot?.routine_signals ?? []);
+  const structuralPreferences = memory?.structural_preferences?.length ? memory.structural_preferences : (latestSnapshot?.preferences ?? []);
+  const structuralOpenQuestions = memory?.structural_open_questions?.length ? memory.structural_open_questions : (latestSnapshot?.open_questions ?? []);
   const latestUpdateLabel = memory?.last_analyzed_at
     ? formatShortDateTime(memory.last_analyzed_at)
     : latestSnapshot?.created_at
@@ -2016,18 +2326,18 @@ function OverviewTab({
             <div className="signal-cluster">
               <h4>Áreas Fortes</h4>
               <SignalBlock
-                title="Aprendizados Recentes"
-                lines={latestSnapshot?.key_learnings ?? []}
-                emptyLabel="Sem aprendizados recentes consolidados."
+                title="Forcas Cumulativas"
+                lines={structuralStrengths}
+                emptyLabel="Sem forcas recorrentes consolidadas."
               />
               <SignalBlock
                 title="Rotina Detectada"
-                lines={latestSnapshot?.routine_signals ?? []}
+                lines={structuralRoutines}
                 emptyLabel="Sem sinais fortes de rotina ainda."
               />
               <SignalBlock
                 title="Preferências Operacionais"
-                lines={latestSnapshot?.preferences ?? []}
+                lines={structuralPreferences}
                 emptyLabel="Sem preferências consolidadas ainda."
               />
             </div>
@@ -2035,8 +2345,8 @@ function OverviewTab({
             <div className="signal-cluster">
               <h4 className="amber">Pontos Frágeis</h4>
               <SignalBlock
-                title="Lacunas Atuais"
-                lines={latestSnapshot?.open_questions ?? []}
+                title="Lacunas Ainda Abertas"
+                lines={structuralOpenQuestions}
                 emptyLabel="Sem lacunas críticas no momento."
                 subtle
               />
@@ -2425,6 +2735,10 @@ function MemoryTab({
   onImproveMemory: () => void;
 }) {
   const memoryReady = memoryStatus?.has_initial_analysis ?? hasEstablishedMemory(memory, latestSnapshot);
+  const structuralStrengths = memory?.structural_strengths ?? [];
+  const structuralRoutines = memory?.structural_routines ?? [];
+  const structuralPreferences = memory?.structural_preferences ?? [];
+  const structuralOpenQuestions = memory?.structural_open_questions ?? [];
   const pendingNewMessages = memoryStatus?.pending_new_message_count ?? 0;
   const nextProcessCount = memoryStatus?.next_process_message_count ?? 0;
   const messagesUntilAutoProcess = memoryStatus?.messages_until_auto_process ?? 0;
@@ -2437,15 +2751,15 @@ function MemoryTab({
     : "Fazer Primeira Analise";
   const nextBatchLabel = nextProcessCount > 0
     ? `Processar Proximo Lote de ${formatTokenCount(nextProcessCount)} Agora`
-    : "Aguardando 10 mensagens novas";
+    : "Aguardando novo lote economico";
 
   return (
     <div className="page-stack">
       <Card>
         <SectionTitle title="Estado da Memoria" icon={Database} />
         <p className="support-copy">
-          Esta contagem considera mensagens recebidas e enviadas. Depois da primeira analise, o backend atualiza memoria,
-          projetos e mensagens importantes em lotes fixos de 10 mensagens novas.
+          Depois da primeira analise, este painel passa a contar apenas mensagens novas desde a ultima consolidacao.
+          O backend trabalha com lotes economicos pequenos para manter custo baixo e contexto mais preciso.
         </p>
         <div className="memory-breakdown-grid">
           <MemorySignalCard
@@ -2461,7 +2775,7 @@ function MemoryTab({
           <MemorySignalCard
             label="Mensagens novas"
             value={formatTokenCount(pendingNewMessages)}
-            meta="Fila operacional atual do WhatsApp, somando recebidas e enviadas"
+            meta="Mensagens novas desde a ultima analise concluida"
             tone="indigo"
           />
           <MemorySignalCard
@@ -2472,7 +2786,7 @@ function MemoryTab({
                 ? nextProcessCount > 0
                   ? "O proximo processamento vai consumir exatamente esse lote"
                   : "Ainda nao ha lote suficiente para o processamento incremental"
-                : "Na primeira analise entram ate 250 mensagens recentes"
+                : "Na primeira analise entra uma selecao balanceada das mensagens mais relevantes"
             }
             tone="amber"
           />
@@ -2496,7 +2810,7 @@ function MemoryTab({
         {!memoryReady ? (
           <>
             <p className="support-copy">
-              A primeira analise roda uma unica vez e usa sempre as mensagens diretas mais recentes disponiveis, com teto de 250.
+              A primeira analise roda uma unica vez e usa uma selecao balanceada de mensagens diretas recentes, evitando inflar tokens com historico desnecessario.
             </p>
             <button
               className="ac-success-button"
@@ -2511,7 +2825,7 @@ function MemoryTab({
         ) : (
           <>
             <p className="support-copy">
-              Depois da base inicial, cada atualizacao usa apenas o proximo lote de 10 mensagens novas. O botao abaixo adianta manualmente esse proximo lote quando ele ja estiver disponivel.
+              Depois da base inicial, cada atualizacao usa apenas o proximo lote economico de mensagens novas. Isso mantem a memoria viva sem reprocessar tudo de novo.
             </p>
             <button
               className="ac-primary-button"
@@ -2527,7 +2841,7 @@ function MemoryTab({
       </Card>
 
       <Card>
-        <SectionTitle title="Ultimo Snapshot" icon={FileText} />
+        <SectionTitle title="Ultima Janela Recente" icon={FileText} />
         {latestSnapshot ? (
           <div className="manual-list">
             <p>{latestSnapshot.window_summary}</p>
@@ -2535,6 +2849,7 @@ function MemoryTab({
               Baseado em {formatTokenCount(latestSnapshot.source_message_count)} mensagens entre{" "}
               {formatDateTime(latestSnapshot.window_start)} e {formatDateTime(latestSnapshot.window_end)}.
             </p>
+            <p>Este bloco mostra somente a janela mais recente. O retrato cumulativo do dono fica logo abaixo.</p>
           </div>
         ) : (
           <div className="empty-hint">
@@ -2551,6 +2866,38 @@ function MemoryTab({
             ? memory.life_summary
             : "Nenhum resumo consolidado ainda. Assim que a primeira leitura rodar, este bloco vira a visao mais util do dono para o chat e para futuras atualizacoes automaticas."}
         </p>
+      </Card>
+
+      <Card>
+        <SectionTitle title="Mapa Estrutural Cumulativo" icon={Brain} />
+        <div className="dual-column-grid">
+          <div className="signal-cluster">
+            <SignalBlock
+              title="Forcas recorrentes"
+              lines={structuralStrengths}
+              emptyLabel="Sem forcas recorrentes consolidadas ainda."
+            />
+            <SignalBlock
+              title="Rotina detectada"
+              lines={structuralRoutines}
+              emptyLabel="Sem rotina consolidada ainda."
+            />
+          </div>
+          <div className="signal-cluster">
+            <SignalBlock
+              title="Preferencias operacionais"
+              lines={structuralPreferences}
+              emptyLabel="Sem preferencias fortes consolidadas ainda."
+              subtle
+            />
+            <SignalBlock
+              title="Lacunas ainda abertas"
+              lines={structuralOpenQuestions}
+              emptyLabel="Sem lacunas importantes em aberto."
+              subtle
+            />
+          </div>
+        </div>
       </Card>
 
       {memoryError ? <InlineError title="Falha na memoria" message={memoryError} /> : null}
@@ -3644,7 +3991,7 @@ function AutomationTab({
         />
         <p className="support-copy">
           Esta area mostra so o estado operacional do loop automatico. Sem memoria inicial, nada entra na fila sozinho.
-          Depois da primeira analise, o backend processa 1 lote de 10 mensagens novas por ciclo.
+          Depois da primeira analise, o backend processa 1 lote economico de mensagens novas por ciclo.
         </p>
 
         <div className="automation-top-grid">
@@ -3865,7 +4212,7 @@ function ManualTab({
             <div className="manual-grid">
               <ManualInfoCard title="Visao Geral" text="Painel-resumo do estado atual: conexao, memoria, projetos, sinais e atalhos para o fluxo principal." />
               <ManualInfoCard title="Observador" text="Ponto de entrada do WhatsApp. Mostra QR, estado da instancia, sessao e a saude da captura." />
-              <ManualInfoCard title="Memoria" text="Aqui nasce e evolui a memoria central. Primeira analise, lotes de 10 mensagens, estado da fila e resumo do dono." />
+              <ManualInfoCard title="Memoria" text="Aqui nasce e evolui a memoria central. Primeira analise, lotes economicos de mensagens novas, estado da fila e resumo do dono." />
               <ManualInfoCard title="Importantes" text="Cofre de fatos duraveis: acessos, valores, clientes, prazos, riscos e sinais operacionais reaproveitaveis." />
               <ManualInfoCard title="Projetos" text="Organiza frentes reais detectadas nas conversas, com resumo, status, evidencias e proximos passos." />
               <ManualInfoCard title="Chat Pessoal" text="Thread por assunto usando a memoria central. Bom para separar estrategia, rotina, vendas, produto e operacao." />
@@ -3892,9 +4239,9 @@ function ManualTab({
             <div className="manual-sequence">
               <ManualStep title="1. Conectar o observador" text="Voce gera o QR, conecta o WhatsApp e libera a captura. A partir daqui o sistema passa a receber somente o que interessa para memoria." />
               <ManualStep title="2. Filtrar a entrada" text="Nem tudo entra. A ingestao prioriza chats diretos uteis e evita grupo, broadcast, newsletter, status e lixo operacional sem texto relevante." />
-              <ManualStep title="3. Criar a memoria base" text="A primeira analise e manual e usa ate 250 mensagens diretas mais recentes. Ela cria o primeiro retrato consolidado do dono." />
+              <ManualStep title="3. Criar a memoria base" text="A primeira analise e manual e usa uma selecao balanceada das mensagens diretas mais relevantes e recentes. Ela cria o primeiro retrato consolidado do dono." />
               <ManualStep title="4. Atualizar por contato" text="Durante as analises, o sistema tenta entender com quem e cada conversa e atualiza memorias separadas por pessoa de forma cumulativa." />
-              <ManualStep title="5. Processar lotes incrementais" text="Depois da base inicial, o backend passa a trabalhar em lotes fixos de 10 mensagens novas, contando recebidas e enviadas." />
+              <ManualStep title="5. Processar lotes incrementais" text="Depois da base inicial, o backend passa a trabalhar em lotes economicos de mensagens novas, contando apenas o que chegou desde a ultima consolidacao." />
               <ManualStep title="6. Salvar o que dura" text="O processamento atualiza resumo do dono, snapshots, projetos, memorias por pessoa e o cofre de mensagens importantes." />
               <ManualStep title="7. Reutilizar no chat" text="O chat pessoal consome a memoria consolidada, projetos, contexto da thread atual e sinais importantes para responder melhor." />
             </div>

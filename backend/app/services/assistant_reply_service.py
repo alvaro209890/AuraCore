@@ -57,6 +57,10 @@ class AssistantReplyService:
             last_snapshot_id=None,
             last_analyzed_ingested_count=None,
             last_analyzed_pruned_count=None,
+            structural_strengths=[],
+            structural_routines=[],
+            structural_preferences=[],
+            structural_open_questions=[],
         )
         projects = self.store.list_project_memories(
             self.settings.default_user_id,
@@ -84,7 +88,7 @@ class AssistantReplyService:
         normalized_history = self._normalize_messages(recent_messages)
         return await self.groq_service.generate_reply(
             user_message=user_message,
-            current_life_summary="" if use_light_touch_context else persona.life_summary,
+            current_life_summary="" if use_light_touch_context else self._build_persona_context(persona),
             recent_snapshots_context="" if use_light_touch_context else self._build_snapshot_context(),
             recent_projects_context="" if use_light_touch_context else self._build_project_context(projects),
             recent_chat_context="" if use_light_touch_context else self._build_chat_context(normalized_history),
@@ -112,6 +116,20 @@ class AssistantReplyService:
                 )
             )
         return normalized
+
+    def _build_persona_context(self, persona: PersonaRecord) -> str:
+        sections: list[str] = []
+        if persona.life_summary.strip():
+            sections.append(persona.life_summary.strip())
+        if persona.structural_strengths:
+            sections.append("Forcas recorrentes:\n- " + "\n- ".join(persona.structural_strengths[:5]))
+        if persona.structural_routines:
+            sections.append("Rotina recorrente:\n- " + "\n- ".join(persona.structural_routines[:5]))
+        if persona.structural_preferences:
+            sections.append("Preferencias operacionais:\n- " + "\n- ".join(persona.structural_preferences[:5]))
+        if persona.structural_open_questions:
+            sections.append("Lacunas ainda abertas:\n- " + "\n- ".join(persona.structural_open_questions[:4]))
+        return "\n\n".join(section for section in sections if section).strip()
 
     def _resolve_interaction_mode(self, message_text: str) -> str:
         normalized = " ".join(message_text.lower().split()).strip()

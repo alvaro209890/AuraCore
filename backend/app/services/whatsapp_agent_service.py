@@ -182,7 +182,7 @@ class WhatsAppAgentService:
             return WhatsAppAgentInboundMessageResponse(action="duplicate_message")
 
         agent_owner_number = await self._get_agent_owner_number()
-        if agent_owner_number and contact_phone == agent_owner_number:
+        if agent_owner_number and self.store.phone_matches(contact_phone, agent_owner_number):
             return WhatsAppAgentInboundMessageResponse(action="ignored_self")
 
         observer_status, settings_record = await self._load_observer_context()
@@ -246,7 +246,7 @@ class WhatsAppAgentService:
                 inbound_message_id=inbound_message.id,
             )
 
-        if contact_phone != allowed_contact_phone:
+        if not self.store.phone_matches(contact_phone, allowed_contact_phone):
             self.store.update_whatsapp_agent_message(
                 message_id=inbound_message.id,
                 processing_status="ignored_not_allowed",
@@ -708,7 +708,11 @@ class WhatsAppAgentService:
         current = self.store.get_whatsapp_agent_settings(self.settings.default_user_id)
         observer_owner = self.store.normalize_contact_phone(observer_status.owner_number)
         next_allowed = observer_owner if observer_status.connected else None
-        if next_allowed != current.allowed_contact_phone:
+        same_allowed_phone = (
+            next_allowed == current.allowed_contact_phone
+            or self.store.phone_matches(next_allowed, current.allowed_contact_phone)
+        )
+        if not same_allowed_phone:
             return self.store.update_whatsapp_agent_settings(
                 user_id=self.settings.default_user_id,
                 allowed_contact_phone=next_allowed,

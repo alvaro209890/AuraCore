@@ -171,7 +171,7 @@ class AutomationService:
         estimated_cost_ceiling_usd = 0.0
         job_plan: FixedAnalysisPlan | None = None
 
-        if memory_status.has_initial_analysis and memory_status.pending_new_message_count >= 10:
+        if memory_status.has_initial_analysis and memory_status.can_run_next_batch:
             job_plan = self.memory_service.plan_next_batch()
             selected_message_count = len(job_plan.source_messages)
             estimated_total_tokens = job_plan.estimated_input_tokens + job_plan.estimated_output_tokens
@@ -200,13 +200,13 @@ class AutomationService:
                 reason_code = "batch_ready"
                 explanation = (
                     f"Existem {memory_status.pending_new_message_count} mensagens novas pendentes. "
-                    "O backend vai processar automaticamente o proximo lote economico de 10 mensagens."
+                    f"O backend vai processar automaticamente o proximo lote economico de {selected_message_count} mensagens."
                 )
         elif memory_status.has_initial_analysis:
             reason_code = "awaiting_next_batch"
             explanation = (
                 f"Ainda existem {memory_status.pending_new_message_count} mensagens novas pendentes. "
-                "O proximo processamento automatico so dispara quando a fila chegar a 10."
+                f"O proximo processamento automatico so dispara quando a fila chegar a {self.settings.memory_incremental_min_messages}."
             )
 
         decision = self.store.create_automation_decision(

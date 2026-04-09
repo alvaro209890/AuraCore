@@ -150,14 +150,23 @@ class MemoryAnalysisService:
     def get_memory_status(self) -> MemoryStatus:
         persona = self.get_current_persona()
         has_initial_analysis = bool(persona.last_analyzed_at or persona.last_snapshot_id)
-        pending_new_message_count = self.store.count_messages(self.settings.default_user_id)
+        pending_new_message_count = (
+            self._count_new_messages_since_last_analysis(persona)
+            if has_initial_analysis
+            else self.store.count_pending_messages(self.settings.default_user_id)
+        )
+        incremental_batch_size = self._resolve_incremental_batch_size()
+        incremental_min_messages = self._resolve_incremental_min_messages()
+        first_analysis_limit = self._resolve_first_analysis_limit()
         next_process_message_count = (
-            min(250, pending_new_message_count)
+            min(first_analysis_limit, pending_new_message_count)
             if not has_initial_analysis
-            else 10 if pending_new_message_count >= 10 else 0
+            else min(incremental_batch_size, pending_new_message_count)
+            if pending_new_message_count >= incremental_min_messages
+            else 0
         )
         messages_until_auto_process = (
-            0 if not has_initial_analysis else max(0, 10 - pending_new_message_count)
+            0 if not has_initial_analysis else max(0, incremental_min_messages - pending_new_message_count)
         )
         return MemoryStatus(
             has_initial_analysis=has_initial_analysis,
@@ -166,7 +175,7 @@ class MemoryAnalysisService:
             next_process_message_count=next_process_message_count,
             messages_until_auto_process=messages_until_auto_process,
             can_run_first_analysis=not has_initial_analysis and pending_new_message_count > 0,
-            can_run_next_batch=has_initial_analysis and pending_new_message_count >= 10,
+            can_run_next_batch=has_initial_analysis and pending_new_message_count >= incremental_min_messages,
         )
 
     def plan_first_analysis(self) -> FixedAnalysisPlan:
@@ -209,8 +218,8 @@ class MemoryAnalysisService:
         if not transcript.strip() or not included_messages:
             raise MemoryAnalysisError("Essa janela nao contem mensagens textuais analisaveis.")
 
-        current_persona = self.store.get_persona(self.settings.default_user_id)
-        current_summary = current_persona.life_summary if current_persona else ""
+        current_persona = self.get_current_persona()
+        current_summary = self._build_persona_context(current_persona)
         prior_analyses_context = self._build_prior_analyses_context()
         project_context = self._build_project_context(
             self.store.list_project_memories(
@@ -229,7 +238,7 @@ class MemoryAnalysisService:
             prior_analyses_context=prior_analyses_context,
             project_context=project_context,
             chat_context=chat_context,
-            intent="improve_memory" if current_persona and current_persona.last_analyzed_at else "first_analysis",
+            intent="improve_memory" if current_persona.last_analyzed_at else "first_analysis",
             window_hours=window_hours,
             window_start=window_start,
             window_end=window_end,
@@ -244,10 +253,25 @@ class MemoryAnalysisService:
             source_message_count=len(included_messages),
             created_at=window_end,
         )
+        structural_strengths, structural_routines, structural_preferences, structural_open_questions = (
+            self._build_structural_profile_from_snapshots(
+                [
+                    snapshot,
+                    *self.store.list_memory_snapshots(
+                        self.settings.default_user_id,
+                        limit=max(1, self.settings.memory_analysis_context_snapshots + 7),
+                    ),
+                ]
+            )
+        )
         persona = self.store.persist_memory_analysis(
             snapshot=snapshot,
             updated_life_summary=deepseek_result.updated_life_summary,
             analyzed_at=window_end,
+            structural_strengths=structural_strengths,
+            structural_routines=structural_routines,
+            structural_preferences=structural_preferences,
+            structural_open_questions=structural_open_questions,
         )
         self._persist_person_memories(
             messages=included_messages,
@@ -317,8 +341,8 @@ class MemoryAnalysisService:
         if not transcript.strip() or not included_messages:
             raise MemoryAnalysisError("As configuracoes escolhidas nao produziram mensagens textuais analisaveis.")
 
-        current_persona = self.store.get_persona(self.settings.default_user_id)
-        current_summary = current_persona.life_summary if current_persona else ""
+        current_persona = self.get_current_persona()
+        current_summary = self._build_persona_context(current_persona)
         prior_analyses_context = self._build_prior_analyses_context()
         project_context = self._build_project_context(
             self.store.list_project_memories(
@@ -337,7 +361,7 @@ class MemoryAnalysisService:
             prior_analyses_context=prior_analyses_context,
             project_context=project_context,
             chat_context=chat_context,
-            intent="improve_memory" if current_persona and current_persona.last_analyzed_at else "first_analysis",
+            intent="improve_memory" if current_persona.last_analyzed_at else "first_analysis",
             window_hours=max_lookback_hours,
             window_start=window_start,
             window_end=window_end,
@@ -352,10 +376,25 @@ class MemoryAnalysisService:
             source_message_count=len(included_messages),
             created_at=window_end,
         )
+        structural_strengths, structural_routines, structural_preferences, structural_open_questions = (
+            self._build_structural_profile_from_snapshots(
+                [
+                    snapshot,
+                    *self.store.list_memory_snapshots(
+                        self.settings.default_user_id,
+                        limit=max(1, self.settings.memory_analysis_context_snapshots + 7),
+                    ),
+                ]
+            )
+        )
         persona = self.store.persist_memory_analysis(
             snapshot=snapshot,
             updated_life_summary=deepseek_result.updated_life_summary,
             analyzed_at=window_end,
+            structural_strengths=structural_strengths,
+            structural_routines=structural_routines,
+            structural_preferences=structural_preferences,
+            structural_open_questions=structural_open_questions,
         )
         self._persist_person_memories(
             messages=included_messages,
@@ -416,12 +455,7 @@ class MemoryAnalysisService:
         automation_settings = self.store.get_automation_settings(self.settings.default_user_id)
         has_memory = current_persona.last_analyzed_at is not None or bool(current_persona.last_snapshot_id)
         resolved_intent = "improve_memory" if has_memory else "first_analysis"
-        retention_state = self.store.get_message_retention_state(self.settings.default_user_id)
-
-        baseline_ingested = current_persona.last_analyzed_ingested_count or 0
-        baseline_pruned = current_persona.last_analyzed_pruned_count or 0
-        new_message_count = max(0, retention_state.total_direct_ingested_count - baseline_ingested)
-        replaced_message_count = max(0, retention_state.total_direct_pruned_count - baseline_pruned)
+        new_message_count, replaced_message_count = self._resolve_message_deltas_since_last_analysis(current_persona)
         transcript, included_messages = self._build_transcript(
             messages,
             max_messages=resolved_target_count,
@@ -447,7 +481,7 @@ class MemoryAnalysisService:
             transcript=transcript,
             conversation_context=conversation_context,
             people_memory_context=people_memory_context,
-            current_life_summary=current_persona.life_summary,
+            current_life_summary=self._build_persona_context(current_persona),
             prior_analyses_context=prior_analyses_context,
             project_context=project_context,
             chat_context=chat_context,
@@ -579,14 +613,253 @@ class MemoryAnalysisService:
         )
 
     def get_current_persona(self) -> PersonaRecord:
-        return self.store.get_persona(self.settings.default_user_id) or PersonaRecord(
-            user_id=self.settings.default_user_id,
-            life_summary="",
-            last_analyzed_at=None,
-            last_snapshot_id=None,
-            last_analyzed_ingested_count=None,
-            last_analyzed_pruned_count=None,
+        persona = self.store.get_persona(self.settings.default_user_id)
+        if persona is None:
+            return PersonaRecord(
+                user_id=self.settings.default_user_id,
+                life_summary="",
+                last_analyzed_at=None,
+                last_snapshot_id=None,
+                last_analyzed_ingested_count=None,
+                last_analyzed_pruned_count=None,
+                structural_strengths=[],
+                structural_routines=[],
+                structural_preferences=[],
+                structural_open_questions=[],
+            )
+
+        needs_structural_backfill = not (
+            persona.structural_strengths
+            and persona.structural_routines
+            and persona.structural_preferences
+            and persona.structural_open_questions
         )
+        if not needs_structural_backfill:
+            return persona
+
+        snapshots = self.store.list_memory_snapshots(self.settings.default_user_id, limit=8)
+        if not snapshots:
+            return persona
+
+        (
+            computed_strengths,
+            computed_routines,
+            computed_preferences,
+            computed_open_questions,
+        ) = self._build_structural_profile_from_snapshots(snapshots)
+        next_strengths = persona.structural_strengths or computed_strengths
+        next_routines = persona.structural_routines or computed_routines
+        next_preferences = persona.structural_preferences or computed_preferences
+        next_open_questions = persona.structural_open_questions or computed_open_questions
+
+        if (
+            next_strengths == persona.structural_strengths
+            and next_routines == persona.structural_routines
+            and next_preferences == persona.structural_preferences
+            and next_open_questions == persona.structural_open_questions
+        ):
+            return persona
+
+        return self.store.update_persona_structural_profile(
+            user_id=self.settings.default_user_id,
+            structural_strengths=next_strengths,
+            structural_routines=next_routines,
+            structural_preferences=next_preferences,
+            structural_open_questions=next_open_questions,
+            updated_at=datetime.now(UTC),
+        )
+
+    def _resolve_message_deltas_since_last_analysis(self, persona: PersonaRecord) -> tuple[int, int]:
+        retention_state = self.store.get_message_retention_state(self.settings.default_user_id)
+        baseline_ingested = persona.last_analyzed_ingested_count
+        baseline_pruned = persona.last_analyzed_pruned_count
+        baseline_missing_or_stale = (
+            baseline_ingested is None
+            or baseline_ingested > retention_state.total_direct_ingested_count
+        )
+        if (persona.last_analyzed_at or persona.last_snapshot_id) and baseline_missing_or_stale:
+            return self.store.count_pending_messages(self.settings.default_user_id), 0
+
+        new_message_count = max(0, retention_state.total_direct_ingested_count - (baseline_ingested or 0))
+        replaced_message_count = (
+            max(0, retention_state.total_direct_pruned_count - baseline_pruned)
+            if baseline_pruned is not None and baseline_pruned <= retention_state.total_direct_pruned_count
+            else 0
+        )
+        return new_message_count, replaced_message_count
+
+    def _count_new_messages_since_last_analysis(self, persona: PersonaRecord) -> int:
+        new_message_count, _ = self._resolve_message_deltas_since_last_analysis(persona)
+        return new_message_count
+
+    def _resolve_first_analysis_limit(self) -> int:
+        return max(
+            40,
+            min(
+                self.settings.memory_first_analysis_max_messages,
+                self.settings.memory_analysis_max_messages,
+                self.settings.message_retention_max_rows,
+            ),
+        )
+
+    def _resolve_incremental_batch_size(self) -> int:
+        return max(
+            8,
+            min(
+                self.settings.memory_incremental_batch_size,
+                self.settings.memory_analysis_max_messages,
+                self.settings.message_retention_max_rows,
+            ),
+        )
+
+    def _resolve_incremental_min_messages(self) -> int:
+        return max(6, min(self.settings.memory_incremental_min_messages, self._resolve_incremental_batch_size()))
+
+    def _resolve_fixed_plan_char_budget(self, mode: Literal["first_analysis", "incremental_batch"]) -> int:
+        target = 28000 if mode == "first_analysis" else 14000
+        return min(self.settings.memory_analysis_max_chars, target)
+
+    def _select_balanced_messages(
+        self,
+        messages: list[StoredMessageRecord],
+        *,
+        max_messages: int,
+        prefer_recent: bool,
+    ) -> list[StoredMessageRecord]:
+        if not messages:
+            return []
+
+        ordered = sorted(messages, key=lambda message: message.timestamp, reverse=prefer_recent)
+        groups: dict[str, list[StoredMessageRecord]] = {}
+        for message in ordered:
+            person_key = self.store.build_person_key(
+                contact_phone=message.contact_phone,
+                chat_jid=message.chat_jid,
+                contact_name=message.contact_name,
+            )
+            groups.setdefault(person_key, []).append(message)
+
+        ordered_keys = sorted(
+            groups.keys(),
+            key=lambda key: groups[key][0].timestamp,
+            reverse=prefer_recent,
+        )
+        offsets = {key: 0 for key in ordered_keys}
+        selected: list[StoredMessageRecord] = []
+
+        while len(selected) < max_messages:
+            progressed = False
+            for key in ordered_keys:
+                index = offsets[key]
+                group = groups[key]
+                if index >= len(group):
+                    continue
+                selected.append(group[index])
+                offsets[key] = index + 1
+                progressed = True
+                if len(selected) >= max_messages:
+                    break
+            if not progressed:
+                break
+
+        return sorted(selected, key=lambda message: message.timestamp)
+
+    def _build_persona_context(self, persona: PersonaRecord) -> str:
+        sections: list[str] = []
+        if persona.life_summary.strip():
+            sections.append(persona.life_summary.strip())
+        if persona.structural_strengths:
+            sections.append("Forcas recorrentes:\n- " + "\n- ".join(persona.structural_strengths[:6]))
+        if persona.structural_routines:
+            sections.append("Rotina recorrente:\n- " + "\n- ".join(persona.structural_routines[:6]))
+        if persona.structural_preferences:
+            sections.append("Preferencias operacionais:\n- " + "\n- ".join(persona.structural_preferences[:6]))
+        if persona.structural_open_questions:
+            sections.append("Lacunas ainda abertas:\n- " + "\n- ".join(persona.structural_open_questions[:5]))
+        return "\n\n".join(section for section in sections if section).strip()
+
+    def _build_structural_profile_from_snapshots(
+        self,
+        snapshots: list[MemorySnapshotRecord],
+    ) -> tuple[list[str], list[str], list[str], list[str]]:
+        recent_snapshots = snapshots[:8]
+        return (
+            self._rank_snapshot_signal_lines(
+                recent_snapshots,
+                extractor=lambda snapshot: [*snapshot.key_learnings, *snapshot.people_and_relationships],
+                limit=8,
+                minimum_score=3,
+            ),
+            self._rank_snapshot_signal_lines(
+                recent_snapshots,
+                extractor=lambda snapshot: snapshot.routine_signals,
+                limit=8,
+                minimum_score=3,
+            ),
+            self._rank_snapshot_signal_lines(
+                recent_snapshots,
+                extractor=lambda snapshot: snapshot.preferences,
+                limit=8,
+                minimum_score=3,
+            ),
+            self._rank_snapshot_signal_lines(
+                recent_snapshots,
+                extractor=lambda snapshot: snapshot.open_questions,
+                limit=6,
+                minimum_score=6,
+            ),
+        )
+
+    def _rank_snapshot_signal_lines(
+        self,
+        snapshots: list[MemorySnapshotRecord],
+        *,
+        extractor,
+        limit: int,
+        minimum_score: int,
+    ) -> list[str]:
+        if not snapshots:
+            return []
+
+        score_by_key: dict[str, int] = {}
+        value_by_key: dict[str, str] = {}
+        latest_keys: set[str] = set()
+
+        for index, snapshot in enumerate(snapshots):
+            weight = max(1, 8 - index)
+            if index == 0:
+                weight += 3
+            elif index == 1:
+                weight += 1
+
+            raw_items = extractor(snapshot)
+            cleaned_items: list[str] = []
+            for item in raw_items:
+                text = " ".join(str(item).split()).strip()
+                if text:
+                    cleaned_items.append(text)
+
+            if index == 0:
+                latest_keys = {item.casefold() for item in cleaned_items}
+
+            for position, item in enumerate(cleaned_items[:8]):
+                key = item.casefold()
+                score_by_key[key] = score_by_key.get(key, 0) + max(1, weight - (position // 2))
+                value_by_key.setdefault(key, item)
+
+        ranked = sorted(
+            score_by_key.items(),
+            key=lambda item: (-item[1], value_by_key[item[0]].casefold()),
+        )
+
+        selected: list[str] = []
+        for key, score in ranked:
+            if key not in latest_keys and score < minimum_score:
+                continue
+            selected.append(value_by_key[key])
+            if len(selected) >= limit:
+                break
+        return selected
 
     def _build_fixed_analysis_plan(
         self,
@@ -601,23 +874,40 @@ class MemoryAnalysisService:
                 raise MemoryAnalysisError("A primeira analise ja foi concluida. Use o processamento por lotes daqui para frente.")
             if pending_count <= 0:
                 raise MemoryAnalysisError("Ainda nao ha mensagens novas para a primeira analise.")
-            selected_messages = self.store.list_pending_messages(
+            candidate_messages = self.store.list_pending_messages(
                 user_id=self.settings.default_user_id,
-                limit=min(250, pending_count),
+                limit=min(
+                    self.settings.message_retention_max_rows,
+                    max(self._resolve_first_analysis_limit() * 2, min(pending_count, self._resolve_first_analysis_limit() * 4)),
+                ),
                 newest_first=True,
             )
-            selected_messages = list(reversed(selected_messages))
+            selected_messages = self._select_balanced_messages(
+                candidate_messages,
+                max_messages=min(self._resolve_first_analysis_limit(), pending_count),
+                prefer_recent=True,
+            )
             intent: Literal["first_analysis", "improve_memory"] = "first_analysis"
             detail_mode: Literal["light", "balanced", "deep"] = "deep"
         else:
             if not status.has_initial_analysis:
                 raise MemoryAnalysisError("A primeira analise ainda nao foi feita. Rode-a antes de processar lotes incrementais.")
-            if pending_count < 10:
-                raise MemoryAnalysisError("Ainda nao existem 10 mensagens novas pendentes para o proximo processamento.")
-            selected_messages = self.store.list_pending_messages(
+            if pending_count < self._resolve_incremental_min_messages():
+                raise MemoryAnalysisError(
+                    f"Ainda nao existem {self._resolve_incremental_min_messages()} mensagens novas pendentes para o proximo processamento."
+                )
+            candidate_messages = self.store.list_pending_messages(
                 user_id=self.settings.default_user_id,
-                limit=10,
+                limit=min(
+                    self.settings.message_retention_max_rows,
+                    max(self._resolve_incremental_batch_size() * 2, min(pending_count, self._resolve_incremental_batch_size() * 4)),
+                ),
                 newest_first=False,
+            )
+            selected_messages = self._select_balanced_messages(
+                candidate_messages,
+                max_messages=min(self._resolve_incremental_batch_size(), pending_count),
+                prefer_recent=False,
             )
             intent = "improve_memory"
             detail_mode = "balanced"
@@ -626,7 +916,11 @@ class MemoryAnalysisService:
         if not selected_messages:
             raise MemoryAnalysisError("Nao encontrei mensagens textuais analisaveis na fila operacional.")
 
-        transcript = self._build_full_transcript(selected_messages)
+        transcript, selected_messages = self._build_transcript(
+            selected_messages,
+            max_messages=len(selected_messages),
+            char_budget=self._resolve_fixed_plan_char_budget(mode),
+        )
         conversation_context = self._build_conversation_context(selected_messages)
         people_memory_context = self._build_people_memory_context(selected_messages)
         window_start = selected_messages[0].timestamp
@@ -645,7 +939,7 @@ class MemoryAnalysisService:
             transcript=transcript,
             conversation_context=conversation_context,
             people_memory_context=people_memory_context,
-            current_life_summary=current_persona.life_summary,
+            current_life_summary=self._build_persona_context(current_persona),
             prior_analyses_context=prior_analyses_context,
             project_context=project_context,
             chat_context=chat_context,
@@ -707,7 +1001,7 @@ class MemoryAnalysisService:
             transcript=plan.transcript,
             conversation_context=plan.conversation_context,
             people_memory_context=plan.people_memory_context,
-            current_life_summary=current_persona.life_summary,
+            current_life_summary=self._build_persona_context(current_persona),
             prior_analyses_context=prior_analyses_context,
             project_context=project_context,
             chat_context=chat_context,
@@ -727,10 +1021,25 @@ class MemoryAnalysisService:
             source_message_count=len(plan.source_messages),
             created_at=analyzed_at,
         )
+        structural_strengths, structural_routines, structural_preferences, structural_open_questions = (
+            self._build_structural_profile_from_snapshots(
+                [
+                    snapshot,
+                    *self.store.list_memory_snapshots(
+                        self.settings.default_user_id,
+                        limit=max(1, self.settings.memory_analysis_context_snapshots + 7),
+                    ),
+                ]
+            )
+        )
         persona = self.store.persist_memory_analysis(
             snapshot=snapshot,
             updated_life_summary=deepseek_result.updated_life_summary,
             analyzed_at=analyzed_at,
+            structural_strengths=structural_strengths,
+            structural_routines=structural_routines,
+            structural_preferences=structural_preferences,
+            structural_open_questions=structural_open_questions,
         )
         self._persist_person_memories(
             messages=plan.source_messages,
@@ -842,7 +1151,7 @@ class MemoryAnalysisService:
         result = await self.deepseek_service.extract_important_messages(
             messages_block=messages_block,
             allowed_message_ids=[message.message_id for message in candidates],
-            current_life_summary=current_persona.life_summary,
+            current_life_summary=self._build_persona_context(current_persona),
             project_context=project_context,
         )
 
@@ -901,7 +1210,7 @@ class MemoryAnalysisService:
         review_result = await self.deepseek_service.review_important_messages(
             important_messages_block=self._build_saved_important_messages_block(pending_messages),
             allowed_message_ids=[message.source_message_id for message in pending_messages],
-            current_life_summary=current_persona.life_summary,
+            current_life_summary=self._build_persona_context(current_persona),
             project_context=project_context,
         )
 
@@ -953,17 +1262,24 @@ class MemoryAnalysisService:
 
         # Passo 1: Refinamento da Persona e Projetos
         refined = await self.deepseek_service.refine_saved_memory(
-            current_life_summary=current_persona.life_summary,
+            current_life_summary=self._build_persona_context(current_persona),
             prior_analyses_context=self._build_prior_analyses_context_from_snapshots(snapshots),
             project_context=self._build_project_context(projects),
             chat_context=self._build_chat_context(),
         )
 
         refined_at = datetime.now(UTC)
+        structural_strengths, structural_routines, structural_preferences, structural_open_questions = (
+            self._build_structural_profile_from_snapshots(snapshots)
+        )
         persona = self.store.update_persona_summary(
             user_id=self.settings.default_user_id,
             updated_life_summary=refined.updated_life_summary,
             analyzed_at=refined_at,
+            structural_strengths=structural_strengths,
+            structural_routines=structural_routines,
+            structural_preferences=structural_preferences,
+            structural_open_questions=structural_open_questions,
         )
         updated_projects = self.store.upsert_project_memories(
             user_id=self.settings.default_user_id,
@@ -988,7 +1304,7 @@ class MemoryAnalysisService:
         if contact_records:
             contact_block = self._build_contact_memories_block(contact_records)
             refined_contacts = await self.deepseek_service.refine_contact_memories(
-                current_life_summary=persona.life_summary,
+                current_life_summary=self._build_persona_context(persona),
                 project_context=self._build_project_context(updated_projects),
                 contact_memories_block=contact_block,
             )
@@ -1424,9 +1740,9 @@ class MemoryAnalysisService:
 
     def _resolve_char_budget(self, detail_mode: Literal["light", "balanced", "deep"]) -> int:
         presets = {
-            "light": 18000,
-            "balanced": 36000,
-            "deep": 60000,
+            "light": 10000,
+            "balanced": 18000,
+            "deep": 30000,
         }
         return min(self.settings.memory_analysis_max_chars, presets[detail_mode])
 

@@ -45,6 +45,10 @@ class PersonaRecord:
     last_snapshot_id: str | None
     last_analyzed_ingested_count: int | None
     last_analyzed_pruned_count: int | None
+    structural_strengths: list[str]
+    structural_routines: list[str]
+    structural_preferences: list[str]
+    structural_open_questions: list[str]
 
 
 @dataclass(slots=True)
@@ -582,49 +586,71 @@ class SupabaseStore:
         newest_first: bool = False,
     ) -> list[StoredMessageRecord]:
         resolved_limit = max(1, min(limit, self.message_retention_max_rows))
-        try:
-            response = (
-                self.client.table("mensagens")
-                .select("id,user_id,contact_name,chat_jid,contact_phone,direction,message_text,timestamp,source")
-                .eq("user_id", str(user_id))
-                .order("timestamp", desc=newest_first)
-                .limit(resolved_limit)
-                .execute()
-            )
-        except Exception as exc:
-            if not self._is_missing_column_error(exc, column_name="chat_jid", table_name="mensagens"):
-                raise
-            response = (
-                self.client.table("mensagens")
-                .select("id,user_id,contact_name,contact_phone,direction,message_text,timestamp,source")
-                .eq("user_id", str(user_id))
-                .order("timestamp", desc=newest_first)
-                .limit(resolved_limit)
-                .execute()
+        messages: list[StoredMessageRecord] = []
+        seen_ids: set[str] = set()
+        chunk_size = min(200, self.message_retention_max_rows)
+        offset = 0
+
+        while len(messages) < resolved_limit and offset < self.message_retention_max_rows:
+            range_end = min(offset + chunk_size - 1, self.message_retention_max_rows - 1)
+            try:
+                response = (
+                    self.client.table("mensagens")
+                    .select("id,user_id,contact_name,chat_jid,contact_phone,direction,message_text,timestamp,source")
+                    .eq("user_id", str(user_id))
+                    .order("timestamp", desc=newest_first)
+                    .range(offset, range_end)
+                    .execute()
+                )
+            except Exception as exc:
+                if not self._is_missing_column_error(exc, column_name="chat_jid", table_name="mensagens"):
+                    raise
+                response = (
+                    self.client.table("mensagens")
+                    .select("id,user_id,contact_name,contact_phone,direction,message_text,timestamp,source")
+                    .eq("user_id", str(user_id))
+                    .order("timestamp", desc=newest_first)
+                    .range(offset, range_end)
+                    .execute()
+                )
+
+            rows = [row for row in (response.data or []) if isinstance(row, dict)]
+            if not rows:
+                break
+
+            processed_ids = self._fetch_processed_message_ids(
+                [str(row.get("id") or "").strip() for row in rows if str(row.get("id") or "").strip()]
             )
 
-        rows = response.data or []
-        messages: list[StoredMessageRecord] = []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            message_text = str(row.get("message_text") or "").strip()
-            contact_phone = self._optional_text(row.get("contact_phone"))
-            if not message_text or not self.is_normal_contact_phone(contact_phone):
-                continue
-            messages.append(
-                StoredMessageRecord(
-                    message_id=str(row.get("id") or ""),
-                    user_id=self._parse_uuid(row.get("user_id")) or user_id,
-                    direction=str(row.get("direction") or "inbound"),
-                    contact_name=str(row.get("contact_name") or row.get("contact_phone") or "Contato"),
-                    chat_jid=self._optional_text(row.get("chat_jid")),
-                    contact_phone=contact_phone,
-                    message_text=message_text,
-                    timestamp=self._parse_datetime(row.get("timestamp")) or datetime.now(UTC),
-                    source=str(row.get("source") or "unknown"),
+            for row in rows:
+                message_id = str(row.get("id") or "").strip()
+                if not message_id or message_id in seen_ids or message_id in processed_ids:
+                    continue
+                message_text = str(row.get("message_text") or "").strip()
+                contact_phone = self._optional_text(row.get("contact_phone"))
+                if not message_text or not self.is_normal_contact_phone(contact_phone):
+                    continue
+                seen_ids.add(message_id)
+                messages.append(
+                    StoredMessageRecord(
+                        message_id=message_id,
+                        user_id=self._parse_uuid(row.get("user_id")) or user_id,
+                        direction=str(row.get("direction") or "inbound"),
+                        contact_name=str(row.get("contact_name") or row.get("contact_phone") or "Contato"),
+                        chat_jid=self._optional_text(row.get("chat_jid")),
+                        contact_phone=contact_phone,
+                        message_text=message_text,
+                        timestamp=self._parse_datetime(row.get("timestamp")) or datetime.now(UTC),
+                        source=str(row.get("source") or "unknown"),
+                    )
                 )
-            )
+                if len(messages) >= resolved_limit:
+                    break
+
+            if len(rows) < chunk_size:
+                break
+            offset += chunk_size
+
         return messages
 
     def prune_non_direct_messages(self, user_id: UUID) -> int:
@@ -683,7 +709,8 @@ class SupabaseStore:
                 self.client.table("persona")
                 .select(
                     "user_id,life_summary,last_analyzed_at,last_snapshot_id,"
-                    "last_analyzed_ingested_count,last_analyzed_pruned_count"
+                    "last_analyzed_ingested_count,last_analyzed_pruned_count,"
+                    "structural_strengths,structural_routines,structural_preferences,structural_open_questions"
                 )
                 .eq("user_id", str(user_id))
                 .limit(1)
@@ -693,6 +720,10 @@ class SupabaseStore:
             if not (
                 self._is_missing_column_error(exc, column_name="last_analyzed_ingested_count", table_name="persona")
                 or self._is_missing_column_error(exc, column_name="last_analyzed_pruned_count", table_name="persona")
+                or self._is_missing_column_error(exc, column_name="structural_strengths", table_name="persona")
+                or self._is_missing_column_error(exc, column_name="structural_routines", table_name="persona")
+                or self._is_missing_column_error(exc, column_name="structural_preferences", table_name="persona")
+                or self._is_missing_column_error(exc, column_name="structural_open_questions", table_name="persona")
             ):
                 raise
             response = (
@@ -718,6 +749,10 @@ class SupabaseStore:
             last_snapshot_id=self._optional_text(row.get("last_snapshot_id")),
             last_analyzed_ingested_count=self._parse_int(row.get("last_analyzed_ingested_count")),
             last_analyzed_pruned_count=self._parse_int(row.get("last_analyzed_pruned_count")),
+            structural_strengths=self._parse_string_list(row.get("structural_strengths")),
+            structural_routines=self._parse_string_list(row.get("structural_routines")),
+            structural_preferences=self._parse_string_list(row.get("structural_preferences")),
+            structural_open_questions=self._parse_string_list(row.get("structural_open_questions")),
         )
 
     def persist_memory_analysis(
@@ -726,6 +761,10 @@ class SupabaseStore:
         snapshot: MemorySnapshotRecord,
         updated_life_summary: str,
         analyzed_at: datetime,
+        structural_strengths: Sequence[str] = (),
+        structural_routines: Sequence[str] = (),
+        structural_preferences: Sequence[str] = (),
+        structural_open_questions: Sequence[str] = (),
     ) -> PersonaRecord:
         self._insert_memory_snapshot(snapshot)
         try:
@@ -737,6 +776,10 @@ class SupabaseStore:
                 "last_snapshot_id": snapshot.id,
                 "last_analyzed_ingested_count": retention_state.total_direct_ingested_count,
                 "last_analyzed_pruned_count": retention_state.total_direct_pruned_count,
+                "structural_strengths": self._normalize_string_list(structural_strengths, limit=8),
+                "structural_routines": self._normalize_string_list(structural_routines, limit=8),
+                "structural_preferences": self._normalize_string_list(structural_preferences, limit=8),
+                "structural_open_questions": self._normalize_string_list(structural_open_questions, limit=6),
                 "updated_at": analyzed_at.isoformat(),
             }
             try:
@@ -745,11 +788,19 @@ class SupabaseStore:
                 if not (
                     self._is_missing_column_error(exc, column_name="last_analyzed_ingested_count", table_name="persona")
                     or self._is_missing_column_error(exc, column_name="last_analyzed_pruned_count", table_name="persona")
+                    or self._is_missing_column_error(exc, column_name="structural_strengths", table_name="persona")
+                    or self._is_missing_column_error(exc, column_name="structural_routines", table_name="persona")
+                    or self._is_missing_column_error(exc, column_name="structural_preferences", table_name="persona")
+                    or self._is_missing_column_error(exc, column_name="structural_open_questions", table_name="persona")
                 ):
                     raise
                 legacy_persona_record = dict(persona_record)
                 legacy_persona_record.pop("last_analyzed_ingested_count", None)
                 legacy_persona_record.pop("last_analyzed_pruned_count", None)
+                legacy_persona_record.pop("structural_strengths", None)
+                legacy_persona_record.pop("structural_routines", None)
+                legacy_persona_record.pop("structural_preferences", None)
+                legacy_persona_record.pop("structural_open_questions", None)
                 self.client.table("persona").upsert(legacy_persona_record, on_conflict="user_id").execute()
         except Exception:
             self._delete_memory_snapshot(snapshot.id)
@@ -766,16 +817,23 @@ class SupabaseStore:
         user_id: UUID,
         updated_life_summary: str,
         analyzed_at: datetime,
+        structural_strengths: Sequence[str] = (),
+        structural_routines: Sequence[str] = (),
+        structural_preferences: Sequence[str] = (),
+        structural_open_questions: Sequence[str] = (),
     ) -> PersonaRecord:
         current = self.get_persona(user_id)
-        retention_state = self.get_message_retention_state(user_id)
         persona_record = {
             "user_id": str(user_id),
             "life_summary": updated_life_summary,
             "last_analyzed_at": analyzed_at.isoformat(),
             "last_snapshot_id": current.last_snapshot_id if current else None,
-            "last_analyzed_ingested_count": retention_state.total_direct_ingested_count,
-            "last_analyzed_pruned_count": retention_state.total_direct_pruned_count,
+            "last_analyzed_ingested_count": current.last_analyzed_ingested_count if current else None,
+            "last_analyzed_pruned_count": current.last_analyzed_pruned_count if current else None,
+            "structural_strengths": self._normalize_string_list(structural_strengths or (current.structural_strengths if current else []), limit=8),
+            "structural_routines": self._normalize_string_list(structural_routines or (current.structural_routines if current else []), limit=8),
+            "structural_preferences": self._normalize_string_list(structural_preferences or (current.structural_preferences if current else []), limit=8),
+            "structural_open_questions": self._normalize_string_list(structural_open_questions or (current.structural_open_questions if current else []), limit=6),
             "updated_at": analyzed_at.isoformat(),
         }
         try:
@@ -784,16 +842,75 @@ class SupabaseStore:
             if not (
                 self._is_missing_column_error(exc, column_name="last_analyzed_ingested_count", table_name="persona")
                 or self._is_missing_column_error(exc, column_name="last_analyzed_pruned_count", table_name="persona")
+                or self._is_missing_column_error(exc, column_name="structural_strengths", table_name="persona")
+                or self._is_missing_column_error(exc, column_name="structural_routines", table_name="persona")
+                or self._is_missing_column_error(exc, column_name="structural_preferences", table_name="persona")
+                or self._is_missing_column_error(exc, column_name="structural_open_questions", table_name="persona")
             ):
                 raise
             legacy_persona_record = dict(persona_record)
             legacy_persona_record.pop("last_analyzed_ingested_count", None)
             legacy_persona_record.pop("last_analyzed_pruned_count", None)
+            legacy_persona_record.pop("structural_strengths", None)
+            legacy_persona_record.pop("structural_routines", None)
+            legacy_persona_record.pop("structural_preferences", None)
+            legacy_persona_record.pop("structural_open_questions", None)
             self.client.table("persona").upsert(legacy_persona_record, on_conflict="user_id").execute()
 
         persona = self.get_persona(user_id)
         if persona is None:
             raise RuntimeError("Persona summary was updated but could not be fetched afterwards.")
+        return persona
+
+    def update_persona_structural_profile(
+        self,
+        *,
+        user_id: UUID,
+        structural_strengths: Sequence[str] = (),
+        structural_routines: Sequence[str] = (),
+        structural_preferences: Sequence[str] = (),
+        structural_open_questions: Sequence[str] = (),
+        updated_at: datetime | None = None,
+    ) -> PersonaRecord:
+        current = self.get_persona(user_id)
+        resolved_updated_at = updated_at or datetime.now(UTC)
+        persona_record = {
+            "user_id": str(user_id),
+            "life_summary": current.life_summary if current else "",
+            "last_analyzed_at": current.last_analyzed_at.isoformat() if current and current.last_analyzed_at else None,
+            "last_snapshot_id": str(current.last_snapshot_id) if current and current.last_snapshot_id else None,
+            "last_analyzed_ingested_count": current.last_analyzed_ingested_count if current else None,
+            "last_analyzed_pruned_count": current.last_analyzed_pruned_count if current else None,
+            "structural_strengths": self._normalize_string_list(structural_strengths or (current.structural_strengths if current else []), limit=8),
+            "structural_routines": self._normalize_string_list(structural_routines or (current.structural_routines if current else []), limit=8),
+            "structural_preferences": self._normalize_string_list(structural_preferences or (current.structural_preferences if current else []), limit=8),
+            "structural_open_questions": self._normalize_string_list(structural_open_questions or (current.structural_open_questions if current else []), limit=6),
+            "updated_at": resolved_updated_at.isoformat(),
+        }
+        try:
+            self.client.table("persona").upsert(persona_record, on_conflict="user_id").execute()
+        except Exception as exc:
+            if not (
+                self._is_missing_column_error(exc, column_name="last_analyzed_ingested_count", table_name="persona")
+                or self._is_missing_column_error(exc, column_name="last_analyzed_pruned_count", table_name="persona")
+                or self._is_missing_column_error(exc, column_name="structural_strengths", table_name="persona")
+                or self._is_missing_column_error(exc, column_name="structural_routines", table_name="persona")
+                or self._is_missing_column_error(exc, column_name="structural_preferences", table_name="persona")
+                or self._is_missing_column_error(exc, column_name="structural_open_questions", table_name="persona")
+            ):
+                raise
+            legacy_persona_record = dict(persona_record)
+            legacy_persona_record.pop("last_analyzed_ingested_count", None)
+            legacy_persona_record.pop("last_analyzed_pruned_count", None)
+            legacy_persona_record.pop("structural_strengths", None)
+            legacy_persona_record.pop("structural_routines", None)
+            legacy_persona_record.pop("structural_preferences", None)
+            legacy_persona_record.pop("structural_open_questions", None)
+            self.client.table("persona").upsert(legacy_persona_record, on_conflict="user_id").execute()
+
+        persona = self.get_persona(user_id)
+        if persona is None:
+            raise RuntimeError("Persona structural profile was updated but could not be fetched afterwards.")
         return persona
 
     def list_memory_snapshots(self, user_id: UUID, *, limit: int = 20) -> list[MemorySnapshotRecord]:
@@ -2389,6 +2506,15 @@ class SupabaseStore:
         rows = response.data or []
         return sum(1 for row in rows if isinstance(row, dict))
 
+    def count_pending_messages(self, user_id: UUID) -> int:
+        return len(
+            self.list_pending_messages(
+                user_id=user_id,
+                limit=self.message_retention_max_rows,
+                newest_first=False,
+            )
+        )
+
     def count_messages_in_window(self, *, user_id: UUID, window_start: datetime, window_end: datetime) -> int:
         response = (
             self.client.table("mensagens")
@@ -3589,11 +3715,11 @@ class SupabaseStore:
             "auto_sync_enabled": True,
             "auto_analyze_enabled": True,
             "auto_refine_enabled": False,
-            "min_new_messages_threshold": 25,
+            "min_new_messages_threshold": 12,
             "stale_hours_threshold": 24,
             "pruned_messages_threshold": 1,
             "default_detail_mode": "balanced",
-            "default_target_message_count": min(200, self.message_retention_max_rows),
+            "default_target_message_count": min(120, self.message_retention_max_rows),
             "default_lookback_hours": 72,
             "daily_budget_usd": 0.25,
             "max_auto_jobs_per_day": 4,
@@ -3727,9 +3853,46 @@ class SupabaseStore:
         if value is None:
             return None
         digits = "".join(char for char in str(value) if char.isdigit())
-        if 8 <= len(digits) <= 15:
+        if len(digits) >= 12 and digits.startswith("55"):
+            digits = digits[2:]
+        if len(digits) > 11:
+            digits = digits[-11:]
+        if 8 <= len(digits) <= 11:
             return digits
         return None
+
+    def build_phone_variants(self, value: str | None) -> set[str]:
+        normalized = self.normalize_contact_phone(value)
+        if not normalized:
+            return set()
+
+        variants = {normalized}
+        digits = normalized
+        if len(digits) >= 11:
+            variants.add(digits[-10:])
+            variants.add(digits[-9:])
+            variants.add(digits[-8:])
+        elif len(digits) == 10:
+            variants.add(digits[-9:])
+            variants.add(digits[-8:])
+        elif len(digits) == 9:
+            variants.add(digits[-8:])
+        return {variant for variant in variants if 8 <= len(variant) <= 11}
+
+    def phone_matches(self, left: str | None, right: str | None, *, min_suffix: int = 8) -> bool:
+        left_variants = self.build_phone_variants(left)
+        right_variants = self.build_phone_variants(right)
+        if not left_variants or not right_variants:
+            return False
+        if left_variants.intersection(right_variants):
+            return True
+
+        for left_value in left_variants:
+            for right_value in right_variants:
+                shared = min(len(left_value), len(right_value))
+                if shared >= min_suffix and left_value[-shared:] == right_value[-shared:]:
+                    return True
+        return False
 
     def _parse_string_list(self, value: Any) -> list[str]:
         if not isinstance(value, list):
@@ -4108,11 +4271,11 @@ class SupabaseStore:
             auto_sync_enabled=self._parse_bool(value.get("auto_sync_enabled")) if self._parse_bool(value.get("auto_sync_enabled")) is not None else True,
             auto_analyze_enabled=self._parse_bool(value.get("auto_analyze_enabled")) if self._parse_bool(value.get("auto_analyze_enabled")) is not None else True,
             auto_refine_enabled=self._parse_bool(value.get("auto_refine_enabled")) if self._parse_bool(value.get("auto_refine_enabled")) is not None else False,
-            min_new_messages_threshold=self._parse_int(value.get("min_new_messages_threshold")) or 25,
+            min_new_messages_threshold=self._parse_int(value.get("min_new_messages_threshold")) or 12,
             stale_hours_threshold=self._parse_int(value.get("stale_hours_threshold")) or 24,
             pruned_messages_threshold=self._parse_int(value.get("pruned_messages_threshold")) or 1,
             default_detail_mode=self._normalize_detail_mode(self._optional_text(value.get("default_detail_mode")) or "balanced"),
-            default_target_message_count=self._parse_int(value.get("default_target_message_count")) or min(200, self.message_retention_max_rows),
+            default_target_message_count=self._parse_int(value.get("default_target_message_count")) or min(120, self.message_retention_max_rows),
             default_lookback_hours=self._parse_int(value.get("default_lookback_hours")) or 72,
             daily_budget_usd=self._parse_float(value.get("daily_budget_usd")) or 0.25,
             max_auto_jobs_per_day=self._parse_int(value.get("max_auto_jobs_per_day")) or 4,

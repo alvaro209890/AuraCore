@@ -261,6 +261,10 @@ class MemoryCurrentResponse(BaseModel):
     life_summary: str = ""
     last_analyzed_at: datetime | None = None
     last_snapshot_id: str | None = None
+    structural_strengths: list[str] = Field(default_factory=list)
+    structural_routines: list[str] = Field(default_factory=list)
+    structural_preferences: list[str] = Field(default_factory=list)
+    structural_open_questions: list[str] = Field(default_factory=list)
 
 
 class MemoryStatusResponse(BaseModel):

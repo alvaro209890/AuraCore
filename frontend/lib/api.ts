@@ -130,6 +130,10 @@ export type MemoryCurrent = {
   life_summary: string;
   last_analyzed_at: string | null;
   last_snapshot_id: string | null;
+  structural_strengths: string[];
+  structural_routines: string[];
+  structural_preferences: string[];
+  structural_open_questions: string[];
 };
 
 export type MemoryStatus = {

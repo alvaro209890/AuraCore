@@ -127,6 +127,10 @@ class ChatAssistantService:
             last_snapshot_id=None,
             last_analyzed_ingested_count=None,
             last_analyzed_pruned_count=None,
+            structural_strengths=[],
+            structural_routines=[],
+            structural_preferences=[],
+            structural_open_questions=[],
         )
         projects = self.store.list_project_memories(
             self.settings.default_user_id,

@@ -64,7 +64,7 @@ def _build_records(
         ):
             continue
         normalized_phone = store.normalize_contact_phone(contact_phone)
-        if blocked_contact_phone and normalized_phone and normalized_phone == blocked_contact_phone:
+        if blocked_contact_phone and normalized_phone and store.phone_matches(normalized_phone, blocked_contact_phone):
             continue
 
         records.append(
