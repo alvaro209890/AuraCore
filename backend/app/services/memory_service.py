@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+import logging
 from math import ceil
+import re
 from typing import Literal
 from uuid import uuid4
 
@@ -29,6 +31,9 @@ from app.services.supabase_store import (
 
 class MemoryAnalysisError(RuntimeError):
     """Raised when a memory analysis request cannot be completed."""
+
+
+logger = logging.getLogger("auracore.memory_analysis")
 
 
 @dataclass(slots=True)
@@ -670,6 +675,7 @@ class MemoryAnalysisService:
         )
 
     def _resolve_message_deltas_since_last_analysis(self, persona: PersonaRecord) -> tuple[int, int]:
+        pending_count = self.store.count_pending_messages(self.settings.default_user_id)
         retention_state = self.store.get_message_retention_state(self.settings.default_user_id)
         baseline_ingested = persona.last_analyzed_ingested_count
         baseline_pruned = persona.last_analyzed_pruned_count
@@ -678,15 +684,14 @@ class MemoryAnalysisService:
             or baseline_ingested > retention_state.total_direct_ingested_count
         )
         if (persona.last_analyzed_at or persona.last_snapshot_id) and baseline_missing_or_stale:
-            return self.store.count_pending_messages(self.settings.default_user_id), 0
+            return pending_count, 0
 
-        new_message_count = max(0, retention_state.total_direct_ingested_count - (baseline_ingested or 0))
         replaced_message_count = (
             max(0, retention_state.total_direct_pruned_count - baseline_pruned)
             if baseline_pruned is not None and baseline_pruned <= retention_state.total_direct_pruned_count
             else 0
         )
-        return new_message_count, replaced_message_count
+        return pending_count, replaced_message_count
 
     def _count_new_messages_since_last_analysis(self, persona: PersonaRecord) -> int:
         new_message_count, _ = self._resolve_message_deltas_since_last_analysis(persona)
@@ -1141,6 +1146,8 @@ class MemoryAnalysisService:
         if not messages_block:
             return 0
 
+        logger.info("important_extract_start candidates=%s", len(candidates))
+
         current_persona = self.get_current_persona()
         project_context = self._build_project_context(
             self.store.list_project_memories(
@@ -1157,9 +1164,13 @@ class MemoryAnalysisService:
 
         message_by_id = {message.message_id: message for message in candidates}
         seeds: list[ImportantMessageSeed] = []
+        low_confidence_count = 0
         for candidate in result.important_messages:
             source = message_by_id.get(candidate.message_id)
-            if source is None or candidate.confidence < 55:
+            if source is None:
+                continue
+            if candidate.confidence < 55:
+                low_confidence_count += 1
                 continue
             seeds.append(
                 ImportantMessageSeed(
@@ -1175,11 +1186,60 @@ class MemoryAnalysisService:
                 )
             )
 
-        return self.store.upsert_important_messages(
+        fallback_used = False
+        if not seeds:
+            seeds = self._build_heuristic_important_message_seeds(candidates)
+            fallback_used = bool(seeds)
+
+        saved_count = self.store.upsert_important_messages(
             user_id=self.settings.default_user_id,
             messages=seeds,
             saved_at=analyzed_at or datetime.now(UTC),
         )
+        logger.info(
+            "important_extract_done candidates=%s model_candidates=%s low_confidence=%s saved=%s fallback_used=%s",
+            len(candidates),
+            len(result.important_messages),
+            low_confidence_count,
+            saved_count,
+            fallback_used,
+        )
+        return saved_count
+
+    def _build_heuristic_important_message_seeds(
+        self,
+        messages: list[StoredMessageRecord],
+    ) -> list[ImportantMessageSeed]:
+        patterns: list[tuple[str, re.Pattern[str], str, int]] = [
+            ("money", re.compile(r"\b(?:r\$\s?\d+|\d+[,.]?\d*\s?(?:reais|pix|boleto|pagamento|cobran[çc]a|transfer[êe]ncia))\b", re.IGNORECASE), "Possivel combinacao financeira ou cobranca relevante.", 72),
+            ("deadline", re.compile(r"\b(?:amanh[ãa]|hoje|prazo|vence|vencimento|at[ée]|\d{1,2}/\d{1,2}(?:/\d{2,4})?)\b", re.IGNORECASE), "Possivel prazo, vencimento ou data combinada.", 69),
+            ("access", re.compile(r"\b(?:senha|c[oó]digo|token|login|acesso|2fa|autentica[cç][aã]o)\b", re.IGNORECASE), "Possivel informacao de acesso ou autenticacao.", 78),
+            ("document", re.compile(r"\b(?:cpf|cnpj|rg|passaporte|contrato|comprovante|nota fiscal|documento)\b", re.IGNORECASE), "Possivel documento ou dado formal importante.", 74),
+            ("address", re.compile(r"\b(?:endere[cç]o|rua|avenida|av\.?|bairro|cep|apartamento|apto|casa)\b", re.IGNORECASE), "Possivel endereco ou local relevante.", 67),
+            ("commitment", re.compile(r"\b(?:reuni[aã]o|consulta|compromisso|agenda|marcado|hor[aá]rio|horario)\b", re.IGNORECASE), "Possivel compromisso ou horario combinado.", 66),
+        ]
+
+        seeds_by_message_id: dict[str, ImportantMessageSeed] = {}
+        for message in messages:
+            normalized_text = " ".join(message.message_text.split()).strip()
+            if len(normalized_text) < 12:
+                continue
+            for category, pattern, reason, confidence in patterns:
+                if not pattern.search(normalized_text):
+                    continue
+                seeds_by_message_id[message.message_id] = ImportantMessageSeed(
+                    source_message_id=message.message_id,
+                    contact_name=message.contact_name,
+                    contact_phone=message.contact_phone,
+                    direction=message.direction,
+                    message_text=message.message_text,
+                    message_timestamp=message.timestamp,
+                    category=category,
+                    importance_reason=f"heuristic_fallback: {reason}",
+                    confidence=confidence,
+                )
+                break
+        return list(seeds_by_message_id.values())
 
     async def review_important_messages(
         self,

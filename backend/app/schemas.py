@@ -151,11 +151,13 @@ class IngestMessageRequestItem(BaseModel):
     message_id: str = Field(min_length=1)
     direction: Literal["inbound", "outbound"]
     contact_name: str | None = None
+    contact_name_source: str | None = None
     chat_jid: str = Field(min_length=1)
     contact_phone: str = Field(min_length=1)
     message_text: str = Field(min_length=1)
     timestamp: datetime
     source: str = Field(default="baileys", min_length=1)
+    source_event: str | None = None
 
 
 class IngestMessagesRequest(BaseModel):
@@ -175,11 +177,13 @@ class WhatsAppAgentInboundMessageRequest(BaseModel):
     direction: Literal["inbound", "outbound"] = "inbound"
     from_me: bool = False
     contact_name: str | None = None
+    contact_name_source: str | None = None
     chat_jid: str = Field(min_length=1)
     contact_phone: str = Field(min_length=1)
     message_text: str = Field(min_length=1)
     timestamp: datetime
     source: str = Field(default="baileys", min_length=1)
+    source_event: str | None = None
 
 
 class WhatsAppAgentInboundMessagesRequest(BaseModel):

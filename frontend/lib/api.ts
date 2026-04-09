@@ -413,11 +413,22 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set("Content-Type", "application/json");
   }
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...init,
-    headers,
-    cache: "no-store",
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      ...init,
+      headers,
+      cache: "no-store",
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error && error.message
+        ? error.message
+        : "Falha de rede ao falar com o backend.";
+    throw new Error(
+      `Backend indisponivel ou bloqueado na rede/CORS. Confira se o Render esta online e se FRONTEND_ORIGINS inclui este dominio. Detalhe: ${message}`,
+    );
+  }
 
   if (!response.ok) {
     let detail = `Request failed with status ${response.status}.`;

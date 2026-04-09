@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import logging
 from typing import Any, Sequence
 from uuid import UUID, uuid4
 
@@ -9,6 +10,8 @@ from postgrest.exceptions import APIError
 from supabase import Client, create_client
 
 _UNSET = object()
+observer_ingest_logger = logging.getLogger("auracore.observer_ingest")
+contact_resolution_logger = logging.getLogger("auracore.contact_resolution")
 
 
 @dataclass(slots=True)
@@ -17,11 +20,13 @@ class IngestedMessageRecord:
     user_id: UUID
     direction: str
     contact_name: str
+    contact_name_source: str = "unknown"
     chat_jid: str
     contact_phone: str | None
     message_text: str
     timestamp: datetime
     source: str = "baileys"
+    source_event: str | None = None
 
 
 @dataclass(slots=True)
@@ -165,8 +170,21 @@ class MessageRetentionStateRecord:
     user_id: UUID
     total_direct_ingested_count: int
     total_direct_pruned_count: int
+    observer_history_cutoff_at: datetime | None
     last_message_at: datetime | None
     updated_at: datetime | None
+
+
+@dataclass(slots=True)
+class KnownContactRecord:
+    id: str
+    user_id: UUID
+    contact_phone: str
+    chat_jid: str | None
+    contact_name: str
+    name_source: str
+    last_seen_at: datetime | None
+    updated_at: datetime
 
 
 @dataclass(slots=True)
@@ -424,7 +442,7 @@ class SupabaseStore:
     ) -> None:
         self.client: Client = create_client(supabase_url, supabase_key)
         self.default_user_id = default_user_id
-        self.message_retention_max_rows = max(200, message_retention_max_rows)
+        self.message_retention_max_rows = max(20, message_retention_max_rows)
         resolved_first_analysis_limit = (
             first_analysis_queue_limit
             if first_analysis_queue_limit is not None
@@ -444,6 +462,17 @@ class SupabaseStore:
         if not filtered_messages:
             return IngestSaveResult(saved_count=0, ignored_count=0)
 
+        for message in filtered_messages:
+            self.upsert_known_contact(
+                user_id=self.default_user_id,
+                contact_phone=message.contact_phone,
+                chat_jid=message.chat_jid,
+                contact_name=message.contact_name,
+                name_source=message.contact_name_source,
+                seen_at=message.timestamp,
+            )
+
+        self.reconcile_observer_backlog(user_id=self.default_user_id)
         known_contact_names = self._load_known_contact_names(
             [message.contact_phone for message in filtered_messages if message.contact_phone]
         )
@@ -457,16 +486,27 @@ class SupabaseStore:
         if not pending_messages:
             return IngestSaveResult(saved_count=0, ignored_count=deduped_ignored_count)
 
+        cutoff_at = self.get_observer_history_cutoff(user_id=self.default_user_id)
+        stale_history_ids: list[str] = []
+        if cutoff_at is not None:
+            fresh_pending_messages: list[IngestedMessageRecord] = []
+            for message in pending_messages:
+                if message.timestamp < cutoff_at:
+                    stale_history_ids.append(message.message_id)
+                else:
+                    fresh_pending_messages.append(message)
+            pending_messages = fresh_pending_messages
+
         (
             pending_messages,
             overflow_message_ids,
             trimmed_existing_ids,
         ) = self._prepare_ingest_batch(pending_messages)
 
-        if overflow_message_ids or trimmed_existing_ids:
+        if stale_history_ids or overflow_message_ids or trimmed_existing_ids:
             self.mark_messages_processed(
                 user_id=self.default_user_id,
-                message_ids=[*overflow_message_ids, *trimmed_existing_ids],
+                message_ids=[*stale_history_ids, *overflow_message_ids, *trimmed_existing_ids],
                 processed_at=datetime.now(UTC),
             )
         if trimmed_existing_ids:
@@ -476,7 +516,7 @@ class SupabaseStore:
         if not pending_messages:
             return IngestSaveResult(
                 saved_count=0,
-                ignored_count=deduped_ignored_count + len(overflow_message_ids),
+                ignored_count=deduped_ignored_count + len(stale_history_ids) + len(overflow_message_ids),
                 trimmed_existing_count=len(trimmed_existing_ids),
             )
 
@@ -529,9 +569,17 @@ class SupabaseStore:
                 user_id=self.default_user_id,
                 pruned_increment=pruned_count,
             )
+        observer_ingest_logger.info(
+            "observer_ingest_saved saved=%s ignored=%s stale_history=%s overflow=%s trimmed_existing=%s",
+            len(records),
+            deduped_ignored_count + len(stale_history_ids) + len(overflow_message_ids),
+            len(stale_history_ids),
+            len(overflow_message_ids),
+            len(trimmed_existing_ids),
+        )
         return IngestSaveResult(
             saved_count=len(records),
-            ignored_count=deduped_ignored_count + len(overflow_message_ids),
+            ignored_count=deduped_ignored_count + len(stale_history_ids) + len(overflow_message_ids),
             trimmed_existing_count=len(trimmed_existing_ids),
         )
 
@@ -648,6 +696,9 @@ class SupabaseStore:
             )
 
         rows = response.data or []
+        known_contact_names = self._load_known_contact_names(
+            [self._optional_text(row.get("contact_phone")) for row in rows if isinstance(row, dict)]
+        )
         messages: list[StoredMessageRecord] = []
         for row in rows:
             if not isinstance(row, dict):
@@ -661,7 +712,11 @@ class SupabaseStore:
                     message_id=str(row.get("id") or ""),
                     user_id=self._parse_uuid(row.get("user_id")) or user_id,
                     direction=str(row.get("direction") or "inbound"),
-                    contact_name=str(row.get("contact_name") or row.get("contact_phone") or "Contato"),
+                    contact_name=self._resolve_contact_name(
+                        incoming_name=self._optional_text(row.get("contact_name")),
+                        contact_phone=contact_phone,
+                        known_name=known_contact_names.get(contact_phone or ""),
+                    ),
                     chat_jid=self._optional_text(row.get("chat_jid")),
                     contact_phone=contact_phone,
                     message_text=message_text,
@@ -678,7 +733,9 @@ class SupabaseStore:
         limit: int,
         newest_first: bool = False,
     ) -> list[StoredMessageRecord]:
+        self.reconcile_observer_backlog(user_id=user_id)
         resolved_limit = max(1, min(limit, self.message_retention_max_rows))
+        cutoff_at = self.get_observer_history_cutoff(user_id=user_id)
         messages: list[StoredMessageRecord] = []
         seen_ids: set[str] = set()
         chunk_size = min(200, self.message_retention_max_rows)
@@ -710,6 +767,9 @@ class SupabaseStore:
             rows = [row for row in (response.data or []) if isinstance(row, dict)]
             if not rows:
                 break
+            known_contact_names = self._load_known_contact_names(
+                [self._optional_text(row.get("contact_phone")) for row in rows]
+            )
 
             processed_ids = self._fetch_processed_message_ids(
                 [str(row.get("id") or "").strip() for row in rows if str(row.get("id") or "").strip()]
@@ -721,7 +781,10 @@ class SupabaseStore:
                     continue
                 message_text = str(row.get("message_text") or "").strip()
                 contact_phone = self._optional_text(row.get("contact_phone"))
+                timestamp = self._parse_datetime(row.get("timestamp")) or datetime.now(UTC)
                 if not message_text or not self.is_normal_contact_phone(contact_phone):
+                    continue
+                if cutoff_at is not None and timestamp < cutoff_at:
                     continue
                 seen_ids.add(message_id)
                 messages.append(
@@ -729,11 +792,15 @@ class SupabaseStore:
                         message_id=message_id,
                         user_id=self._parse_uuid(row.get("user_id")) or user_id,
                         direction=str(row.get("direction") or "inbound"),
-                        contact_name=str(row.get("contact_name") or row.get("contact_phone") or "Contato"),
+                        contact_name=self._resolve_contact_name(
+                            incoming_name=self._optional_text(row.get("contact_name")),
+                            contact_phone=contact_phone,
+                            known_name=known_contact_names.get(contact_phone or ""),
+                        ),
                         chat_jid=self._optional_text(row.get("chat_jid")),
                         contact_phone=contact_phone,
                         message_text=message_text,
-                        timestamp=self._parse_datetime(row.get("timestamp")) or datetime.now(UTC),
+                        timestamp=timestamp,
                         source=str(row.get("source") or "unknown"),
                     )
                 )
@@ -1855,6 +1922,37 @@ class SupabaseStore:
             return None
         return self._parse_whatsapp_agent_thread(rows[0], fallback_user_id=user_id)
 
+    def get_whatsapp_agent_thread_by_chat_jid(
+        self,
+        *,
+        user_id: UUID,
+        chat_jid: str | None,
+    ) -> WhatsAppAgentThreadRecord | None:
+        normalized_jid = self._optional_text(chat_jid)
+        if not normalized_jid:
+            return None
+        try:
+            response = (
+                self.client.table("whatsapp_agent_threads")
+                .select(
+                    "id,user_id,contact_phone,chat_jid,contact_name,status,last_message_at,last_inbound_at,"
+                    "last_outbound_at,last_error_at,last_error_text,created_at,updated_at"
+                )
+                .eq("user_id", str(user_id))
+                .eq("chat_jid", normalized_jid)
+                .order("updated_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "whatsapp_agent_threads"):
+                raise
+            return None
+        rows = response.data or []
+        if not rows:
+            return None
+        return self._parse_whatsapp_agent_thread(rows[0], fallback_user_id=user_id)
+
     def get_or_create_whatsapp_agent_thread(
         self,
         *,
@@ -1868,7 +1966,18 @@ class SupabaseStore:
         if not normalized_phone:
             raise RuntimeError("WhatsApp agent thread requires a valid contact phone.")
 
+        self.upsert_known_contact(
+            user_id=user_id,
+            contact_phone=normalized_phone,
+            chat_jid=chat_jid,
+            contact_name=contact_name,
+            name_source="agent_inbound",
+            seen_at=created_at,
+        )
+
         existing = self.get_whatsapp_agent_thread_by_contact(user_id=user_id, contact_phone=normalized_phone)
+        if existing is None:
+            existing = self.get_whatsapp_agent_thread_by_chat_jid(user_id=user_id, chat_jid=chat_jid)
         resolved_name = self._resolve_contact_name(
             incoming_name=contact_name,
             contact_phone=normalized_phone,
@@ -1879,6 +1988,8 @@ class SupabaseStore:
 
         if existing is not None:
             payload: dict[str, Any] = {"updated_at": now.isoformat()}
+            if normalized_phone and normalized_phone != existing.contact_phone:
+                payload["contact_phone"] = normalized_phone
             if resolved_name and resolved_name != existing.contact_name:
                 payload["contact_name"] = resolved_name
             if resolved_chat_jid and resolved_chat_jid != existing.chat_jid:
@@ -2266,6 +2377,15 @@ class SupabaseStore:
         if not normalized_phone:
             raise RuntimeError("WhatsApp agent memory requires a valid contact phone.")
 
+        self.upsert_known_contact(
+            user_id=user_id,
+            contact_phone=normalized_phone,
+            chat_jid=chat_jid,
+            contact_name=contact_name,
+            name_source="agent_memory",
+            seen_at=last_learned_at,
+        )
+
         current = self.get_whatsapp_agent_contact_memory(user_id=user_id, contact_phone=normalized_phone)
         record_id = current.id if current is not None else str(uuid4())
         now = updated_at or datetime.now(UTC)
@@ -2639,23 +2759,36 @@ class SupabaseStore:
         try:
             response = (
                 self.client.table("message_retention_state")
-                .select("user_id,total_direct_ingested_count,total_direct_pruned_count,last_message_at,updated_at")
+                .select(
+                    "user_id,total_direct_ingested_count,total_direct_pruned_count,"
+                    "observer_history_cutoff_at,last_message_at,updated_at"
+                )
                 .eq("user_id", str(user_id))
                 .limit(1)
                 .execute()
             )
         except Exception as exc:
-            if not self._is_missing_table_error(exc, "message_retention_state"):
-                raise
-            current_count = self.count_messages(user_id)
-            last_message_at = self.get_latest_message_timestamp(user_id)
-            return MessageRetentionStateRecord(
-                user_id=user_id,
-                total_direct_ingested_count=current_count,
-                total_direct_pruned_count=0,
-                last_message_at=last_message_at,
-                updated_at=datetime.now(UTC),
-            )
+            if self._is_missing_column_error(exc, column_name="observer_history_cutoff_at", table_name="message_retention_state"):
+                response = (
+                    self.client.table("message_retention_state")
+                    .select("user_id,total_direct_ingested_count,total_direct_pruned_count,last_message_at,updated_at")
+                    .eq("user_id", str(user_id))
+                    .limit(1)
+                    .execute()
+                )
+            else:
+                if not self._is_missing_table_error(exc, "message_retention_state"):
+                    raise
+                current_count = self.count_messages(user_id)
+                last_message_at = self.get_latest_message_timestamp(user_id)
+                return MessageRetentionStateRecord(
+                    user_id=user_id,
+                    total_direct_ingested_count=current_count,
+                    total_direct_pruned_count=0,
+                    observer_history_cutoff_at=None,
+                    last_message_at=last_message_at,
+                    updated_at=datetime.now(UTC),
+                )
         rows = response.data or []
         if rows and isinstance(rows[0], dict):
             row = rows[0]
@@ -2663,6 +2796,7 @@ class SupabaseStore:
                 user_id=self._parse_uuid(row.get("user_id")) or user_id,
                 total_direct_ingested_count=self._parse_int(row.get("total_direct_ingested_count")) or 0,
                 total_direct_pruned_count=self._parse_int(row.get("total_direct_pruned_count")) or 0,
+                observer_history_cutoff_at=self._parse_datetime(row.get("observer_history_cutoff_at")),
                 last_message_at=self._parse_datetime(row.get("last_message_at")),
                 updated_at=self._parse_datetime(row.get("updated_at")),
             )
@@ -2674,18 +2808,24 @@ class SupabaseStore:
             "user_id": str(user_id),
             "total_direct_ingested_count": current_count,
             "total_direct_pruned_count": 0,
+            "observer_history_cutoff_at": None,
             "last_message_at": last_message_at.isoformat() if last_message_at else None,
             "updated_at": created_at.isoformat(),
         }
         try:
             self.client.table("message_retention_state").upsert(record, on_conflict="user_id").execute()
         except Exception as exc:
-            if not self._is_missing_table_error(exc, "message_retention_state"):
+            if self._is_missing_column_error(exc, column_name="observer_history_cutoff_at", table_name="message_retention_state"):
+                legacy_record = dict(record)
+                legacy_record.pop("observer_history_cutoff_at", None)
+                self.client.table("message_retention_state").upsert(legacy_record, on_conflict="user_id").execute()
+            elif not self._is_missing_table_error(exc, "message_retention_state"):
                 raise
         return MessageRetentionStateRecord(
             user_id=user_id,
             total_direct_ingested_count=current_count,
             total_direct_pruned_count=0,
+            observer_history_cutoff_at=None,
             last_message_at=last_message_at,
             updated_at=created_at,
         )
@@ -2705,21 +2845,228 @@ class SupabaseStore:
             "user_id": str(user_id),
             "total_direct_ingested_count": current.total_direct_ingested_count + max(0, ingested_increment),
             "total_direct_pruned_count": current.total_direct_pruned_count + max(0, pruned_increment),
+            "observer_history_cutoff_at": (
+                current.observer_history_cutoff_at.isoformat()
+                if current.observer_history_cutoff_at
+                else None
+            ),
             "last_message_at": resolved_last_message_at.isoformat() if resolved_last_message_at else None,
             "updated_at": updated_at.isoformat(),
         }
         try:
             self.client.table("message_retention_state").upsert(record, on_conflict="user_id").execute()
         except Exception as exc:
-            if not self._is_missing_table_error(exc, "message_retention_state"):
+            if self._is_missing_column_error(exc, column_name="observer_history_cutoff_at", table_name="message_retention_state"):
+                legacy_record = dict(record)
+                legacy_record.pop("observer_history_cutoff_at", None)
+                self.client.table("message_retention_state").upsert(legacy_record, on_conflict="user_id").execute()
+            elif not self._is_missing_table_error(exc, "message_retention_state"):
                 raise
         return MessageRetentionStateRecord(
             user_id=user_id,
             total_direct_ingested_count=int(record["total_direct_ingested_count"]),
             total_direct_pruned_count=int(record["total_direct_pruned_count"]),
+            observer_history_cutoff_at=current.observer_history_cutoff_at,
             last_message_at=resolved_last_message_at,
             updated_at=updated_at,
         )
+
+    def set_observer_history_cutoff(
+        self,
+        *,
+        user_id: UUID,
+        cutoff_at: datetime,
+    ) -> MessageRetentionStateRecord:
+        current = self.get_message_retention_state(user_id)
+        effective_cutoff = (
+            min(current.observer_history_cutoff_at, cutoff_at)
+            if current.observer_history_cutoff_at is not None
+            else cutoff_at
+        )
+        updated_at = datetime.now(UTC)
+        record = {
+            "user_id": str(user_id),
+            "total_direct_ingested_count": current.total_direct_ingested_count,
+            "total_direct_pruned_count": current.total_direct_pruned_count,
+            "observer_history_cutoff_at": effective_cutoff.isoformat(),
+            "last_message_at": current.last_message_at.isoformat() if current.last_message_at else None,
+            "updated_at": updated_at.isoformat(),
+        }
+        try:
+            self.client.table("message_retention_state").upsert(record, on_conflict="user_id").execute()
+        except Exception as exc:
+            if self._is_missing_column_error(exc, column_name="observer_history_cutoff_at", table_name="message_retention_state"):
+                legacy_record = dict(record)
+                legacy_record.pop("observer_history_cutoff_at", None)
+                self.client.table("message_retention_state").upsert(legacy_record, on_conflict="user_id").execute()
+            elif not self._is_missing_table_error(exc, "message_retention_state"):
+                raise
+        return MessageRetentionStateRecord(
+            user_id=user_id,
+            total_direct_ingested_count=current.total_direct_ingested_count,
+            total_direct_pruned_count=current.total_direct_pruned_count,
+            observer_history_cutoff_at=effective_cutoff,
+            last_message_at=current.last_message_at,
+            updated_at=updated_at,
+        )
+
+    def get_observer_history_cutoff(self, *, user_id: UUID) -> datetime | None:
+        return self.get_message_retention_state(user_id).observer_history_cutoff_at
+
+    def reconcile_observer_backlog(self, *, user_id: UUID) -> int:
+        cutoff_at = self.get_observer_history_cutoff(user_id=user_id)
+        if cutoff_at is None:
+            return 0
+
+        deleted_total = 0
+        while True:
+            try:
+                response = (
+                    self.client.table("mensagens")
+                    .select("id")
+                    .eq("user_id", str(user_id))
+                    .lt("timestamp", cutoff_at.isoformat())
+                    .order("timestamp", desc=False)
+                    .limit(500)
+                    .execute()
+                )
+            except Exception as exc:
+                if not self._is_missing_table_error(exc, "mensagens"):
+                    raise
+                return deleted_total
+
+            rows = response.data or []
+            stale_ids = [
+                str(row.get("id") or "").strip()
+                for row in rows
+                if isinstance(row, dict) and str(row.get("id") or "").strip()
+            ]
+            if not stale_ids:
+                break
+
+            self.mark_messages_processed(
+                user_id=user_id,
+                message_ids=stale_ids,
+                processed_at=datetime.now(UTC),
+            )
+            self.delete_messages_by_ids(message_ids=stale_ids)
+            deleted_total += len(stale_ids)
+
+        if deleted_total > 0:
+            observer_ingest_logger.info(
+                "observer_backlog_reconciled deleted=%s cutoff_at=%s",
+                deleted_total,
+                cutoff_at.isoformat(),
+            )
+        return deleted_total
+
+    def get_known_contact_by_phone(
+        self,
+        *,
+        user_id: UUID,
+        contact_phone: str | None,
+    ) -> KnownContactRecord | None:
+        normalized_phone = self.normalize_contact_phone(contact_phone)
+        if not normalized_phone:
+            return None
+        try:
+            response = (
+                self.client.table("whatsapp_known_contacts")
+                .select("id,user_id,contact_phone,chat_jid,contact_name,name_source,last_seen_at,updated_at")
+                .eq("user_id", str(user_id))
+                .eq("contact_phone", normalized_phone)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "whatsapp_known_contacts"):
+                raise
+            return None
+        rows = response.data or []
+        if not rows:
+            return None
+        return self._parse_known_contact(rows[0], fallback_user_id=user_id)
+
+    def get_known_contact_by_chat_jid(
+        self,
+        *,
+        user_id: UUID,
+        chat_jid: str | None,
+    ) -> KnownContactRecord | None:
+        normalized_jid = self._optional_text(chat_jid)
+        if not normalized_jid:
+            return None
+        try:
+            response = (
+                self.client.table("whatsapp_known_contacts")
+                .select("id,user_id,contact_phone,chat_jid,contact_name,name_source,last_seen_at,updated_at")
+                .eq("user_id", str(user_id))
+                .eq("chat_jid", normalized_jid)
+                .order("updated_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "whatsapp_known_contacts"):
+                raise
+            return None
+        rows = response.data or []
+        if not rows:
+            return None
+        return self._parse_known_contact(rows[0], fallback_user_id=user_id)
+
+    def upsert_known_contact(
+        self,
+        *,
+        user_id: UUID,
+        contact_phone: str | None,
+        chat_jid: str | None,
+        contact_name: str | None,
+        name_source: str | None,
+        seen_at: datetime | None,
+    ) -> KnownContactRecord | None:
+        normalized_phone = self.normalize_contact_phone(contact_phone)
+        if not normalized_phone:
+            return None
+        known = self.get_known_contact_by_phone(user_id=user_id, contact_phone=normalized_phone)
+        resolved_name = self._resolve_contact_name(
+            incoming_name=contact_name,
+            contact_phone=normalized_phone,
+            known_name=known.contact_name if known is not None else None,
+        )
+        resolved_name_source = self._optional_text(name_source) or (known.name_source if known is not None else "unknown")
+        resolved_chat_jid = self._optional_text(chat_jid) or (known.chat_jid if known is not None else None)
+        resolved_seen_at = self._latest_datetime(known.last_seen_at if known is not None else None, seen_at)
+        updated_at = datetime.now(UTC)
+        payload = {
+            "id": known.id if known is not None else str(uuid4()),
+            "user_id": str(user_id),
+            "contact_phone": normalized_phone,
+            "chat_jid": resolved_chat_jid,
+            "contact_name": resolved_name,
+            "name_source": resolved_name_source,
+            "last_seen_at": resolved_seen_at.isoformat() if resolved_seen_at else None,
+            "updated_at": updated_at.isoformat(),
+        }
+        try:
+            self.client.table("whatsapp_known_contacts").upsert(payload, on_conflict="user_id,contact_phone").execute()
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "whatsapp_known_contacts"):
+                raise
+            return None
+        if (
+            known is None
+            or known.contact_name != resolved_name
+            or known.chat_jid != resolved_chat_jid
+            or known.name_source != resolved_name_source
+        ):
+            contact_resolution_logger.info(
+                "known_contact_upserted contact_phone=%s chat_jid=%s name_source=%s",
+                normalized_phone,
+                resolved_chat_jid,
+                resolved_name_source,
+            )
+        return self.get_known_contact_by_phone(user_id=user_id, contact_phone=normalized_phone)
 
     def get_automation_settings(self, user_id: UUID) -> AutomationSettingsRecord:
         try:
@@ -4046,6 +4393,20 @@ class SupabaseStore:
         chunk_size = 100
         for start in range(0, len(cleaned_phones), chunk_size):
             chunk = cleaned_phones[start:start + chunk_size]
+            rows: list[Any] = []
+            try:
+                response = (
+                    self.client.table("whatsapp_known_contacts")
+                    .select("contact_phone,contact_name,updated_at")
+                    .in_("contact_phone", chunk)
+                    .order("updated_at", desc=True)
+                    .limit(max(200, len(chunk) * 6))
+                    .execute()
+                )
+                rows.extend(response.data or [])
+            except Exception as exc:
+                if not self._is_missing_table_error(exc, "whatsapp_known_contacts"):
+                    raise
             response = (
                 self.client.table("mensagens")
                 .select("contact_phone,contact_name,timestamp")
@@ -4054,7 +4415,7 @@ class SupabaseStore:
                 .limit(max(200, len(chunk) * 12))
                 .execute()
             )
-            rows = response.data or []
+            rows.extend(response.data or [])
             for row in rows:
                 if not isinstance(row, dict):
                     continue
@@ -4226,6 +4587,27 @@ class SupabaseStore:
             role=role,
             content=content,
             created_at=self._parse_datetime(value.get("created_at")) or datetime.now(UTC),
+        )
+
+    def _parse_known_contact(self, value: Any, *, fallback_user_id: UUID) -> KnownContactRecord | None:
+        if not isinstance(value, dict):
+            return None
+        contact_phone = self.normalize_contact_phone(self._optional_text(value.get("contact_phone")))
+        if not contact_phone:
+            return None
+        return KnownContactRecord(
+            id=str(value.get("id") or ""),
+            user_id=self._parse_uuid(value.get("user_id")) or fallback_user_id,
+            contact_phone=contact_phone,
+            chat_jid=self._optional_text(value.get("chat_jid")),
+            contact_name=self._resolve_contact_name(
+                incoming_name=self._optional_text(value.get("contact_name")),
+                contact_phone=contact_phone,
+                known_name=self._optional_text(value.get("contact_name")),
+            ),
+            name_source=self._optional_text(value.get("name_source")) or "unknown",
+            last_seen_at=self._parse_datetime(value.get("last_seen_at")),
+            updated_at=self._parse_datetime(value.get("updated_at")) or datetime.now(UTC),
         )
 
     def _parse_whatsapp_agent_settings(self, value: Any, *, fallback_user_id: UUID) -> WhatsAppAgentSettingsRecord | None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import logging
 from time import perf_counter
 from typing import Sequence
 
@@ -24,6 +25,8 @@ from app.services.supabase_store import (
     WhatsAppAgentThreadRecord,
     WhatsAppAgentThreadSessionRecord,
 )
+
+logger = logging.getLogger("auracore.agent_reply")
 
 
 @dataclass(slots=True)
@@ -165,6 +168,8 @@ class WhatsAppAgentService:
         chat_jid = payload.chat_jid.strip()
         contact_phone = self.store.normalize_contact_phone(payload.contact_phone)
         contact_name = (payload.contact_name or payload.contact_phone or "Contato").strip()
+        contact_name_source = (payload.contact_name_source or "unknown").strip() or "unknown"
+        source_event = (payload.source_event or "unknown").strip() or "unknown"
 
         if not normalized_text:
             return WhatsAppAgentInboundMessageResponse(action="ignored_empty")
@@ -187,6 +192,14 @@ class WhatsAppAgentService:
 
         observer_status, settings_record = await self._load_observer_context()
         allowed_contact_phone = settings_record.allowed_contact_phone
+        self.store.upsert_known_contact(
+            user_id=self.settings.default_user_id,
+            contact_phone=contact_phone,
+            chat_jid=chat_jid,
+            contact_name=contact_name,
+            name_source=contact_name_source,
+            seen_at=payload.timestamp,
+        )
 
         thread = self.store.get_or_create_whatsapp_agent_thread(
             user_id=self.settings.default_user_id,
@@ -195,11 +208,16 @@ class WhatsAppAgentService:
             contact_name=contact_name,
             created_at=payload.timestamp,
         )
+        known_contact = self.store.get_known_contact_by_phone(
+            user_id=self.settings.default_user_id,
+            contact_phone=contact_phone,
+        )
+        delivery_chat_jid = known_contact.chat_jid if known_contact and known_contact.chat_jid else thread.chat_jid or chat_jid
         session, _started_new_session = self.store.resolve_whatsapp_agent_session(
             user_id=self.settings.default_user_id,
             thread_id=thread.id,
             contact_phone=contact_phone,
-            chat_jid=chat_jid,
+            chat_jid=delivery_chat_jid,
             activity_at=payload.timestamp,
             idle_timeout_minutes=self.settings.whatsapp_agent_idle_timeout_minutes,
         )
@@ -219,8 +237,10 @@ class WhatsAppAgentService:
             learning_status="pending_review",
             metadata={
                 "source": payload.source,
+                "source_event": source_event,
                 "from_me": bool(payload.from_me),
                 "observer_owner_number": observer_status.owner_number,
+                "contact_name_source": contact_name_source,
             },
             created_at=datetime.now(UTC),
         )
@@ -235,6 +255,13 @@ class WhatsAppAgentService:
         )
 
         if not allowed_contact_phone:
+            logger.info(
+                "allowlist_missing thread_id=%s message_id=%s contact_phone=%s source_event=%s",
+                thread.id,
+                inbound_message.id,
+                contact_phone,
+                source_event,
+            )
             self.store.update_whatsapp_agent_message(
                 message_id=inbound_message.id,
                 processing_status="ignored_missing_allowlist",
@@ -247,6 +274,14 @@ class WhatsAppAgentService:
             )
 
         if not self.store.phone_matches(contact_phone, allowed_contact_phone):
+            logger.info(
+                "allowlist_blocked thread_id=%s message_id=%s contact_phone=%s allowed_contact_phone=%s source_event=%s",
+                thread.id,
+                inbound_message.id,
+                contact_phone,
+                allowed_contact_phone,
+                source_event,
+            )
             self.store.update_whatsapp_agent_message(
                 message_id=inbound_message.id,
                 processing_status="ignored_not_allowed",
@@ -376,7 +411,7 @@ class WhatsAppAgentService:
             content=assistant_reply,
             message_timestamp=datetime.now(UTC),
             contact_phone=contact_phone,
-            chat_jid=chat_jid,
+            chat_jid=delivery_chat_jid,
             source_inbound_message_id=payload.message_id,
             processing_status="sending",
             learning_status="not_applicable",
@@ -385,13 +420,14 @@ class WhatsAppAgentService:
             metadata={
                 "generated_by": "groq",
                 "reply_to_message_id": inbound_message.whatsapp_message_id,
+                "delivery_chat_jid": delivery_chat_jid,
             },
             created_at=datetime.now(UTC),
         )
 
         try:
             send_result = await self.agent_gateway.send_text_message(
-                chat_jid=chat_jid,
+                chat_jid=delivery_chat_jid,
                 message_text=assistant_reply,
             )
             sent_at = send_result.timestamp or datetime.now(UTC)
@@ -409,6 +445,7 @@ class WhatsAppAgentService:
             )
             self.store.update_whatsapp_agent_thread(
                 thread_id=thread.id,
+                chat_jid=delivery_chat_jid,
                 status="active",
                 last_outbound_at=sent_at,
                 last_message_at=sent_at,
@@ -419,6 +456,15 @@ class WhatsAppAgentService:
                 session_id=session.id,
                 last_activity_at=sent_at,
                 updated_at=sent_at,
+            )
+            logger.info(
+                "reply_sent thread_id=%s inbound_message_id=%s outbound_message_id=%s contact_phone=%s chat_jid=%s latency_ms=%s",
+                thread.id,
+                inbound_message.id,
+                outbound_message.id,
+                contact_phone,
+                delivery_chat_jid,
+                reply_elapsed_ms,
             )
             return WhatsAppAgentInboundMessageResponse(
                 action="replied",
@@ -444,6 +490,15 @@ class WhatsAppAgentService:
                 status="error",
                 last_error_at=datetime.now(UTC),
                 last_error_text=send_error,
+            )
+            logger.error(
+                "reply_send_failed thread_id=%s inbound_message_id=%s outbound_message_id=%s contact_phone=%s chat_jid=%s error=%s",
+                thread.id,
+                inbound_message.id,
+                outbound_message.id,
+                contact_phone,
+                delivery_chat_jid,
+                send_error,
             )
             return WhatsAppAgentInboundMessageResponse(
                 action="failed_send",

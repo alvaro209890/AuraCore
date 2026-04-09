@@ -35,17 +35,59 @@ export type GatewaySendResult = {
   timestamp: string | null;
 };
 
+type ContactNameSource =
+  | "saved_contact"
+  | "verified_name"
+  | "verified_business"
+  | "push_name"
+  | "cached_history"
+  | "phone";
+
 type IngestMessagePayload = {
   message_id: string;
   direction: "inbound" | "outbound";
   from_me: boolean;
   contact_name: string;
+  contact_name_source: string;
   chat_jid: string;
   contact_phone: string;
   message_text: string;
   timestamp: string;
   source: "baileys";
+  source_event: string;
 };
+
+type ContactProfile = {
+  name?: string | null;
+  notify?: string | null;
+  verifiedName?: string | null;
+  verifiedBizName?: string | null;
+};
+
+type GatewayContactLike = ContactProfile & {
+  id?: string | null;
+  lid?: string | null;
+};
+
+type GatewayHistorySync = {
+  messages: proto.IWebMessageInfo[];
+  isLatest?: boolean;
+  contacts?: GatewayContactLike[];
+};
+
+type MessageKeyWithLid = proto.IMessageKey & {
+  participantPn?: string | null;
+  remoteJidAlt?: string | null;
+};
+
+type BufferedLidMessage = {
+  message: proto.IWebMessageInfo;
+  sourceEvent: string;
+  bufferedAt: number;
+};
+
+const LID_BUFFER_TTL_MS = 30_000;
+const LID_BUFFER_MAX_PER_JID = 32;
 
 function isGroupJid(jid: string | null | undefined): boolean {
   return Boolean(jid && jid.endsWith("@g.us"));
@@ -138,6 +180,9 @@ export class WhatsAppGatewayChannel {
   private readonly processedIds = new Set<string>();
   private readonly processedOrder: string[] = [];
   private readonly knownContactNames = new Map<string, string>();
+  private readonly knownContactNameSources = new Map<string, string>();
+  private readonly lidToPhoneJid = new Map<string, string>();
+  private readonly pendingLidMessages = new Map<string, BufferedLidMessage[]>();
 
   constructor(
     private readonly channelName: "observer" | "agent",
@@ -204,6 +249,8 @@ export class WhatsAppGatewayChannel {
     this.state = "connecting";
     this.ownerNumber = null;
     this.lastError = "session_reset";
+    this.lidToPhoneJid.clear();
+    this.pendingLidMessages.clear();
     this.allowReconnect = true;
     await this.connect();
   }
@@ -264,10 +311,32 @@ export class WhatsAppGatewayChannel {
       void this.handleMessagesUpsert(upsert as { messages: proto.IWebMessageInfo[]; type: string });
     });
 
+    socket.ev.on("contacts.upsert", (contacts) => {
+      if (this.connectionEpoch !== epoch) return;
+      this.absorbContactLidMappings(contacts as GatewayContactLike[], "contacts_upsert");
+    });
+
+    socket.ev.on("contacts.update", (contacts) => {
+      if (this.connectionEpoch !== epoch) return;
+      this.absorbContactLidMappings(contacts as GatewayContactLike[], "contacts_update");
+    });
+
     socket.ev.on("messaging-history.set", (historySet) => {
       if (this.connectionEpoch !== epoch) return;
-      void this.handleHistorySync(historySet as { messages: proto.IWebMessageInfo[]; isLatest?: boolean });
+      void this.handleHistorySync(historySet as GatewayHistorySync);
     });
+
+    const ws = socket.ws as { on?: (event: string, listener: (node: unknown) => void) => void } | undefined;
+    if (ws?.on) {
+      ws.on("CB:message", (node: unknown) => {
+        if (this.connectionEpoch !== epoch) return;
+        this.absorbRawSenderPhone(node, "cb_message");
+      });
+      ws.on("CB:receipt", (node: unknown) => {
+        if (this.connectionEpoch !== epoch) return;
+        this.absorbRawSenderPhone(node, "cb_receipt");
+      });
+    }
   }
 
   private async handleConnectionUpdate(update: {
@@ -331,10 +400,10 @@ export class WhatsAppGatewayChannel {
     await this.ingestMessages(upsert.messages, "live_upsert");
   }
 
-  private async handleHistorySync(historySet: {
-    messages: proto.IWebMessageInfo[];
-    isLatest?: boolean;
-  }): Promise<void> {
+  private async handleHistorySync(historySet: GatewayHistorySync): Promise<void> {
+    if (historySet.contacts?.length) {
+      this.absorbContactLidMappings(historySet.contacts, "history_sync");
+    }
     await this.ingestMessages(historySet.messages, historySet.isLatest ? "history_sync_latest" : "history_sync");
   }
 
@@ -348,7 +417,7 @@ export class WhatsAppGatewayChannel {
 
     const batch: IngestMessagePayload[] = [];
     for (const message of messages) {
-      const normalized = this.normalizeMessage(message);
+      const normalized = this.normalizeMessage(message, sourceEvent);
       if (normalized) {
         batch.push(normalized);
       }
@@ -395,18 +464,29 @@ export class WhatsAppGatewayChannel {
     }
   }
 
-  private normalizeMessage(message: proto.IWebMessageInfo): IngestMessagePayload | null {
+  private normalizeMessage(message: proto.IWebMessageInfo, sourceEvent: string): IngestMessagePayload | null {
     const key = message.key;
     if (!key || !key.id || !key.remoteJid) {
       return null;
     }
 
-    if (this.isDuplicate(key.id)) {
+    const rawRemoteJid = String(key.remoteJid);
+    const resolvedChatJid = this.resolveIncomingRemoteJid(key);
+    if (rawRemoteJid.endsWith("@lid") && resolvedChatJid.endsWith("@lid")) {
+      this.bufferLidMessage(rawRemoteJid, message, sourceEvent);
+      this.requestPhoneForLidJid(rawRemoteJid, message);
+      logger.info(
+        { channel: this.channelName, sourceEvent, rawRemoteJid, messageId: key.id },
+        "Buffered unresolved LID message until phone mapping is available.",
+      );
       return null;
     }
 
-    const remoteJid = String(key.remoteJid);
-    if (!isDirectUserJid(remoteJid)) {
+    if (!isDirectUserJid(resolvedChatJid)) {
+      return null;
+    }
+
+    if (this.isDuplicate(key.id)) {
       return null;
     }
 
@@ -415,67 +495,74 @@ export class WhatsAppGatewayChannel {
       return null;
     }
 
-    const contactPhone = jidToPhone(remoteJid);
+    const contactPhone = jidToPhone(resolvedChatJid);
     if (!contactPhone) {
       return null;
     }
 
-    const contactName = this.resolveContactName(message, remoteJid, contactPhone);
+    const { value: contactName, source: contactNameSource } = this.resolveContactName(
+      message,
+      rawRemoteJid,
+      resolvedChatJid,
+      contactPhone,
+    );
     return {
       message_id: key.id,
       direction: key.fromMe ? "outbound" : "inbound",
       from_me: Boolean(key.fromMe),
       contact_name: contactName || contactPhone,
-      chat_jid: remoteJid,
+      contact_name_source: contactNameSource,
+      chat_jid: resolvedChatJid,
       contact_phone: contactPhone,
       message_text: messageText,
       timestamp: toIsoTimestamp(message.messageTimestamp),
       source: "baileys",
+      source_event: sourceEvent,
     };
   }
 
   private resolveContactName(
     message: proto.IWebMessageInfo,
-    remoteJid: string,
+    rawRemoteJid: string,
+    resolvedChatJid: string,
     contactPhone: string,
-  ): string {
+  ): { value: string; source: ContactNameSource } {
     const socketWithContacts = this.socket as
       | (WASocket & {
           contacts?: Record<
             string,
-            {
-              name?: string | null;
-              notify?: string | null;
-              verifiedName?: string | null;
-              verifiedBizName?: string | null;
-            }
+            ContactProfile
           >;
         })
       | null;
-    const contact = socketWithContacts?.contacts?.[remoteJid];
+    const resolvedContact = socketWithContacts?.contacts?.[resolvedChatJid];
+    const rawContact = socketWithContacts?.contacts?.[rawRemoteJid];
     const cachedName = this.knownContactNames.get(contactPhone);
-    const candidates = [
-      message.pushName,
-      contact?.name,
-      contact?.notify,
-      contact?.verifiedName,
-      contact?.verifiedBizName,
-      cachedName,
-      contactPhone,
+    const cachedSource = this.knownContactNameSources.get(contactPhone);
+    const candidates: Array<{ value: string | null | undefined; source: ContactNameSource }> = [
+      { value: resolvedContact?.name || rawContact?.name, source: "saved_contact" },
+      { value: resolvedContact?.verifiedBizName || rawContact?.verifiedBizName, source: "verified_business" },
+      { value: resolvedContact?.verifiedName || rawContact?.verifiedName, source: "verified_name" },
+      { value: message.pushName || resolvedContact?.notify || rawContact?.notify, source: "push_name" },
+      {
+        value: cachedName,
+        source:
+          cachedSource && cachedSource !== "phone"
+            ? (cachedSource as ContactNameSource)
+            : "cached_history",
+      },
     ];
 
     for (const candidate of candidates) {
-      const text = String(candidate ?? "").trim();
-      if (!text) {
+      const text = String(candidate.value ?? "").trim();
+      if (!this.isUsefulContactName(text, contactPhone)) {
         continue;
       }
-      if (text !== contactPhone) {
-        this.knownContactNames.set(contactPhone, text);
-      }
-      return text;
+      this.rememberContactName(contactPhone, text, candidate.source);
+      return { value: text, source: candidate.source };
     }
 
-    return contactPhone;
+    return { value: contactPhone, source: "phone" };
   }
 
   private isDuplicate(messageId: string): boolean {
@@ -497,6 +584,234 @@ export class WhatsAppGatewayChannel {
   private resetProcessedMessageCache(): void {
     this.processedIds.clear();
     this.processedOrder.length = 0;
+  }
+
+  private resolveIncomingRemoteJid(key: proto.IMessageKey): string {
+    const enrichedKey = key as MessageKeyWithLid;
+    const remoteJid = String(key.remoteJid ?? "");
+    if (!remoteJid.endsWith("@lid")) {
+      return remoteJid;
+    }
+
+    const candidates = [enrichedKey.remoteJidAlt, enrichedKey.participantPn, key.participant];
+    for (const candidate of candidates) {
+      const normalized = this.normalizePhoneJidCandidate(candidate);
+      if (normalized) {
+        this.rememberLidMapping(remoteJid, normalized, "message_candidate");
+        return normalized;
+      }
+    }
+
+    const exact = this.lidToPhoneJid.get(remoteJid);
+    if (exact) {
+      return exact;
+    }
+
+    const baseLidJid = this.toBaseLidJid(remoteJid);
+    const baseMatch = this.lidToPhoneJid.get(baseLidJid);
+    if (baseMatch) {
+      return baseMatch;
+    }
+
+    const lidNumber = baseLidJid.split("@")[0];
+    for (const [knownLidJid, mappedPhoneJid] of this.lidToPhoneJid.entries()) {
+      if (knownLidJid.startsWith(lidNumber)) {
+        return mappedPhoneJid;
+      }
+    }
+
+    return remoteJid;
+  }
+
+  private normalizePhoneJidCandidate(value: string | null | undefined): string | null {
+    if (!value) {
+      return null;
+    }
+    const trimmed = value.trim();
+    if (!trimmed || isStatusJid(trimmed) || isGroupJid(trimmed) || trimmed.endsWith("@lid")) {
+      return null;
+    }
+
+    if (trimmed.endsWith("@s.whatsapp.net")) {
+      return trimmed;
+    }
+
+    const phone = jidToPhone(trimmed);
+    if (phone.length < 8) {
+      return null;
+    }
+    return `${phone}@s.whatsapp.net`;
+  }
+
+  private rememberLidMapping(
+    lidJid: string | null | undefined,
+    phoneJid: string | null | undefined,
+    source: "contacts_upsert" | "contacts_update" | "history_sync" | "message_candidate" | "cb_message" | "cb_receipt",
+  ): void {
+    if (!lidJid || !lidJid.endsWith("@lid")) {
+      return;
+    }
+    const normalizedPhoneJid = this.normalizePhoneJidCandidate(phoneJid);
+    if (!normalizedPhoneJid) {
+      return;
+    }
+
+    const baseLidJid = this.toBaseLidJid(lidJid);
+    const previous = this.lidToPhoneJid.get(baseLidJid);
+    this.lidToPhoneJid.set(baseLidJid, normalizedPhoneJid);
+    this.lidToPhoneJid.set(lidJid, normalizedPhoneJid);
+
+    if (previous !== normalizedPhoneJid) {
+      logger.info(
+        { channel: this.channelName, lidJid, baseLidJid, phoneJid: normalizedPhoneJid, source },
+        "Resolved LID to phone JID.",
+      );
+    }
+
+    this.replayBufferedLidMessages(baseLidJid);
+    if (baseLidJid !== lidJid) {
+      this.replayBufferedLidMessages(lidJid);
+    }
+  }
+
+  private absorbContactLidMappings(
+    contacts: GatewayContactLike[] | undefined,
+    source: "contacts_upsert" | "contacts_update" | "history_sync",
+  ): void {
+    if (!contacts?.length) {
+      return;
+    }
+
+    for (const contact of contacts) {
+      const contactId = typeof contact.id === "string" ? contact.id.trim() : "";
+      const lidRaw = typeof contact.lid === "string" ? contact.lid.trim() : "";
+      const lidJid = lidRaw ? (lidRaw.includes("@") ? lidRaw : `${lidRaw}@lid`) : contactId.endsWith("@lid") ? contactId : "";
+      const phoneJid = this.normalizePhoneJidCandidate(contactId);
+      if (lidJid && phoneJid) {
+        this.rememberLidMapping(lidJid, phoneJid, source);
+      }
+
+      const contactPhone = phoneJid ? jidToPhone(phoneJid) : "";
+      const preferredName =
+        (typeof contact.name === "string" ? contact.name.trim() : "") ||
+        (typeof contact.verifiedBizName === "string" ? contact.verifiedBizName.trim() : "") ||
+        (typeof contact.verifiedName === "string" ? contact.verifiedName.trim() : "") ||
+        (typeof contact.notify === "string" ? contact.notify.trim() : "");
+      if (contactPhone && this.isUsefulContactName(preferredName, contactPhone)) {
+        this.rememberContactName(contactPhone, preferredName, "saved_contact");
+      }
+    }
+  }
+
+  private absorbRawSenderPhone(node: unknown, source: "cb_message" | "cb_receipt"): void {
+    const attrs = (node as { attrs?: Record<string, string> } | undefined)?.attrs;
+    if (!attrs) {
+      return;
+    }
+    const lidJid = attrs.from;
+    const senderPhoneJid = attrs.sender_pn;
+    if (lidJid?.endsWith("@lid") && senderPhoneJid) {
+      this.rememberLidMapping(lidJid, senderPhoneJid, source);
+    }
+  }
+
+  private bufferLidMessage(lidJid: string, message: proto.IWebMessageInfo, sourceEvent: string): void {
+    const now = Date.now();
+    const existing = this.pendingLidMessages.get(lidJid) ?? [];
+    const fresh = existing.filter((entry) => now - entry.bufferedAt < LID_BUFFER_TTL_MS);
+    if (fresh.length >= LID_BUFFER_MAX_PER_JID) {
+      fresh.shift();
+    }
+    fresh.push({ message, sourceEvent, bufferedAt: now });
+    this.pendingLidMessages.set(lidJid, fresh);
+  }
+
+  private replayBufferedLidMessages(lidJid: string): void {
+    const entries = this.pendingLidMessages.get(lidJid);
+    if (!entries?.length) {
+      return;
+    }
+
+    this.pendingLidMessages.delete(lidJid);
+    const freshEntries = entries.filter((entry) => Date.now() - entry.bufferedAt < LID_BUFFER_TTL_MS);
+    if (!freshEntries.length) {
+      return;
+    }
+
+    for (const entry of freshEntries) {
+      void this.ingestMessages([entry.message], entry.sourceEvent);
+    }
+  }
+
+  private requestPhoneForLidJid(lidJid: string, message?: proto.IWebMessageInfo): void {
+    const socket = this.socket;
+    if (!socket || this.lidToPhoneJid.has(lidJid)) {
+      return;
+    }
+
+    void (async () => {
+      try {
+        await socket.presenceSubscribe(lidJid);
+      } catch {
+        // Best effort only.
+      }
+
+      if (message?.key) {
+        try {
+          await socket.readMessages([message.key]);
+        } catch {
+          // Best effort only.
+        }
+      }
+    })();
+  }
+
+  private rememberContactName(contactPhone: string, name: string, source: ContactNameSource): void {
+    if (!this.isUsefulContactName(name, contactPhone)) {
+      return;
+    }
+    this.knownContactNames.set(contactPhone, name.trim());
+    this.knownContactNameSources.set(contactPhone, source);
+  }
+
+  private isUsefulContactName(name: string | null | undefined, contactPhone: string): boolean {
+    const trimmed = String(name ?? "").trim();
+    if (!trimmed) {
+      return false;
+    }
+    if (trimmed === contactPhone) {
+      return false;
+    }
+    const nameDigits = trimmed.replace(/[^\d]/g, "");
+    const phoneDigits = contactPhone.replace(/[^\d]/g, "");
+    return !nameDigits || nameDigits !== phoneDigits;
+  }
+
+  private toBaseLidJid(lidJid: string): string {
+    return lidJid.replace(/:\d+@lid$/, "@lid");
+  }
+
+  private resolveDeliveryJid(chatJid: string): string {
+    const trimmed = chatJid.trim();
+    if (!trimmed) {
+      throw new Error("WhatsApp chat JID is required.");
+    }
+
+    if (trimmed.endsWith("@lid")) {
+      const exact = this.lidToPhoneJid.get(trimmed);
+      const base = this.lidToPhoneJid.get(this.toBaseLidJid(trimmed));
+      return exact || base || trimmed;
+    }
+
+    if (trimmed.includes("@")) {
+      return trimmed;
+    }
+
+    const phone = jidToPhone(trimmed);
+    if (!phone) {
+      throw new Error("WhatsApp chat JID is invalid.");
+    }
+    return `${phone}@s.whatsapp.net`;
   }
 
   private scheduleReconnect(): void {
@@ -553,6 +868,8 @@ export class WhatsAppGatewayChannel {
       this.socket.ev.removeAllListeners("connection.update");
       this.socket.ev.removeAllListeners("creds.update");
       this.socket.ev.removeAllListeners("messages.upsert");
+      this.socket.ev.removeAllListeners("contacts.upsert");
+      this.socket.ev.removeAllListeners("contacts.update");
       this.socket.ev.removeAllListeners("messaging-history.set");
       (this.socket as unknown as { ws?: { close: () => void } }).ws?.close();
     } catch {
@@ -571,7 +888,8 @@ export class WhatsAppGatewayChannel {
     if (!trimmed) {
       throw new Error("Cannot send empty WhatsApp message.");
     }
-    const result = await socket.sendMessage(chatJid, { text: trimmed });
+    const deliveryJid = this.resolveDeliveryJid(chatJid);
+    const result = await socket.sendMessage(deliveryJid, { text: trimmed });
     const messageId = result?.key?.id ?? null;
     const timestamp = result?.messageTimestamp ? toIsoTimestamp(result.messageTimestamp) : new Date().toISOString();
     return {

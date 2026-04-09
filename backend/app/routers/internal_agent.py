@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 
 from app.dependencies import get_settings, get_whatsapp_agent_service
@@ -7,6 +9,7 @@ from app.schemas import WhatsAppAgentInboundMessagesRequest, WhatsAppAgentInboun
 from app.services.whatsapp_agent_service import WhatsAppAgentService
 
 router = APIRouter(prefix="/api/internal/agent", tags=["internal"])
+logger = logging.getLogger("auracore.agent_reply")
 
 
 @router.post("/messages/inbound", response_model=WhatsAppAgentInboundMessagesResponse)
@@ -37,6 +40,12 @@ async def ingest_agent_message(
             ignored += 1
         else:
             accepted += 1
+    logger.info(
+        "agent_inbound_batch accepted=%s ignored=%s total=%s",
+        accepted,
+        ignored,
+        len(payload.messages),
+    )
     return WhatsAppAgentInboundMessagesResponse(
         accepted_count=accepted,
         ignored_count=ignored,

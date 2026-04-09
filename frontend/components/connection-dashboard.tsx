@@ -399,7 +399,7 @@ function getIntentTitle(intent: AgentIntent | null): string {
     case "first_analysis":
       return "Fazer Primeira Análise";
     case "improve_memory":
-      return "Ler Novas Mensagens e Melhorar Memória";
+      return "Atualizar Sistema com Novas Mensagens";
     case "refine_saved":
       return "Refinar Memória Já Salva";
     default:
@@ -576,6 +576,9 @@ function buildActivityTrace(args: {
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message) {
+    if (error.message.includes("Backend indisponivel ou bloqueado na rede/CORS")) {
+      return error.message;
+    }
     return error.message;
   }
   return "Não foi possível concluir a operação.";
@@ -972,7 +975,7 @@ export function ConnectionDashboard() {
   const refreshLiveDataRef = useRef<(() => Promise<void>) | null>(null);
 
   const latestSnapshot = snapshots[0] ?? null;
-  const memoryIsEstablished = memoryStatus?.has_initial_analysis ?? hasEstablishedMemory(memory, latestSnapshot);
+  const memoryIsEstablished = memoryStatus?.has_initial_analysis ?? false;
   const activeChatThread = useMemo(
     () => chatThreads.find((thread) => thread.id === activeChatThreadId) ?? chatThreads[0] ?? null,
     [activeChatThreadId, chatThreads],
@@ -2038,7 +2041,7 @@ export function ConnectionDashboard() {
               {agentState.running && agentState.mode === "analyze"
                 ? "Lendo..."
                 : memoryIsEstablished
-                  ? "Melhorar Memória"
+                  ? "Atualizar Sistema"
                   : "Primeira Análise"}
             </button>
           </div>
@@ -2479,7 +2482,7 @@ function ObserverTab({
   );
 }
 
-function AgentTab({
+function AgentTabLegacy({
   status,
   statusLabel,
   viewState,
@@ -2717,6 +2720,323 @@ function AgentTab({
   );
 }
 
+void AgentTabLegacy;
+
+function AgentTab({
+  status,
+  statusLabel,
+  viewState,
+  settings,
+  activeSession,
+  contactMemory,
+  threads,
+  messages,
+  activeThreadId,
+  isConnecting,
+  isResetting,
+  isSaving,
+  connectionError,
+  messagesError,
+  onConnect,
+  onReset,
+  onToggleAutoReply,
+  onSelectThread,
+  onRefresh,
+}: {
+  status: WhatsAppAgentStatus | null;
+  statusLabel: string;
+  viewState: ViewState;
+  settings: WhatsAppAgentSettings | null;
+  activeSession: WhatsAppAgentSession | null;
+  contactMemory: WhatsAppAgentContactMemory | null;
+  threads: WhatsAppAgentThread[];
+  messages: WhatsAppAgentMessage[];
+  activeThreadId: string | null;
+  isConnecting: boolean;
+  isResetting: boolean;
+  isSaving: boolean;
+  connectionError: string | null;
+  messagesError: string | null;
+  onConnect: () => void;
+  onReset: () => void;
+  onToggleAutoReply: (value: boolean) => void;
+  onSelectThread: (threadId: string) => void;
+  onRefresh: () => void;
+}) {
+  const autoReplyEnabled = settings?.auto_reply_enabled ?? false;
+  const allowedContact = settings?.allowed_contact_phone ?? status?.allowed_contact_phone ?? "Nao definido";
+  const activeThread = threads.find((thread) => thread.id === activeThreadId) ?? threads[0] ?? null;
+  const sessionStartedLabel = activeSession?.started_at ? formatDateTime(activeSession.started_at) : "Sem sessao ativa";
+  const sessionLastActivityLabel = activeSession?.last_activity_at ? formatDateTime(activeSession.last_activity_at) : "Sem atividade";
+  const connectedNumber = status?.owner_number ?? "Aguardando leitura";
+  const connectionModeLabel = status?.connected ? "Online" : statusLabel;
+  const replyModeLabel = autoReplyEnabled ? "Ativa" : "Desativada";
+  const learnedCountLabel = String(contactMemory?.learned_message_count ?? 0);
+  const memorySummary = contactMemory?.profile_summary?.trim()
+    ? contactMemory.profile_summary.trim()
+    : "Sem resumo duravel salvo ainda para este contato. Quando o dono repetir preferencias, objetivos ou restricoes, o agente passa a consolidar isso aqui.";
+  const activeThreadLastTouch = activeThread?.session_last_activity_at ?? activeThread?.last_message_at ?? null;
+  const memoryHighlights = [
+    ...(contactMemory?.preferences ?? []),
+    ...(contactMemory?.objectives ?? []),
+    ...(contactMemory?.durable_facts ?? []),
+    ...(contactMemory?.recurring_instructions ?? []),
+    ...(contactMemory?.constraints ?? []),
+  ].slice(0, 8);
+
+  return (
+    <div className="page-stack agent-page">
+      <Card className="agent-command-deck">
+        <div className="agent-command-copy">
+          <div className="agent-command-kicker">
+            <span className={`agent-state-pill${status?.connected ? " agent-state-live" : ""}`}>{connectionModeLabel}</span>
+            <span className="agent-state-note">Canal de atendimento separado do observador</span>
+          </div>
+          <h2>WhatsApp Agente</h2>
+          <p className="lead-copy">
+            O numero secundario responde pelo proprio canal do agente e so aceita conversa do numero conectado no observador.
+          </p>
+          <div className="agent-command-actions">
+            <button className="ac-primary-button" onClick={onConnect} disabled={isConnecting || viewState === "connected"} type="button">
+              <RefreshCw size={15} className={isConnecting ? "spin" : ""} />
+              {viewState === "connected" ? "Agente conectado" : isConnecting ? "Gerando QR..." : "Gerar novo QR"}
+            </button>
+            <button className="ac-secondary-button" onClick={onRefresh} type="button">
+              <RefreshCw size={15} />
+              Atualizar status
+            </button>
+            <button
+              className={autoReplyEnabled ? "ac-danger-button" : "ac-success-button"}
+              onClick={() => onToggleAutoReply(!autoReplyEnabled)}
+              disabled={isSaving || !status?.connected}
+              type="button"
+            >
+              <Bot size={15} />
+              {autoReplyEnabled ? "Desativar respostas" : "Ativar respostas"}
+            </button>
+          </div>
+        </div>
+
+        <div className="agent-command-metrics">
+          <AgentMetricPanel
+            label="Numero do agente"
+            value={connectedNumber}
+            meta={status?.connected ? "Sessao conectada no canal secundario" : "Leia o QR para conectar"}
+          />
+          <AgentMetricPanel
+            label="Contato autorizado"
+            value={allowedContact}
+            meta="Atualizado automaticamente a partir do observador"
+          />
+          <AgentMetricPanel
+            label="Resposta automatica"
+            value={replyModeLabel}
+            meta={autoReplyEnabled ? "Groq responde no proprio WhatsApp agente" : "Fluxo em modo manual"}
+          />
+          <AgentMetricPanel
+            label="Memoria aprendida"
+            value={learnedCountLabel}
+            meta={contactMemory ? "Itens relevantes guardados para este contato" : "Nada aprendido ainda"}
+          />
+        </div>
+      </Card>
+
+      <div className="agent-workspace-grid">
+        <Card className="agent-connection-card">
+          <div className="agent-card-heading">
+            <SectionTitle title="Conexao e QR" icon={Bot} />
+            <div className="agent-qr-badge">
+              <Clock size={12} />
+              {status?.connected ? "Sessao ativa" : status?.qr_expires_in_sec ? `Expira em ${status.qr_expires_in_sec}s` : "Sem QR ativo"}
+            </div>
+          </div>
+
+          <div className="agent-connection-layout">
+            <div className="agent-qr-column">
+              <div className="qr-display-shell agent-qr-shell">
+                {status?.qr_code ? (
+                  <div className="qr-modern-frame">
+                    <img className="qr-modern-image" src={status.qr_code} alt="QR Code do WhatsApp agente" />
+                  </div>
+                ) : (
+                  <div className="qr-modern-empty">
+                    <Bot size={28} />
+                    <strong>QR indisponivel</strong>
+                    <p>
+                      {status?.connected
+                        ? "A sessao ja esta conectada. Nao e necessario gerar um novo QR."
+                        : "Gere uma nova sessao para exibir o QR do agente."}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="agent-connection-details">
+              <p className="support-copy">
+                O observador continua cuidando de memoria e ingestao. Este painel existe so para operar o canal ativo do agente sem misturar os dois papeis.
+              </p>
+              <div className="agent-status-grid">
+                <StatusLine label="Gateway" value={status?.gateway_ready ? "Baileys online" : "Indisponivel"} tone="emerald" />
+                <StatusLine label="Sessao" value={connectedNumber} tone="indigo" />
+                <StatusLine label="Contato permitido" value={allowedContact} tone="amber" />
+                <StatusLine label="Ultima atividade" value={formatDateTime(status?.last_seen_at)} tone="zinc" />
+              </div>
+              <div className="agent-note-panel">
+                <strong>Regra central</strong>
+                <p>O agente responde somente para o numero conectado no observador. Nenhum outro contato recebe resposta automatica.</p>
+              </div>
+            </div>
+          </div>
+        </Card>
+
+        <Card className="agent-operations-card">
+          <SectionTitle title="Operacao do agente" icon={Server} />
+          <div className="agent-operations-grid">
+            <div className="agent-summary-panel">
+              <span>Sessao logica da conversa</span>
+              <strong>{activeSession ? "Sessao aberta" : "Aguardando nova conversa"}</strong>
+              <p>
+                {activeSession
+                  ? `Iniciada em ${sessionStartedLabel} e com ultima atividade em ${sessionLastActivityLabel}.`
+                  : "Depois de 10 minutos sem conversa, o contexto reinicia e a proxima mensagem abre uma nova sessao."}
+              </p>
+            </div>
+            <div className="agent-summary-panel">
+              <span>Memoria propria do agente</span>
+              <strong>{contactMemory ? "Resumo disponivel" : "Ainda sem perfil salvo"}</strong>
+              <p>{memorySummary}</p>
+            </div>
+          </div>
+
+          {memoryHighlights.length > 0 ? (
+            <div className="agent-chip-cloud">
+              {memoryHighlights.map((item, index) => (
+                <span key={`${item}-${index}`} className="agent-memory-chip">{item}</span>
+              ))}
+            </div>
+          ) : null}
+
+          <div className="agent-danger-strip">
+            <div>
+              <strong>Zona de perigo</strong>
+              <p>Resetar a sessao do agente apaga as chaves atuais e exige um novo QR.</p>
+            </div>
+            <button className="ac-danger-button" onClick={onReset} disabled={isResetting} type="button">
+              <XCircle size={15} />
+              {isResetting ? "Resetando..." : "Resetar sessao do agente"}
+            </button>
+          </div>
+        </Card>
+      </div>
+
+      <div className="agent-inbox-grid">
+        <Card className="agent-list-card">
+          <div className="agent-list-header">
+            <SectionTitle title="Conversas recentes" icon={MessageSquare} />
+            <span>{threads.length} ativas</span>
+          </div>
+          {threads.length === 0 ? (
+            <div className="empty-hint">
+              <Bot size={18} />
+              <p>Nenhuma conversa registrada ainda.</p>
+            </div>
+          ) : (
+            <div className="agent-thread-list">
+              {threads.map((thread) => (
+                <button
+                  key={thread.id}
+                  className={`agent-thread-row${thread.id === activeThread?.id ? " agent-thread-row-active" : ""}`}
+                  onClick={() => onSelectThread(thread.id)}
+                  type="button"
+                >
+                  <div className="agent-thread-main">
+                    <strong>{thread.contact_name || thread.contact_phone || "Contato"}</strong>
+                    <span>{thread.last_message_preview ?? "Sem mensagem recente"}</span>
+                  </div>
+                  <div className="agent-thread-meta">
+                    <span>{thread.active_session_id ? "sessao aberta" : thread.status}</span>
+                    <small>
+                      {thread.session_started_at
+                        ? `sessao ${formatDateTime(thread.session_started_at)}`
+                        : thread.last_message_at
+                          ? formatDateTime(thread.last_message_at)
+                          : "Sem data"}
+                    </small>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </Card>
+
+        <Card className="agent-detail-card">
+          <div className="agent-detail-header">
+            <div>
+              <SectionTitle title="Historico do agente" icon={Bot} />
+              <p className="support-copy">
+                {activeThread
+                  ? `Contato atual: ${activeThread.contact_name || activeThread.contact_phone || "Contato sem nome"}`
+                  : "Selecione uma thread para abrir o historico completo do agente."}
+              </p>
+            </div>
+            <div className="agent-detail-meta">
+              <span>{activeThread?.active_session_id ? "Sessao em andamento" : "Sem sessao aberta"}</span>
+              <strong>{activeThreadLastTouch ? formatDateTime(activeThreadLastTouch) : "Sem atividade"}</strong>
+            </div>
+          </div>
+
+          {contactMemory ? (
+            <div className="agent-memory-summary">
+              <div className="agent-memory-summary-copy">
+                <span>Memoria duravel desta relacao</span>
+                <p>{memorySummary}</p>
+              </div>
+              {memoryHighlights.length > 0 ? (
+                <div className="agent-chip-cloud">
+                  {memoryHighlights.map((item, index) => (
+                    <span key={`${item}-detail-${index}`} className="agent-memory-chip">{item}</span>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {activeThread ? (
+            <div className="agent-message-stack">
+              {messages.length === 0 ? (
+                <div className="empty-hint">
+                  <MessageSquare size={18} />
+                  <p>Sem mensagens ainda para esta conversa.</p>
+                </div>
+              ) : (
+                messages.map((msg) => (
+                  <div key={msg.id} className={`agent-message-bubble agent-message-${msg.role}`}>
+                    <div className="agent-message-top">
+                      <strong>{msg.role === "assistant" ? "Agente" : "Contato"}</strong>
+                      <span>{formatDateTime(msg.message_timestamp)}</span>
+                    </div>
+                    <p>{msg.content}</p>
+                    <small>{msg.processing_status}{msg.send_status ? ` | ${msg.send_status}` : ""}</small>
+                  </div>
+                ))
+              )}
+            </div>
+          ) : (
+            <div className="empty-hint">
+              <Bot size={18} />
+              <p>Selecione um contato para ver as mensagens.</p>
+            </div>
+          )}
+        </Card>
+      </div>
+
+      {connectionError ? <InlineError title={`Falha do agente (${statusLabel})`} message={connectionError} /> : null}
+      {messagesError ? <InlineError title="Falha nas mensagens do agente" message={messagesError} /> : null}
+    </div>
+  );
+}
+
 function MemoryTab({
   memoryStatus,
   memory,
@@ -2734,7 +3054,7 @@ function MemoryTab({
   onInitialAnalysis: () => void;
   onImproveMemory: () => void;
 }) {
-  const memoryReady = memoryStatus?.has_initial_analysis ?? hasEstablishedMemory(memory, latestSnapshot);
+  const memoryReady = memoryStatus?.has_initial_analysis ?? false;
   const structuralStrengths = memory?.structural_strengths ?? [];
   const structuralRoutines = memory?.structural_routines ?? [];
   const structuralPreferences = memory?.structural_preferences ?? [];
@@ -2750,8 +3070,8 @@ function MemoryTab({
       : `Fazer Primeira Analise (${formatTokenCount(nextProcessCount)} mensagens)`
     : "Fazer Primeira Analise";
   const nextBatchLabel = nextProcessCount > 0
-    ? `Processar Proximo Lote de ${formatTokenCount(nextProcessCount)} Agora`
-    : "Aguardando novo lote economico";
+    ? `Atualizar Sistema com ${formatTokenCount(nextProcessCount)} Mensagens Novas`
+    : "Aguardando mensagens novas suficientes";
 
   return (
     <div className="page-stack">
@@ -4380,6 +4700,24 @@ function ManualInfoCard({ title, text }: { title: string; text: string }) {
     <div className="manual-info-card">
       <strong>{title}</strong>
       <p>{text}</p>
+    </div>
+  );
+}
+
+function AgentMetricPanel({
+  label,
+  value,
+  meta,
+}: {
+  label: string;
+  value: string;
+  meta: string;
+}) {
+  return (
+    <div className="agent-metric-panel">
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <small>{meta}</small>
     </div>
   );
 }

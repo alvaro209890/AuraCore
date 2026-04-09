@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Header, HTTPException, status
 
 from app.dependencies import (
@@ -13,6 +15,7 @@ from app.services.automation_service import AutomationService
 from app.services.supabase_store import IngestedMessageRecord, SupabaseStore
 
 router = APIRouter(prefix="/api/internal/observer", tags=["internal"])
+logger = logging.getLogger("auracore.observer_ingest")
 
 
 @router.post("/messages/ingest", response_model=IngestMessagesResponse)
@@ -37,6 +40,16 @@ async def ingest_messages(
     normalized_messages = _build_records(payload, store, blocked_contact_phone)
     save_result = store.save_ingested_messages(normalized_messages)
     ignored_count = max(0, len(payload.messages) - len(normalized_messages)) + save_result.ignored_count
+    if payload.messages:
+        logger.info(
+            "observer_batch source_events=%s received=%s normalized=%s saved=%s ignored=%s trimmed=%s",
+            sorted({(item.source_event or "unknown").strip() for item in payload.messages if (item.source_event or "").strip()}),
+            len(payload.messages),
+            len(normalized_messages),
+            save_result.saved_count,
+            ignored_count,
+            save_result.trimmed_existing_count,
+        )
     automation_service.register_ingest_batch(
         accepted_count=save_result.saved_count,
         ignored_count=ignored_count,
@@ -73,11 +86,13 @@ def _build_records(
                 user_id=store.default_user_id,
                 direction=item.direction,
                 contact_name=(item.contact_name or contact_phone).strip(),
+                contact_name_source=(item.contact_name_source or "unknown").strip() or "unknown",
                 chat_jid=chat_jid,
                 contact_phone=normalized_phone or contact_phone,
                 message_text=message_text,
                 timestamp=item.timestamp,
                 source=item.source.strip() or "baileys",
+                source_event=(item.source_event or "").strip() or None,
             )
         )
     return records

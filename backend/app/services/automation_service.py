@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+import logging
 from time import perf_counter
 from typing import Literal
 from zoneinfo import ZoneInfo
@@ -54,6 +55,9 @@ class AutomationStatusSnapshot:
     daily_auto_jobs_count: int
     queued_jobs_count: int
     running_job_id: str | None
+
+
+logger = logging.getLogger("auracore.automation")
 
 
 class AutomationService:
@@ -522,6 +526,7 @@ class AutomationService:
             finished_at=datetime.now(UTC),
         )
         self.store.save_analysis_job_messages(job_id=job.id, message_ids=outcome.source_message_ids)
+        important_saved_count = 0
         if outcome.source_messages:
             extract_start = perf_counter()
             try:
@@ -571,6 +576,14 @@ class AutomationService:
             )
             if marked_count > 0:
                 self.store.delete_messages_by_ids(message_ids=outcome.source_message_ids)
+        self._finalize_observer_cutoff_if_needed(job)
+        logger.info(
+            "analysis_job_done job_id=%s intent=%s selected=%s important_saved=%s",
+            job.id,
+            job.intent,
+            len(outcome.source_message_ids),
+            important_saved_count,
+        )
         self.store.create_model_run(
             user_id=self.settings.default_user_id,
             job_id=job.id,
@@ -632,10 +645,11 @@ class AutomationService:
             finished_at=datetime.now(UTC),
         )
         self.store.save_analysis_job_messages(job_id=job.id, message_ids=outcome.source_message_ids)
+        important_saved_count = 0
         if outcome.source_messages:
             extract_start = perf_counter()
             try:
-                await self.memory_service.extract_and_store_important_messages(
+                important_saved_count = await self.memory_service.extract_and_store_important_messages(
                     messages=outcome.source_messages,
                     analyzed_at=datetime.now(UTC),
                 )
@@ -681,6 +695,14 @@ class AutomationService:
             )
             if marked_count > 0:
                 self.store.delete_messages_by_ids(message_ids=outcome.source_message_ids)
+        self._finalize_observer_cutoff_if_needed(job)
+        logger.info(
+            "fixed_analysis_job_done job_id=%s intent=%s selected=%s important_saved=%s",
+            job.id,
+            job.intent,
+            len(outcome.source_message_ids),
+            important_saved_count,
+        )
         self.store.create_model_run(
             user_id=self.settings.default_user_id,
             job_id=job.id,
@@ -697,6 +719,16 @@ class AutomationService:
             created_at=datetime.now(UTC),
         )
         return outcome
+
+    def _finalize_observer_cutoff_if_needed(self, job: AnalysisJobRecord) -> None:
+        if job.intent != "first_analysis":
+            return
+        cutoff_at = job.started_at or datetime.now(UTC)
+        self.store.set_observer_history_cutoff(
+            user_id=self.settings.default_user_id,
+            cutoff_at=cutoff_at,
+        )
+        self.store.reconcile_observer_backlog(user_id=self.settings.default_user_id)
 
     def _get_daily_cost_usd(self) -> float:
         day_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)

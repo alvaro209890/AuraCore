@@ -24,8 +24,12 @@ from app.services.groq_service import GroqChatError
 from app.services.memory_service import MemoryAnalysisError
 from app.services.observer_gateway import ObserverGatewayError
 
-
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s:%(name)s:%(message)s",
+)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
