@@ -1829,15 +1829,7 @@ class SupabaseStore:
 
         rows = response.data or []
         if not rows or not isinstance(rows[0], dict):
-            created_at = datetime.now(UTC)
-            payload = self._default_whatsapp_agent_settings_record(user_id=user_id, updated_at=created_at)
-            try:
-                self.client.table("whatsapp_agent_settings").upsert(payload, on_conflict="user_id").execute()
-            except Exception as exc:
-                if not self._is_missing_table_error(exc, "whatsapp_agent_settings"):
-                    raise
-                return self._default_whatsapp_agent_settings(user_id=user_id)
-            return self._parse_whatsapp_agent_settings(payload, fallback_user_id=user_id) or self._default_whatsapp_agent_settings(user_id=user_id)
+            return self._default_whatsapp_agent_settings(user_id=user_id)
 
         parsed = self._parse_whatsapp_agent_settings(rows[0], fallback_user_id=user_id)
         return parsed or self._default_whatsapp_agent_settings(user_id=user_id)
@@ -2804,23 +2796,6 @@ class SupabaseStore:
         created_at = datetime.now(UTC)
         current_count = self.count_messages(user_id)
         last_message_at = self.get_latest_message_timestamp(user_id)
-        record = {
-            "user_id": str(user_id),
-            "total_direct_ingested_count": current_count,
-            "total_direct_pruned_count": 0,
-            "observer_history_cutoff_at": None,
-            "last_message_at": last_message_at.isoformat() if last_message_at else None,
-            "updated_at": created_at.isoformat(),
-        }
-        try:
-            self.client.table("message_retention_state").upsert(record, on_conflict="user_id").execute()
-        except Exception as exc:
-            if self._is_missing_column_error(exc, column_name="observer_history_cutoff_at", table_name="message_retention_state"):
-                legacy_record = dict(record)
-                legacy_record.pop("observer_history_cutoff_at", None)
-                self.client.table("message_retention_state").upsert(legacy_record, on_conflict="user_id").execute()
-            elif not self._is_missing_table_error(exc, "message_retention_state"):
-                raise
         return MessageRetentionStateRecord(
             user_id=user_id,
             total_direct_ingested_count=current_count,
@@ -3110,11 +3085,6 @@ class SupabaseStore:
 
         created_at = datetime.now(UTC)
         record = self._default_automation_settings_record(user_id=user_id, updated_at=created_at)
-        try:
-            self.client.table("automation_settings").upsert(record, on_conflict="user_id").execute()
-        except Exception as exc:
-            if not self._is_missing_table_error(exc, "automation_settings"):
-                raise
         return AutomationSettingsRecord(
             user_id=user_id,
             auto_sync_enabled=bool(record["auto_sync_enabled"]),
