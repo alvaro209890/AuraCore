@@ -54,6 +54,8 @@ import {
   updateAutomationSettings,
   type AutomationSettings,
   type AutomationStatus,
+  type AutomationDecision,
+  type AnalysisJob,
   type ChatMessage,
   type ChatThread,
   type ChatWorkspace,
@@ -62,8 +64,10 @@ import {
   type MemoryCurrent,
   type MemoryStatus,
   type MemorySnapshot,
+  type ModelRun,
   type ObserverStatus,
   type ProjectMemory,
+  type WhatsAppSyncRun,
 } from "@/lib/api";
 
 type ViewState = "idle" | "loading" | "waiting" | "connected" | "error";
@@ -83,6 +87,15 @@ type AgentLog = {
   tone: LogTone;
   createdAt: string;
   message: string;
+};
+
+type ActivityTraceItem = {
+  id: string;
+  title: string;
+  detail: string;
+  timestamp: string | null;
+  tone: "info" | "success" | "error" | "active";
+  meta?: string;
 };
 
 type AgentState = {
@@ -424,6 +437,93 @@ function buildPersistedActivityLogs(status: AutomationStatus | null): AgentLog[]
   return [...syncLogs, ...decisionLogs, ...jobLogs].sort((left, right) => (
     new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
   ));
+}
+
+function getActivityToneLabel(tone: ActivityTraceItem["tone"]): string {
+  switch (tone) {
+    case "success":
+      return "estavel";
+    case "error":
+      return "falha";
+    case "active":
+      return "ao vivo";
+    default:
+      return "analise";
+  }
+}
+
+function buildActivityTrace(args: {
+  agentState: AgentState;
+  latestSyncRun: WhatsAppSyncRun | null;
+  latestDecision: AutomationDecision | null;
+  latestJob: AnalysisJob | null;
+  latestModelRun: ModelRun | null;
+}): ActivityTraceItem[] {
+  const { agentState, latestSyncRun, latestDecision, latestJob, latestModelRun } = args;
+  const items: ActivityTraceItem[] = [];
+
+  if (agentState.running) {
+    items.push({
+      id: "live-agent",
+      title: "Pipeline em execucao",
+      detail: agentState.status,
+      timestamp: new Date().toISOString(),
+      tone: "active",
+      meta: `${agentState.progress}% concluido`,
+    });
+  }
+
+  if (latestSyncRun) {
+    items.push({
+      id: `trace-sync-${latestSyncRun.id}`,
+      title: "Leitura operacional",
+      detail: `${latestSyncRun.messages_saved_count} mensagens diretas salvas, ${latestSyncRun.messages_ignored_count} ignoradas e ${latestSyncRun.messages_pruned_count} podadas na janela mais recente.`,
+      timestamp: latestSyncRun.finished_at ?? latestSyncRun.last_activity_at ?? latestSyncRun.started_at,
+      tone: latestSyncRun.status === "failed" ? "error" : "success",
+      meta: latestSyncRun.status,
+    });
+  }
+
+  if (latestDecision) {
+    items.push({
+      id: `trace-decision-${latestDecision.id}`,
+      title: "Sintese do raciocinio salvo",
+      detail: latestDecision.explanation,
+      timestamp: latestDecision.created_at,
+      tone: latestDecision.should_analyze ? "success" : "info",
+      meta: `${latestDecision.action} • ${latestDecision.reason_code}`,
+    });
+  }
+
+  if (latestJob) {
+    items.push({
+      id: `trace-job-${latestJob.id}`,
+      title: "Lote processado",
+      detail: `${getIntentTitle(latestJob.intent as AgentIntent)} com ${formatTokenCount(latestJob.selected_message_count)} mensagens na execucao mais recente.`,
+      timestamp: latestJob.finished_at ?? latestJob.started_at ?? latestJob.created_at,
+      tone: latestJob.status === "failed" ? "error" : latestJob.status === "succeeded" ? "success" : "active",
+      meta: `${latestJob.status} • ${latestJob.trigger_source}`,
+    });
+  }
+
+  if (latestModelRun) {
+    items.push({
+      id: `trace-model-${latestModelRun.id}`,
+      title: "Execucao do motor",
+      detail: latestModelRun.success
+        ? "O processamento principal terminou e devolveu atualizacoes para memoria, projetos e cofre importante."
+        : latestModelRun.error_text || "A execucao mais recente falhou antes de consolidar a resposta final.",
+      timestamp: latestModelRun.created_at,
+      tone: latestModelRun.success ? "success" : "error",
+      meta: latestModelRun.run_type,
+    });
+  }
+
+  return items.sort((left, right) => {
+    const leftTime = left.timestamp ? new Date(left.timestamp).getTime() : 0;
+    const rightTime = right.timestamp ? new Date(right.timestamp).getTime() : 0;
+    return rightTime - leftTime;
+  });
 }
 
 function getErrorMessage(error: unknown): string {
@@ -2642,11 +2742,24 @@ function ActivityTab({
   const resolvedThinking = latestDecision?.explanation
     ? [latestDecision.explanation, ...thinkingLines]
     : thinkingLines;
+  const traceItems = useMemo(
+    () =>
+      buildActivityTrace({
+        agentState,
+        latestSyncRun,
+        latestDecision,
+        latestJob,
+        latestModelRun,
+      }),
+    [agentState, latestDecision, latestJob, latestModelRun, latestSyncRun],
+  );
+  const displayedLogs = logs.slice(0, 18);
+  const hasSavedDeepSeekThought = Boolean(latestDecision?.explanation?.trim());
 
   const subTabs = [
     { id: "overview" as const, label: "Visão Geral", icon: BarChart3 },
     { id: "persist" as const, label: "Persistência", icon: Database },
-    { id: "logs" as const, label: "Logs", icon: Terminal },
+    { id: "logs" as const, label: "Lab IA", icon: Terminal },
   ];
 
   return (
@@ -2866,21 +2979,145 @@ function ActivityTab({
 
       {/* === LOGS sub-tab === */}
       {activitySubTab === "logs" ? (
-        <div className="terminal-shell">
-          <div className="terminal-header">
-            <span className="terminal-dot terminal-dot-red" />
-            <span className="terminal-dot terminal-dot-yellow" />
-            <span className="terminal-dot terminal-dot-green" />
-            <span className="terminal-title">execution.log</span>
-          </div>
-          <div className="terminal-body">
-            {logs.map((log) => (
-              <div key={log.id} className="terminal-line">
-                <span className="terminal-time">{formatShortDateTime(log.createdAt)}</span>
-                <span className={`terminal-tag terminal-tag-${log.tone}`}>[{log.tone}]</span>
-                <span className="terminal-message">{log.message}</span>
+        <div className="activity-lab-grid">
+          <Card className="activity-lab-hero">
+            <div className="activity-lab-head">
+              <div>
+                <div className="hero-kicker">
+                  <Sparkles size={14} />
+                  DeepSeek Workspace
+                </div>
+                <h3>Rastro do processamento</h3>
+                <p>
+                  Esta area tenta mostrar como o pipeline esta pensando e executando usando apenas os sinais que o backend
+                  realmente persiste.
+                </p>
               </div>
-            ))}
+              <div className="activity-lab-badges">
+                <span className={`micro-status micro-status-${agentState.running ? "indigo" : "emerald"}`}>
+                  {agentState.running ? "Analisando agora" : "Em espera"}
+                </span>
+                <span className="micro-status micro-status-zinc">
+                  {latestModelRun?.provider === "deepseek" ? "DeepSeek ativo" : "Sem motor recente"}
+                </span>
+              </div>
+            </div>
+
+            <div className="activity-lab-metrics">
+              <div className="activity-lab-metric">
+                <span>Estado atual</span>
+                <strong>{agentState.running ? "Processando lote" : latestJob?.status ?? "Sem execucao"}</strong>
+                <small>{agentState.running ? agentState.status : "Ultimo estado conhecido do pipeline"}</small>
+              </div>
+              <div className="activity-lab-metric">
+                <span>Sintese salva</span>
+                <strong>{hasSavedDeepSeekThought ? "Disponivel" : "Limitada"}</strong>
+                <small>
+                  {hasSavedDeepSeekThought
+                    ? "Existe uma explicacao persistida da decisao mais recente."
+                    : "O backend nao salva o pensamento bruto completo do modelo hoje."}
+                </small>
+              </div>
+              <div className="activity-lab-metric">
+                <span>Ultima atividade</span>
+                <strong>
+                  {traceItems[0]?.timestamp ? formatShortDateTime(traceItems[0].timestamp) : "Sem atividade"}
+                </strong>
+                <small>{traceItems[0]?.title ?? "Aguardando novo ciclo"}</small>
+              </div>
+            </div>
+          </Card>
+
+          <div className="activity-lab-columns">
+            <Card className="activity-trace-card">
+              <SectionTitle title="Linha de Pensamento Disponivel" icon={Brain} />
+              {hasSavedDeepSeekThought ? (
+                <div className="activity-thought-stack">
+                  <div className="activity-thought-primary">
+                    <span className="activity-thought-label">Sintese persistida</span>
+                    <p>{latestDecision?.explanation}</p>
+                  </div>
+                  <div className="activity-thought-secondary">
+                    {resolvedThinking.map((line, index) => (
+                      <div key={`${line.slice(0, 20)}-${index}`} className="activity-thought-chip">
+                        <span>{index + 1}</span>
+                        <p>{line}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="activity-thought-empty">
+                  <Brain size={18} />
+                  <p>
+                    O pensamento bruto do DeepSeek nao e salvo no backend neste momento. O que aparece aqui e a melhor
+                    sintese operacional persistida: status atual, decisao registrada e trilha de execucao.
+                  </p>
+                </div>
+              )}
+            </Card>
+
+            <Card className="activity-trace-card">
+              <SectionTitle title="Timeline de Execucao" icon={GitBranch} />
+              <div className="activity-trace-list">
+                {traceItems.length > 0 ? (
+                  traceItems.map((item) => (
+                    <div key={item.id} className={`activity-trace-item activity-trace-${item.tone}`}>
+                      <div className="activity-trace-dot" />
+                      <div className="activity-trace-content">
+                        <div className="activity-trace-top">
+                          <strong>{item.title}</strong>
+                          <span>{item.timestamp ? formatShortDateTime(item.timestamp) : "Agora"}</span>
+                        </div>
+                        <p>{item.detail}</p>
+                        <div className="activity-trace-meta">
+                          <span>{getActivityToneLabel(item.tone)}</span>
+                          {item.meta ? <span>{item.meta}</span> : null}
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="activity-thought-empty">
+                    <GitBranch size={18} />
+                    <p>Nenhum rastro persistido ainda. Assim que o pipeline rodar, esta timeline comeca a se preencher.</p>
+                  </div>
+                )}
+              </div>
+            </Card>
+          </div>
+
+          <div className="terminal-shell activity-terminal-shell">
+            <div className="terminal-header activity-terminal-header">
+              <div className="activity-terminal-leds">
+                <span className="terminal-dot terminal-dot-red" />
+                <span className="terminal-dot terminal-dot-yellow" />
+                <span className="terminal-dot terminal-dot-green" />
+              </div>
+              <div className="activity-terminal-titles">
+                <strong>deepseek-runtime.log</strong>
+                <span>eventos recentes do pipeline</span>
+              </div>
+              <span className={`micro-status micro-status-${agentState.running ? "indigo" : "zinc"}`}>
+                {agentState.running ? "stream ativo" : "aguardando"}
+              </span>
+            </div>
+            <div className="terminal-body">
+              {displayedLogs.map((log, index) => (
+                <div key={log.id} className={`terminal-line activity-terminal-line activity-terminal-${log.tone}`}>
+                  <span className="activity-terminal-index">{String(index + 1).padStart(2, "0")}</span>
+                  <span className="terminal-time">{formatShortDateTime(log.createdAt)}</span>
+                  <span className={`terminal-tag terminal-tag-${log.tone}`}>[{log.tone}]</span>
+                  <span className="terminal-message">{log.message}</span>
+                </div>
+              ))}
+              {displayedLogs.length === 0 ? (
+                <div className="activity-thought-empty">
+                  <Terminal size={18} />
+                  <p>Sem logs recentes por enquanto.</p>
+                </div>
+              ) : null}
+            </div>
           </div>
         </div>
       ) : null}
@@ -3046,124 +3283,255 @@ function ManualTab({
   chatMessages: ChatMessage[];
   automationStatus: AutomationStatus | null;
 }) {
+  const [manualSubTab, setManualSubTab] = useState<"overview" | "flow" | "architecture" | "data" | "operations">("overview");
+  const latestSnapshot = snapshots[0] ?? null;
+  const memoryReady = Boolean(memory?.last_analyzed_at);
+  const projectCount = projects.length;
+  const importantCount = importantMessages.length;
+  const threadCount = chatThreads.length;
+  const manualTabs = [
+    "Visao Geral",
+    "Fluxo Real",
+    "Arquitetura",
+    "Dados",
+    "Operacao",
+  ];
+
   return (
     <div className="page-stack">
-      <Card>
-        <SectionTitle title="O Que É Este Site" icon={Brain} />
-        <div className="manual-grid">
-          <div className="manual-list">
-            <p>O AuraCore conecta o WhatsApp, retém apenas chats diretos, monta memória consolidada, organiza projetos, registra atividade e permite conversar usando esse contexto.</p>
-            <p>O backend é FastAPI. O Supabase guarda mensagens diretas, snapshots, persona, projetos, chat, automação e atividade persistida.</p>
-            <p>O sistema usa a memória consolidada, os projetos e o histórico do chat para responder e atualizar contexto.</p>
+      <Card className="manual-hero-card">
+        <div className="manual-hero-copy">
+          <div className="hero-kicker">
+            <FileText size={14} />
+            Central de Operacao
           </div>
-          <div className="manual-list">
-            <p>Observador: {status?.connected ? "conectado" : "desconectado"}.</p>
-            <p>Memória atual: {memory?.last_analyzed_at ? `ativa desde ${formatShortDateTime(memory.last_analyzed_at)}` : "ainda não consolidada"}.</p>
-            <p>Projetos salvos: {projects.length}. Snapshots: {snapshots.length}. Threads de chat: {chatThreads.length}. Mensagens na thread ativa: {chatMessages.length}.</p>
-          </div>
+          <h3>O AuraCore e um operador de contexto pessoal em cima do WhatsApp.</h3>
+          <p>
+            Ele conecta o observador, filtra somente conversas diretas uteis, consolida memoria do dono, salva memoria por
+            pessoa, identifica mensagens importantes, organiza projetos e ainda oferece um chat pessoal que responde usando
+            esse contexto inteiro.
+          </p>
         </div>
-      </Card>
-
-      <Card>
-        <SectionTitle title="Mapa Das Abas" icon={Database} />
-        <div className="manual-grid">
-          <ManualInfoCard title="Visão Geral" text="Resumo rápido do estado da memória, sinais úteis e atalhos para entrar no fluxo principal." />
-          <ManualInfoCard title="Observador" text="Conecta o WhatsApp, mostra QR, estado da instância e saúde do gateway." />
-          <ManualInfoCard title="Memória" text="Controla puxar mensagens, primeira análise, melhoria incremental e refinamento da memória salva." />
-          <ManualInfoCard title="Importantes" text="Mostra o cofre de mensagens duráveis, alimentado automaticamente após cada análise." />
-          <ManualInfoCard title="Projetos" text="Mostra as frentes reais, próximos passos, evidências e público já consolidados." />
-          <ManualInfoCard title="Chat Pessoal" text="Agora trabalha com múltiplas threads: você separa estratégia, rotina e projetos sem perder a memória central." />
-          <ManualInfoCard title="Atividade / Automação" text="Mostra syncs, decisões, jobs e o estado operacional da fila automática." />
-        </div>
-      </Card>
-
-      <Card>
-        <SectionTitle title="Fluxo Completo" icon={Terminal} />
-        <div className="manual-sequence">
-          <ManualStep title="1. Conectar o observador" text="Leia o QR na aba Observador. Depois disso o gateway começa a ler só conversas diretas úteis." />
-          <ManualStep title="2. Puxar mensagens" text="O botão de releitura força uma nova sincronização do WhatsApp. Grupos, broadcast e newsletter não devem subir para o Supabase." />
-          <ManualStep title="3. Fazer a primeira análise" text="Quando ainda não existe memória base, o sistema monta o primeiro retrato consolidado do dono." />
-          <ManualStep title="4. Salvar mensagens duráveis" text="Ao fim de cada análise, o sistema separa acessos, projetos, dinheiro, riscos e fatos operacionais que merecem virar memória longa." />
-          <ManualStep title="5. Melhorar memória" text="Depois da base inicial, novas mensagens são cruzadas com snapshots, projetos e chat para atualizar o perfil." />
-          <ManualStep title="6. Conversar por threads" text="Use threads separadas no chat para manter assuntos distintos, sem perder a memória central do dono." />
-          <ManualStep title="7. Acompanhar automação" text="A aba de atividade mostra o que foi sincronizado, o que entrou na fila e o que já foi processado." />
-        </div>
-      </Card>
-
-      <Card>
-        <SectionTitle title="Botões Principais" icon={Zap} />
-        <div className="manual-grid">
-          <ManualInfoCard title="Puxar Novas Mensagens do WhatsApp" text="Relê os chats diretos mais recentes e atualiza a retenção operacional no Supabase." />
-          <ManualInfoCard title="Fazer Primeira Análise" text="Cria a primeira base de memória quando o perfil ainda está vazio." />
-          <ManualInfoCard title="Ler Novas Mensagens e Melhorar Memória" text="Usa mensagens novas mais memória já salva para reforçar ou corrigir o retrato do dono." />
-          <ManualInfoCard title="Refinar Memória Já Salva" text="Não relê o WhatsApp; apenas limpa e melhora o que já foi consolidado." />
-          <ManualInfoCard title="Nova Conversa" text="Cria uma nova thread de chat para separar assuntos. Todas usam a memória central, mas cada uma mantém histórico próprio." />
-          <ManualInfoCard title="Rodar Tick Agora" text="Força o backend a fechar syncs ociosos, registrar decisões e processar a fila automática." />
-        </div>
-      </Card>
-
-      <Card>
-        <SectionTitle title="O Que Vai Para O Supabase" icon={Server} />
-        <div className="manual-list">
-          <p>`mensagens`: apenas conversas diretas aproveitáveis.</p>
-          <p>`important_messages`: o cofre de mensagens importantes, revisado diariamente pelo backend.</p>
-          <p>`persona`, `memory_snapshots`, `project_memories`: memória consolidada e evolução do perfil.</p>
-          <p>`person_memories` e `person_memory_snapshots`: memória separada por pessoa, com histórico incremental por contato.</p>
-          <p>`chat_threads` e `chat_messages`: múltiplas threads do chat pessoal.</p>
-          <p>`wa_sync_runs`, `automation_decisions`, `analysis_jobs`, `model_runs`: auditoria operacional da automação.</p>
-        </div>
-      </Card>
-
-      <Card>
-        <SectionTitle title="O Que Nunca Deve Subir" icon={XCircle} />
-        <div className="manual-list">
-          <p>Mensagens de grupo.</p>
-          <p>Status, newsletter, broadcast e lixo sem texto útil.</p>
-          <p>Mensagens de sistema ou explicações internas desnecessárias. A interface mostra só o que ajuda na operação.</p>
-        </div>
-      </Card>
-
-      <Card>
-        <SectionTitle title="Estado Atual Da Operação" icon={Activity} />
-        <div className="manual-grid">
-          <ManualInfoCard
-            title="Memória"
-            text={
-              memory?.last_analyzed_at
-                ? `Última consolidação em ${formatDateTime(memory.last_analyzed_at)}.`
-                : "Ainda sem consolidação inicial."
-            }
+        <div className="manual-hero-stats">
+          <ModernStatCard
+            label="Observador"
+            value={status?.connected ? "Online" : "Pendente"}
+            meta={status?.connected ? "Capturando conversas diretas" : "Conecte o WhatsApp primeiro"}
+            icon={Eye}
+            tone="emerald"
           />
-          <ManualInfoCard
-            title="Último snapshot"
-            text={
-              snapshots[0]
-                ? `Última janela consolidada em ${formatShortDateTime(snapshots[0].created_at)} com ${snapshots[0].source_message_count} mensagens.`
-                : "Nenhum snapshot consolidado ainda."
-            }
+          <ModernStatCard
+            label="Memoria Base"
+            value={memoryReady ? "Pronta" : "Nao criada"}
+            meta={memoryReady ? `Desde ${formatShortDateTime(memory?.last_analyzed_at ?? null)}` : "Primeira analise ainda nao foi rodada"}
+            icon={Database}
+            tone="indigo"
           />
-          <ManualInfoCard
-            title="Mensagens Importantes"
-            text={
-              importantMessages.length > 0
-                ? `${importantMessages.length} item(ns) ativos no cofre, com revisão diária automática após a virada do dia.`
-                : "Nenhuma mensagem importante ativa ainda."
-            }
-          />
-          <ManualInfoCard
-            title="Threads"
-            text={`Há ${chatThreads.length} thread(s) salvas no chat e ${chatMessages.length} mensagem(ns) na thread atualmente aberta.`}
-          />
-          <ManualInfoCard
-            title="Automação"
-            text={
-              automationStatus
-                ? `${automationStatus.queued_jobs_count} job(s) na fila e ${automationStatus.daily_auto_jobs_count} processamento(s) automáticos hoje.`
-                : "Status da automação ainda não carregado."
-            }
+          <ModernStatCard
+            label="Memorias por pessoa"
+            value={String(projectCount > 0 || importantCount > 0 || snapshots.length > 0 ? "Ativas" : "Vazias")}
+            meta="Atualizadas progressivamente por contato"
+            icon={User}
+            tone="amber"
           />
         </div>
       </Card>
+
+      <div style={{ padding: "0 4px" }}>
+        <SegmentedControl
+          options={manualTabs}
+          selected={
+            manualSubTab === "overview"
+              ? "Visao Geral"
+              : manualSubTab === "flow"
+                ? "Fluxo Real"
+                : manualSubTab === "architecture"
+                  ? "Arquitetura"
+                  : manualSubTab === "data"
+                    ? "Dados"
+                    : "Operacao"
+          }
+          onChange={(value) => {
+            if (value === "Visao Geral") setManualSubTab("overview");
+            if (value === "Fluxo Real") setManualSubTab("flow");
+            if (value === "Arquitetura") setManualSubTab("architecture");
+            if (value === "Dados") setManualSubTab("data");
+            if (value === "Operacao") setManualSubTab("operations");
+          }}
+        />
+      </div>
+
+      {manualSubTab === "overview" ? (
+        <>
+          <Card>
+            <SectionTitle title="Como Ler Este Produto" icon={Brain} />
+            <div className="manual-grid">
+              <div className="manual-list">
+                <p>O site e dividido em duas camadas. A primeira e operacional: conectar o WhatsApp, ler mensagens, acompanhar a fila e ver os jobs. A segunda e cognitiva: consolidar memoria, mapear projetos, salvar sinais importantes e conversar com contexto.</p>
+                <p>O Observador cuida da entrada. A Memoria cuida da consolidacao. Importantes e Projetos guardam o que merece sobreviver. O Chat usa tudo isso para responder. Atividade e Automacao mostram o que o backend fez ou esta fazendo.</p>
+              </div>
+              <div className="manual-list">
+                <p>Para o usuario final, a ideia e simples: conectar, fazer a primeira analise, deixar a automacao manter o contexto e usar o chat pessoal como uma camada de apoio persistente.</p>
+                <p>Para voce localizar qualquer problema, pense assim: entrada de dados em Observador, consolidacao em Memoria, armazenamento em Supabase e leitura do estado em Atividade.</p>
+              </div>
+            </div>
+          </Card>
+
+          <Card>
+            <SectionTitle title="Mapa Das Abas" icon={Database} />
+            <div className="manual-grid">
+              <ManualInfoCard title="Visao Geral" text="Painel-resumo do estado atual: conexao, memoria, projetos, sinais e atalhos para o fluxo principal." />
+              <ManualInfoCard title="Observador" text="Ponto de entrada do WhatsApp. Mostra QR, estado da instancia, sessao e a saude da captura." />
+              <ManualInfoCard title="Memoria" text="Aqui nasce e evolui a memoria central. Primeira analise, lotes de 10 mensagens, estado da fila e resumo do dono." />
+              <ManualInfoCard title="Importantes" text="Cofre de fatos duraveis: acessos, valores, clientes, prazos, riscos e sinais operacionais reaproveitaveis." />
+              <ManualInfoCard title="Projetos" text="Organiza frentes reais detectadas nas conversas, com resumo, status, evidencias e proximos passos." />
+              <ManualInfoCard title="Chat Pessoal" text="Thread por assunto usando a memoria central. Bom para separar estrategia, rotina, vendas, produto e operacao." />
+              <ManualInfoCard title="Atividade" text="Mostra o pipeline trabalhando: logs, lotes, trilha de execucao e o melhor raciocinio operacional salvo." />
+              <ManualInfoCard title="Automacao" text="Mostra a fila automatica e o estado do loop de processamento sem expor configuracoes tecnicas desnecessarias." />
+            </div>
+          </Card>
+        </>
+      ) : null}
+
+      {manualSubTab === "flow" ? (
+        <>
+          <Card>
+            <SectionTitle title="Fluxo Real Do Site" icon={Terminal} />
+            <div className="manual-sequence">
+              <ManualStep title="1. Conectar o observador" text="Voce gera o QR, conecta o WhatsApp e libera a captura. A partir daqui o sistema passa a receber somente o que interessa para memoria." />
+              <ManualStep title="2. Filtrar a entrada" text="Nem tudo entra. A ingestao prioriza chats diretos uteis e evita grupo, broadcast, newsletter, status e lixo operacional sem texto relevante." />
+              <ManualStep title="3. Criar a memoria base" text="A primeira analise e manual e usa ate 250 mensagens diretas mais recentes. Ela cria o primeiro retrato consolidado do dono." />
+              <ManualStep title="4. Atualizar por contato" text="Durante as analises, o sistema tenta entender com quem e cada conversa e atualiza memorias separadas por pessoa de forma cumulativa." />
+              <ManualStep title="5. Processar lotes incrementais" text="Depois da base inicial, o backend passa a trabalhar em lotes fixos de 10 mensagens novas, contando recebidas e enviadas." />
+              <ManualStep title="6. Salvar o que dura" text="O processamento atualiza resumo do dono, snapshots, projetos, memorias por pessoa e o cofre de mensagens importantes." />
+              <ManualStep title="7. Reutilizar no chat" text="O chat pessoal consome a memoria consolidada, projetos, contexto da thread atual e sinais importantes para responder melhor." />
+            </div>
+          </Card>
+
+          <Card>
+            <SectionTitle title="Botoes Principais" icon={Zap} />
+            <div className="manual-grid">
+              <ManualInfoCard title="Puxar Novas Mensagens do WhatsApp" text="Forca uma releitura das conversas diretas recentes e atualiza a fila operacional no banco." />
+              <ManualInfoCard title="Fazer Primeira Analise" text="Cria a base inicial da memoria quando o sistema ainda nao conhece bem o dono." />
+              <ManualInfoCard title="Processar Proximo Lote" text="Consome o proximo lote de mensagens novas quando ja existe memoria base e ha volume suficiente." />
+              <ManualInfoCard title="Refinar Memoria Ja Salva" text="Nao busca novas mensagens; apenas reorganiza e melhora o que ja esta consolidado." />
+              <ManualInfoCard title="Nova Conversa" text="Abre uma thread nova no chat sem perder a memoria central nem o restante do historico salvo." />
+              <ManualInfoCard title="Rodar Tick Agora" text="Executa o ciclo da automacao manualmente: fecha syncs, registra decisoes e tenta processar a fila." />
+            </div>
+          </Card>
+        </>
+      ) : null}
+
+      {manualSubTab === "architecture" ? (
+        <>
+          <Card>
+            <SectionTitle title="Arquitetura Em Camadas" icon={Server} />
+            <div className="manual-grid">
+              <ManualInfoCard title="Frontend" text="O painel organiza as abas de operacao, memoria, atividade e chat. Ele consulta a API e mostra o estado persistido do sistema." />
+              <ManualInfoCard title="Backend FastAPI" text="Coordena observador, memoria, automacao, chat e persistencia. E onde ficam as regras de selecao de mensagens e atualizacao de contexto." />
+              <ManualInfoCard title="Supabase" text="Armazena mensagens operacionais, snapshots, persona, projetos, memorias por pessoa, threads do chat e trilhas da automacao." />
+              <ManualInfoCard title="Modelos" text="O motor de analise consolida memoria e o chat responde usando o contexto salvo. O frontend nao inventa raciocinio que o backend nao persistiu." />
+            </div>
+          </Card>
+
+          <Card>
+            <SectionTitle title="Como Cada Parte Se Conversa" icon={GitBranch} />
+            <div className="manual-list">
+              <p>Observador envia mensagens para o backend. O backend decide o que entra em `mensagens` e atualiza a fila operacional.</p>
+              <p>A Memoria seleciona uma janela ou um lote, monta o prompt com contexto consolidado e grava de volta os resultados mais importantes.</p>
+              <p>O Chat nao le o WhatsApp cru. Ele conversa em cima da memoria consolidada, do historico da thread atual, dos projetos e dos sinais duraveis.</p>
+              <p>A Automacao observa se existe memoria base, conta mensagens novas e enfileira no maximo um lote automatico por ciclo quando faz sentido.</p>
+            </div>
+          </Card>
+        </>
+      ) : null}
+
+      {manualSubTab === "data" ? (
+        <>
+          <Card>
+            <SectionTitle title="O Que Vai Para O Supabase" icon={Database} />
+            <div className="manual-grid">
+              <ManualInfoCard title="mensagens" text="Fila operacional de conversas diretas aproveitaveis que ainda podem alimentar analise e memoria." />
+              <ManualInfoCard title="persona e memory_snapshots" text="Resumo principal do dono e historico de janelas consolidadas ao longo do tempo." />
+              <ManualInfoCard title="person_memories" text="Memoria separada por contato, atualizada progressivamente para cada pessoa relevante nas conversas." />
+              <ManualInfoCard title="project_memories" text="Projetos, frentes, entregas, clientes e proximos passos com base nas conversas consolidadas." />
+              <ManualInfoCard title="important_messages" text="Cofre de itens duraveis como acesso, dinheiro, prazo, risco e fatos operacionais." />
+              <ManualInfoCard title="chat_threads e chat_messages" text="Threads do chat pessoal usadas para separar contextos sem perder a memoria central." />
+              <ManualInfoCard title="wa_sync_runs, automation_decisions, analysis_jobs, model_runs" text="Auditoria do que foi sincronizado, decidido, processado e executado." />
+              <ManualInfoCard title="wa_sessions e wa_session_keys" text="Estado de sessao e chaves do observador do WhatsApp." />
+            </div>
+          </Card>
+
+          <Card>
+            <SectionTitle title="O Que Nunca Deve Subir" icon={XCircle} />
+            <div className="manual-list">
+              <p>Grupos, canais, newsletter, broadcast e status.</p>
+              <p>Ruido sem valor contextual, lixo sem texto util e mensagens puramente sistemicas.</p>
+              <p>Explicacoes internas do pipeline na interface final quando elas nao ajudam o usuario a operar o sistema.</p>
+            </div>
+          </Card>
+        </>
+      ) : null}
+
+      {manualSubTab === "operations" ? (
+        <>
+          <Card>
+            <SectionTitle title="Estado Atual Da Operacao" icon={Activity} />
+            <div className="manual-grid">
+              <ManualInfoCard
+                title="Observador"
+                text={status?.connected ? `Conectado com ${status.owner_number ?? "numero ainda nao lido"}.` : "Desconectado ou aguardando leitura do QR."}
+              />
+              <ManualInfoCard
+                title="Memoria Central"
+                text={
+                  memory?.last_analyzed_at
+                    ? `Ultima consolidacao em ${formatDateTime(memory.last_analyzed_at)}.`
+                    : "Ainda sem consolidacao inicial."
+                }
+              />
+              <ManualInfoCard
+                title="Ultimo Snapshot"
+                text={
+                  latestSnapshot
+                    ? `Ultima janela consolidada em ${formatShortDateTime(latestSnapshot.created_at)} com ${latestSnapshot.source_message_count} mensagens.`
+                    : "Nenhum snapshot consolidado ainda."
+                }
+              />
+              <ManualInfoCard
+                title="Mensagens Importantes"
+                text={
+                  importantCount > 0
+                    ? `${importantCount} item(ns) ativos no cofre com revisao automatica diaria.`
+                    : "Nenhuma mensagem importante ativa ainda."
+                }
+              />
+              <ManualInfoCard
+                title="Projetos e Threads"
+                text={`${projectCount} projeto(s) consolidado(s), ${threadCount} thread(s) no chat e ${chatMessages.length} mensagem(ns) na thread aberta.`}
+              />
+              <ManualInfoCard
+                title="Fila Automatica"
+                text={
+                  automationStatus
+                    ? `${automationStatus.queued_jobs_count} job(s) na fila e ${automationStatus.daily_auto_jobs_count} processamento(s) automaticos hoje.`
+                    : "Status da automacao ainda nao carregado."
+                }
+              />
+            </div>
+          </Card>
+
+          <Card>
+            <SectionTitle title="Como Diagnosticar Rapido" icon={AlertCircle} />
+            <div className="manual-grid">
+              <ManualInfoCard title="Sem mensagens novas" text="Olhe primeiro a aba Observador e a releitura manual. Se nao houver entrada, a memoria nao tem o que processar." />
+              <ManualInfoCard title="Sem memoria base" text="A automacao nao inicia a base sozinha. Rode manualmente a primeira analise na aba Memoria." />
+              <ManualInfoCard title="Chat ruim ou vazio" text="Confira se ja existe memoria consolidada, se ha snapshots e se a thread atual tem historico suficiente." />
+              <ManualInfoCard title="Fila travada" text="Use Atividade e Automacao para ver ultimo sync, decisao, job e rastro do pipeline." />
+            </div>
+          </Card>
+        </>
+      ) : null}
     </div>
   );
 }

@@ -47,9 +47,14 @@ class DeepSeekMemoryResult(BaseModel):
     contact_memories: list[DeepSeekPersonMemory] = Field(default_factory=list)
 
 
+
 class DeepSeekMemoryRefinementResult(BaseModel):
     updated_life_summary: str
     active_projects: list[DeepSeekProjectMemory] = Field(default_factory=list)
+
+
+class DeepSeekContactMemoryRefinementResult(BaseModel):
+    contact_memories: list[DeepSeekPersonMemory] = Field(default_factory=list)
 
 
 class DeepSeekImportantMessageCandidate(BaseModel):
@@ -168,6 +173,33 @@ class DeepSeekService:
             payload=payload,
             parser=self._parse_refinement_result,
             validator=self._validate_refinement_result,
+        )
+
+    async def refine_contact_memories(
+        self,
+        *,
+        current_life_summary: str,
+        project_context: str,
+        contact_memories_block: str,
+    ) -> DeepSeekContactMemoryRefinementResult:
+        payload = self._build_completion_payload(
+            system_prompt=(
+                "Voce revisa perfis de contatos salvos no AuraCore para alinha-los a nova fase da vida do dono. "
+                "Retorne apenas JSON valido. Nao mude o person_key. Atualize os resumos de perfil e relacao, e remova "
+                "fatos marcantes, pendencias ou topicos que perderam completamente a relevancia para o contexto atual do dono."
+            ),
+            user_prompt=self._build_contact_refinement_prompt(
+                current_life_summary=current_life_summary,
+                project_context=project_context,
+                contact_memories_block=contact_memories_block,
+            ),
+            max_tokens=6000 if self._is_reasoning_model() else 3000,
+        )
+
+        return await self._request_parsed_completion(
+            payload=payload,
+            parser=self._parse_contact_refinement_result,
+            validator=self._validate_contact_refinement_result,
         )
 
     async def extract_important_messages(
@@ -499,6 +531,50 @@ Regras:
 - Nao inclua markdown fences.
 """.strip()
 
+    def _build_contact_refinement_prompt(
+        self,
+        *,
+        current_life_summary: str,
+        project_context: str,
+        contact_memories_block: str,
+    ) -> str:
+        return f"""
+Reavale a lista de contatos do dono com base no panorama mais recente da sua vida e projetos.
+
+Resumo atual da vida do dono:
+{current_life_summary.strip() or "(memoria consolidada ainda vazia)"}
+
+Projetos recentes:
+{project_context.strip() or "(nenhum projeto consolidado ainda)"}
+
+Lista de contatos para refinar:
+{contact_memories_block.strip() or "(nenhum contato)"}
+
+Retorne um JSON com exatamente este formato:
+{{
+  "contact_memories": [
+    {{
+      "person_key": "string",
+      "contact_name": "string",
+      "profile_summary": "string",
+      "relationship_summary": "string",
+      "salient_facts": ["string"],
+      "open_loops": ["string"],
+      "recent_topics": ["string"]
+    }}
+  ]
+}}
+
+Regras:
+- Retorne a lista completando TODOS os contatos recebidos.
+- Nao altere o 'person_key' ou 'contact_name' atual.
+- Analise o 'profile_summary' e o 'relationship_summary' de cada contato em relacao ao resumo da vida do dono. Ajuste o texto para ser conciso e focado em como esse contato ajuda, interfere ou se encaixa na vida do dono hoje.
+- Em 'salient_facts', 'open_loops' e 'recent_topics', elimine tudo o que for muito antigo, ja finalizado, obsoleto ou irrelevante (ex: "tem consulta", "vai mandar comprovante", conversas menores).
+- Deixe apenas os tracos mais importantes de longo prazo da pessoa ou dinamica na rotina.
+- Mantenha descricoes neutras e baseadas em fatos.
+- Nao inclua markdown fences.
+""".strip()
+
     def _build_important_messages_prompt(
         self,
         *,
@@ -689,6 +765,13 @@ Regras:
         if not parsed.updated_life_summary.strip():
             raise DeepSeekError("DeepSeek retornou uma memoria refinada vazia.")
 
+    def _validate_contact_refinement_result(self, parsed: DeepSeekContactMemoryRefinementResult) -> None:
+        for person in parsed.contact_memories:
+            if not person.person_key.strip():
+                raise DeepSeekError("DeepSeek retornou um contato refinado sem person_key.")
+            if not person.profile_summary.strip():
+                raise DeepSeekError("DeepSeek retornou um contato refinado sem profile_summary.")
+
     def _validate_important_messages_result(
         self,
         parsed: DeepSeekImportantMessagesResult,
@@ -753,49 +836,6 @@ Regras:
             active_projects=self._as_projects(raw.get("active_projects")),
             contact_memories=self._as_person_memories(raw.get("contact_memories")),
         )
-
-    def _parse_refinement_result(self, content: str) -> DeepSeekMemoryRefinementResult:
-        normalized_content = content.strip()
-        if normalized_content.startswith("```"):
-            normalized_content = normalized_content.strip("`")
-            normalized_content = normalized_content.replace("json", "", 1).strip()
-
-        try:
-            raw = json.loads(normalized_content)
-        except json.JSONDecodeError as exc:
-            raise DeepSeekError("DeepSeek retornou JSON invalido no refinamento.") from exc
-
-        if not isinstance(raw, dict):
-            raise DeepSeekError("DeepSeek retornou um payload inesperado no refinamento.")
-
-        return DeepSeekMemoryRefinementResult(
-            updated_life_summary=self._as_text(raw.get("updated_life_summary")),
-            active_projects=self._as_projects(raw.get("active_projects")),
-        )
-
-    def _parse_important_messages_result(self, content: str) -> DeepSeekImportantMessagesResult:
-        normalized_content = content.strip()
-        if normalized_content.startswith("```"):
-            normalized_content = normalized_content.strip("`")
-            normalized_content = normalized_content.replace("json", "", 1).strip()
-
-        try:
-            raw = json.loads(normalized_content)
-        except json.JSONDecodeError as exc:
-            raise DeepSeekError("DeepSeek retornou JSON invalido na extracao de mensagens importantes.") from exc
-
-        if not isinstance(raw, dict):
-            raise DeepSeekError("DeepSeek retornou um payload inesperado na extracao de mensagens importantes.")
-
-        return DeepSeekImportantMessagesResult(
-            important_messages=self._as_important_messages(raw.get("important_messages")),
-        )
-
-    def _parse_important_messages_review_result(self, content: str) -> DeepSeekImportantMessagesReviewResult:
-        normalized_content = content.strip()
-        if normalized_content.startswith("```"):
-            normalized_content = normalized_content.strip("`")
-            normalized_content = normalized_content.replace("json", "", 1).strip()
 
         try:
             raw = json.loads(normalized_content)

@@ -7,7 +7,7 @@ from typing import Literal
 from uuid import uuid4
 
 from app.config import Settings
-from app.services.deepseek_service import DeepSeekMemoryResult, DeepSeekService
+from app.services.deepseek_service import DeepSeekContactMemoryRefinementResult, DeepSeekMemoryResult, DeepSeekService
 from app.services.groq_service import GroqChatService
 from app.services.supabase_store import (
     AutomationSettingsRecord,
@@ -951,6 +951,7 @@ class MemoryAnalysisService:
                 "Ainda nao ha memoria suficiente salva no Supabase para refinar. Rode ao menos uma analise primeiro."
             )
 
+        # Passo 1: Refinamento da Persona e Projetos
         refined = await self.deepseek_service.refine_saved_memory(
             current_life_summary=current_persona.life_summary,
             prior_analyses_context=self._build_prior_analyses_context_from_snapshots(snapshots),
@@ -981,7 +982,76 @@ class MemoryAnalysisService:
             ],
             observed_at=refined_at,
         )
+
+        # Passo 2: Refinamento dos Contatos (Pessoas)
+        contact_records = self.store.list_person_memories(self.settings.default_user_id, limit=24)
+        if contact_records:
+            contact_block = self._build_contact_memories_block(contact_records)
+            refined_contacts = await self.deepseek_service.refine_contact_memories(
+                current_life_summary=persona.life_summary,
+                project_context=self._build_project_context(updated_projects),
+                contact_memories_block=contact_block,
+            )
+            
+            contact_seeds: list[PersonMemorySeed] = []
+            for c_record in contact_records:
+                for c_refined in refined_contacts.contact_memories:
+                    if c_refined.person_key == c_record.person_key:
+                        contact_seeds.append(
+                            PersonMemorySeed(
+                                person_key=c_record.person_key,
+                                contact_name=c_record.contact_name,
+                                contact_phone=c_record.contact_phone,
+                                chat_jid=c_record.chat_jid,
+                                profile_summary=c_refined.profile_summary,
+                                relationship_summary=c_refined.relationship_summary,
+                                salient_facts=c_refined.salient_facts,
+                                open_loops=c_refined.open_loops,
+                                recent_topics=c_refined.recent_topics,
+                                source_message_count=c_record.source_message_count,
+                                window_start=None,
+                                window_end=None,
+                            )
+                        )
+                        break
+            
+            if contact_seeds:
+                self.store.upsert_person_memories(
+                    user_id=self.settings.default_user_id,
+                    source_snapshot_id=persona.last_snapshot_id,
+                    people=contact_seeds,
+                    observed_at=refined_at,
+                )
+
+        # Passo 3: Refinamento do Cofre (Mensagens Importantes)
+        await self.review_important_messages(reviewed_before=datetime.now(UTC), limit=80)
+
         return MemoryRefinementOutcome(persona=persona, projects=updated_projects)
+
+    def _build_contact_memories_block(self, memories: list[PersonMemoryRecord]) -> str:
+        if not memories:
+            return ""
+
+        sections: list[str] = []
+        for memory in memories:
+            lines = [
+                f"- person_key: {memory.person_key}",
+                f"  Contato: {memory.contact_name}",
+            ]
+            if memory.profile_summary:
+                lines.append(f"  Quem e: {memory.profile_summary}")
+            if memory.relationship_summary:
+                lines.append(f"  Relacao com o dono: {memory.relationship_summary}")
+            if memory.salient_facts:
+                lines.append(f"  Fatos marcantes: {'; '.join(memory.salient_facts[:6])}")
+            if memory.open_loops:
+                lines.append(f"  Pendencias abertas: {'; '.join(memory.open_loops[:5])}")
+            if memory.recent_topics:
+                lines.append(f"  Topicos recentes: {'; '.join(memory.recent_topics[:5])}")
+
+            sections.append("\n".join(lines))
+
+        return "\n\n".join(sections)
 
     def _build_prior_analyses_context(self) -> str:
         limit = max(0, self.settings.memory_analysis_context_snapshots)
