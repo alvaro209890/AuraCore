@@ -465,6 +465,15 @@ class AutomationService:
             finished_at=datetime.now(UTC),
         )
         self.store.save_analysis_job_messages(job_id=job.id, message_ids=outcome.source_message_ids)
+        if outcome.source_message_ids:
+            processed_at = datetime.now(UTC)
+            marked_count = self.store.mark_messages_processed(
+                user_id=self.settings.default_user_id,
+                message_ids=outcome.source_message_ids,
+                processed_at=processed_at,
+            )
+            if marked_count > 0:
+                self.store.delete_messages_by_ids(message_ids=outcome.source_message_ids)
         self.store.create_model_run(
             user_id=self.settings.default_user_id,
             job_id=job.id,

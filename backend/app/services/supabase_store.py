@@ -242,7 +242,14 @@ class SupabaseStore:
             [message.contact_phone for message in filtered_messages if message.contact_phone]
         )
         existing_ids = self._fetch_existing_message_ids([message.message_id for message in filtered_messages])
-        new_message_count = sum(1 for message in filtered_messages if message.message_id not in existing_ids)
+        processed_ids = self._fetch_processed_message_ids([message.message_id for message in filtered_messages])
+        pending_messages = [
+            message for message in filtered_messages
+            if message.message_id not in existing_ids and message.message_id not in processed_ids
+        ]
+        new_message_count = len(pending_messages)
+        if not pending_messages:
+            return 0
 
         records = [
             {
@@ -262,7 +269,7 @@ class SupabaseStore:
                 "embedding": None,
                 "ingested_at": datetime.now(UTC).isoformat(),
             }
-            for message in filtered_messages
+            for message in pending_messages
         ]
 
         try:
@@ -284,7 +291,7 @@ class SupabaseStore:
             self.bump_message_retention_state(
                 user_id=self.default_user_id,
                 ingested_increment=new_message_count,
-                last_message_at=max(message.timestamp for message in filtered_messages),
+                last_message_at=max(message.timestamp for message in pending_messages),
             )
         self.prune_non_direct_messages(self.default_user_id)
         pruned_count = self.prune_old_messages(self.default_user_id)
@@ -294,6 +301,39 @@ class SupabaseStore:
                 pruned_increment=pruned_count,
             )
         return len(records)
+
+    def mark_messages_processed(self, *, user_id: UUID, message_ids: Sequence[str], processed_at: datetime | None = None) -> int:
+        cleaned_ids = [message_id.strip() for message_id in message_ids if message_id and message_id.strip()]
+        if not cleaned_ids:
+            return 0
+        resolved_processed_at = processed_at or datetime.now(UTC)
+        records = [
+            {
+                "message_id": message_id,
+                "user_id": str(user_id),
+                "processed_at": resolved_processed_at.isoformat(),
+            }
+            for message_id in dict.fromkeys(cleaned_ids)
+        ]
+        try:
+            self.client.table("processed_message_ids").upsert(records, on_conflict="message_id").execute()
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "processed_message_ids"):
+                raise
+            return 0
+        return len(records)
+
+    def delete_messages_by_ids(self, *, message_ids: Sequence[str]) -> int:
+        cleaned_ids = [message_id.strip() for message_id in message_ids if message_id and message_id.strip()]
+        if not cleaned_ids:
+            return 0
+        deleted_total = 0
+        chunk_size = 500
+        for start in range(0, len(cleaned_ids), chunk_size):
+            chunk = cleaned_ids[start:start + chunk_size]
+            self.client.table("mensagens").delete().in_("id", chunk).execute()
+            deleted_total += len(chunk)
+        return deleted_total
 
     def list_messages_in_window(
         self,
@@ -2242,6 +2282,29 @@ class SupabaseStore:
                 if isinstance(row, dict) and str(row.get("id") or "").strip()
             )
         return existing
+
+    def _fetch_processed_message_ids(self, message_ids: Sequence[str]) -> set[str]:
+        cleaned_ids = [message_id.strip() for message_id in message_ids if message_id and message_id.strip()]
+        if not cleaned_ids:
+            return set()
+
+        processed: set[str] = set()
+        chunk_size = 500
+        for start in range(0, len(cleaned_ids), chunk_size):
+            chunk = cleaned_ids[start:start + chunk_size]
+            try:
+                response = self.client.table("processed_message_ids").select("message_id").in_("message_id", chunk).execute()
+            except Exception as exc:
+                if not self._is_missing_table_error(exc, "processed_message_ids"):
+                    raise
+                return set()
+            rows = response.data or []
+            processed.update(
+                str(row.get("message_id") or "").strip()
+                for row in rows
+                if isinstance(row, dict) and str(row.get("message_id") or "").strip()
+            )
+        return processed
 
     def _parse_chat_thread(self, value: Any, *, fallback_user_id: UUID) -> ChatThreadRecord | None:
         if not isinstance(value, dict):

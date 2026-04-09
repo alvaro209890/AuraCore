@@ -431,7 +431,7 @@ class MemoryAnalysisService:
             new_message_count=new_message_count,
             replaced_message_count=replaced_message_count,
             retained_message_count=retained_message_count,
-            retention_limit=self.settings.message_retention_max_rows,
+            retention_limit=self.store.message_retention_max_rows,
             current_char_budget=resolved_char_budget,
             selected_transcript_chars=selected_transcript_chars,
             selected_transcript_tokens=selected_transcript_tokens,
