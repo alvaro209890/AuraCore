@@ -1017,6 +1017,82 @@ export function ConnectionDashboard() {
     [agentLogs, persistedActivityLogs],
   );
 
+  async function refreshMemoryArtifactsAfterJob(): Promise<void> {
+    const [memoryResult, projectsResult, memoryStatusResult, snapshotsResult, importantMessagesResult] =
+      await Promise.allSettled([
+        getCurrentMemory(),
+        getMemoryProjects(),
+        getMemoryStatus(),
+        getMemorySnapshots(6),
+        getImportantMessages(80),
+      ]);
+
+    startTransition(() => {
+      if (memoryResult.status === "fulfilled") {
+        setMemory(memoryResult.value);
+      }
+      if (projectsResult.status === "fulfilled") {
+        setProjects(projectsResult.value);
+      }
+      if (memoryStatusResult.status === "fulfilled") {
+        setMemoryStatus(memoryStatusResult.value);
+      }
+      if (snapshotsResult.status === "fulfilled") {
+        setSnapshots(snapshotsResult.value);
+      }
+      if (importantMessagesResult.status === "fulfilled") {
+        setImportantMessages(importantMessagesResult.value);
+      }
+    });
+  }
+
+  function syncQueuedJobFromAutomationSnapshot(snapshot: AutomationStatus): void {
+    const pendingJob = snapshot.jobs.find((job) => job.status === "queued" || job.status === "running");
+
+    if (!queuedJobId) {
+      if (pendingJob) {
+        setQueuedJobId(pendingJob.id);
+        pushAgentLog("info", `Detectada análise em andamento (Fila: ${pendingJob.id.slice(0, 8)}). Sincronizando painel...`);
+      }
+      return;
+    }
+
+    const matchingJob = snapshot.jobs.find((job) => job.id === queuedJobId);
+    if (!matchingJob) {
+      if (!pendingJob) {
+        setQueuedJobId(null);
+      }
+      return;
+    }
+
+    if (matchingJob.status === "queued" || matchingJob.status === "running") {
+      return;
+    }
+
+    setQueuedJobId(null);
+    const resolvedIntent = (agentState.intent ?? matchingJob.intent) as AgentIntent;
+
+    if (matchingJob.status === "succeeded") {
+      void refreshMemoryArtifactsAfterJob();
+      finishAgentRunSuccess(
+        resolvedIntent,
+        resolvedIntent === "first_analysis"
+          ? "Primeira analise concluida. A base inicial do dono foi criada."
+          : resolvedIntent === "refine_saved"
+            ? "Refinamento concluido. A memoria consolidada ficou mais precisa."
+            : "Leitura concluida. As mensagens novas foram cruzadas com a memoria existente e o perfil foi melhorado.",
+      );
+      return;
+    }
+
+    if (matchingJob.status === "failed") {
+      finishAgentRunError(
+        resolvedIntent,
+        matchingJob.error_text || "Ocorreu um erro desconhecido durante a análise.",
+      );
+    }
+  }
+
   function applyObserverStatus(nextStatus: ObserverStatus, announceTransition = true): void {
     const wasConnected = status?.connected ?? false;
     startTransition(() => {
@@ -1134,12 +1210,13 @@ export function ConnectionDashboard() {
     );
     const shouldRefreshSnapshots = activeTab === "overview" || activeTab === "manual" || activeTab === "memory";
     const shouldRefreshImportantMessages = activeTab === "overview" || activeTab === "manual" || activeTab === "important";
-    const shouldRefreshAutomation = (
+    const shouldRefreshAutomation = !isTickingAutomation && (
       activeTab === "overview" ||
       activeTab === "manual" ||
       activeTab === "activity" ||
-      activeTab === "automation"
-    ) && !isTickingAutomation;
+      activeTab === "automation" ||
+      queuedJobId !== null
+    );
 
     dashboardRefreshInFlightRef.current = true;
     try {
@@ -1208,6 +1285,7 @@ export function ConnectionDashboard() {
           setAutomationError(null);
           setAutomationDraft((previous) => previous ?? toAutomationDraft(nextAutomation.settings));
         });
+        syncQueuedJobFromAutomationSnapshot(nextAutomation);
       } else if (automationResult.status === "rejected" && shouldRefreshAutomation) {
         setAutomationError(getErrorMessage(automationResult.reason));
       }
@@ -1423,45 +1501,7 @@ export function ConnectionDashboard() {
       setAutomationStatus(snap);
       setAutomationError(null);
       setAutomationDraft((previous) => previous ?? toAutomationDraft(snap.settings));
-
-      // Sincroniza o estado da fila local com o servidor (útil após refresh)
-      const pendingJob = snap.jobs.find(j => j.status === "queued" || j.status === "running");
-      if (!queuedJobId && pendingJob) {
-        setQueuedJobId(pendingJob.id);
-        pushAgentLog("info", `Detectada análise em andamento (Fila: ${pendingJob.id.slice(0, 8)}). Sincronizando painel...`);
-      }
-
-      // Se temos um job em fila, verifica se ele terminou
-      if (queuedJobId) {
-        const matchingJob = snap.jobs.find(j => j.id === queuedJobId);
-        if (matchingJob) {
-          if (matchingJob.status === "succeeded") {
-            setQueuedJobId(null);
-            const intent = agentState.intent || (matchingJob.intent as AgentIntent) || "first_analysis";
-            
-            // Recarrega os dados agora que o processo terminou
-            getCurrentMemory().then(setMemory);
-            getMemoryProjects().then(setProjects);
-            getMemoryStatus().then(setMemoryStatus);
-            getImportantMessages(80).then(setImportantMessages).catch(() => {});
-            
-            finishAgentRunSuccess(
-              intent,
-              intent === "first_analysis" 
-                ? "Primeira analise concluida. A base inicial do dono foi criada."
-                : intent === "refine_saved"
-                ? "Refinamento concluido. A memoria consolidada ficou mais precisa."
-                : "Leitura concluida. As mensagens novas foram cruzadas com a memoria existente e o perfil foi melhorado."
-            );
-          } else if (matchingJob.status === "failed") {
-            setQueuedJobId(null);
-            finishAgentRunError(agentState.intent || (matchingJob.intent as AgentIntent) || "first_analysis", matchingJob.error_text || "Ocorreu um erro desconhecido durante a análise.");
-          }
-        } else if (!pendingJob) {
-           // Se o job que estávamos rastreando sumiu e não há nenhum outro pendente, resetamos
-           setQueuedJobId(null);
-        }
-      }
+      syncQueuedJobFromAutomationSnapshot(snap);
     } else {
       setAutomationError(getErrorMessage(automationResult.reason));
     }
@@ -1806,9 +1846,14 @@ export function ConnectionDashboard() {
           : await runNextMemoryBatch();
         
         // Response now contains the queued job
-        if (response.job && response.job.status === "queued") {
+        if (response.job && (response.job.status === "queued" || response.job.status === "running")) {
           setQueuedJobId(response.job.id);
-          pushAgentLog("info", "Tarefa registrada na fila do servidor. Iniciando processamento em segundo plano...");
+          pushAgentLog(
+            "info",
+            response.job.status === "running"
+              ? "Tarefa aceita pelo servidor e já entrou em processamento."
+              : "Tarefa registrada na fila do servidor. Iniciando processamento em segundo plano...",
+          );
         } else {
            setMemory(response.current);
            setProjects(response.projects);
@@ -1824,9 +1869,14 @@ export function ConnectionDashboard() {
         }
       } else {
         const response = await refineMemory();
-        if (response.job && response.job.status === "queued") {
+        if (response.job && (response.job.status === "queued" || response.job.status === "running")) {
           setQueuedJobId(response.job.id);
-          pushAgentLog("info", "Tarefa de refinamento registrada na fila. Otimizando a base de dados nos bastidores...");
+          pushAgentLog(
+            "info",
+            response.job.status === "running"
+              ? "Refinamento aceito pelo servidor e já entrou em processamento."
+              : "Tarefa de refinamento registrada na fila. Otimizando a base de dados nos bastidores...",
+          );
         } else {
           setMemory(response.current);
           setProjects(response.projects);

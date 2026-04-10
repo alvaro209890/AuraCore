@@ -720,6 +720,7 @@ Regras:
         parser: Callable[[str], ParsedResultT],
         validator: Callable[[ParsedResultT], None],
     ) -> ParsedResultT:
+        self._ensure_configured()
         last_error: DeepSeekError | None = None
         for _attempt in range(2):
             data = await self._post_completion(payload)
@@ -733,6 +734,7 @@ Regras:
         raise last_error or DeepSeekError("DeepSeek returned an invalid structured response.")
 
     async def _post_completion(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_configured()
         headers = {
             "Authorization": f"Bearer {self.settings.deepseek_api_key}",
             "Content-Type": "application/json",
@@ -749,6 +751,10 @@ Regras:
             raise DeepSeekError(f"DeepSeek request failed ({response.status_code}): {detail}")
 
         return response.json()
+
+    def _ensure_configured(self) -> None:
+        if not self.settings.deepseek_api_key:
+            raise DeepSeekError("DEEPSEEK_API_KEY nao configurada na Render.")
 
     def _validate_analysis_result(self, parsed: DeepSeekMemoryResult) -> None:
         if not parsed.updated_life_summary.strip():

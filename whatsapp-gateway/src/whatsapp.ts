@@ -86,6 +86,13 @@ type BufferedLidMessage = {
   bufferedAt: number;
 };
 
+type PendingBackendBatch = {
+  messages: IngestMessagePayload[];
+  sourceEvent: string;
+  queuedAt: number;
+  attempts: number;
+};
+
 const LID_BUFFER_TTL_MS = 30_000;
 const LID_BUFFER_MAX_PER_JID = 32;
 
@@ -183,6 +190,9 @@ export class WhatsAppGatewayChannel {
   private readonly knownContactNameSources = new Map<string, string>();
   private readonly lidToPhoneJid = new Map<string, string>();
   private readonly pendingLidMessages = new Map<string, BufferedLidMessage[]>();
+  private readonly pendingBackendBatches: PendingBackendBatch[] = [];
+  private backendRetryTimer: NodeJS.Timeout | null = null;
+  private backendDeliveryInFlight = false;
 
   constructor(
     private readonly channelName: "observer" | "agent",
@@ -208,6 +218,7 @@ export class WhatsAppGatewayChannel {
     this.allowReconnect = false;
     this.clearReconnectTimer();
     await this.cleanupSocket(false);
+    this.clearBackendRetryTimer();
   }
 
   getStatus(): GatewayObserverStatus {
@@ -428,6 +439,17 @@ export class WhatsAppGatewayChannel {
       return;
     }
 
+    const delivered = await this.deliverBatch(batch, sourceEvent, 1);
+    if (!delivered) {
+      this.enqueueBackendBatch(batch, sourceEvent, 1);
+    }
+  }
+
+  private async deliverBatch(
+    batch: IngestMessagePayload[],
+    sourceEvent: string,
+    attemptNumber: number,
+  ): Promise<boolean> {
     const ingestPath =
       this.channelName === "observer"
         ? "/api/internal/observer/messages/ingest"
@@ -446,21 +468,109 @@ export class WhatsAppGatewayChannel {
       if (!response.ok) {
         const detail = await response.text();
         logger.error(
-          { channel: this.channelName, sourceEvent, count: batch.length, status: response.status, detail },
+          {
+            channel: this.channelName,
+            sourceEvent,
+            attemptNumber,
+            count: batch.length,
+            status: response.status,
+            detail,
+          },
           "AuraCore backend rejected the message batch.",
         );
-        return;
+        return response.status < 500 ? true : false;
       }
 
       logger.info(
-        { channel: this.channelName, sourceEvent, count: batch.length },
+        { channel: this.channelName, sourceEvent, attemptNumber, count: batch.length },
         "Delivered message batch to AuraCore backend.",
       );
+      return true;
     } catch (error) {
       logger.error(
-        { channel: this.channelName, error, sourceEvent, count: batch.length },
+        {
+          channel: this.channelName,
+          sourceEvent,
+          attemptNumber,
+          count: batch.length,
+          errorMessage: error instanceof Error ? error.message : String(error),
+        },
         "Failed to deliver messages to AuraCore backend.",
       );
+      return false;
+    }
+  }
+
+  private enqueueBackendBatch(
+    batch: IngestMessagePayload[],
+    sourceEvent: string,
+    attempts: number,
+  ): void {
+    const dedupedMessages = Array.from(
+      new Map(batch.map((message) => [message.message_id, message])).values(),
+    );
+
+    this.pendingBackendBatches.push({
+      messages: dedupedMessages,
+      sourceEvent,
+      queuedAt: Date.now(),
+      attempts,
+    });
+
+    logger.warn(
+      {
+        channel: this.channelName,
+        sourceEvent,
+        count: dedupedMessages.length,
+        queuedBatches: this.pendingBackendBatches.length,
+      },
+      "Queued message batch for backend retry.",
+    );
+    this.scheduleBackendRetry();
+  }
+
+  private scheduleBackendRetry(): void {
+    if (this.backendRetryTimer || !this.running) {
+      return;
+    }
+
+    this.backendRetryTimer = setTimeout(() => {
+      this.backendRetryTimer = null;
+      void this.flushPendingBackendBatches();
+    }, config.reconnectDelayMs);
+  }
+
+  private clearBackendRetryTimer(): void {
+    if (!this.backendRetryTimer) {
+      return;
+    }
+    clearTimeout(this.backendRetryTimer);
+    this.backendRetryTimer = null;
+  }
+
+  private async flushPendingBackendBatches(): Promise<void> {
+    if (this.backendDeliveryInFlight || this.pendingBackendBatches.length === 0) {
+      return;
+    }
+
+    this.backendDeliveryInFlight = true;
+    try {
+      while (this.pendingBackendBatches.length > 0) {
+        const current = this.pendingBackendBatches[0];
+        const delivered = await this.deliverBatch(
+          current.messages,
+          current.sourceEvent,
+          current.attempts + 1,
+        );
+        if (!delivered) {
+          current.attempts += 1;
+          this.scheduleBackendRetry();
+          return;
+        }
+        this.pendingBackendBatches.shift();
+      }
+    } finally {
+      this.backendDeliveryInFlight = false;
     }
   }
 
@@ -590,7 +700,7 @@ export class WhatsAppGatewayChannel {
     const enrichedKey = key as MessageKeyWithLid;
     const remoteJid = String(key.remoteJid ?? "");
     if (!remoteJid.endsWith("@lid")) {
-      return remoteJid;
+      return this.normalizePhoneJidCandidate(remoteJid) ?? remoteJid;
     }
 
     const candidates = [enrichedKey.remoteJidAlt, enrichedKey.participantPn, key.participant];
@@ -630,10 +740,6 @@ export class WhatsAppGatewayChannel {
     const trimmed = value.trim();
     if (!trimmed || isStatusJid(trimmed) || isGroupJid(trimmed) || trimmed.endsWith("@lid")) {
       return null;
-    }
-
-    if (trimmed.endsWith("@s.whatsapp.net")) {
-      return trimmed;
     }
 
     const phone = jidToPhone(trimmed);
@@ -803,7 +909,12 @@ export class WhatsAppGatewayChannel {
       return exact || base || trimmed;
     }
 
-    if (trimmed.includes("@")) {
+    if (
+      isGroupJid(trimmed) ||
+      isStatusJid(trimmed) ||
+      isBroadcastJid(trimmed) ||
+      isNewsletterJid(trimmed)
+    ) {
       return trimmed;
     }
 

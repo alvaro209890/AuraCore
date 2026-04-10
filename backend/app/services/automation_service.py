@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import logging
@@ -72,6 +73,8 @@ class AutomationService:
         self.store = store
         self.memory_service = memory_service
         self._important_messages_timezone = ZoneInfo("America/Sao_Paulo")
+        self._tick_lock = asyncio.Lock()
+        self._scheduled_tick_task: asyncio.Task[AnalysisJobRecord | None] | None = None
 
     async def start_manual_sync(self, *, trigger: str = "manual") -> WhatsAppSyncRunRecord:
         started_at = datetime.now(UTC)
@@ -255,6 +258,7 @@ class AutomationService:
             estimated_cost_ceiling_usd=job_plan.estimated_cost_ceiling_usd,
             created_at=datetime.now(UTC),
         )
+        self._schedule_tick()
         return decision, job
 
     async def enqueue_manual_analysis(
@@ -265,6 +269,38 @@ class AutomationService:
         max_lookback_hours: int,
         detail_mode: str,
     ) -> AnalysisJobRecord:
+        if max_lookback_hours == 0 and intent in {"first_analysis", "improve_memory"}:
+            plan = (
+                self.memory_service.plan_first_analysis()
+                if intent == "first_analysis"
+                else self.memory_service.plan_next_batch()
+            )
+            resolved_detail_mode = "deep" if plan.intent == "first_analysis" else "balanced"
+            created_at = datetime.now(UTC)
+            job = self.store.create_analysis_job(
+                user_id=self.settings.default_user_id,
+                intent=intent,
+                status="queued",
+                trigger_source="manual",
+                decision_id=None,
+                sync_run_id=None,
+                target_message_count=len(plan.source_messages),
+                max_lookback_hours=0,
+                detail_mode=resolved_detail_mode,
+                selected_message_count=len(plan.source_messages),
+                selected_transcript_chars=plan.selected_transcript_chars,
+                estimated_input_tokens=plan.estimated_input_tokens,
+                estimated_output_tokens=plan.estimated_output_tokens,
+                estimated_cost_floor_usd=plan.estimated_cost_floor_usd,
+                estimated_cost_ceiling_usd=plan.estimated_cost_ceiling_usd,
+                created_at=created_at,
+            )
+            self._schedule_tick()
+            updated_job = self.store.get_analysis_job(job.id)
+            if updated_job is None:
+                raise RuntimeError("Manual fixed-plan job disappeared.")
+            return updated_job
+
         preview = await self.memory_service.get_analysis_preview(
             target_message_count=target_message_count,
             max_lookback_hours=max_lookback_hours,
@@ -289,8 +325,7 @@ class AutomationService:
             estimated_cost_ceiling_usd=preview.estimated_cost_total_ceiling_usd,
             created_at=created_at,
         )
-        import asyncio
-        asyncio.create_task(self.tick())
+        self._schedule_tick()
         updated_job = self.store.get_analysis_job(job.id)
         if updated_job is None:
             raise RuntimeError("Manual analysis job disappeared.")
@@ -328,8 +363,7 @@ class AutomationService:
             estimated_cost_ceiling_usd=plan.estimated_cost_ceiling_usd,
             created_at=created_at,
         )
-        import asyncio
-        asyncio.create_task(self.tick())
+        self._schedule_tick()
         updated_job = self.store.get_analysis_job(job.id)
         if updated_job is None:
             raise RuntimeError("Manual next batch job disappeared.")
@@ -349,8 +383,7 @@ class AutomationService:
             detail_mode="balanced",
             created_at=created_at,
         )
-        import asyncio
-        asyncio.create_task(self.tick())
+        self._schedule_tick()
         updated_job = self.store.get_analysis_job(job.id)
         if updated_job is None:
             raise RuntimeError("Manual refinement job disappeared.")
@@ -417,26 +450,68 @@ class AutomationService:
             return self.store.get_analysis_job(job.id)
 
         if job.max_lookback_hours == 0 and job.intent in {"first_analysis", "improve_memory"}:
-            plan = (
-                self.memory_service.plan_first_analysis()
-                if job.intent == "first_analysis"
-                else self.memory_service.plan_next_batch()
-            )
+            try:
+                plan = (
+                    self.memory_service.plan_first_analysis()
+                    if job.intent == "first_analysis"
+                    else self.memory_service.plan_next_batch()
+                )
+            except Exception as error:
+                self.store.update_analysis_job(
+                    job_id=job.id,
+                    status="failed",
+                    error_text=str(error),
+                    finished_at=datetime.now(UTC),
+                )
+                raise
             await self._execute_fixed_analysis_job(job=job, plan=plan)
             return self.store.get_analysis_job(job.id)
 
-        preview = await self.memory_service.get_analysis_preview(
-            target_message_count=job.target_message_count,
-            max_lookback_hours=job.max_lookback_hours,
-            detail_mode=job.detail_mode,  # type: ignore[arg-type]
-        )
+        try:
+            preview = await self.memory_service.get_analysis_preview(
+                target_message_count=job.target_message_count,
+                max_lookback_hours=job.max_lookback_hours,
+                detail_mode=job.detail_mode,  # type: ignore[arg-type]
+            )
+        except Exception as error:
+            self.store.update_analysis_job(
+                job_id=job.id,
+                status="failed",
+                error_text=str(error),
+                finished_at=datetime.now(UTC),
+            )
+            raise
         await self._execute_analysis_job(job=job, preview=preview)
         return self.store.get_analysis_job(job.id)
 
     async def tick(self) -> AnalysisJobRecord | None:
-        await self._maybe_review_important_messages()
-        await self.settle_sync_runs()
-        return await self.execute_next_job()
+        async with self._tick_lock:
+            self._recover_stale_running_jobs()
+            await self._maybe_review_important_messages()
+            await self.settle_sync_runs()
+            return await self.execute_next_job()
+
+    def _schedule_tick(self) -> None:
+        if self._scheduled_tick_task is not None and not self._scheduled_tick_task.done():
+            return
+        self._scheduled_tick_task = asyncio.create_task(self.tick())
+
+    def _recover_stale_running_jobs(self) -> None:
+        now = datetime.now(UTC)
+        stale_after = timedelta(minutes=15)
+        for job in self.store.list_analysis_jobs(user_id=self.settings.default_user_id, limit=20):
+            if job.status != "running":
+                continue
+            reference_time = job.started_at or job.created_at
+            if now - reference_time < stale_after:
+                continue
+            self.store.update_analysis_job(
+                job_id=job.id,
+                status="failed",
+                error_text="Job recuperado automaticamente apos ficar travado em running por mais de 15 minutos.",
+                finished_at=now,
+            )
+            logger.warning("stale_analysis_job_recovered job_id=%s intent=%s", job.id, job.intent)
 
     async def get_status_snapshot(self) -> AutomationStatusSnapshot:
         await self.settle_sync_runs()
