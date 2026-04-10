@@ -13,6 +13,8 @@ _UNSET = object()
 observer_ingest_logger = logging.getLogger("auracore.observer_ingest")
 contact_resolution_logger = logging.getLogger("auracore.contact_resolution")
 
+OPERATIVE_MESSAGE_LIMIT = 150
+
 
 @dataclass(slots=True)
 class IngestedMessageRecord:
@@ -452,9 +454,16 @@ class SupabaseStore:
             if first_analysis_queue_limit is not None
             else self.message_retention_max_rows
         )
-        self.first_analysis_queue_limit = max(
+        requested_first_analysis_limit = max(
             20,
             min(resolved_first_analysis_limit, self.message_retention_max_rows),
+        )
+        self.first_analysis_queue_limit = max(
+            20,
+            min(
+                self.message_retention_max_rows,
+                max(requested_first_analysis_limit, min(self.message_retention_max_rows, OPERATIVE_MESSAGE_LIMIT)),
+            ),
         )
         self._compat_sync_runs: dict[str, WhatsAppSyncRunRecord] = {}
         self._compat_decisions: dict[str, AutomationDecisionRecord] = {}
@@ -500,16 +509,17 @@ class SupabaseStore:
 
         (
             pending_messages,
-            _overflow_message_ids,
-            _trimmed_existing_ids,
+            overflow_message_ids,
+            trimmed_existing_ids,
         ) = self._prepare_ingest_batch(pending_messages)
 
+        if trimmed_existing_ids:
+            self.delete_messages_by_ids(message_ids=trimmed_existing_ids)
+
+        ignored_total = deduped_ignored_count + len(stale_history_messages) + len(overflow_message_ids)
         resolved_now = datetime.now(UTC)
         records: list[dict[str, Any]] = []
-        for message, analysis_status in (
-            [(message, "pending") for message in pending_messages]
-            + [(message, "baseline_skipped") for message in stale_history_messages]
-        ):
+        for message in pending_messages:
             records.append(
                 {
                     "id": message.message_id,
@@ -527,16 +537,20 @@ class SupabaseStore:
                     "source": message.source,
                     "embedding": None,
                     "ingested_at": resolved_now.isoformat(),
-                    "analysis_status": analysis_status,
+                    "analysis_status": "pending",
                     "analysis_job_id": None,
                     "analysis_started_at": None,
-                    "analyzed_at": cutoff_at.isoformat() if analysis_status == "baseline_skipped" and cutoff_at else None,
+                    "analyzed_at": None,
                 }
             )
 
         new_message_count = len(records)
         if not records:
-            return IngestSaveResult(saved_count=0, ignored_count=deduped_ignored_count)
+            return IngestSaveResult(
+                saved_count=0,
+                ignored_count=ignored_total,
+                trimmed_existing_count=len(trimmed_existing_ids),
+            )
 
         try:
             self.client.table("mensagens").upsert(records, on_conflict="id").execute()
@@ -563,7 +577,7 @@ class SupabaseStore:
             self.client.table("mensagens").upsert(legacy_records, on_conflict="id").execute()
         if new_message_count > 0:
             latest_ingested_at = max(
-                (message.timestamp for message in new_messages),
+                (message.timestamp for message in pending_messages),
                 default=None,
             )
             self.bump_message_retention_state(
@@ -572,23 +586,72 @@ class SupabaseStore:
                 last_message_at=latest_ingested_at,
             )
         self.prune_non_direct_messages(self.default_user_id)
+        trimmed_existing_count = self.prune_old_messages(self.default_user_id)
         observer_ingest_logger.info(
-            "observer_ingest_saved saved=%s ignored=%s pending=%s baseline_skipped=%s",
+            "observer_ingest_saved saved=%s ignored=%s pending=%s stale_skipped=%s overflow_dropped=%s trimmed_existing=%s",
             len(records),
-            deduped_ignored_count,
+            ignored_total,
             len(pending_messages),
             len(stale_history_messages),
+            len(overflow_message_ids),
+            trimmed_existing_count + len(trimmed_existing_ids),
         )
         return IngestSaveResult(
             saved_count=len(records),
-            ignored_count=deduped_ignored_count,
+            ignored_count=ignored_total,
+            trimmed_existing_count=trimmed_existing_count + len(trimmed_existing_ids),
         )
 
     def _prepare_ingest_batch(
         self,
         pending_messages: Sequence[IngestedMessageRecord],
     ) -> tuple[list[IngestedMessageRecord], list[str], list[str]]:
-        return list(pending_messages), [], []
+        cleaned_messages = [message for message in pending_messages if message.message_id.strip()]
+        if not cleaned_messages:
+            return [], [], []
+
+        if self._has_initial_memory_analysis():
+            return cleaned_messages, [], []
+
+        limit = self.first_analysis_queue_limit
+        existing_pending = self._list_pending_message_refs(user_id=self.default_user_id)
+        combined: list[tuple[datetime, str, str | None, IngestedMessageRecord | None]] = [
+            (message.timestamp, message.message_id, "incoming", message)
+            for message in cleaned_messages
+        ]
+        combined.extend(
+            (timestamp, message_id, "existing", None)
+            for message_id, timestamp in existing_pending
+        )
+        combined.sort(key=lambda item: (item[0], item[1]), reverse=True)
+
+        kept_entries = combined[:limit]
+        kept_new_ids = {
+            message_id
+            for _timestamp, message_id, source, _message in kept_entries
+            if source == "incoming"
+        }
+        kept_existing_ids = {
+            message_id
+            for _timestamp, message_id, source, _message in kept_entries
+            if source == "existing"
+        }
+        accepted_messages = [
+            message
+            for message in cleaned_messages
+            if message.message_id in kept_new_ids
+        ]
+        overflow_message_ids = [
+            message.message_id
+            for message in cleaned_messages
+            if message.message_id not in kept_new_ids
+        ]
+        trimmed_existing_ids = [
+            message_id
+            for message_id, _timestamp in existing_pending
+            if message_id not in kept_existing_ids
+        ]
+        return accepted_messages, overflow_message_ids, trimmed_existing_ids
 
     def _has_initial_memory_analysis(self) -> bool:
         persona = self.get_persona(self.default_user_id)
@@ -703,14 +766,14 @@ class SupabaseStore:
         newest_first: bool = False,
     ) -> list[StoredMessageRecord]:
         self.reconcile_observer_backlog(user_id=user_id)
-        resolved_limit = max(1, min(limit, self.message_retention_max_rows))
+        resolved_limit = max(1, min(limit, self.first_analysis_queue_limit))
         messages: list[StoredMessageRecord] = []
         seen_ids: set[str] = set()
-        chunk_size = min(500, self.message_retention_max_rows)
+        chunk_size = min(500, self.first_analysis_queue_limit)
         offset = 0
 
-        while len(messages) < resolved_limit and offset < self.message_retention_max_rows:
-            range_end = min(offset + chunk_size - 1, self.message_retention_max_rows - 1)
+        while len(messages) < resolved_limit and offset < self.first_analysis_queue_limit:
+            range_end = min(offset + chunk_size - 1, self.first_analysis_queue_limit - 1)
             try:
                 response = (
                     self.client.table("mensagens")
@@ -800,14 +863,14 @@ class SupabaseStore:
         newest_first: bool = False,
     ) -> list[StoredMessageRecord]:
         cutoff_at = self.get_observer_history_cutoff(user_id=user_id)
-        resolved_limit = max(1, min(limit, self.message_retention_max_rows))
+        resolved_limit = max(1, min(limit, self.first_analysis_queue_limit))
         messages: list[StoredMessageRecord] = []
         seen_ids: set[str] = set()
-        chunk_size = min(200, self.message_retention_max_rows)
+        chunk_size = min(200, self.first_analysis_queue_limit)
         offset = 0
 
-        while len(messages) < resolved_limit and offset < self.message_retention_max_rows:
-            range_end = min(offset + chunk_size - 1, self.message_retention_max_rows - 1)
+        while len(messages) < resolved_limit and offset < self.first_analysis_queue_limit:
+            range_end = min(offset + chunk_size - 1, self.first_analysis_queue_limit - 1)
             try:
                 response = (
                     self.client.table("mensagens")
@@ -1068,7 +1131,7 @@ class SupabaseStore:
         return deleted_total
 
     def prune_old_messages(self, user_id: UUID) -> int:
-        offset = self.message_retention_max_rows
+        offset = self.first_analysis_queue_limit
         deleted_total = 0
         while True:
             response = (
@@ -2931,7 +2994,7 @@ class SupabaseStore:
             self.client.table("mensagens")
             .select("id")
             .eq("user_id", str(user_id))
-            .limit(self.message_retention_max_rows)
+            .limit(self.first_analysis_queue_limit)
             .execute()
         )
         rows = response.data or []
@@ -2971,7 +3034,7 @@ class SupabaseStore:
             if row_count < chunk_size:
                 break
             offset += chunk_size
-        return count
+        return min(count, self.first_analysis_queue_limit)
 
     def count_messages_in_window(self, *, user_id: UUID, window_start: datetime, window_end: datetime) -> int:
         response = (
@@ -3144,7 +3207,7 @@ class SupabaseStore:
     def reconcile_observer_backlog(self, *, user_id: UUID) -> int:
         cutoff_at = self.get_observer_history_cutoff(user_id=user_id)
         if cutoff_at is None:
-            return 0
+            return self._trim_pending_queue_to_limit(user_id=user_id)
 
         try:
             skipped_total = self.mark_messages_baseline_skipped_before_timestamp(
@@ -3203,7 +3266,54 @@ class SupabaseStore:
                 skipped_total,
                 cutoff_at.isoformat(),
             )
-        return skipped_total
+        trimmed_total = self._trim_pending_queue_to_limit(user_id=user_id)
+        return skipped_total + trimmed_total
+
+    def _list_pending_message_refs(self, *, user_id: UUID) -> list[tuple[str, datetime]]:
+        refs: list[tuple[str, datetime]] = []
+        chunk_size = 500
+        offset = 0
+        while True:
+            range_end = offset + chunk_size - 1
+            try:
+                response = (
+                    self.client.table("mensagens")
+                    .select("id,timestamp")
+                    .eq("user_id", str(user_id))
+                    .eq("analysis_status", "pending")
+                    .order("timestamp", desc=True)
+                    .range(offset, range_end)
+                    .execute()
+                )
+            except Exception as exc:
+                if self._is_missing_column_error(exc, column_name="analysis_status", table_name="mensagens"):
+                    return []
+                if not self._is_missing_table_error(exc, "mensagens"):
+                    raise
+                return []
+
+            rows = response.data or []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                message_id = str(row.get("id") or "").strip()
+                timestamp = self._parse_datetime(row.get("timestamp"))
+                if message_id and timestamp is not None:
+                    refs.append((message_id, timestamp))
+            if len(rows) < chunk_size:
+                break
+            offset += chunk_size
+        return refs
+
+    def _trim_pending_queue_to_limit(self, *, user_id: UUID) -> int:
+        pending_refs = self._list_pending_message_refs(user_id=user_id)
+        if len(pending_refs) <= self.first_analysis_queue_limit:
+            return 0
+        trimmed_ids = [
+            message_id
+            for message_id, _timestamp in pending_refs[self.first_analysis_queue_limit:]
+        ]
+        return self.delete_messages_by_ids(message_ids=trimmed_ids)
 
     def get_known_contact_by_phone(
         self,

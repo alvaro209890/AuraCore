@@ -561,7 +561,7 @@ class MemoryAnalysisService:
             new_message_count=new_message_count,
             replaced_message_count=replaced_message_count,
             retained_message_count=retained_message_count,
-            retention_limit=self.store.message_retention_max_rows,
+            retention_limit=self.store.first_analysis_queue_limit,
             current_char_budget=resolved_char_budget,
             selected_transcript_chars=selected_transcript_chars,
             selected_transcript_tokens=selected_transcript_tokens,
@@ -683,9 +683,8 @@ class MemoryAnalysisService:
         return max(
             40,
             min(
-                self.settings.memory_first_analysis_max_messages,
+                self.store.first_analysis_queue_limit,
                 self.settings.memory_analysis_max_messages,
-                self.settings.message_retention_max_rows,
             ),
         )
 
