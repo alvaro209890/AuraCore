@@ -3084,6 +3084,43 @@ class SupabaseStore:
                 messages.append(parsed)
         return messages
 
+    def list_whatsapp_agent_messages_for_contact(
+        self,
+        *,
+        user_id: UUID,
+        contact_phone: str,
+        limit: int = 40,
+    ) -> list[WhatsAppAgentMessageRecord]:
+        normalized_phone = self.normalize_contact_phone(contact_phone)
+        if not normalized_phone:
+            return []
+        try:
+            response = (
+                self.client.table("whatsapp_agent_messages")
+                .select(
+                    "id,user_id,thread_id,direction,role,session_id,whatsapp_message_id,source_inbound_message_id,"
+                    "contact_phone,chat_jid,content,message_timestamp,processing_status,learning_status,send_status,"
+                    "error_text,response_latency_ms,model_run_id,learned_at,metadata,created_at"
+                )
+                .eq("user_id", str(user_id))
+                .eq("contact_phone", normalized_phone)
+                .order("message_timestamp", desc=True)
+                .limit(limit)
+                .execute()
+            )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "whatsapp_agent_messages"):
+                raise
+            return []
+
+        rows = response.data or []
+        messages: list[WhatsAppAgentMessageRecord] = []
+        for row in reversed(rows):
+            parsed = self._parse_whatsapp_agent_message(row, fallback_user_id=user_id)
+            if parsed is not None and parsed.content.strip():
+                messages.append(parsed)
+        return messages
+
     def list_whatsapp_agent_session_messages(self, *, session_id: str, limit: int = 40) -> list[WhatsAppAgentMessageRecord]:
         try:
             response = (
@@ -4612,6 +4649,29 @@ class SupabaseStore:
         if not rows or not isinstance(rows[0], dict):
             return None
         return rows[0].get("creds")
+
+    def get_whatsapp_session_owner_phone(self, *, session_id: str) -> str | None:
+        creds = self.load_whatsapp_session_creds(session_id=session_id)
+        payload: dict[str, Any] | None = None
+        if isinstance(creds, dict):
+            payload = creds
+        elif isinstance(creds, str):
+            try:
+                decoded = json.loads(creds)
+            except json.JSONDecodeError:
+                decoded = None
+            if isinstance(decoded, dict):
+                payload = decoded
+        if not payload:
+            return None
+        me = payload.get("me")
+        if not isinstance(me, dict):
+            return None
+        raw_id = str(me.get("id") or "").strip()
+        if not raw_id:
+            return None
+        owner_id = raw_id.split("@", 1)[0].split(":", 1)[0].strip()
+        return self.normalize_contact_phone(owner_id)
 
     def save_whatsapp_session_creds(
         self,

@@ -95,6 +95,7 @@ type PendingBackendBatch = {
 
 const LID_BUFFER_TTL_MS = 30_000;
 const LID_BUFFER_MAX_PER_JID = 32;
+const SENT_MESSAGE_CACHE_MAX = 100;
 
 function isGroupJid(jid: string | null | undefined): boolean {
   return Boolean(jid && jid.endsWith("@g.us"));
@@ -190,6 +191,7 @@ export class WhatsAppGatewayChannel {
   private readonly knownContactNameSources = new Map<string, string>();
   private readonly lidToPhoneJid = new Map<string, string>();
   private readonly pendingLidMessages = new Map<string, BufferedLidMessage[]>();
+  private readonly sentMessagesCache = new Map<string, BaileysProto.IMessage>();
   private readonly pendingBackendBatches: PendingBackendBatch[] = [];
   private backendRetryTimer: NodeJS.Timeout | null = null;
   private backendDeliveryInFlight = false;
@@ -303,6 +305,14 @@ export class WhatsAppGatewayChannel {
       syncFullHistory: this.channelName === "observer",
       shouldIgnoreJid: (jid) => !isDirectUserJid(jid),
       browser: Browsers.macOS(`AuraCore-${this.instanceName}`),
+      // Let Baileys recover linked-device decrypt retries that show up as
+      // "Aguardando mensagem" by looking up the original outgoing payload.
+      getMessage: async (key) => {
+        if (key.id && this.sentMessagesCache.has(key.id)) {
+          return this.sentMessagesCache.get(key.id);
+        }
+        return undefined;
+      },
     });
 
     this.socket = socket;
@@ -1001,6 +1011,15 @@ export class WhatsAppGatewayChannel {
     }
     const deliveryJid = this.resolveDeliveryJid(chatJid);
     const result = await socket.sendMessage(deliveryJid, { text: trimmed });
+    if (result?.key?.id && result.message) {
+      this.sentMessagesCache.set(result.key.id, result.message);
+      if (this.sentMessagesCache.size > SENT_MESSAGE_CACHE_MAX) {
+        const oldest = this.sentMessagesCache.keys().next().value;
+        if (oldest) {
+          this.sentMessagesCache.delete(oldest);
+        }
+      }
+    }
     const messageId = result?.key?.id ?? null;
     const timestamp = result?.messageTimestamp ? toIsoTimestamp(result.messageTimestamp) : new Date().toISOString();
     return {

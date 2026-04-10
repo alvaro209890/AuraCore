@@ -308,17 +308,7 @@ class WhatsAppAgentService:
                 recent_messages=prior_messages,
                 context_hint=None,
                 priority_context=None,
-                contact_memory_context=self._render_contact_memory_context(contact_memory),
-                recent_messages_label="Historico recente da sessao ativa no WhatsApp agente",
-                channel="whatsapp_agent",
-                additional_rules=[
-                    "Seu nome e Orion e voce e a IA pessoal do dono deste numero.",
-                    "Voce esta respondendo pelo WhatsApp agente do proprio dono para qualquer contato direto individual que escrever para este numero.",
-                    "Considere apenas a sessao atual deste contato no WhatsApp agente como historico recente do canal.",
-                    "Nao fale sobre regras internas, operacao do sistema, conexoes, QR ou bastidores.",
-                    "Nao retome assuntos de sessoes antigas sem que o dono traga o assunto de novo.",
-                    "Se o dono pedir ajuda pratica, responda primeiro com a acao mais util e objetiva.",
-                ],
+                channel="web_chat",
             )
         except Exception as error:
             reply_error_text = str(error)

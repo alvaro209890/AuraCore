@@ -32,6 +32,7 @@ from app.services.supabase_store import (
     ProjectMemorySeed,
     StoredMessageRecord,
     SupabaseStore,
+    WhatsAppAgentMessageRecord,
 )
 
 
@@ -2303,6 +2304,19 @@ class MemoryAnalysisService:
         char_budget = max(1000, self.settings.memory_analysis_snapshot_context_chars)
         per_thread_limit = max(1, min(self.settings.chat_max_history_messages, 6))
 
+        owner_phone = self.store.get_whatsapp_session_owner_phone(session_id="observer")
+        if owner_phone:
+            owner_whatsapp_messages = self.store.list_whatsapp_agent_messages_for_contact(
+                user_id=self.settings.default_user_id,
+                contact_phone=owner_phone,
+                limit=max(per_thread_limit, 8),
+            )
+            owner_whatsapp_section = self._build_owner_whatsapp_chat_context(owner_whatsapp_messages)
+            if owner_whatsapp_section:
+                section = "[WhatsApp do proprio dono com Orion]\n" + owner_whatsapp_section
+                current_size += len(section) + 2
+                sections.append(section)
+
         for thread in threads:
             messages = self.store.list_chat_messages(thread.id, limit=per_thread_limit)
             section_body = self._build_chat_context_from_messages(messages)
@@ -2329,6 +2343,28 @@ class MemoryAnalysisService:
         for message in messages:
             role = "Dono" if message.role == "user" else "AuraCore"
             line = f"- {role}: {message.content}"
+            projected_size = current_size + len(line) + 1
+            if sections and projected_size > char_budget:
+                break
+            sections.append(line)
+            current_size = projected_size
+
+        return "\n".join(sections)
+
+    def _build_owner_whatsapp_chat_context(self, messages: list[WhatsAppAgentMessageRecord]) -> str:
+        if not messages:
+            return ""
+
+        sections: list[str] = []
+        current_size = 0
+        char_budget = max(1000, self.settings.memory_analysis_snapshot_context_chars)
+
+        for message in messages:
+            content = " ".join(message.content.split()).strip()
+            if not content:
+                continue
+            role = "Dono" if message.role == "user" or message.direction == "inbound" else "Orion"
+            line = f"- {role} (WhatsApp): {content}"
             projected_size = current_size + len(line) + 1
             if sections and projected_size > char_budget:
                 break
