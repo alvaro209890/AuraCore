@@ -204,6 +204,37 @@ class WhatsAppAgentInboundMessagesResponse(BaseModel):
     ignored_count: int = Field(default=0, ge=0)
 
 
+class WhatsAppSessionCredsResponse(BaseModel):
+    creds: Any | None = None
+
+
+class WhatsAppSessionCredsUpsertRequest(BaseModel):
+    creds: Any
+
+
+class WhatsAppSessionKeysLoadRequest(BaseModel):
+    category: str = Field(min_length=1)
+    ids: list[str] = Field(default_factory=list)
+
+
+class WhatsAppSessionKeysLoadResponse(BaseModel):
+    values: dict[str, Any] = Field(default_factory=dict)
+
+
+class WhatsAppSessionKeysUpsertRequest(BaseModel):
+    category: str = Field(min_length=1)
+    values: dict[str, Any] = Field(default_factory=dict)
+
+
+class WhatsAppSessionKeysDeleteRequest(BaseModel):
+    category: str = Field(min_length=1)
+    ids: list[str] = Field(default_factory=list)
+
+
+class SimpleOkResponse(BaseModel):
+    ok: bool = True
+
+
 class AnalyzeMemoryRequest(BaseModel):
     intent: Literal["first_analysis", "improve_memory"] | None = None
     window_hours: int | None = Field(default=None, ge=1)

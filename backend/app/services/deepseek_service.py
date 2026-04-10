@@ -520,7 +520,7 @@ Regras:
         chat_context: str,
     ) -> str:
         return f"""
-Refine a memoria consolidada abaixo usando apenas o que ja foi salvo no Supabase.
+Refine a memoria consolidada abaixo usando apenas o que ja foi salvo no banco local do AuraCore.
 
 Resumo consolidado atual:
 {current_life_summary.strip() or "(memoria consolidada vazia)"}
@@ -841,7 +841,7 @@ Regras:
 
     def _ensure_configured(self) -> None:
         if not self.settings.deepseek_api_key:
-            raise DeepSeekError("DEEPSEEK_API_KEY nao configurada na Render.")
+            raise DeepSeekError("DEEPSEEK_API_KEY nao configurada no backend local.")
 
     def _validate_analysis_result(self, parsed: DeepSeekMemoryResult) -> None:
         if not parsed.updated_life_summary.strip():

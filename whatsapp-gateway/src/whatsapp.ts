@@ -3,16 +3,16 @@ import makeWASocket, {
   DisconnectReason,
   fetchLatestBaileysVersion,
   extractMessageContent,
-  type proto,
   type WASocket,
-} from "@whiskeysockets/baileys";
+  type BaileysProto,
+} from "./baileys-runtime";
 import { randomUUID } from "node:crypto";
 
 import Pino from "pino";
 import QRCode from "qrcode";
 
+import { AuraCoreAuthStateStore } from "./auracore-auth-state";
 import { config } from "./config";
-import { SupabaseAuthStateStore } from "./supabase-auth-state";
 
 const logger = Pino({ level: config.nodeEnv === "development" ? "debug" : "info" });
 const baileysLogger = Pino({ level: "silent" });
@@ -70,18 +70,18 @@ type GatewayContactLike = ContactProfile & {
 };
 
 type GatewayHistorySync = {
-  messages: proto.IWebMessageInfo[];
+  messages: BaileysProto.IWebMessageInfo[];
   isLatest?: boolean;
   contacts?: GatewayContactLike[];
 };
 
-type MessageKeyWithLid = proto.IMessageKey & {
+type MessageKeyWithLid = BaileysProto.IMessageKey & {
   participantPn?: string | null;
   remoteJidAlt?: string | null;
 };
 
 type BufferedLidMessage = {
-  message: proto.IWebMessageInfo;
+  message: BaileysProto.IWebMessageInfo;
   sourceEvent: string;
   bufferedAt: number;
 };
@@ -129,7 +129,7 @@ function isDirectUserJid(jid: string | null | undefined): boolean {
   );
 }
 
-function extractMessageText(message: proto.IWebMessageInfo): string {
+function extractMessageText(message: BaileysProto.IWebMessageInfo): string {
   const payload = extractMessageContent(message.message);
   if (!payload) return "";
 
@@ -171,7 +171,7 @@ function asDisconnectCode(error: unknown): number | null {
 }
 
 export class WhatsAppGatewayChannel {
-  private readonly authStore: SupabaseAuthStateStore;
+  private readonly authStore: AuraCoreAuthStateStore;
   private socket: WASocket | null = null;
   private state: ObserverState = "connecting";
   private connected = false;
@@ -199,10 +199,10 @@ export class WhatsAppGatewayChannel {
     private readonly sessionId: string,
     private readonly instanceName: string,
   ) {
-    this.authStore = new SupabaseAuthStateStore(
+    this.authStore = new AuraCoreAuthStateStore(
       sessionId,
-      config.supabaseUrl,
-      config.supabaseServiceRoleKey,
+      config.auracoreApiBaseUrl,
+      config.internalApiToken,
       logger,
     );
   }
@@ -319,7 +319,7 @@ export class WhatsAppGatewayChannel {
 
     socket.ev.on("messages.upsert", (upsert) => {
       if (this.connectionEpoch !== epoch) return;
-      void this.handleMessagesUpsert(upsert as { messages: proto.IWebMessageInfo[]; type: string });
+      void this.handleMessagesUpsert(upsert as { messages: BaileysProto.IWebMessageInfo[]; type: string });
     });
 
     socket.ev.on("contacts.upsert", (contacts) => {
@@ -405,7 +405,7 @@ export class WhatsAppGatewayChannel {
   }
 
   private async handleMessagesUpsert(upsert: {
-    messages: proto.IWebMessageInfo[];
+    messages: BaileysProto.IWebMessageInfo[];
     type: string;
   }): Promise<void> {
     await this.ingestMessages(upsert.messages, "live_upsert");
@@ -419,7 +419,7 @@ export class WhatsAppGatewayChannel {
   }
 
   private async ingestMessages(
-    messages: proto.IWebMessageInfo[] | undefined,
+    messages: BaileysProto.IWebMessageInfo[] | undefined,
     sourceEvent: string,
   ): Promise<void> {
     if (!messages || messages.length === 0) {
@@ -574,7 +574,7 @@ export class WhatsAppGatewayChannel {
     }
   }
 
-  private normalizeMessage(message: proto.IWebMessageInfo, sourceEvent: string): IngestMessagePayload | null {
+  private normalizeMessage(message: BaileysProto.IWebMessageInfo, sourceEvent: string): IngestMessagePayload | null {
     const key = message.key;
     if (!key || !key.id || !key.remoteJid) {
       return null;
@@ -632,7 +632,7 @@ export class WhatsAppGatewayChannel {
   }
 
   private resolveContactName(
-    message: proto.IWebMessageInfo,
+    message: BaileysProto.IWebMessageInfo,
     rawRemoteJid: string,
     resolvedChatJid: string,
     contactPhone: string,
@@ -696,7 +696,7 @@ export class WhatsAppGatewayChannel {
     this.processedOrder.length = 0;
   }
 
-  private resolveIncomingRemoteJid(key: proto.IMessageKey): string {
+  private resolveIncomingRemoteJid(key: BaileysProto.IMessageKey): string {
     const enrichedKey = key as MessageKeyWithLid;
     const remoteJid = String(key.remoteJid ?? "");
     if (!remoteJid.endsWith("@lid")) {
@@ -821,7 +821,7 @@ export class WhatsAppGatewayChannel {
     }
   }
 
-  private bufferLidMessage(lidJid: string, message: proto.IWebMessageInfo, sourceEvent: string): void {
+  private bufferLidMessage(lidJid: string, message: BaileysProto.IWebMessageInfo, sourceEvent: string): void {
     const now = Date.now();
     const existing = this.pendingLidMessages.get(lidJid) ?? [];
     const fresh = existing.filter((entry) => now - entry.bufferedAt < LID_BUFFER_TTL_MS);
@@ -849,7 +849,7 @@ export class WhatsAppGatewayChannel {
     }
   }
 
-  private requestPhoneForLidJid(lidJid: string, message?: proto.IWebMessageInfo): void {
+  private requestPhoneForLidJid(lidJid: string, message?: BaileysProto.IWebMessageInfo): void {
     const socket = this.socket;
     if (!socket || this.lidToPhoneJid.has(lidJid)) {
       return;

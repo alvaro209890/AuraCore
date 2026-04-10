@@ -232,7 +232,7 @@ const ANALYZE_STEPS: AgentStep[] = [
   },
   {
     threshold: 94,
-    label: "Salvando no Supabase",
+    label: "Salvando no banco local",
     detail: "Persistindo resumo, projetos, contadores de retenção e novo snapshot para futuras leituras.",
   },
 ];
@@ -421,7 +421,7 @@ function buildActivityThinking(args: {
     );
   } else {
     lines.push(
-      "Esta rota nao reler o WhatsApp; ela limpa e reorganiza somente o que ja esta salvo no Supabase para reduzir ruido.",
+      "Esta rota nao reler o WhatsApp; ela limpa e reorganiza somente o que ja esta salvo no banco local para reduzir ruido.",
     );
   }
 
@@ -4642,7 +4642,7 @@ function ManualTab({
               </div>
               <div className="manual-list">
                 <p>Para o usuario final, a ideia e simples: conectar, fazer a primeira analise, puxar mensagens novas quando quiser e rodar a analise manual para manter o contexto vivo.</p>
-                <p>Para voce localizar qualquer problema, pense assim: entrada de dados em Observador, consolidacao em Memoria, armazenamento em Supabase e leitura do estado em Atividade.</p>
+                <p>Para voce localizar qualquer problema, pense assim: entrada de dados em Observador, consolidacao em Memoria, armazenamento no banco local e leitura do estado em Atividade.</p>
               </div>
             </div>
           </Card>
@@ -4707,7 +4707,7 @@ function ManualTab({
             <div className="manual-grid">
               <ManualInfoCard title="Frontend" text="O painel organiza as abas de operacao, memoria, atividade e chat. Ele consulta a API e mostra o estado persistido do sistema." />
               <ManualInfoCard title="Backend FastAPI" text="Coordena observador, memoria, automacao, chat e persistencia. E onde ficam as regras de selecao de mensagens e atualizacao de contexto." />
-              <ManualInfoCard title="Supabase" text="Armazena mensagens operacionais, snapshots, persona, projetos, memorias por pessoa, threads do chat e trilhas da automacao." />
+              <ManualInfoCard title="Banco local" text="Armazena mensagens operacionais, snapshots, persona, projetos, memorias por pessoa, threads do chat e trilhas da automacao." />
               <ManualInfoCard title="Modelos" text="O motor de analise consolida memoria e o chat responde usando o contexto salvo. O frontend nao inventa raciocinio que o backend nao persistiu." />
             </div>
           </Card>
@@ -4727,7 +4727,7 @@ function ManualTab({
       {manualSubTab === "data" ? (
         <>
           <Card>
-            <SectionTitle title="O Que Vai Para O Supabase" icon={Database} />
+            <SectionTitle title="O Que Vai Para O Banco Local" icon={Database} />
             <div className="manual-grid">
               <ManualInfoCard title="mensagens" text="Fila operacional de conversas diretas aproveitaveis que ainda podem alimentar analise e memoria." />
               <ManualInfoCard title="persona e memory_snapshots" text="Resumo principal do dono e historico de janelas consolidadas ao longo do tempo." />

@@ -6,10 +6,12 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.routers.automation import router as automation_router
 from app.routers.chat import router as chat_router
 from app.dependencies import get_settings
 from app.routers.internal_agent import router as internal_agent_router
 from app.routers.internal import router as internal_router
+from app.routers.internal_storage import router as internal_storage_router
 from app.routers.memories import router as memories_router
 from app.routers.observer import router as observer_router
 from app.routers.whatsapp_agent import router as whatsapp_agent_router
@@ -39,8 +41,10 @@ app.add_middleware(
 app.include_router(observer_router)
 app.include_router(memories_router)
 app.include_router(chat_router)
+app.include_router(automation_router)
 app.include_router(internal_router)
 app.include_router(internal_agent_router)
+app.include_router(internal_storage_router)
 app.include_router(whatsapp_agent_router)
 
 
@@ -56,6 +60,8 @@ async def root() -> dict[str, str]:
 @app.get("/health", tags=["meta"])
 async def healthcheck() -> dict[str, str]:
     return {"status": "healthy"}
+
+
 @app.exception_handler(DeepSeekError)
 async def deepseek_error_handler(_: Request, exc: DeepSeekError) -> JSONResponse:
     return JSONResponse(status_code=502, content={"detail": str(exc)})

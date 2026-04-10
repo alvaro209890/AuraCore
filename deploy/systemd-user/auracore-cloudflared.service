@@ -1,0 +1,15 @@
+[Unit]
+Description=AuraCore Cloudflare Tunnel (user)
+After=network-online.target auracore-backend.service
+Wants=network-online.target
+Requires=auracore-backend.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/acer/Downloads/AuraCore
+ExecStart=/usr/local/bin/cloudflared --config /home/acer/.cloudflared/config.yml tunnel run
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

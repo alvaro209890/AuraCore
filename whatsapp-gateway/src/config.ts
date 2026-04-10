@@ -37,8 +37,6 @@ export const config = {
   instanceName: getOptional("INSTANCE_NAME", "observer"),
   observerInstanceName: getOptional("OBSERVER_INSTANCE_NAME", getOptional("INSTANCE_NAME", "observer")),
   agentInstanceName: getOptional("AGENT_INSTANCE_NAME", "agent"),
-  supabaseUrl: normalizeUrl(getRequired("SUPABASE_URL")),
-  supabaseServiceRoleKey: getRequired("SUPABASE_SERVICE_ROLE_KEY"),
   auracoreApiBaseUrl: normalizeUrl(getRequired("AURACORE_API_BASE_URL")),
   internalApiToken: getRequired("INTERNAL_API_TOKEN"),
   qrExpiresSeconds: parseInteger("QR_EXPIRES_SECONDS", 60),

@@ -49,7 +49,7 @@ async def refresh_observer_messages(
         status=status,
         message=(
             "Nova sincronizacao do WhatsApp concluida. O AuraCore releu apenas chats diretos e salvou "
-            "as mensagens no Supabase sem disparar analise automatica. Agora voce pode abrir a aba de "
+            "as mensagens no banco local sem disparar analise automatica. Agora voce pode abrir a aba de "
             "memoria e rodar a analise manual quando quiser."
         ),
         sync_run_id=sync_run.id,

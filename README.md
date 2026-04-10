@@ -1,60 +1,103 @@
 # AuraCore
 
-AuraCore e o segundo cerebro digital centrado em dois numeros de WhatsApp:
+AuraCore roda agora com esta topologia:
 
-- `Numero A (Observador)`: lido pelo sistema para aprender contexto, rotina e relacionamentos.
-- `Numero B (Assistente)`: respondera ao usuario nas fases seguintes.
+- `frontend`: Next.js exportado estaticamente e publicado no Firebase Hosting.
+- `backend`: FastAPI rodando neste PC.
+- `whatsapp-gateway`: Node.js + Baileys rodando neste PC.
+- `cloudflared`: publica a API local em `https://api.cursar.space`.
+- `banco local`: SQLite em `/media/acer/dados/Banco_de_dados/AuraCore_DB/auracore.sqlite3`.
 
-## Estrutura
+## Banco local
 
-- [`backend`](/home/acer/Downloads/AuraCore/backend): FastAPI publico para status do observador, analise DeepSeek e persistencia no Supabase.
-- [`frontend`](/home/acer/Downloads/AuraCore/frontend): dashboard Next.js para conectar o WhatsApp e disparar analises manuais.
-- [`whatsapp-gateway`](/home/acer/Downloads/AuraCore/whatsapp-gateway): microservico Node.js com Baileys, QR Code e ingestao de mensagens.
-- [`supabase/migrations`](/home/acer/Downloads/AuraCore/supabase/migrations): schema inicial e upgrade para snapshots de memoria.
+- Diretório esperado: `/media/acer/dados/Banco_de_dados/AuraCore_DB`
+- Arquivo principal: `/media/acer/dados/Banco_de_dados/AuraCore_DB/auracore.sqlite3`
+- O backend inicializa automaticamente o schema SQLite no primeiro boot.
+- A sessão do WhatsApp também fica nesse banco via `wa_sessions` e `wa_session_keys`.
 
-## O que esta implementado
-
-- Conexao do WhatsApp observador via Baileys com sessao persistida no Supabase.
-- QR Code, status e reconexao pelo `whatsapp-gateway`.
-- Ingestao de chats diretos de entrada e saida para a tabela `mensagens`.
-- Analise manual por janela de horas com `deepseek-chat`.
-- Atualizacao de `persona.life_summary` e gravacao de `memory_snapshots`.
-- Dashboard unico com conexao, resumo atual e historico de analises.
-
-## Como rodar
+## Variáveis principais
 
 ### Backend
 
-1. Copie [`backend/.env.example`](/home/acer/Downloads/AuraCore/backend/.env.example) para `.env`.
-2. Instale dependencias com `pip install -r requirements.txt`.
-3. Inicie com `uvicorn app.main:app --reload --port 8000`.
+Use [`backend/.env.example`](/home/acer/Downloads/AuraCore/backend/.env.example) como base.
 
-### WhatsApp Gateway
+Campos obrigatórios no runtime:
 
-1. Copie [`whatsapp-gateway/.env.example`](/home/acer/Downloads/AuraCore/whatsapp-gateway/.env.example) para `.env`.
-2. Instale dependencias com `npm install`.
-3. Inicie com `npm run dev`.
+- `AURACORE_DB_PATH`
+- `WHATSAPP_GATEWAY_URL`
+- `INTERNAL_API_TOKEN`
+
+Campos opcionais, mas necessários para análise e chat:
+
+- `DEEPSEEK_API_KEY`
+- `GROQ_API_KEY`
+
+### Gateway
+
+Use [`whatsapp-gateway/.env.example`](/home/acer/Downloads/AuraCore/whatsapp-gateway/.env.example) como base.
+
+Campos obrigatórios:
+
+- `AURACORE_API_BASE_URL`
+- `INTERNAL_API_TOKEN`
 
 ### Frontend
 
-1. Copie [`frontend/.env.example`](/home/acer/Downloads/AuraCore/frontend/.env.example) para `.env.local`.
-2. Instale dependencias com `npm install`.
-3. Inicie com `npm run dev`.
+Use [`frontend/.env.example`](/home/acer/Downloads/AuraCore/frontend/.env.example) para dev local.
 
-### Supabase
+Para o build publicado no Firebase, o valor esperado é:
 
-1. Aplique [`20260408190000_initial_schema.sql`](/home/acer/Downloads/AuraCore/supabase/migrations/20260408190000_initial_schema.sql).
-2. Em seguida aplique [`20260408203000_memory_analysis_schema.sql`](/home/acer/Downloads/AuraCore/supabase/migrations/20260408203000_memory_analysis_schema.sql).
-3. Por fim aplique [`20260408230000_whatsapp_session_storage.sql`](/home/acer/Downloads/AuraCore/supabase/migrations/20260408230000_whatsapp_session_storage.sql).
+- `NEXT_PUBLIC_API_BASE_URL=https://api.cursar.space`
 
-## Deploy
+## Desenvolvimento local
 
-O deploy em producao pode rodar em um unico servico da Render usando Docker:
+### Backend
 
-- o FastAPI fica publico na porta do servico;
-- o gateway Baileys roda no mesmo container em `127.0.0.1:10001`;
-- a sessao do WhatsApp fica salva no Supabase, sem precisar de disco persistente.
+```bash
+cd backend
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
 
-O arquivo [`render.yaml`](/home/acer/Downloads/AuraCore/render.yaml) ja descreve esse modo single-service.
+### Gateway
 
-Se voce optar por Render free, pode manter o servico mais ativo com ping externo em `/health`, mas a Render ainda pode reiniciar o servico. Como a sessao do WhatsApp fica no Supabase, o QR normalmente nao precisa ser lido de novo apos esses restarts.
+```bash
+cd whatsapp-gateway
+npm install
+npm run build
+npm run start
+```
+
+### Frontend
+
+```bash
+cd frontend
+npm install
+npm run build
+```
+
+## Produção local neste PC
+
+- `auracore-backend.service`: sobe o FastAPI em `127.0.0.1:8000`
+- `auracore-whatsapp-gateway.service`: sobe o gateway em `127.0.0.1:10001`
+- `auracore-cloudflared.service`: publica `api.cursar.space -> http://127.0.0.1:8000`
+
+Instalação rootless neste PC:
+
+```bash
+bash /home/acer/Downloads/AuraCore/scripts/install-user-services.sh
+systemctl --user restart auracore-backend.service auracore-whatsapp-gateway.service auracore-cloudflared.service
+```
+
+Arquivos relevantes:
+
+- Serviços de usuário: [`deploy/systemd-user`](/home/acer/Downloads/AuraCore/deploy/systemd-user)
+- Serviços de sistema: [`deploy/systemd`](/home/acer/Downloads/AuraCore/deploy/systemd)
+- Configuração do túnel: [`deploy/cloudflared/config.yml`](/home/acer/Downloads/AuraCore/deploy/cloudflared/config.yml)
+
+Estado atual validado em 10 de abril de 2026:
+
+- API pública: `https://api.cursar.space/health`
+- Frontend publicado: `https://auracore-82bf2.web.app`

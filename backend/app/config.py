@@ -17,8 +17,10 @@ class Settings(BaseSettings):
 
     app_name: str = "AuraCore Observer API"
     environment: str = "development"
-    supabase_url: str = Field(..., alias="SUPABASE_URL")
-    supabase_service_role_key: str = Field(..., alias="SUPABASE_SERVICE_ROLE_KEY")
+    database_path: str = Field(
+        "/media/acer/dados/Banco_de_dados/AuraCore_DB/auracore.sqlite3",
+        alias="AURACORE_DB_PATH",
+    )
     default_user_id: UUID = Field(
         UUID("00000000-0000-0000-0000-000000000001"),
         alias="DEFAULT_USER_ID",

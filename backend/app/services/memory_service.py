@@ -1407,7 +1407,7 @@ class MemoryAnalysisService:
 
         if not current_persona.life_summary.strip() and not snapshots and not projects:
             raise MemoryAnalysisError(
-                "Ainda nao ha memoria suficiente salva no Supabase para refinar. Rode ao menos uma analise primeiro."
+                "Ainda nao ha memoria suficiente salva no banco local para refinar. Rode ao menos uma analise primeiro."
             )
 
         # Passo 1: Refinamento da Persona e Projetos

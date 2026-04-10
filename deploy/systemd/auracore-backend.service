@@ -1,0 +1,17 @@
+[Unit]
+Description=AuraCore Backend
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/media/acer/dados/Banco_de_dados/AuraCore_DB
+
+[Service]
+Type=simple
+User=acer
+WorkingDirectory=/home/acer/Downloads/AuraCore/backend
+EnvironmentFile=-/home/acer/Downloads/AuraCore/backend/.env
+ExecStart=/bin/bash /home/acer/Downloads/AuraCore/scripts/run-backend-prod.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -59,7 +59,7 @@ class GroqChatService:
         additional_rules: list[str] | None = None,
     ) -> str:
         if not self.settings.groq_api_key:
-            raise GroqChatError("GROQ_API_KEY nao configurada na Render.")
+            raise GroqChatError("GROQ_API_KEY nao configurada no backend local.")
 
         headers = {
             "Authorization": f"Bearer {self.settings.groq_api_key}",
@@ -134,7 +134,7 @@ class GroqChatService:
         fallback_label: str,
     ) -> GroqPreviewDecision:
         if not self.settings.groq_api_key:
-            raise GroqChatError("GROQ_API_KEY nao configurada na Render.")
+            raise GroqChatError("GROQ_API_KEY nao configurada no backend local.")
 
         headers = {
             "Authorization": f"Bearer {self.settings.groq_api_key}",
@@ -199,7 +199,7 @@ class GroqChatService:
 
     async def extract_chat_search_intent(self, user_message: str) -> GroqChatSearchIntent:
         if not self.settings.groq_api_key:
-            raise GroqChatError("GROQ_API_KEY nao configurada na Render.")
+            raise GroqChatError("GROQ_API_KEY nao configurada no backend local.")
 
         headers = {
             "Authorization": f"Bearer {self.settings.groq_api_key}",
@@ -251,7 +251,7 @@ class GroqChatService:
         existing_memory_context: str = "",
     ) -> GroqAgentMemoryDecision:
         if not self.settings.groq_api_key:
-            raise GroqChatError("GROQ_API_KEY nao configurada na Render.")
+            raise GroqChatError("GROQ_API_KEY nao configurada no backend local.")
 
         headers = {
             "Authorization": f"Bearer {self.settings.groq_api_key}",

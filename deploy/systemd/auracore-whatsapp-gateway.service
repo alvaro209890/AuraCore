@@ -1,0 +1,17 @@
+[Unit]
+Description=AuraCore WhatsApp Gateway
+After=network-online.target auracore-backend.service
+Wants=network-online.target
+Requires=auracore-backend.service
+
+[Service]
+Type=simple
+User=acer
+WorkingDirectory=/home/acer/Downloads/AuraCore/whatsapp-gateway
+EnvironmentFile=-/home/acer/Downloads/AuraCore/whatsapp-gateway/.env
+ExecStart=/bin/bash /home/acer/Downloads/AuraCore/scripts/run-gateway-prod.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -413,7 +413,7 @@ const API_BASE_URL = (
   process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
   (typeof window !== "undefined" && window.location.hostname === "localhost"
     ? "http://localhost:8000"
-    : "https://auracore-backend-82bf2.onrender.com")
+    : "https://api.cursar.space")
 );
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -438,7 +438,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(
       "Backend indisponivel, erro de rede ou resposta bloqueada pelo navegador. "
         + "Isso tambem pode acontecer quando o backend cai com 500 sem devolver os headers de CORS. "
-        + `Confira os logs do Render e a comunicacao com o gateway do WhatsApp. Detalhe: ${message}`,
+        + `Confira o servico local do AuraCore e a comunicacao com o gateway do WhatsApp. Detalhe: ${message}`,
     );
   }
 

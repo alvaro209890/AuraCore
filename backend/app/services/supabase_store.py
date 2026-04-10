@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import json
 import logging
+from pathlib import Path
 from typing import Any, Sequence
 from uuid import UUID, uuid4
 
-from postgrest.exceptions import APIError
-from supabase import Client, create_client
+from app.services.sqlite_client import SQLiteClient
 
 _UNSET = object()
 observer_ingest_logger = logging.getLogger("auracore.observer_ingest")
@@ -439,14 +440,17 @@ class ImportantMessageRecord:
 class SupabaseStore:
     def __init__(
         self,
-        supabase_url: str,
-        supabase_key: str,
+        database_path: str,
         default_user_id: UUID,
         *,
         message_retention_max_rows: int = 5000,
         first_analysis_queue_limit: int | None = None,
     ) -> None:
-        self.client: Client = create_client(supabase_url, supabase_key)
+        self.client = SQLiteClient(
+            database_path,
+            schema_path=Path(__file__).with_name("sqlite_schema.sql"),
+        )
+        self.database_path = database_path
         self.default_user_id = default_user_id
         self.message_retention_max_rows = max(20, message_retention_max_rows)
         resolved_first_analysis_limit = (
@@ -4478,6 +4482,108 @@ class SupabaseStore:
                 total += run.estimated_cost_usd or 0.0
             return round(total, 6)
 
+    def load_whatsapp_session_creds(self, *, session_id: str) -> Any | None:
+        response = (
+            self.client.table("wa_sessions")
+            .select("session_id,creds,updated_at")
+            .eq("session_id", session_id)
+            .limit(1)
+            .execute()
+        )
+        rows = response.data or []
+        if not rows or not isinstance(rows[0], dict):
+            return None
+        return rows[0].get("creds")
+
+    def save_whatsapp_session_creds(
+        self,
+        *,
+        session_id: str,
+        creds: Any,
+        updated_at: datetime,
+    ) -> None:
+        self.client.table("wa_sessions").upsert(
+            {
+                "session_id": session_id,
+                "creds": creds,
+                "updated_at": updated_at.isoformat(),
+            },
+            on_conflict="session_id",
+        ).execute()
+
+    def load_whatsapp_session_keys(
+        self,
+        *,
+        session_id: str,
+        category: str,
+        key_ids: Sequence[str],
+    ) -> dict[str, Any]:
+        cleaned_ids = [key_id.strip() for key_id in key_ids if key_id and key_id.strip()]
+        if not cleaned_ids:
+            return {}
+        response = (
+            self.client.table("wa_session_keys")
+            .select("key_id,value")
+            .eq("session_id", session_id)
+            .eq("category", category)
+            .in_("key_id", cleaned_ids)
+            .execute()
+        )
+        rows = response.data or []
+        resolved: dict[str, Any] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            key_id = self._optional_text(row.get("key_id"))
+            if key_id:
+                resolved[key_id] = row.get("value")
+        return resolved
+
+    def save_whatsapp_session_keys(
+        self,
+        *,
+        session_id: str,
+        category: str,
+        values: dict[str, Any],
+        updated_at: datetime,
+    ) -> None:
+        records = [
+            {
+                "session_id": session_id,
+                "category": category,
+                "key_id": key_id,
+                "value": value,
+                "updated_at": updated_at.isoformat(),
+            }
+            for key_id, value in values.items()
+            if key_id.strip()
+        ]
+        if not records:
+            return
+        self.client.table("wa_session_keys").upsert(
+            records,
+            on_conflict="session_id,category,key_id",
+        ).execute()
+
+    def delete_whatsapp_session_keys(
+        self,
+        *,
+        session_id: str,
+        category: str,
+        key_ids: Sequence[str],
+    ) -> None:
+        cleaned_ids = [key_id.strip() for key_id in key_ids if key_id and key_id.strip()]
+        if not cleaned_ids:
+            return
+        self.client.table("wa_session_keys").delete().eq("session_id", session_id).eq("category", category).in_(
+            "key_id",
+            cleaned_ids,
+        ).execute()
+
+    def clear_whatsapp_session(self, *, session_id: str) -> None:
+        self.client.table("wa_session_keys").delete().eq("session_id", session_id).execute()
+        self.client.table("wa_sessions").delete().eq("session_id", session_id).execute()
+
     def _insert_memory_snapshot(self, snapshot: MemorySnapshotRecord) -> None:
         record = {
             "id": snapshot.id,
@@ -4553,10 +4659,6 @@ class SupabaseStore:
         return rows[0]
 
     def _api_error_dict(self, exc: Exception) -> dict[str, Any]:
-        if isinstance(exc, APIError) and exc.args:
-            first = exc.args[0]
-            if isinstance(first, dict):
-                return first
         return {}
 
     def _api_error_message(self, exc: Exception) -> str:
@@ -4567,19 +4669,28 @@ class SupabaseStore:
         return str(exc).strip().lower()
 
     def _api_error_code(self, exc: Exception) -> str:
-        payload = self._api_error_dict(exc)
-        code = payload.get("code")
-        return str(code or "").strip().upper()
+        if type(exc).__name__ == "OperationalError":
+            message = str(exc).lower()
+            if "no such table" in message:
+                return "42P01"
+            if "no such column" in message:
+                return "42703"
+        return ""
 
     def _is_missing_table_error(self, exc: Exception, table_name: str) -> bool:
         message = self._api_error_message(exc)
         code = self._api_error_code(exc)
-        return code == "42P01" or f"relation {table_name.lower()}" in message or f"table {table_name.lower()}" in message
+        return (
+            code == "42P01"
+            or f"relation {table_name.lower()}" in message
+            or f"table {table_name.lower()}" in message
+            or f"no such table: {table_name.lower()}" in message
+        )
 
     def _is_missing_column_error(self, exc: Exception, *, column_name: str, table_name: str | None = None) -> bool:
         message = self._api_error_message(exc)
         code = self._api_error_code(exc)
-        if code != "42703" and f"column {column_name.lower()}" not in message:
+        if code != "42703" and f"column {column_name.lower()}" not in message and f"no such column: {column_name.lower()}" not in message:
             return False
         if table_name is None:
             return True
@@ -4698,6 +4809,13 @@ class SupabaseStore:
         return bool(left_variants.intersection(right_variants))
 
     def _parse_string_list(self, value: Any) -> list[str]:
+        if isinstance(value, str):
+            try:
+                decoded = json.loads(value)
+            except json.JSONDecodeError:
+                decoded = None
+            if isinstance(decoded, list):
+                value = decoded
         if not isinstance(value, list):
             return []
         items: list[str] = []

@@ -1,0 +1,7 @@
+tunnel: e759f152-1746-4a22-9ad8-f2131a36b84c
+credentials-file: /home/acer/.cloudflared/e759f152-1746-4a22-9ad8-f2131a36b84c.json
+
+ingress:
+  - hostname: api.cursar.space
+    service: http://127.0.0.1:8000
+  - service: http_status:404
