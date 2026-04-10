@@ -1204,6 +1204,13 @@ class MemoryAnalysisService:
         )
 
     async def _analyze_fixed_plan(self, plan: FixedAnalysisPlan) -> MemoryAnalysisOutcome:
+        logger.info(
+            "fixed_plan_stage_start stage=analyze_memory intent=%s messages=%s window_start=%s window_end=%s",
+            plan.intent,
+            len(plan.source_messages),
+            plan.window_start.isoformat(),
+            plan.window_end.isoformat(),
+        )
         current_persona = self.get_current_persona()
         prior_analyses_context = self._build_prior_analyses_context()
         existing_projects = self.store.list_project_memories(
@@ -1228,8 +1235,21 @@ class MemoryAnalysisService:
             window_end=plan.window_end,
             source_message_count=len(plan.source_messages),
         )
+        logger.info(
+            "fixed_plan_stage_done stage=analyze_memory intent=%s projects=%s contacts=%s open_questions=%s",
+            plan.intent,
+            len(deepseek_result.active_projects),
+            len(deepseek_result.contact_memories),
+            len(deepseek_result.open_questions),
+        )
         if plan.intent == "first_analysis":
             deepseek_result = self._stabilize_first_analysis_result(deepseek_result)
+            logger.info(
+                "fixed_plan_stage_done stage=stabilize_first_analysis intent=%s projects=%s contacts=%s",
+                plan.intent,
+                len(deepseek_result.active_projects),
+                len(deepseek_result.contact_memories),
+            )
 
         analyzed_at = datetime.now(UTC)
         effective_life_summary = self._resolve_effective_life_summary(
@@ -1245,6 +1265,18 @@ class MemoryAnalysisService:
             source_messages=plan.source_messages,
             created_at=analyzed_at,
         )
+        logger.info(
+            "fixed_plan_stage_done stage=build_snapshot intent=%s coverage=%s source_messages=%s",
+            plan.intent,
+            snapshot.coverage_score,
+            snapshot.source_message_count,
+        )
+        logger.info(
+            "fixed_plan_stage_start stage=merge_projects intent=%s existing_projects=%s candidate_projects=%s",
+            plan.intent,
+            len(existing_projects),
+            len(deepseek_result.active_projects),
+        )
         merged_project_seeds = await self._merge_project_seeds_incrementally(
             updated_life_summary=effective_life_summary,
             existing_projects=existing_projects,
@@ -1252,10 +1284,25 @@ class MemoryAnalysisService:
             window_summary=deepseek_result.window_summary,
             conversation_context=plan.conversation_context,
         )
+        logger.info(
+            "fixed_plan_stage_done stage=merge_projects intent=%s merged_projects=%s",
+            plan.intent,
+            len(merged_project_seeds),
+        )
+        logger.info(
+            "fixed_plan_stage_start stage=extract_important_messages intent=%s candidate_messages=%s",
+            plan.intent,
+            len(plan.source_messages),
+        )
         important_message_seeds = await self._extract_important_message_seeds(
             messages=plan.source_messages,
             current_life_summary=effective_life_summary,
             project_context=self._build_project_seed_context(merged_project_seeds),
+        )
+        logger.info(
+            "fixed_plan_stage_done stage=extract_important_messages intent=%s saved_candidates=%s",
+            plan.intent,
+            len(important_message_seeds),
         )
         structural_strengths, structural_routines, structural_preferences, structural_open_questions = (
             self._build_structural_profile_from_snapshots(
@@ -1268,6 +1315,15 @@ class MemoryAnalysisService:
                 ]
             )
         )
+        logger.info(
+            "fixed_plan_stage_done stage=build_structural_profile intent=%s strengths=%s routines=%s preferences=%s open_questions=%s",
+            plan.intent,
+            len(structural_strengths),
+            len(structural_routines),
+            len(structural_preferences),
+            len(structural_open_questions),
+        )
+        logger.info("fixed_plan_stage_start stage=persist_persona intent=%s", plan.intent)
         persona = self.store.persist_memory_analysis(
             snapshot=snapshot,
             updated_life_summary=effective_life_summary,
@@ -1277,22 +1333,42 @@ class MemoryAnalysisService:
             structural_preferences=structural_preferences,
             structural_open_questions=structural_open_questions,
         )
+        logger.info(
+            "fixed_plan_stage_done stage=persist_persona intent=%s persona_id=%s snapshot_id=%s",
+            plan.intent,
+            str(persona.user_id),
+            snapshot.id,
+        )
+        logger.info("fixed_plan_stage_start stage=persist_people intent=%s", plan.intent)
         self._persist_person_memories(
             messages=plan.source_messages,
             deepseek_result=deepseek_result,
             source_snapshot_id=snapshot.id,
             analyzed_at=analyzed_at,
         )
+        logger.info("fixed_plan_stage_done stage=persist_people intent=%s", plan.intent)
+        logger.info("fixed_plan_stage_start stage=persist_projects intent=%s", plan.intent)
         projects = self.store.upsert_project_memories(
             user_id=self.settings.default_user_id,
             source_snapshot_id=snapshot.id,
             projects=merged_project_seeds,
             observed_at=analyzed_at,
         )
+        logger.info(
+            "fixed_plan_stage_done stage=persist_projects intent=%s project_rows=%s",
+            plan.intent,
+            len(projects),
+        )
+        logger.info("fixed_plan_stage_start stage=persist_important intent=%s", plan.intent)
         important_saved_count = self.store.upsert_important_messages(
             user_id=self.settings.default_user_id,
             messages=important_message_seeds,
             saved_at=analyzed_at,
+        )
+        logger.info(
+            "fixed_plan_stage_done stage=persist_important intent=%s important_saved=%s",
+            plan.intent,
+            important_saved_count,
         )
         return MemoryAnalysisOutcome(
             persona=persona,
@@ -1359,6 +1435,7 @@ class MemoryAnalysisService:
         conversation_context: str,
     ) -> list[ProjectMemorySeed]:
         if not existing_projects and not candidate_projects:
+            logger.info("merge_projects_skipped reason=no_existing_and_no_candidates")
             return []
         merged_result = await self.deepseek_service.merge_projects_incrementally(
             current_life_summary=updated_life_summary,
@@ -1369,6 +1446,12 @@ class MemoryAnalysisService:
         )
         seeds = self._project_memory_seeds_from_deepseek(
             merged_result.active_projects if merged_result.active_projects else candidate_projects,
+        )
+        logger.info(
+            "merge_projects_result existing=%s candidates=%s merged=%s",
+            len(existing_projects),
+            len(candidate_projects),
+            len(seeds),
         )
         return seeds[:8]
 
@@ -1381,6 +1464,7 @@ class MemoryAnalysisService:
     ) -> list[ImportantMessageSeed]:
         candidates = [message for message in messages if message.message_text.strip()]
         if not candidates:
+            logger.info("important_extract_skipped reason=no_textual_candidates")
             return []
 
         messages_block = self._build_important_messages_block(candidates)
@@ -2472,7 +2556,7 @@ class MemoryAnalysisService:
                 label = self._label_for_score(score)
                 summary = (
                     f"Ja existem {selected_message_count} mensagens diretas utilizaveis nesta janela. "
-                    "Isso e suficiente para montar a primeira base consolidada do dono com o reasoner."
+                    "Isso e suficiente para montar a primeira base consolidada do dono com o DeepSeek Chat."
                 )
                 return score, label, True, summary
 

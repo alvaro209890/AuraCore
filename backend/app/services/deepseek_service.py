@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from datetime import datetime
+import logging
+from time import perf_counter
 from typing import Any, Callable, Literal, TypeVar
 
 import httpx
@@ -84,6 +87,7 @@ class DeepSeekImportantMessagesReviewResult(BaseModel):
 
 
 ParsedResultT = TypeVar("ParsedResultT")
+logger = logging.getLogger("auracore.deepseek")
 
 
 @dataclass(slots=True)
@@ -154,6 +158,7 @@ class DeepSeekService:
             payload=payload,
             parser=self._parse_result,
             validator=self._validate_analysis_result,
+            operation="analyze_memory",
         )
 
     async def refine_saved_memory(
@@ -180,6 +185,7 @@ class DeepSeekService:
             payload=payload,
             parser=self._parse_refinement_result,
             validator=self._validate_refinement_result,
+            operation="refine_saved_memory",
         )
 
     async def refine_contact_memories(
@@ -207,6 +213,7 @@ class DeepSeekService:
             payload=payload,
             parser=self._parse_contact_refinement_result,
             validator=self._validate_contact_refinement_result,
+            operation="refine_contact_memories",
         )
 
     async def merge_projects_incrementally(
@@ -237,6 +244,7 @@ class DeepSeekService:
             payload=payload,
             parser=self._parse_project_merge_result,
             validator=self._validate_project_merge_result,
+            operation="merge_projects_incrementally",
         )
 
     async def extract_important_messages(
@@ -265,6 +273,7 @@ class DeepSeekService:
             payload=payload,
             parser=self._parse_important_messages_result,
             validator=lambda parsed: self._validate_important_messages_result(parsed, allowed_message_ids=allowed_ids),
+            operation="extract_important_messages",
         )
 
     async def review_important_messages(
@@ -292,6 +301,7 @@ class DeepSeekService:
             payload=payload,
             parser=self._parse_important_messages_review_result,
             validator=lambda parsed: self._validate_important_messages_review_result(parsed, allowed_message_ids=allowed_ids),
+            operation="review_important_messages",
         )
 
     def build_analysis_prompt_preview(
@@ -843,38 +853,115 @@ Regras:
         payload: dict[str, Any],
         parser: Callable[[str], ParsedResultT],
         validator: Callable[[ParsedResultT], None],
+        operation: str,
     ) -> ParsedResultT:
         self._ensure_configured()
         last_error: DeepSeekError | None = None
-        for _attempt in range(2):
-            data = await self._post_completion(payload)
+        logger.info("deepseek_operation_start operation=%s model=%s", operation, self.settings.deepseek_model)
+        for attempt in range(1, 3):
+            data = await self._post_completion(payload, operation=operation, attempt=attempt)
             try:
                 content = self._extract_content(data)
                 parsed = parser(content)
                 validator(parsed)
+                logger.info("deepseek_operation_done operation=%s attempt=%s", operation, attempt)
                 return parsed
             except DeepSeekError as exc:
                 last_error = exc
+                logger.warning(
+                    "deepseek_operation_invalid_response operation=%s attempt=%s detail=%s",
+                    operation,
+                    attempt,
+                    str(exc),
+                )
         raise last_error or DeepSeekError("DeepSeek returned an invalid structured response.")
 
-    async def _post_completion(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _post_completion(self, payload: dict[str, Any], *, operation: str, attempt: int) -> dict[str, Any]:
         self._ensure_configured()
         headers = {
             "Authorization": f"Bearer {self.settings.deepseek_api_key}",
             "Content-Type": "application/json",
         }
+        start_clock = perf_counter()
+        request_timeout = httpx.Timeout(
+            connect=min(10.0, self.settings.deepseek_timeout_seconds),
+            read=self.settings.deepseek_timeout_seconds,
+            write=min(30.0, max(10.0, self.settings.deepseek_timeout_seconds)),
+            pool=min(10.0, self.settings.deepseek_timeout_seconds),
+        )
+        hard_timeout_seconds = self.settings.deepseek_timeout_seconds + 5.0
+        logger.info(
+            "deepseek_request_start operation=%s attempt=%s model=%s timeout_seconds=%s",
+            operation,
+            attempt,
+            self.settings.deepseek_model,
+            self.settings.deepseek_timeout_seconds,
+        )
+        try:
+            async with httpx.AsyncClient(
+                base_url=self.settings.normalized_deepseek_api_base_url,
+                timeout=request_timeout,
+                trust_env=False,
+            ) as client:
+                response = await asyncio.wait_for(
+                    client.post("/chat/completions", headers=headers, json=payload),
+                    timeout=hard_timeout_seconds,
+                )
+        except asyncio.TimeoutError as exc:
+            latency_ms = round((perf_counter() - start_clock) * 1000)
+            logger.error(
+                "deepseek_request_timeout operation=%s attempt=%s timeout_kind=hard latency_ms=%s",
+                operation,
+                attempt,
+                latency_ms,
+            )
+            raise DeepSeekError(
+                f"DeepSeek excedeu o timeout duro de {hard_timeout_seconds:.0f}s em {operation}."
+            ) from exc
+        except httpx.TimeoutException as exc:
+            latency_ms = round((perf_counter() - start_clock) * 1000)
+            logger.error(
+                "deepseek_request_timeout operation=%s attempt=%s timeout_kind=%s latency_ms=%s detail=%s",
+                operation,
+                attempt,
+                exc.__class__.__name__,
+                latency_ms,
+                str(exc),
+            )
+            raise DeepSeekError(
+                f"DeepSeek excedeu o timeout HTTP ({exc.__class__.__name__}) em {operation}: {exc}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            latency_ms = round((perf_counter() - start_clock) * 1000)
+            logger.error(
+                "deepseek_request_transport_error operation=%s attempt=%s error_kind=%s latency_ms=%s detail=%s",
+                operation,
+                attempt,
+                exc.__class__.__name__,
+                latency_ms,
+                str(exc),
+            )
+            raise DeepSeekError(
+                f"Falha de transporte ao chamar DeepSeek em {operation} ({exc.__class__.__name__}): {exc}"
+            ) from exc
 
-        async with httpx.AsyncClient(
-            base_url=self.settings.normalized_deepseek_api_base_url,
-            timeout=self.settings.deepseek_timeout_seconds,
-        ) as client:
-            response = await client.post("/chat/completions", headers=headers, json=payload)
+        latency_ms = round((perf_counter() - start_clock) * 1000)
+        logger.info(
+            "deepseek_request_done operation=%s attempt=%s status_code=%s latency_ms=%s",
+            operation,
+            attempt,
+            response.status_code,
+            latency_ms,
+        )
 
         if response.status_code >= 400:
             detail = response.text.strip() or "Unexpected DeepSeek error."
             raise DeepSeekError(f"DeepSeek request failed ({response.status_code}): {detail}")
 
-        return response.json()
+        try:
+            return response.json()
+        except json.JSONDecodeError as exc:
+            raise DeepSeekError(f"DeepSeek retornou JSON HTTP invalido em {operation}: {exc}") from exc
 
     def _ensure_configured(self) -> None:
         if not self.settings.deepseek_api_key:

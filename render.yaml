@@ -15,7 +15,7 @@ services:
       - key: DEEPSEEK_API_KEY
         sync: false
       - key: DEEPSEEK_MODEL
-        value: deepseek-reasoner
+        value: deepseek-chat
       - key: DEEPSEEK_API_BASE_URL
         value: https://api.deepseek.com
       - key: DEEPSEEK_TIMEOUT_SECONDS

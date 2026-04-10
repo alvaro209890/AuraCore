@@ -417,12 +417,66 @@ export type MemoryActivity = {
   settings?: AutomationSettings | null;
 };
 
-const API_BASE_URL = (
-  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
-  (typeof window !== "undefined" && window.location.hostname === "localhost"
-    ? "http://localhost:8000"
-    : "https://api.cursar.space")
-);
+const REMOTE_FALLBACK_API_BASE_URL = "https://api.cursar.space";
+const EXPLICIT_API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ?? null;
+
+let activeApiBaseUrl: string | null = EXPLICIT_API_BASE_URL;
+
+function isLoopbackHost(hostname: string): boolean {
+  const normalized = hostname.trim().toLowerCase();
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "[::1]";
+}
+
+function isPrivateIpv4Host(hostname: string): boolean {
+  return /^(10|127)\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname)
+    || /^192\.168\.\d{1,3}\.\d{1,3}$/.test(hostname)
+    || /^172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}$/.test(hostname);
+}
+
+function buildApiBaseCandidates(): string[] {
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+  const addCandidate = (value: string | null | undefined): void => {
+    if (!value) {
+      return;
+    }
+    const normalized = value.replace(/\/$/, "");
+    if (!normalized || seen.has(normalized)) {
+      return;
+    }
+    seen.add(normalized);
+    candidates.push(normalized);
+  };
+
+  if (activeApiBaseUrl) {
+    addCandidate(activeApiBaseUrl);
+  }
+
+  if (typeof window !== "undefined") {
+    const browserHost = window.location.hostname.trim().toLowerCase();
+    const isFirebaseHost = browserHost.endsWith(".web.app") || browserHost.endsWith(".firebaseapp.com");
+    const localCandidates = ["http://127.0.0.1:8000", "http://localhost:8000"];
+
+    if (isLoopbackHost(browserHost) || isPrivateIpv4Host(browserHost)) {
+      addCandidate(`http://${browserHost}:8000`);
+    }
+
+    if (isFirebaseHost) {
+      localCandidates.forEach(addCandidate);
+    }
+
+    addCandidate(EXPLICIT_API_BASE_URL);
+
+    if (!isFirebaseHost) {
+      localCandidates.forEach(addCandidate);
+    }
+  } else {
+    addCandidate(EXPLICIT_API_BASE_URL);
+  }
+
+  addCandidate(REMOTE_FALLBACK_API_BASE_URL);
+  return candidates;
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers ?? undefined);
@@ -431,40 +485,49 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set("Content-Type", "application/json");
   }
 
-  let response: Response;
-  try {
-    response = await fetch(`${API_BASE_URL}${path}`, {
-      ...init,
-      headers,
-      cache: "no-store",
-    });
-  } catch (error) {
-    const message =
-      error instanceof Error && error.message
-        ? error.message
-        : "Falha de rede ao falar com o backend.";
-    throw new Error(
-      "Backend indisponivel, erro de rede ou resposta bloqueada pelo navegador. "
-        + "Isso tambem pode acontecer quando o backend cai com 500 sem devolver os headers de CORS. "
-        + `Confira o servico local do AuraCore e a comunicacao com o gateway do WhatsApp. Detalhe: ${message}`,
-    );
-  }
+  const networkErrors: string[] = [];
 
-  if (!response.ok) {
-    let detail = `Request failed with status ${response.status}.`;
+  for (const baseUrl of buildApiBaseCandidates()) {
+    let response: Response;
     try {
-      const errorPayload = (await response.json()) as { detail?: string };
-      if (typeof errorPayload.detail === "string" && errorPayload.detail.length > 0) {
-        detail = errorPayload.detail;
-      }
-    } catch {
-      // Ignore JSON parsing errors and keep the generic message.
+      response = await fetch(`${baseUrl}${path}`, {
+        ...init,
+        headers,
+        cache: "no-store",
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : "Falha de rede ao falar com o backend.";
+      networkErrors.push(`${baseUrl}: ${message}`);
+      continue;
     }
 
-    throw new Error(detail);
+    activeApiBaseUrl = baseUrl;
+
+    if (!response.ok) {
+      let detail = `Request failed with status ${response.status}.`;
+      try {
+        const errorPayload = (await response.json()) as { detail?: string };
+        if (typeof errorPayload.detail === "string" && errorPayload.detail.length > 0) {
+          detail = errorPayload.detail;
+        }
+      } catch {
+        // Ignore JSON parsing errors and keep the generic message.
+      }
+
+      throw new Error(detail);
+    }
+
+    return (await response.json()) as T;
   }
 
-  return (await response.json()) as T;
+  throw new Error(
+    "Backend indisponivel, erro de rede ou resposta bloqueada pelo navegador. "
+      + "Isso tambem pode acontecer quando o backend local nao esta acessivel a partir desta aba. "
+      + `Bases testadas: ${networkErrors.join(" | ") || "nenhuma"}`,
+  );
 }
 
 export async function connectObserver(): Promise<ObserverStatus> {
@@ -696,18 +759,24 @@ export async function* sendChatMessageStream(
   threadId?: string,
   contextHint?: string,
 ): AsyncGenerator<ChatStreamEvent> {
-  const url = `${API_BASE_URL}/api/chat/messages/stream`;
-  let response: Response;
+  let response: Response | null = null;
 
-  try {
-    response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-      body: JSON.stringify({ message_text: messageText, thread_id: threadId, context_hint: contextHint }),
-      cache: "no-store",
-    });
-  } catch {
-    // Streaming endpoint unavailable – fall back to normal request
+  for (const baseUrl of buildApiBaseCandidates()) {
+    try {
+      response = await fetch(`${baseUrl}/api/chat/messages/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+        body: JSON.stringify({ message_text: messageText, thread_id: threadId, context_hint: contextHint }),
+        cache: "no-store",
+      });
+      activeApiBaseUrl = baseUrl;
+      break;
+    } catch {
+      response = null;
+    }
+  }
+
+  if (!response) {
     const workspace = await sendChatMessage(messageText, threadId, contextHint);
     const lastMsg = workspace.session.messages[workspace.session.messages.length - 1];
     if (lastMsg?.role === "assistant") {

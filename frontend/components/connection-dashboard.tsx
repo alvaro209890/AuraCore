@@ -1754,7 +1754,6 @@ export function ConnectionDashboard() {
     } else if (chatResult.status === "rejected") {
       const message = getErrorMessage(chatResult.reason);
       setChatError(message);
-      setMemoryError(message);
     }
 
     if (memoryResult.status === "fulfilled") {
