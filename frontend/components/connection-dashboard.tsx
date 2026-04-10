@@ -37,37 +37,34 @@ import {
 
 import {
   createChatThread,
-  getAutomationStatus,
   connectAgent,
   connectObserver,
+  executeMemoryAnalysis,
   getAgentStatus,
   getAgentWorkspace,
   getChatWorkspace,
   getCurrentMemory,
+  getMemoryActivity,
   getMemoryProjects,
   getImportantMessages,
   getMemoryStatus,
   getMemorySnapshots,
   getObserverStatus,
   refreshObserverMessages,
-  refineMemory,
   resetAgent,
   resetObserver,
-  runFirstMemoryAnalysis,
-  runNextMemoryBatch,
-  runAutomationTick,
   sendChatMessageStream,
   updateAgentSettings,
   updateAutomationSettings,
-  type AutomationSettings,
+  runAutomationTick,
+  type AnalysisJob,
   type AutomationStatus,
   type AutomationDecision,
-  type AnalysisJob,
   type ChatMessage,
   type ChatThread,
   type ChatWorkspace,
   type ImportantMessage,
-  type MemoryAnalysisDetailMode,
+  type MemoryActivity,
   type MemoryCurrent,
   type MemoryStatus,
   type MemorySnapshot,
@@ -85,8 +82,8 @@ import {
 } from "@/lib/api";
 
 type ViewState = "idle" | "loading" | "waiting" | "connected" | "error";
-type AgentMode = "idle" | "analyze" | "refine";
-type AgentIntent = "first_analysis" | "improve_memory" | "refine_saved";
+type AgentMode = "idle" | "analyze";
+type AgentIntent = "first_analysis" | "improve_memory";
 type TabId =
   | "overview"
   | "observer"
@@ -132,19 +129,7 @@ type AgentState = {
   completedAt: string | null;
 };
 
-type AutomationDraft = {
-  auto_sync_enabled: boolean;
-  auto_analyze_enabled: boolean;
-  auto_refine_enabled: boolean;
-  min_new_messages_threshold: number;
-  stale_hours_threshold: number;
-  pruned_messages_threshold: number;
-  default_detail_mode: MemoryAnalysisDetailMode;
-  default_target_message_count: number;
-  default_lookback_hours: number;
-  daily_budget_usd: number;
-  max_auto_jobs_per_day: number;
-};
+type AutomationDraft = Record<string, never> | null;
 
 type InsightMetric = {
   label: string;
@@ -207,13 +192,15 @@ const NAV_GROUPS: NavGroup[] = [
     title: "Sistema",
     items: [
       { id: "activity", label: "Atividade", icon: Activity },
-      { id: "automation", label: "Automação", icon: Settings },
       { id: "manual", label: "Manual", icon: FileText },
     ],
   },
 ];
 
 const NAV_ITEMS: NavItem[] = NAV_GROUPS.flatMap((g) => g.items);
+const getAutomationStatus = getMemoryActivity;
+const runFirstMemoryAnalysis = () => executeMemoryAnalysis("first_analysis");
+const runNextMemoryBatch = () => executeMemoryAnalysis("improve_memory");
 
 const IDLE_AGENT_STATUS = "Nenhuma atualização em andamento.";
 
@@ -401,9 +388,7 @@ function getIntentTitle(intent: AgentIntent | null): string {
     case "first_analysis":
       return "Fazer Primeira Análise";
     case "improve_memory":
-      return "Atualizar Sistema com Novas Mensagens";
-    case "refine_saved":
-      return "Refinar Memória Já Salva";
+      return "Atualizar Memória";
     default:
       return "Aguardando nova ação";
   }
@@ -444,23 +429,7 @@ function buildActivityThinking(args: {
   return lines;
 }
 
-function toAutomationDraft(settings: AutomationSettings): AutomationDraft {
-  return {
-    auto_sync_enabled: settings.auto_sync_enabled,
-    auto_analyze_enabled: settings.auto_analyze_enabled,
-    auto_refine_enabled: settings.auto_refine_enabled,
-    min_new_messages_threshold: settings.min_new_messages_threshold,
-    stale_hours_threshold: settings.stale_hours_threshold,
-    pruned_messages_threshold: settings.pruned_messages_threshold,
-    default_detail_mode: settings.default_detail_mode,
-    default_target_message_count: settings.default_target_message_count,
-    default_lookback_hours: settings.default_lookback_hours,
-    daily_budget_usd: settings.daily_budget_usd,
-    max_auto_jobs_per_day: settings.max_auto_jobs_per_day,
-  };
-}
-
-function buildPersistedActivityLogs(status: AutomationStatus | null): AgentLog[] {
+function buildPersistedActivityLogs(status: MemoryActivity | null): AgentLog[] {
   if (!status) {
     return [];
   }
@@ -469,13 +438,7 @@ function buildPersistedActivityLogs(status: AutomationStatus | null): AgentLog[]
     id: `sync-${syncRun.id}`,
     tone: (syncRun.status === "failed" ? "error" : "info") as LogTone,
     createdAt: syncRun.finished_at ?? syncRun.last_activity_at ?? syncRun.started_at,
-    message: `Sync ${syncRun.status}: ${syncRun.messages_saved_count} salvas, ${syncRun.messages_ignored_count} ignoradas e ${syncRun.messages_pruned_count} podadas.`,
-  }));
-  const decisionLogs = status.decisions.slice(0, 3).map((decision) => ({
-    id: `decision-${decision.id}`,
-    tone: (decision.action === "queue" ? "success" : "info") as LogTone,
-    createdAt: decision.created_at,
-    message: `Decisao ${decision.action}: ${decision.intent} com score ${decision.score}/100. ${decision.explanation}`,
+    message: `Sync ${syncRun.status}: ${syncRun.messages_saved_count} salvas e ${syncRun.messages_ignored_count} ignoradas.`,
   }));
   const jobLogs = status.jobs.slice(0, 4).map((job) => ({
     id: `job-${job.id}`,
@@ -484,9 +447,37 @@ function buildPersistedActivityLogs(status: AutomationStatus | null): AgentLog[]
     message: `Job ${job.status}: ${getIntentTitle(job.intent as AgentIntent)} em ${job.detail_mode}, alvo ${job.target_message_count} msgs.`,
   }));
 
-  return [...syncLogs, ...decisionLogs, ...jobLogs].sort((left, right) => (
+  return [...syncLogs, ...jobLogs].sort((left, right) => (
     new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
   ));
+}
+
+function automationStatusPlaceholder(status: MemoryActivity | null) {
+  if (!status) {
+    return null;
+  }
+  return {
+    ...status,
+    decisions: status.decisions ?? [],
+    queued_jobs_count: status.queued_jobs_count ?? status.jobs.filter((job) => job.status === "queued").length,
+    daily_auto_jobs_count: status.daily_auto_jobs_count ?? 0,
+    daily_cost_usd: 0,
+    settings: status.settings ?? {
+      user_id: "",
+      auto_sync_enabled: false,
+      auto_analyze_enabled: false,
+      auto_refine_enabled: false,
+      min_new_messages_threshold: 1,
+      stale_hours_threshold: 1,
+      pruned_messages_threshold: 0,
+      default_detail_mode: "balanced",
+      default_target_message_count: 120,
+      default_lookback_hours: 72,
+      daily_budget_usd: 0,
+      max_auto_jobs_per_day: 1,
+      updated_at: new Date(0).toISOString(),
+    },
+  };
 }
 
 function getActivityToneLabel(tone: ActivityTraceItem["tone"]): string {
@@ -603,7 +594,7 @@ function getProgressIncrement(progress: number): number {
 }
 
 function getStepsForMode(mode: AgentMode): AgentStep[] {
-  return mode === "refine" ? REFINE_STEPS : ANALYZE_STEPS;
+  return ANALYZE_STEPS;
 }
 
 function getRunningStatus(mode: AgentMode, progress: number): string {
@@ -922,8 +913,7 @@ export function ConnectionDashboard() {
   const [activeChatThreadId, setActiveChatThreadId] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatThreadTitle, setChatThreadTitle] = useState("Conversa principal");
-  const [automationStatus, setAutomationStatus] = useState<AutomationStatus | null>(null);
-  const [automationDraft, setAutomationDraft] = useState<AutomationDraft | null>(null);
+  const [memoryActivity, setMemoryActivity] = useState<MemoryActivity | null>(null);
   const [chatDraft, setChatDraft] = useState("");
   const [queuedJobId, setQueuedJobId] = useState<string | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
@@ -933,7 +923,7 @@ export function ConnectionDashboard() {
   const [importantMessagesError, setImportantMessagesError] = useState<string | null>(null);
   const [chatError, setChatError] = useState<string | null>(null);
   const [messageRefreshError, setMessageRefreshError] = useState<string | null>(null);
-  const [automationError, setAutomationError] = useState<string | null>(null);
+  const [memoryActivityError, setMemoryActivityError] = useState<string | null>(null);
   const [isHydrating, setIsHydrating] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
@@ -946,8 +936,6 @@ export function ConnectionDashboard() {
   const [streamingText, setStreamingText] = useState<string | null>(null);
   const [isLoadingChatThread, setIsLoadingChatThread] = useState(false);
   const [isCreatingChatThread, setIsCreatingChatThread] = useState(false);
-  const [isSavingAutomation, setIsSavingAutomation] = useState(false);
-  const [isTickingAutomation, setIsTickingAutomation] = useState(false);
   const [pollingEnabled, setPollingEnabled] = useState(false);
   const [agentPollingEnabled, setAgentPollingEnabled] = useState(false);
   const [agentState, setAgentState] = useState<AgentState>({
@@ -962,6 +950,17 @@ export function ConnectionDashboard() {
   const [agentLogs, setAgentLogs] = useState<AgentLog[]>([
     makeLog("info", "Painel iniciado. Aguardando a próxima leitura ou refinamento."),
   ]);
+
+  const automationStatus = automationStatusPlaceholder(memoryActivity);
+  const setAutomationStatus = setMemoryActivity as unknown as React.Dispatch<React.SetStateAction<any>>;
+  const automationError = memoryActivityError;
+  const setAutomationError = setMemoryActivityError;
+  const automationDraft = null;
+  const setAutomationDraft = (() => undefined) as React.Dispatch<React.SetStateAction<any>>;
+  const isSavingAutomation = false;
+  const isTickingAutomation = false;
+  const setIsSavingAutomation = (_: boolean) => undefined;
+  const setIsTickingAutomation = (_: boolean) => undefined;
 
   const liveRefreshIntervalMs = useMemo(() => getLiveRefreshInterval(activeTab), [activeTab]);
   const lastQrRefreshAtRef = useRef<number | null>(null);
@@ -1008,7 +1007,7 @@ export function ConnectionDashboard() {
 
   const currentSteps = useMemo(() => getStepsForMode(agentState.mode), [agentState.mode]);
   const insightMetrics = useMemo(() => getSignalMetrics(latestSnapshot), [latestSnapshot]);
-  const persistedActivityLogs = useMemo(() => buildPersistedActivityLogs(automationStatus), [automationStatus]);
+  const persistedActivityLogs = useMemo(() => buildPersistedActivityLogs(memoryActivity), [memoryActivity]);
   const activityLogs = useMemo(
     () =>
       [...persistedActivityLogs, ...agentLogs]
@@ -1046,7 +1045,7 @@ export function ConnectionDashboard() {
     });
   }
 
-  function syncQueuedJobFromAutomationSnapshot(snapshot: AutomationStatus): void {
+  function syncQueuedJobFromAutomationSnapshot(snapshot: MemoryActivity): void {
     const pendingJob = snapshot.jobs.find((job) => job.status === "queued" || job.status === "running");
 
     if (!queuedJobId) {
@@ -1078,9 +1077,7 @@ export function ConnectionDashboard() {
         resolvedIntent,
         resolvedIntent === "first_analysis"
           ? "Primeira analise concluida. A base inicial do dono foi criada."
-          : resolvedIntent === "refine_saved"
-            ? "Refinamento concluido. A memoria consolidada ficou mais precisa."
-            : "Leitura concluida. As mensagens novas foram cruzadas com a memoria existente e o perfil foi melhorado.",
+          : "Leitura concluida. As mensagens novas foram cruzadas com a memoria existente e o perfil foi melhorado.",
       );
       return;
     }
@@ -1283,7 +1280,6 @@ export function ConnectionDashboard() {
         startTransition(() => {
           setAutomationStatus(nextAutomation);
           setAutomationError(null);
-          setAutomationDraft((previous) => previous ?? toAutomationDraft(nextAutomation.settings));
         });
         syncQueuedJobFromAutomationSnapshot(nextAutomation);
       } else if (automationResult.status === "rejected" && shouldRefreshAutomation) {
@@ -1500,7 +1496,6 @@ export function ConnectionDashboard() {
       const snap = automationResult.value;
       setAutomationStatus(snap);
       setAutomationError(null);
-      setAutomationDraft((previous) => previous ?? toAutomationDraft(snap.settings));
       syncQueuedJobFromAutomationSnapshot(snap);
     } else {
       setAutomationError(getErrorMessage(automationResult.reason));
@@ -1522,7 +1517,7 @@ export function ConnectionDashboard() {
     setAutomationError(null);
     try {
       const nextSettings = await updateAutomationSettings(automationDraft);
-      setAutomationStatus((previous) =>
+      setAutomationStatus((previous: any) =>
         previous
           ? { ...previous, settings: nextSettings }
           : {
@@ -1537,7 +1532,6 @@ export function ConnectionDashboard() {
               running_job_id: null,
             },
       );
-      setAutomationDraft(toAutomationDraft(nextSettings));
       pushAgentLog("success", "Configuração da automação salva no backend.");
     } catch (error) {
       const message = getErrorMessage(error);
@@ -1554,7 +1548,6 @@ export function ConnectionDashboard() {
     try {
       const snapshot = await runAutomationTick();
       setAutomationStatus(snapshot);
-      setAutomationDraft((previous) => previous ?? toAutomationDraft(snapshot.settings));
       pushAgentLog("info", "Tick manual da automação executado. Syncs ociosos foram fechados e a fila foi processada.");
     } catch (error) {
       const message = getErrorMessage(error);
@@ -1570,7 +1563,7 @@ export function ConnectionDashboard() {
   }
 
   function startAgentRun(intent: AgentIntent): void {
-    const mode: Exclude<AgentMode, "idle"> = intent === "refine_saved" ? "refine" : "analyze";
+    const mode: Exclude<AgentMode, "idle"> = "analyze";
     if (agentTimerRef.current) {
       window.clearInterval(agentTimerRef.current);
     }
@@ -1591,9 +1584,7 @@ export function ConnectionDashboard() {
       "info",
       intent === "first_analysis"
         ? "Primeira analise iniciada. O agente vai criar a base inicial do dono usando mensagens diretas recentes."
-        : intent === "improve_memory"
-          ? "Atualizacao incremental iniciada. O agente vai combinar mensagens novas com snapshots, projetos e chat pessoal."
-          : "Refinamento iniciado. O agente vai limpar a memoria consolidada e reforcar padroes mais estaveis.",
+        : "Atualizacao incremental iniciada. O agente vai combinar mensagens novas com snapshots, projetos e chat pessoal.",
     );
 
     agentTimerRef.current = window.setInterval(() => {
@@ -1620,7 +1611,7 @@ export function ConnectionDashboard() {
   }
 
   function finishAgentRunSuccess(intent: AgentIntent, message: string): void {
-    const mode: Exclude<AgentMode, "idle"> = intent === "refine_saved" ? "refine" : "analyze";
+    const mode: Exclude<AgentMode, "idle"> = "analyze";
     if (agentTimerRef.current) {
       window.clearInterval(agentTimerRef.current);
     }
@@ -1637,7 +1628,7 @@ export function ConnectionDashboard() {
   }
 
   function finishAgentRunError(intent: AgentIntent, message: string): void {
-    const mode: Exclude<AgentMode, "idle"> = intent === "refine_saved" ? "refine" : "analyze";
+    const mode: Exclude<AgentMode, "idle"> = "analyze";
     if (agentTimerRef.current) {
       window.clearInterval(agentTimerRef.current);
     }
@@ -1748,15 +1739,14 @@ export function ConnectionDashboard() {
         "info",
         response.sync_run_id ? `${response.message} Sync ${response.sync_run_id.slice(0, 8)} aberto.` : response.message,
       );
-      pushAgentLog("info", "Releitura concluída. Vou processar a fila agora para atualizar o resumo do dono.");
+      pushAgentLog("info", "Releitura concluída. As mensagens novas ficaram disponíveis para a próxima análise manual.");
 
       try {
         const snapshot = await runAutomationTick();
         setAutomationStatus(snapshot);
-        setAutomationDraft((previous) => previous ?? toAutomationDraft(snapshot.settings));
-        pushAgentLog("success", "Fila processada após a releitura. O resumo e a memória já foram recalculados quando havia mensagens válidas.");
+        pushAgentLog("info", "Atividade manual atualizada após a releitura. Execute a análise na aba de memória quando quiser consolidar o novo lote.");
       } catch (tickError) {
-        pushAgentLog("error", `A releitura terminou, mas o tick automático falhou: ${getErrorMessage(tickError)}`);
+        pushAgentLog("error", `A releitura terminou, mas não consegui atualizar a atividade manual: ${getErrorMessage(tickError)}`);
       }
 
       await hydrateDashboard("manual");
@@ -1858,7 +1848,8 @@ export function ConnectionDashboard() {
            setMemory(response.current);
            setProjects(response.projects);
            if (response.snapshot) {
-             setSnapshots((previous) => [response.snapshot, ...previous.filter((snapshot) => snapshot.id !== response.snapshot.id)].slice(0, 6));
+             const nextSnapshot = response.snapshot;
+             setSnapshots((previous) => [nextSnapshot, ...previous.filter((snapshot) => snapshot.id !== nextSnapshot.id)].slice(0, 6));
            }
            finishAgentRunSuccess(
              intent,
@@ -1866,21 +1857,6 @@ export function ConnectionDashboard() {
                ? "Primeira analise concluida. A base inicial do dono foi criada."
                : "Leitura concluida. As mensagens novas foram cruzadas com a memoria existente e o perfil foi melhorado.",
            );
-        }
-      } else {
-        const response = await refineMemory();
-        if (response.job && (response.job.status === "queued" || response.job.status === "running")) {
-          setQueuedJobId(response.job.id);
-          pushAgentLog(
-            "info",
-            response.job.status === "running"
-              ? "Refinamento aceito pelo servidor e já entrou em processamento."
-              : "Tarefa de refinamento registrada na fila. Otimizando a base de dados nos bastidores...",
-          );
-        } else {
-          setMemory(response.current);
-          setProjects(response.projects);
-          finishAgentRunSuccess("refine_saved", "Refinamento concluido. A memoria consolidada ficou mais precisa.");
         }
       }
 
@@ -2081,11 +2057,11 @@ export function ConnectionDashboard() {
         </div>
           <div className="ac-quick-status">
             <span>Mensagens novas</span>
-            <strong>{memoryStatus ? formatTokenCount(memoryStatus.pending_new_message_count) : "..."}</strong>
+            <strong>{memoryStatus ? formatTokenCount(memoryStatus.new_messages_after_first_analysis) : "..."}</strong>
           </div>
           <div className="ac-quick-status">
             <span>Próximo lote</span>
-            <strong>{memoryStatus ? formatTokenCount(memoryStatus.next_process_message_count) : "..."}</strong>
+            <strong>{memoryStatus?.current_job ? formatState(memoryStatus.current_job.status) : "Livre"}</strong>
           </div>
         </div>
       </aside>
@@ -2116,7 +2092,7 @@ export function ConnectionDashboard() {
               onClick={() => void runMemoryJob(memoryIsEstablished ? "improve_memory" : "first_analysis")}
               disabled={
                 agentState.running ||
-                (memoryIsEstablished ? !memoryStatus?.can_run_next_batch : !memoryStatus?.can_run_first_analysis)
+                !memoryStatus?.can_execute_analysis
               }
               type="button"
             >
@@ -3145,27 +3121,25 @@ function MemoryTab({
   const structuralRoutines = memory?.structural_routines ?? [];
   const structuralPreferences = memory?.structural_preferences ?? [];
   const structuralOpenQuestions = memory?.structural_open_questions ?? [];
-  const pendingNewMessages = memoryStatus?.pending_new_message_count ?? 0;
-  const nextProcessCount = memoryStatus?.next_process_message_count ?? 0;
-  const messagesUntilAutoProcess = memoryStatus?.messages_until_auto_process ?? 0;
-  const canRunFirstAnalysis = memoryStatus?.can_run_first_analysis ?? false;
-  const canRunNextBatch = memoryStatus?.can_run_next_batch ?? false;
-  const firstAnalysisLabel = nextProcessCount > 0
-    ? pendingNewMessages > nextProcessCount
-      ? `Fazer Primeira Analise (${formatTokenCount(nextProcessCount)} das ${formatTokenCount(pendingNewMessages)} mais recentes)`
-      : `Fazer Primeira Analise (${formatTokenCount(nextProcessCount)} mensagens)`
-    : "Fazer Primeira Analise";
-  const nextBatchLabel = nextProcessCount > 0
-    ? `Atualizar Sistema com ${formatTokenCount(nextProcessCount)} Mensagens Novas`
-    : "Aguardando mensagens novas suficientes";
+  const pendingNewMessages = memoryStatus?.new_messages_after_first_analysis ?? 0;
+  const currentJob = memoryStatus?.current_job ?? null;
+  const latestCompletedJob = memoryStatus?.latest_completed_job ?? null;
+  const canExecuteAnalysis = memoryStatus?.can_execute_analysis ?? false;
+  const executeLabel = !memoryReady
+    ? pendingNewMessages > 0
+      ? `Fazer Primeira Analise (${formatTokenCount(pendingNewMessages)} mensagens disponiveis)`
+      : "Fazer Primeira Analise"
+    : pendingNewMessages > 0
+      ? `Executar Analise (${formatTokenCount(pendingNewMessages)} novas)`
+      : "Aguardando mensagens novas";
 
   return (
     <div className="page-stack">
       <Card>
         <SectionTitle title="Estado da Memoria" icon={Database} />
         <p className="support-copy">
-          Depois da primeira analise, este painel passa a contar apenas mensagens novas desde a ultima consolidacao.
-          O backend trabalha com lotes economicos pequenos para manter custo baixo e contexto mais preciso.
+          A memoria agora funciona em fluxo manual. Depois da primeira analise, este painel conta apenas
+          as mensagens que chegaram depois da base inicial e deixa a consolidacao sob seu comando.
         </p>
         <div className="memory-breakdown-grid">
           <MemorySignalCard
@@ -3181,30 +3155,26 @@ function MemoryTab({
           <MemorySignalCard
             label="Mensagens novas"
             value={formatTokenCount(pendingNewMessages)}
-            meta="Mensagens novas desde a ultima analise concluida"
+            meta={memoryReady ? "Mensagens que chegaram depois da ultima analise" : "Mensagens disponiveis para criar a base inicial"}
             tone="indigo"
           />
           <MemorySignalCard
-            label="Proximo processamento"
-            value={formatTokenCount(nextProcessCount)}
+            label="Job atual"
+            value={currentJob ? formatState(currentJob.status) : "Livre"}
             meta={
-              memoryReady
-                ? nextProcessCount > 0
-                  ? "O proximo processamento vai consumir exatamente esse lote"
-                  : "Ainda nao ha lote suficiente para o processamento incremental"
-                : "Na primeira analise entra uma selecao balanceada das mensagens mais relevantes"
+              currentJob
+                ? `${getIntentTitle(currentJob.intent as AgentIntent)} • ${formatShortDateTime(currentJob.created_at)}`
+                : "Nenhuma analise em execucao no momento"
             }
             tone="amber"
           />
           <MemorySignalCard
-            label="Faltam para o automatico"
-            value={memoryReady ? formatTokenCount(messagesUntilAutoProcess) : "--"}
+            label="Ultimo job concluido"
+            value={latestCompletedJob ? formatState(latestCompletedJob.status) : "--"}
             meta={
-              memoryReady
-                ? messagesUntilAutoProcess > 0
-                  ? "Quando essa contagem chegar a zero, o backend enfileira 1 lote automatico"
-                  : "Ja existe volume suficiente para o proximo lote automatico"
-                : "O automatico so passa a valer depois da primeira analise"
+              latestCompletedJob
+                ? `${getIntentTitle(latestCompletedJob.intent as AgentIntent)} • ${formatShortDateTime(latestCompletedJob.finished_at ?? latestCompletedJob.created_at)}`
+                : "Nenhuma execucao concluida ainda"
             }
             tone="emerald"
           />
@@ -3216,31 +3186,33 @@ function MemoryTab({
         {!memoryReady ? (
           <>
             <p className="support-copy">
-              A primeira analise roda uma unica vez e usa uma selecao balanceada de mensagens diretas recentes, evitando inflar tokens com historico desnecessario.
+              A primeira analise separa o backlog inicial, marca o que foi usado como analisado, envia os importantes para o cofre
+              e monta a primeira versao dos projetos e da memoria do dono.
             </p>
             <button
               className="ac-success-button"
               onClick={onInitialAnalysis}
-              disabled={agentState.running || !!queuedJobId || !canRunFirstAnalysis}
+              disabled={agentState.running || !!queuedJobId || !canExecuteAnalysis}
               type="button"
             >
               <Play size={15} />
-              {agentState.running && agentState.intent === "first_analysis" ? "Executando..." : !!queuedJobId ? "Aguardando fila..." : firstAnalysisLabel}
+              {agentState.running && agentState.intent === "first_analysis" ? "Executando..." : !!queuedJobId ? "Aguardando fila..." : executeLabel}
             </button>
           </>
         ) : (
           <>
             <p className="support-copy">
-              Depois da base inicial, cada atualizacao usa apenas o proximo lote economico de mensagens novas. Isso mantem a memoria viva sem reprocessar tudo de novo.
+              Quando voce clicar em executar, o DeepSeek reaproveita a memoria ja criada, le apenas as mensagens novas
+              pendentes e melhora a analise de forma incremental, incluindo importantes e projetos.
             </p>
             <button
               className="ac-primary-button"
               onClick={onImproveMemory}
-              disabled={agentState.running || !!queuedJobId || !canRunNextBatch}
+              disabled={agentState.running || !!queuedJobId || !canExecuteAnalysis}
               type="button"
             >
               <Sparkles size={15} />
-              {agentState.running && agentState.intent === "improve_memory" ? "Processando..." : !!queuedJobId ? "Fila ativa..." : nextBatchLabel}
+              {agentState.running && agentState.intent === "improve_memory" ? "Processando..." : !!queuedJobId ? "Fila ativa..." : executeLabel}
             </button>
           </>
         )}
@@ -3270,7 +3242,7 @@ function MemoryTab({
         <p className="lead-copy">
           {memory?.life_summary?.trim()
             ? memory.life_summary
-            : "Nenhum resumo consolidado ainda. Assim que a primeira leitura rodar, este bloco vira a visao mais util do dono para o chat e para futuras atualizacoes automaticas."}
+            : "Nenhum resumo consolidado ainda. Assim que a primeira leitura rodar, este bloco vira a visao mais util do dono para o chat e para futuras atualizacoes manuais."}
         </p>
       </Card>
 
@@ -3658,7 +3630,7 @@ function ImportantMessagesTab({
           }
         />
         <p className="support-copy">
-          Este cofre recebe automaticamente mensagens consideradas duráveis: acessos, dinheiro, projetos, riscos e
+          Este cofre recebe, ao fim de cada análise manual, mensagens consideradas duráveis: acessos, dinheiro, projetos, riscos e
           fatos operacionais que merecem sobreviver além do lote curto de processamento.
         </p>
 
@@ -3697,7 +3669,7 @@ function ImportantMessagesTab({
       <Card>
         <SectionTitle title="Como Isso Funciona" icon={Sparkles} />
         <div className="manual-grid">
-          <ManualInfoCard title="Entrada Automática" text="Depois de cada análise de memória, o sistema separa só o que merece virar memória durável." />
+          <ManualInfoCard title="Entrada Manual" text="Depois de cada análise de memória, o sistema separa só o que merece virar memória durável." />
           <ManualInfoCard title="Critério" text="A prioridade é guardar acessos, dinheiro, projetos, clientes, prazos, riscos e fatos operacionais reutilizáveis." />
           <ManualInfoCard title="Revisão Diária" text="O backend revisa esse cofre a partir da virada do dia em São Paulo e tira do uso ativo o que envelheceu ou perdeu valor." />
         </div>
@@ -3707,7 +3679,7 @@ function ImportantMessagesTab({
         <Card>
           <div className="empty-hint">
             <Archive size={18} />
-            <p>Nenhuma mensagem importante ativa ainda. Assim que uma análise concluir, o cofre começa a ser preenchido automaticamente.</p>
+            <p>Nenhuma mensagem importante ativa ainda. Assim que uma análise manual concluir, o cofre começa a ser preenchido.</p>
           </div>
         </Card>
       ) : (
@@ -4084,17 +4056,17 @@ function ActivityTab({
               tone="indigo"
             />
             <MemorySignalCard
-              label="Última decisão"
-              value={latestDecision ? latestDecision.action : "..."}
-              meta={latestDecision ? `${latestDecision.action} • ${latestDecision.reason_code}` : "Sem decisão automática persistida ainda"}
+              label="Último modelo"
+              value={latestModelRun ? latestModelRun.run_type : "..."}
+              meta={latestModelRun ? `${latestModelRun.success ? "sucesso" : "falha"} • ${formatShortDateTime(latestModelRun.created_at)}` : "Sem execução de modelo persistida ainda"}
               tone="emerald"
             />
             <MemorySignalCard
-              label="Jobs automáticos hoje"
-              value={automationStatus ? String(automationStatus.daily_auto_jobs_count) : "..."}
+              label="Fila manual"
+              value={automationStatus ? String(automationStatus.queued_jobs_count) : "..."}
               meta={
                 automationStatus
-                  ? `${automationStatus.queued_jobs_count} item(ns) na fila agora`
+                  ? `${automationStatus.running_job_id ? "Existe 1 job em execução agora" : "Nenhum job rodando agora"}`
                   : "Aguardando status"
               }
               tone="amber"
@@ -4182,7 +4154,7 @@ function ActivityTab({
               ) : (
                 <div className="empty-hint">
                   <Zap size={18} />
-                  <p>Nenhuma decisão automática persistida ainda.</p>
+                  <p>Nenhuma decisão persistida ainda.</p>
                 </div>
               )}
             </Card>
@@ -4604,10 +4576,10 @@ function ManualTab({
             <div className="manual-grid">
               <div className="manual-list">
                 <p>O site e dividido em duas camadas. A primeira e operacional: conectar o WhatsApp, ler mensagens, acompanhar a fila e ver os jobs. A segunda e cognitiva: consolidar memoria, mapear projetos, salvar sinais importantes e conversar com contexto.</p>
-                <p>O Observador cuida da entrada. A Memoria cuida da consolidacao. Importantes e Projetos guardam o que merece sobreviver. O Chat usa tudo isso para responder. Atividade e Automacao mostram o que o backend fez ou esta fazendo.</p>
+                <p>O Observador cuida da entrada. A Memoria cuida da consolidacao. Importantes e Projetos guardam o que merece sobreviver. O Chat usa tudo isso para responder. Atividade mostra o que o backend fez ou esta fazendo.</p>
               </div>
               <div className="manual-list">
-                <p>Para o usuario final, a ideia e simples: conectar, fazer a primeira analise, deixar a automacao manter o contexto e usar o chat pessoal como uma camada de apoio persistente.</p>
+                <p>Para o usuario final, a ideia e simples: conectar, fazer a primeira analise, puxar mensagens novas quando quiser e rodar a analise manual para manter o contexto vivo.</p>
                 <p>Para voce localizar qualquer problema, pense assim: entrada de dados em Observador, consolidacao em Memoria, armazenamento em Supabase e leitura do estado em Atividade.</p>
               </div>
             </div>
@@ -4623,7 +4595,7 @@ function ManualTab({
               <ManualInfoCard title="Projetos" text="Organiza frentes reais detectadas nas conversas, com resumo, status, evidencias e proximos passos." />
               <ManualInfoCard title="Chat Pessoal" text="Thread por assunto usando a memoria central. Bom para separar estrategia, rotina, vendas, produto e operacao." />
               <ManualInfoCard title="Atividade" text="Mostra o pipeline trabalhando: logs, lotes, trilha de execucao e o melhor raciocinio operacional salvo." />
-              <ManualInfoCard title="Automacao" text="Mostra a fila automatica e o estado do loop de processamento sem expor configuracoes tecnicas desnecessarias." />
+              <ManualInfoCard title="Atividade Manual" text="Mostra syncs recentes, jobs manuais e execucoes de modelo persistidas no backend." />
             </div>
           </Card>
 
@@ -4658,8 +4630,7 @@ function ManualTab({
             <div className="manual-grid">
               <ManualInfoCard title="Puxar Novas Mensagens do WhatsApp" text="Forca uma releitura das conversas diretas recentes e atualiza a fila operacional no banco." />
               <ManualInfoCard title="Fazer Primeira Analise" text="Cria a base inicial da memoria quando o sistema ainda nao conhece bem o dono." />
-              <ManualInfoCard title="Processar Proximo Lote" text="Consome o proximo lote de mensagens novas quando ja existe memoria base e ha volume suficiente." />
-              <ManualInfoCard title="Refinar Memoria Ja Salva" text="Nao busca novas mensagens; apenas reorganiza e melhora o que ja esta consolidado." />
+              <ManualInfoCard title="Executar Analise" text="Usa as mensagens pendentes mais a memoria ja salva para atualizar resumo, importantes e projetos de forma incremental." />
               <ManualInfoCard title="Nova Conversa" text="Abre uma thread nova no chat sem perder a memoria central nem o restante do historico salvo." />
               <ManualInfoCard title="Rodar Tick Agora" text="Executa o ciclo da automacao manualmente: fecha syncs, registra decisoes e tenta processar a fila." />
             </div>
@@ -4747,7 +4718,7 @@ function ManualTab({
                 title="Mensagens Importantes"
                 text={
                   importantCount > 0
-                    ? `${importantCount} item(ns) ativos no cofre com revisao automatica diaria.`
+                    ? `${importantCount} item(ns) ativos no cofre, atualizados pelas execucoes manuais de analise.`
                     : "Nenhuma mensagem importante ativa ainda."
                 }
               />
@@ -4756,11 +4727,11 @@ function ManualTab({
                 text={`${projectCount} projeto(s) consolidado(s), ${threadCount} thread(s) no chat e ${chatMessages.length} mensagem(ns) na thread aberta.`}
               />
               <ManualInfoCard
-                title="Fila Automatica"
+                title="Fila Manual"
                 text={
                   automationStatus
-                    ? `${automationStatus.queued_jobs_count} job(s) na fila e ${automationStatus.daily_auto_jobs_count} processamento(s) automaticos hoje.`
-                    : "Status da automacao ainda nao carregado."
+                    ? `${automationStatus.queued_jobs_count} job(s) na fila e ${automationStatus.running_job_id ? "1 execucao em andamento" : "nenhuma execucao rodando agora"}.`
+                    : "Status da atividade manual ainda nao carregado."
                 }
               />
             </div>

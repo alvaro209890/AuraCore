@@ -12,7 +12,11 @@ create table if not exists public.mensagens (
   "timestamp" timestamptz not null,
   source text not null default 'baileys',
   embedding vector(1536),
-  ingested_at timestamptz not null default timezone('utc', now())
+  ingested_at timestamptz not null default timezone('utc', now()),
+  analysis_status text not null default 'pending',
+  analysis_job_id uuid,
+  analysis_started_at timestamptz,
+  analyzed_at timestamptz
 );
 
 do $$
@@ -40,6 +44,9 @@ create index if not exists mensagens_user_chat_jid_timestamp_idx
 
 create index if not exists mensagens_user_contact_phone_timestamp_idx
   on public.mensagens (user_id, contact_phone, "timestamp" desc);
+
+create index if not exists mensagens_user_analysis_status_timestamp_idx
+  on public.mensagens (user_id, analysis_status, "timestamp" desc);
 
 create table if not exists public.processed_message_ids (
   message_id text primary key,

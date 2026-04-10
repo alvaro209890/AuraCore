@@ -274,11 +274,10 @@ class MemoryCurrentResponse(BaseModel):
 class MemoryStatusResponse(BaseModel):
     has_initial_analysis: bool
     last_analyzed_at: datetime | None = None
-    pending_new_message_count: int = Field(ge=0)
-    next_process_message_count: int = Field(ge=0)
-    messages_until_auto_process: int = Field(ge=0)
-    can_run_first_analysis: bool
-    can_run_next_batch: bool
+    new_messages_after_first_analysis: int = Field(ge=0)
+    current_job: "AnalysisJobResponse | None" = None
+    latest_completed_job: "AnalysisJobResponse | None" = None
+    can_execute_analysis: bool
 
 
 class MemorySnapshotResponse(BaseModel):
@@ -478,6 +477,17 @@ class AnalysisJobResponse(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     created_at: datetime
+
+
+class MemoryActivityResponse(BaseModel):
+    sync_runs: list["WhatsAppSyncRunResponse"] = Field(default_factory=list)
+    jobs: list[AnalysisJobResponse] = Field(default_factory=list)
+    model_runs: list["ModelRunResponse"] = Field(default_factory=list)
+    running_job_id: str | None = None
+    decisions: list["AutomationDecisionResponse"] = Field(default_factory=list)
+    queued_jobs_count: int = Field(default=0, ge=0)
+    daily_auto_jobs_count: int = Field(default=0, ge=0)
+    settings: "AutomationSettingsResponse | None" = None
 
 
 class ModelRunResponse(BaseModel):

@@ -9,7 +9,13 @@ from typing import Literal
 from uuid import uuid4
 
 from app.config import Settings
-from app.services.deepseek_service import DeepSeekContactMemoryRefinementResult, DeepSeekMemoryResult, DeepSeekService
+from app.services.deepseek_service import (
+    DeepSeekContactMemoryRefinementResult,
+    DeepSeekMemoryResult,
+    DeepSeekProjectMemory,
+    DeepSeekProjectMergeResult,
+    DeepSeekService,
+)
 from app.services.groq_service import GroqChatService
 from app.services.supabase_store import (
     AutomationSettingsRecord,
@@ -41,6 +47,7 @@ class MemoryAnalysisOutcome:
     persona: PersonaRecord
     snapshot: MemorySnapshotRecord
     projects: list[ProjectMemoryRecord]
+    important_messages_saved_count: int = 0
     source_message_ids: list[str] = field(default_factory=list)
     source_messages: list[StoredMessageRecord] = field(default_factory=list)
     selected_transcript_chars: int = 0
@@ -113,11 +120,7 @@ class MemoryAnalysisPreview:
 class MemoryStatus:
     has_initial_analysis: bool
     last_analyzed_at: datetime | None
-    pending_new_message_count: int
-    next_process_message_count: int
-    messages_until_auto_process: int
-    can_run_first_analysis: bool
-    can_run_next_batch: bool
+    new_messages_after_first_analysis: int
 
 
 @dataclass(slots=True)
@@ -155,32 +158,11 @@ class MemoryAnalysisService:
     def get_memory_status(self) -> MemoryStatus:
         persona = self.get_current_persona()
         has_initial_analysis = bool(persona.last_analyzed_at or persona.last_snapshot_id)
-        pending_new_message_count = (
-            self._count_new_messages_since_last_analysis(persona)
-            if has_initial_analysis
-            else self.store.count_pending_messages(self.settings.default_user_id)
-        )
-        incremental_batch_size = self._resolve_incremental_batch_size()
-        incremental_min_messages = self._resolve_incremental_min_messages()
-        first_analysis_limit = self._resolve_first_analysis_limit()
-        next_process_message_count = (
-            min(first_analysis_limit, pending_new_message_count)
-            if not has_initial_analysis
-            else min(incremental_batch_size, pending_new_message_count)
-            if pending_new_message_count >= incremental_min_messages
-            else 0
-        )
-        messages_until_auto_process = (
-            0 if not has_initial_analysis else max(0, incremental_min_messages - pending_new_message_count)
-        )
+        pending_new_message_count = self.store.count_pending_messages(self.settings.default_user_id)
         return MemoryStatus(
             has_initial_analysis=has_initial_analysis,
             last_analyzed_at=persona.last_analyzed_at,
-            pending_new_message_count=pending_new_message_count,
-            next_process_message_count=next_process_message_count,
-            messages_until_auto_process=messages_until_auto_process,
-            can_run_first_analysis=not has_initial_analysis and pending_new_message_count > 0,
-            can_run_next_batch=has_initial_analysis and pending_new_message_count >= incremental_min_messages,
+            new_messages_after_first_analysis=pending_new_message_count,
         )
 
     def plan_first_analysis(self) -> FixedAnalysisPlan:
@@ -872,7 +854,7 @@ class MemoryAnalysisService:
         mode: Literal["first_analysis", "incremental_batch"],
     ) -> FixedAnalysisPlan:
         status = self.get_memory_status()
-        pending_count = status.pending_new_message_count
+        pending_count = status.new_messages_after_first_analysis
 
         if mode == "first_analysis":
             if status.has_initial_analysis:
@@ -905,10 +887,8 @@ class MemoryAnalysisService:
         else:
             if not status.has_initial_analysis:
                 raise MemoryAnalysisError("A primeira analise ainda nao foi feita. Rode-a antes de processar lotes incrementais.")
-            if pending_count < self._resolve_incremental_min_messages():
-                raise MemoryAnalysisError(
-                    f"Ainda nao existem {self._resolve_incremental_min_messages()} mensagens novas pendentes para o proximo processamento."
-                )
+            if pending_count <= 0:
+                raise MemoryAnalysisError("Ainda nao ha mensagens novas pendentes para atualizar a memoria.")
             candidate_messages = self.store.list_pending_messages(
                 user_id=self.settings.default_user_id,
                 limit=min(
@@ -920,8 +900,8 @@ class MemoryAnalysisService:
             # Prioriza mensagens que tenham texto útil
             textual_candidates = [m for m in candidate_messages if m.message_text.strip()]
             
-            if not textual_candidates and pending_count >= self._resolve_incremental_min_messages():
-                 raise MemoryAnalysisError(
+            if not textual_candidates and pending_count > 0:
+                raise MemoryAnalysisError(
                     f"Existem mensagens pendentes ({pending_count}), mas nenhuma delas possui texto útil para o processamento incremental."
                 )
 
@@ -1011,12 +991,11 @@ class MemoryAnalysisService:
     async def _analyze_fixed_plan(self, plan: FixedAnalysisPlan) -> MemoryAnalysisOutcome:
         current_persona = self.get_current_persona()
         prior_analyses_context = self._build_prior_analyses_context()
-        project_context = self._build_project_context(
-            self.store.list_project_memories(
-                self.settings.default_user_id,
-                limit=max(1, self.settings.chat_context_projects),
-            )
+        existing_projects = self.store.list_project_memories(
+            self.settings.default_user_id,
+            limit=max(1, self.settings.chat_context_projects),
         )
+        project_context = self._build_project_context(existing_projects)
         chat_context = self._build_chat_context()
         deepseek_result = await self.deepseek_service.analyze_memory(
             transcript=plan.transcript,
@@ -1034,6 +1013,7 @@ class MemoryAnalysisService:
         )
 
         analyzed_at = datetime.now(UTC)
+        effective_life_summary = deepseek_result.updated_life_summary.strip() or self._build_persona_context(current_persona)
         snapshot = self._build_snapshot(
             result=deepseek_result,
             window_hours=plan.window_hours,
@@ -1041,6 +1021,18 @@ class MemoryAnalysisService:
             window_end=plan.window_end,
             source_message_count=len(plan.source_messages),
             created_at=analyzed_at,
+        )
+        merged_project_seeds = await self._merge_project_seeds_incrementally(
+            updated_life_summary=effective_life_summary,
+            existing_projects=existing_projects,
+            candidate_projects=deepseek_result.active_projects,
+            window_summary=deepseek_result.window_summary,
+            conversation_context=plan.conversation_context,
+        )
+        important_message_seeds = await self._extract_important_message_seeds(
+            messages=plan.source_messages,
+            current_life_summary=effective_life_summary,
+            project_context=self._build_project_seed_context(merged_project_seeds),
         )
         structural_strengths, structural_routines, structural_preferences, structural_open_questions = (
             self._build_structural_profile_from_snapshots(
@@ -1071,24 +1063,19 @@ class MemoryAnalysisService:
         projects = self.store.upsert_project_memories(
             user_id=self.settings.default_user_id,
             source_snapshot_id=snapshot.id,
-            projects=[
-                ProjectMemorySeed(
-                    project_name=project.name,
-                    summary=project.summary,
-                    status=project.status,
-                    what_is_being_built=project.what_is_being_built,
-                    built_for=project.built_for,
-                    next_steps=project.next_steps,
-                    evidence=project.evidence,
-                )
-                for project in deepseek_result.active_projects
-            ],
+            projects=merged_project_seeds,
             observed_at=analyzed_at,
+        )
+        important_saved_count = self.store.upsert_important_messages(
+            user_id=self.settings.default_user_id,
+            messages=important_message_seeds,
+            saved_at=analyzed_at,
         )
         return MemoryAnalysisOutcome(
             persona=persona,
             snapshot=snapshot,
             projects=projects,
+            important_messages_saved_count=important_saved_count,
             source_message_ids=[message.message_id for message in plan.source_messages],
             source_messages=plan.source_messages,
             selected_transcript_chars=plan.selected_transcript_chars,
@@ -1139,42 +1126,49 @@ class MemoryAnalysisService:
             observed_at=analyzed_at,
         )
 
-    def list_snapshots(self, *, limit: int = 20) -> list[MemorySnapshotRecord]:
-        return self.store.list_memory_snapshots(self.settings.default_user_id, limit=limit)
+    async def _merge_project_seeds_incrementally(
+        self,
+        *,
+        updated_life_summary: str,
+        existing_projects: list[ProjectMemoryRecord],
+        candidate_projects: list[DeepSeekProjectMemory],
+        window_summary: str,
+        conversation_context: str,
+    ) -> list[ProjectMemorySeed]:
+        if not existing_projects and not candidate_projects:
+            return []
+        merged_result = await self.deepseek_service.merge_projects_incrementally(
+            current_life_summary=updated_life_summary,
+            current_project_context=self._build_project_context(existing_projects),
+            candidate_projects_block=self._build_candidate_projects_block(candidate_projects),
+            recent_window_summary=window_summary,
+            conversation_context=conversation_context,
+        )
+        seeds = self._project_memory_seeds_from_deepseek(
+            merged_result.active_projects if merged_result.active_projects else candidate_projects,
+        )
+        return seeds[:8]
 
-    def list_projects(self, *, limit: int = 8) -> list[ProjectMemoryRecord]:
-        return self.store.list_project_memories(self.settings.default_user_id, limit=limit)
-
-    def list_important_messages(self, *, limit: int = 80) -> list[ImportantMessageRecord]:
-        return self.store.list_important_messages(self.settings.default_user_id, limit=limit)
-
-    async def extract_and_store_important_messages(
+    async def _extract_important_message_seeds(
         self,
         *,
         messages: list[StoredMessageRecord],
-        analyzed_at: datetime | None = None,
-    ) -> int:
+        current_life_summary: str,
+        project_context: str,
+    ) -> list[ImportantMessageSeed]:
         candidates = [message for message in messages if message.message_text.strip()]
         if not candidates:
-            return 0
+            return []
 
         messages_block = self._build_important_messages_block(candidates)
         if not messages_block:
-            return 0
+            return []
 
         logger.info("important_extract_start candidates=%s", len(candidates))
-
-        current_persona = self.get_current_persona()
-        project_context = self._build_project_context(
-            self.store.list_project_memories(
-                self.settings.default_user_id,
-                limit=max(1, self.settings.chat_context_projects),
-            )
-        )
         result = await self.deepseek_service.extract_important_messages(
             messages_block=messages_block,
             allowed_message_ids=[message.message_id for message in candidates],
-            current_life_summary=self._build_persona_context(current_persona),
+            current_life_summary=current_life_summary,
             project_context=project_context,
         )
 
@@ -1207,20 +1201,101 @@ class MemoryAnalysisService:
             seeds = self._build_heuristic_important_message_seeds(candidates)
             fallback_used = bool(seeds)
 
-        saved_count = self.store.upsert_important_messages(
-            user_id=self.settings.default_user_id,
-            messages=seeds,
-            saved_at=analyzed_at or datetime.now(UTC),
-        )
         logger.info(
             "important_extract_done candidates=%s model_candidates=%s low_confidence=%s saved=%s fallback_used=%s",
             len(candidates),
             len(result.important_messages),
             low_confidence_count,
-            saved_count,
+            len(seeds),
             fallback_used,
         )
-        return saved_count
+        return seeds
+
+    def _project_memory_seeds_from_deepseek(
+        self,
+        projects: list[DeepSeekProjectMemory],
+    ) -> list[ProjectMemorySeed]:
+        return [
+            ProjectMemorySeed(
+                project_name=project.name,
+                summary=project.summary,
+                status=project.status,
+                what_is_being_built=project.what_is_being_built,
+                built_for=project.built_for,
+                next_steps=project.next_steps,
+                evidence=project.evidence,
+            )
+            for project in projects
+            if project.name.strip() and project.summary.strip()
+        ]
+
+    def _build_project_seed_context(self, projects: list[ProjectMemorySeed]) -> str:
+        if not projects:
+            return ""
+        lines: list[str] = []
+        for project in projects[:8]:
+            lines.extend(
+                [
+                    f"- Projeto: {project.project_name}",
+                    f"  Resumo: {project.summary or '(sem resumo)'}",
+                    f"  Status: {project.status or '(sem status)'}",
+                    f"  Construindo: {project.what_is_being_built or '(nao especificado)'}",
+                    f"  Para quem: {project.built_for or '(nao especificado)'}",
+                    f"  Proximos passos: {'; '.join(project.next_steps) if project.next_steps else '(nenhum)'}",
+                    f"  Evidencias: {'; '.join(project.evidence) if project.evidence else '(nenhuma)'}",
+                ]
+            )
+        return "\n".join(lines)
+
+    def _build_candidate_projects_block(self, projects: list[DeepSeekProjectMemory]) -> str:
+        if not projects:
+            return ""
+        lines: list[str] = []
+        for project in projects[:8]:
+            lines.extend(
+                [
+                    f"- Projeto detectado: {project.name}",
+                    f"  Resumo: {project.summary or '(sem resumo)'}",
+                    f"  Status: {project.status or '(sem status)'}",
+                    f"  Construindo: {project.what_is_being_built or '(nao especificado)'}",
+                    f"  Para quem: {project.built_for or '(nao especificado)'}",
+                    f"  Proximos passos: {'; '.join(project.next_steps) if project.next_steps else '(nenhum)'}",
+                    f"  Evidencias: {'; '.join(project.evidence) if project.evidence else '(nenhuma)'}",
+                ]
+            )
+        return "\n".join(lines)
+
+    def list_snapshots(self, *, limit: int = 20) -> list[MemorySnapshotRecord]:
+        return self.store.list_memory_snapshots(self.settings.default_user_id, limit=limit)
+
+    def list_projects(self, *, limit: int = 8) -> list[ProjectMemoryRecord]:
+        return self.store.list_project_memories(self.settings.default_user_id, limit=limit)
+
+    def list_important_messages(self, *, limit: int = 80) -> list[ImportantMessageRecord]:
+        return self.store.list_important_messages(self.settings.default_user_id, limit=limit)
+
+    async def extract_and_store_important_messages(
+        self,
+        *,
+        messages: list[StoredMessageRecord],
+        analyzed_at: datetime | None = None,
+    ) -> int:
+        current_persona = self.get_current_persona()
+        seeds = await self._extract_important_message_seeds(
+            messages=messages,
+            current_life_summary=self._build_persona_context(current_persona),
+            project_context=self._build_project_context(
+                self.store.list_project_memories(
+                    self.settings.default_user_id,
+                    limit=max(1, self.settings.chat_context_projects),
+                )
+            ),
+        )
+        return self.store.upsert_important_messages(
+            user_id=self.settings.default_user_id,
+            messages=seeds,
+            saved_at=analyzed_at or datetime.now(UTC),
+        )
 
     def _build_heuristic_important_message_seeds(
         self,

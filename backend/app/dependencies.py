@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from app.services.automation_service import AutomationService
 from app.services.assistant_reply_service import AssistantReplyService
 from app.services.chat_service import ChatAssistantService
 from app.config import Settings
 from app.services.deepseek_service import DeepSeekService
 from app.services.groq_service import GroqChatService
+from app.services.memory_job_service import MemoryJobService
 from app.services.memory_service import MemoryAnalysisService
 from app.services.observer_gateway import ObserverGatewayService, WhatsAppAgentGatewayService
 from app.services.supabase_store import SupabaseStore
@@ -87,8 +87,8 @@ def get_chat_assistant_service() -> ChatAssistantService:
 
 
 @lru_cache
-def get_automation_service() -> AutomationService:
-    return AutomationService(
+def get_memory_job_service() -> MemoryJobService:
+    return MemoryJobService(
         settings=get_settings(),
         store=get_supabase_store(),
         memory_service=get_memory_analysis_service(),

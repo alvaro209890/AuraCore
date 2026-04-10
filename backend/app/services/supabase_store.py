@@ -47,6 +47,10 @@ class StoredMessageRecord:
     message_text: str
     timestamp: datetime
     source: str
+    analysis_status: str = "pending"
+    analysis_job_id: str | None = None
+    analysis_started_at: datetime | None = None
+    analyzed_at: datetime | None = None
 
 
 @dataclass(slots=True)
@@ -477,69 +481,62 @@ class SupabaseStore:
             [message.contact_phone for message in filtered_messages if message.contact_phone]
         )
         existing_ids = self._fetch_existing_message_ids([message.message_id for message in filtered_messages])
-        processed_ids = self._fetch_processed_message_ids([message.message_id for message in filtered_messages])
-        pending_messages = [
+        new_messages = [
             message for message in filtered_messages
-            if message.message_id not in existing_ids and message.message_id not in processed_ids
+            if message.message_id not in existing_ids
         ]
-        deduped_ignored_count = max(0, len(filtered_messages) - len(pending_messages))
-        if not pending_messages:
+        deduped_ignored_count = max(0, len(filtered_messages) - len(new_messages))
+        if not new_messages:
             return IngestSaveResult(saved_count=0, ignored_count=deduped_ignored_count)
 
         cutoff_at = self.get_observer_history_cutoff(user_id=self.default_user_id)
-        stale_history_ids: list[str] = []
-        if cutoff_at is not None:
-            fresh_pending_messages: list[IngestedMessageRecord] = []
-            for message in pending_messages:
-                if message.timestamp < cutoff_at:
-                    stale_history_ids.append(message.message_id)
-                else:
-                    fresh_pending_messages.append(message)
-            pending_messages = fresh_pending_messages
+        pending_messages: list[IngestedMessageRecord] = []
+        stale_history_messages: list[IngestedMessageRecord] = []
+        for message in new_messages:
+            if cutoff_at is not None and message.timestamp < cutoff_at:
+                stale_history_messages.append(message)
+            else:
+                pending_messages.append(message)
 
         (
             pending_messages,
-            overflow_message_ids,
-            trimmed_existing_ids,
+            _overflow_message_ids,
+            _trimmed_existing_ids,
         ) = self._prepare_ingest_batch(pending_messages)
 
-        if stale_history_ids or overflow_message_ids or trimmed_existing_ids:
-            self.mark_messages_processed(
-                user_id=self.default_user_id,
-                message_ids=[*stale_history_ids, *overflow_message_ids, *trimmed_existing_ids],
-                processed_at=datetime.now(UTC),
+        resolved_now = datetime.now(UTC)
+        records: list[dict[str, Any]] = []
+        for message, analysis_status in (
+            [(message, "pending") for message in pending_messages]
+            + [(message, "baseline_skipped") for message in stale_history_messages]
+        ):
+            records.append(
+                {
+                    "id": message.message_id,
+                    "user_id": str(message.user_id),
+                    "contact_name": self._resolve_contact_name(
+                        incoming_name=message.contact_name,
+                        contact_phone=message.contact_phone,
+                        known_name=known_contact_names.get(message.contact_phone or ""),
+                    ),
+                    "chat_jid": message.chat_jid,
+                    "contact_phone": message.contact_phone,
+                    "direction": message.direction,
+                    "message_text": message.message_text,
+                    "timestamp": message.timestamp.isoformat(),
+                    "source": message.source,
+                    "embedding": None,
+                    "ingested_at": resolved_now.isoformat(),
+                    "analysis_status": analysis_status,
+                    "analysis_job_id": None,
+                    "analysis_started_at": None,
+                    "analyzed_at": cutoff_at.isoformat() if analysis_status == "baseline_skipped" and cutoff_at else None,
+                }
             )
-        if trimmed_existing_ids:
-            self.delete_messages_by_ids(message_ids=trimmed_existing_ids)
 
-        new_message_count = len(pending_messages)
-        if not pending_messages:
-            return IngestSaveResult(
-                saved_count=0,
-                ignored_count=deduped_ignored_count + len(stale_history_ids) + len(overflow_message_ids),
-                trimmed_existing_count=len(trimmed_existing_ids),
-            )
-
-        records = [
-            {
-                "id": message.message_id,
-                "user_id": str(message.user_id),
-                "contact_name": self._resolve_contact_name(
-                    incoming_name=message.contact_name,
-                    contact_phone=message.contact_phone,
-                    known_name=known_contact_names.get(message.contact_phone or ""),
-                ),
-                "chat_jid": message.chat_jid,
-                "contact_phone": message.contact_phone,
-                "direction": message.direction,
-                "message_text": message.message_text,
-                "timestamp": message.timestamp.isoformat(),
-                "source": message.source,
-                "embedding": None,
-                "ingested_at": datetime.now(UTC).isoformat(),
-            }
-            for message in pending_messages
-        ]
+        new_message_count = len(records)
+        if not records:
+            return IngestSaveResult(saved_count=0, ignored_count=deduped_ignored_count)
 
         try:
             self.client.table("mensagens").upsert(records, on_conflict="id").execute()
@@ -547,6 +544,10 @@ class SupabaseStore:
             if not (
                 self._is_missing_column_error(exc, column_name="chat_jid", table_name="mensagens")
                 or self._is_missing_column_error(exc, column_name="ingested_at", table_name="mensagens")
+                or self._is_missing_column_error(exc, column_name="analysis_status", table_name="mensagens")
+                or self._is_missing_column_error(exc, column_name="analysis_job_id", table_name="mensagens")
+                or self._is_missing_column_error(exc, column_name="analysis_started_at", table_name="mensagens")
+                or self._is_missing_column_error(exc, column_name="analyzed_at", table_name="mensagens")
             ):
                 raise
             legacy_records = []
@@ -554,79 +555,40 @@ class SupabaseStore:
                 legacy_record = dict(record)
                 legacy_record.pop("chat_jid", None)
                 legacy_record.pop("ingested_at", None)
+                legacy_record.pop("analysis_status", None)
+                legacy_record.pop("analysis_job_id", None)
+                legacy_record.pop("analysis_started_at", None)
+                legacy_record.pop("analyzed_at", None)
                 legacy_records.append(legacy_record)
             self.client.table("mensagens").upsert(legacy_records, on_conflict="id").execute()
         if new_message_count > 0:
+            latest_ingested_at = max(
+                (message.timestamp for message in new_messages),
+                default=None,
+            )
             self.bump_message_retention_state(
                 user_id=self.default_user_id,
                 ingested_increment=new_message_count,
-                last_message_at=max(message.timestamp for message in pending_messages),
+                last_message_at=latest_ingested_at,
             )
         self.prune_non_direct_messages(self.default_user_id)
-        pruned_count = self.prune_old_messages(self.default_user_id)
-        if pruned_count > 0:
-            self.bump_message_retention_state(
-                user_id=self.default_user_id,
-                pruned_increment=pruned_count,
-            )
         observer_ingest_logger.info(
-            "observer_ingest_saved saved=%s ignored=%s stale_history=%s overflow=%s trimmed_existing=%s",
+            "observer_ingest_saved saved=%s ignored=%s pending=%s baseline_skipped=%s",
             len(records),
-            deduped_ignored_count + len(stale_history_ids) + len(overflow_message_ids),
-            len(stale_history_ids),
-            len(overflow_message_ids),
-            len(trimmed_existing_ids),
+            deduped_ignored_count,
+            len(pending_messages),
+            len(stale_history_messages),
         )
         return IngestSaveResult(
             saved_count=len(records),
-            ignored_count=deduped_ignored_count + len(stale_history_ids) + len(overflow_message_ids),
-            trimmed_existing_count=len(trimmed_existing_ids),
+            ignored_count=deduped_ignored_count,
         )
 
     def _prepare_ingest_batch(
         self,
         pending_messages: Sequence[IngestedMessageRecord],
     ) -> tuple[list[IngestedMessageRecord], list[str], list[str]]:
-        if self._has_initial_memory_analysis():
-            return list(pending_messages), [], []
-
-        existing_pending = self.list_pending_messages(
-            user_id=self.default_user_id,
-            limit=self.message_retention_max_rows,
-            newest_first=True,
-        )
-        combined_by_id: dict[str, StoredMessageRecord | IngestedMessageRecord] = {
-            message.message_id: message
-            for message in existing_pending
-        }
-        for message in pending_messages:
-            combined_by_id[message.message_id] = message
-
-        ordered_messages = sorted(
-            combined_by_id.values(),
-            key=lambda message: (message.timestamp, message.message_id),
-            reverse=True,
-        )
-        keep_ids = {
-            message.message_id
-            for message in ordered_messages[: self.first_analysis_queue_limit]
-        }
-        kept_pending_messages = [
-            message
-            for message in pending_messages
-            if message.message_id in keep_ids
-        ]
-        overflow_message_ids = [
-            message.message_id
-            for message in pending_messages
-            if message.message_id not in keep_ids
-        ]
-        trimmed_existing_ids = [
-            message.message_id
-            for message in existing_pending
-            if message.message_id not in keep_ids
-        ]
-        return kept_pending_messages, overflow_message_ids, trimmed_existing_ids
+        return list(pending_messages), [], []
 
     def _has_initial_memory_analysis(self) -> bool:
         persona = self.get_persona(self.default_user_id)
@@ -675,7 +637,10 @@ class SupabaseStore:
         try:
             response = (
                 self.client.table("mensagens")
-                .select("id,user_id,contact_name,chat_jid,contact_phone,direction,message_text,timestamp,source")
+                .select(
+                    "id,user_id,contact_name,chat_jid,contact_phone,direction,message_text,"
+                    "timestamp,source,analysis_status,analysis_job_id,analysis_started_at,analyzed_at"
+                )
                 .eq("user_id", str(user_id))
                 .gte("timestamp", window_start.isoformat())
                 .lte("timestamp", window_end.isoformat())
@@ -722,6 +687,10 @@ class SupabaseStore:
                     message_text=message_text,
                     timestamp=self._parse_datetime(row.get("timestamp")) or datetime.now(UTC),
                     source=str(row.get("source") or "unknown"),
+                    analysis_status=self._optional_text(row.get("analysis_status")) or "pending",
+                    analysis_job_id=self._optional_text(row.get("analysis_job_id")),
+                    analysis_started_at=self._parse_datetime(row.get("analysis_started_at")),
+                    analyzed_at=self._parse_datetime(row.get("analyzed_at")),
                 )
             )
         return messages
@@ -735,7 +704,103 @@ class SupabaseStore:
     ) -> list[StoredMessageRecord]:
         self.reconcile_observer_backlog(user_id=user_id)
         resolved_limit = max(1, min(limit, self.message_retention_max_rows))
+        messages: list[StoredMessageRecord] = []
+        seen_ids: set[str] = set()
+        chunk_size = min(500, self.message_retention_max_rows)
+        offset = 0
+
+        while len(messages) < resolved_limit and offset < self.message_retention_max_rows:
+            range_end = min(offset + chunk_size - 1, self.message_retention_max_rows - 1)
+            try:
+                response = (
+                    self.client.table("mensagens")
+                    .select(
+                        "id,user_id,contact_name,chat_jid,contact_phone,direction,message_text,"
+                        "timestamp,source,analysis_status,analysis_job_id,analysis_started_at,analyzed_at"
+                    )
+                    .eq("user_id", str(user_id))
+                    .eq("analysis_status", "pending")
+                    .order("timestamp", desc=newest_first)
+                    .range(offset, range_end)
+                    .execute()
+                )
+            except Exception as exc:
+                if self._is_missing_column_error(exc, column_name="analysis_status", table_name="mensagens"):
+                    return self._list_pending_messages_legacy(
+                        user_id=user_id,
+                        limit=resolved_limit,
+                        newest_first=newest_first,
+                    )
+                if not self._is_missing_column_error(exc, column_name="chat_jid", table_name="mensagens"):
+                    raise
+                response = (
+                    self.client.table("mensagens")
+                    .select(
+                        "id,user_id,contact_name,contact_phone,direction,message_text,timestamp,source,"
+                        "analysis_status,analysis_job_id,analysis_started_at,analyzed_at"
+                    )
+                    .eq("user_id", str(user_id))
+                    .eq("analysis_status", "pending")
+                    .order("timestamp", desc=newest_first)
+                    .range(offset, range_end)
+                    .execute()
+                )
+
+            rows = [row for row in (response.data or []) if isinstance(row, dict)]
+            if not rows:
+                break
+            known_contact_names = self._load_known_contact_names(
+                [self._optional_text(row.get("contact_phone")) for row in rows]
+            )
+
+            for row in rows:
+                message_id = str(row.get("id") or "").strip()
+                if not message_id or message_id in seen_ids:
+                    continue
+                message_text = str(row.get("message_text") or "").strip()
+                contact_phone = self._optional_text(row.get("contact_phone"))
+                if not message_text or not self.is_normal_contact_phone(contact_phone):
+                    continue
+                seen_ids.add(message_id)
+                messages.append(
+                    StoredMessageRecord(
+                        message_id=message_id,
+                        user_id=self._parse_uuid(row.get("user_id")) or user_id,
+                        direction=str(row.get("direction") or "inbound"),
+                        contact_name=self._resolve_contact_name(
+                            incoming_name=self._optional_text(row.get("contact_name")),
+                            contact_phone=contact_phone,
+                            known_name=known_contact_names.get(contact_phone or ""),
+                        ),
+                        chat_jid=self._optional_text(row.get("chat_jid")),
+                        contact_phone=contact_phone,
+                        message_text=message_text,
+                        timestamp=self._parse_datetime(row.get("timestamp")) or datetime.now(UTC),
+                        source=str(row.get("source") or "unknown"),
+                        analysis_status=self._optional_text(row.get("analysis_status")) or "pending",
+                        analysis_job_id=self._optional_text(row.get("analysis_job_id")),
+                        analysis_started_at=self._parse_datetime(row.get("analysis_started_at")),
+                        analyzed_at=self._parse_datetime(row.get("analyzed_at")),
+                    )
+                )
+                if len(messages) >= resolved_limit:
+                    break
+
+            if len(rows) < chunk_size:
+                break
+            offset += chunk_size
+
+        return messages
+
+    def _list_pending_messages_legacy(
+        self,
+        *,
+        user_id: UUID,
+        limit: int,
+        newest_first: bool = False,
+    ) -> list[StoredMessageRecord]:
         cutoff_at = self.get_observer_history_cutoff(user_id=user_id)
+        resolved_limit = max(1, min(limit, self.message_retention_max_rows))
         messages: list[StoredMessageRecord] = []
         seen_ids: set[str] = set()
         chunk_size = min(200, self.message_retention_max_rows)
@@ -767,10 +832,10 @@ class SupabaseStore:
             rows = [row for row in (response.data or []) if isinstance(row, dict)]
             if not rows:
                 break
+
             known_contact_names = self._load_known_contact_names(
                 [self._optional_text(row.get("contact_phone")) for row in rows]
             )
-
             processed_ids = self._fetch_processed_message_ids(
                 [str(row.get("id") or "").strip() for row in rows if str(row.get("id") or "").strip()]
             )
@@ -812,6 +877,167 @@ class SupabaseStore:
             offset += chunk_size
 
         return messages
+
+    def mark_messages_analysis_started(
+        self,
+        *,
+        user_id: UUID,
+        message_ids: Sequence[str],
+        job_id: str,
+        started_at: datetime,
+    ) -> int:
+        return self._update_message_analysis_state(
+            user_id=user_id,
+            message_ids=message_ids,
+            analysis_status="pending",
+            job_id=job_id,
+            started_at=started_at,
+            analyzed_at=None,
+        )
+
+    def mark_messages_analyzed(
+        self,
+        *,
+        user_id: UUID,
+        message_ids: Sequence[str],
+        job_id: str,
+        started_at: datetime,
+        analyzed_at: datetime,
+    ) -> int:
+        return self._update_message_analysis_state(
+            user_id=user_id,
+            message_ids=message_ids,
+            analysis_status="analyzed",
+            job_id=job_id,
+            started_at=started_at,
+            analyzed_at=analyzed_at,
+        )
+
+    def release_messages_from_analysis(
+        self,
+        *,
+        user_id: UUID,
+        message_ids: Sequence[str],
+    ) -> int:
+        return self._update_message_analysis_state(
+            user_id=user_id,
+            message_ids=message_ids,
+            analysis_status="pending",
+            job_id=None,
+            started_at=None,
+            analyzed_at=None,
+        )
+
+    def mark_messages_baseline_skipped_before_timestamp(
+        self,
+        *,
+        user_id: UUID,
+        cutoff_at: datetime,
+        exclude_message_ids: Sequence[str] = (),
+        job_id: str | None = None,
+        started_at: datetime | None = None,
+        analyzed_at: datetime | None = None,
+    ) -> int:
+        exclude_ids = {
+            message_id.strip()
+            for message_id in exclude_message_ids
+            if message_id and message_id.strip()
+        }
+        stale_ids = self._list_message_ids_before_timestamp(
+            user_id=user_id,
+            cutoff_at=cutoff_at,
+            analysis_status="pending",
+        )
+        candidate_ids = [message_id for message_id in stale_ids if message_id not in exclude_ids]
+        return self._update_message_analysis_state(
+            user_id=user_id,
+            message_ids=candidate_ids,
+            analysis_status="baseline_skipped",
+            job_id=job_id,
+            started_at=started_at,
+            analyzed_at=analyzed_at or datetime.now(UTC),
+        )
+
+    def _list_message_ids_before_timestamp(
+        self,
+        *,
+        user_id: UUID,
+        cutoff_at: datetime,
+        analysis_status: str | None = None,
+    ) -> list[str]:
+        chunk_size = 500
+        offset = 0
+        message_ids: list[str] = []
+        while True:
+            range_end = offset + chunk_size - 1
+            try:
+                query = (
+                    self.client.table("mensagens")
+                    .select("id")
+                    .eq("user_id", str(user_id))
+                    .lt("timestamp", cutoff_at.isoformat())
+                    .order("timestamp", desc=False)
+                    .range(offset, range_end)
+                )
+                if analysis_status is not None:
+                    query = query.eq("analysis_status", analysis_status)
+                response = query.execute()
+            except Exception as exc:
+                if analysis_status is not None and self._is_missing_column_error(
+                    exc,
+                    column_name="analysis_status",
+                    table_name="mensagens",
+                ):
+                    return []
+                if not self._is_missing_table_error(exc, "mensagens"):
+                    raise
+                return []
+            rows = response.data or []
+            if not rows:
+                break
+            message_ids.extend(
+                str(row.get("id") or "").strip()
+                for row in rows
+                if isinstance(row, dict) and str(row.get("id") or "").strip()
+            )
+            if len(rows) < chunk_size:
+                break
+            offset += chunk_size
+        return message_ids
+
+    def _update_message_analysis_state(
+        self,
+        *,
+        user_id: UUID,
+        message_ids: Sequence[str],
+        analysis_status: str,
+        job_id: str | None,
+        started_at: datetime | None,
+        analyzed_at: datetime | None,
+    ) -> int:
+        cleaned_ids = [message_id.strip() for message_id in message_ids if message_id and message_id.strip()]
+        if not cleaned_ids:
+            return 0
+        payload = {
+            "analysis_status": analysis_status,
+            "analysis_job_id": job_id,
+            "analysis_started_at": started_at.isoformat() if started_at else None,
+            "analyzed_at": analyzed_at.isoformat() if analyzed_at else None,
+        }
+        updated_total = 0
+        chunk_size = 500
+        for start in range(0, len(cleaned_ids), chunk_size):
+            chunk = cleaned_ids[start:start + chunk_size]
+            try:
+                self.client.table("mensagens").update(payload).eq("user_id", str(user_id)).in_("id", chunk).execute()
+            except Exception as exc:
+                if self._is_missing_column_error(exc, column_name="analysis_status", table_name="mensagens"):
+                    return 0
+                if not self._is_missing_table_error(exc, "mensagens"):
+                    raise
+                return updated_total
+            updated_total += len(chunk)
+        return updated_total
 
     def prune_non_direct_messages(self, user_id: UUID) -> int:
         deleted_total = 0
@@ -2712,13 +2938,40 @@ class SupabaseStore:
         return sum(1 for row in rows if isinstance(row, dict))
 
     def count_pending_messages(self, user_id: UUID) -> int:
-        return len(
-            self.list_pending_messages(
-                user_id=user_id,
-                limit=self.message_retention_max_rows,
-                newest_first=False,
-            )
-        )
+        self.reconcile_observer_backlog(user_id=user_id)
+        count = 0
+        chunk_size = 1000
+        offset = 0
+        while True:
+            range_end = offset + chunk_size - 1
+            try:
+                response = (
+                    self.client.table("mensagens")
+                    .select("id")
+                    .eq("user_id", str(user_id))
+                    .eq("analysis_status", "pending")
+                    .range(offset, range_end)
+                    .execute()
+                )
+            except Exception as exc:
+                if self._is_missing_column_error(exc, column_name="analysis_status", table_name="mensagens"):
+                    return len(
+                        self._list_pending_messages_legacy(
+                            user_id=user_id,
+                            limit=self.message_retention_max_rows,
+                            newest_first=False,
+                        )
+                    )
+                if not self._is_missing_table_error(exc, "mensagens"):
+                    raise
+                return 0
+            rows = response.data or []
+            row_count = sum(1 for row in rows if isinstance(row, dict))
+            count += row_count
+            if row_count < chunk_size:
+                break
+            offset += chunk_size
+        return count
 
     def count_messages_in_window(self, *, user_id: UUID, window_start: datetime, window_end: datetime) -> int:
         response = (
@@ -2893,47 +3146,64 @@ class SupabaseStore:
         if cutoff_at is None:
             return 0
 
-        deleted_total = 0
-        while True:
-            try:
-                response = (
-                    self.client.table("mensagens")
-                    .select("id")
-                    .eq("user_id", str(user_id))
-                    .lt("timestamp", cutoff_at.isoformat())
-                    .order("timestamp", desc=False)
-                    .limit(500)
-                    .execute()
-                )
-            except Exception as exc:
-                if not self._is_missing_table_error(exc, "mensagens"):
-                    raise
-                return deleted_total
-
-            rows = response.data or []
-            stale_ids = [
-                str(row.get("id") or "").strip()
-                for row in rows
-                if isinstance(row, dict) and str(row.get("id") or "").strip()
-            ]
-            if not stale_ids:
-                break
-
-            self.mark_messages_processed(
+        try:
+            skipped_total = self.mark_messages_baseline_skipped_before_timestamp(
                 user_id=user_id,
-                message_ids=stale_ids,
-                processed_at=datetime.now(UTC),
+                cutoff_at=cutoff_at,
+                analyzed_at=cutoff_at,
             )
-            self.delete_messages_by_ids(message_ids=stale_ids)
-            deleted_total += len(stale_ids)
+        except Exception as exc:
+            if not self._is_missing_column_error(exc, column_name="analysis_status", table_name="mensagens"):
+                raise
+            deleted_total = 0
+            while True:
+                try:
+                    response = (
+                        self.client.table("mensagens")
+                        .select("id")
+                        .eq("user_id", str(user_id))
+                        .lt("timestamp", cutoff_at.isoformat())
+                        .order("timestamp", desc=False)
+                        .limit(500)
+                        .execute()
+                    )
+                except Exception as nested_exc:
+                    if not self._is_missing_table_error(nested_exc, "mensagens"):
+                        raise
+                    return deleted_total
 
-        if deleted_total > 0:
+                rows = response.data or []
+                stale_ids = [
+                    str(row.get("id") or "").strip()
+                    for row in rows
+                    if isinstance(row, dict) and str(row.get("id") or "").strip()
+                ]
+                if not stale_ids:
+                    break
+
+                self.mark_messages_processed(
+                    user_id=user_id,
+                    message_ids=stale_ids,
+                    processed_at=datetime.now(UTC),
+                )
+                self.delete_messages_by_ids(message_ids=stale_ids)
+                deleted_total += len(stale_ids)
+
+            if deleted_total > 0:
+                observer_ingest_logger.info(
+                    "observer_backlog_reconciled deleted=%s cutoff_at=%s",
+                    deleted_total,
+                    cutoff_at.isoformat(),
+                )
+            return deleted_total
+
+        if skipped_total > 0:
             observer_ingest_logger.info(
-                "observer_backlog_reconciled deleted=%s cutoff_at=%s",
-                deleted_total,
+                "observer_backlog_reconciled baseline_skipped=%s cutoff_at=%s",
+                skipped_total,
                 cutoff_at.isoformat(),
             )
-        return deleted_total
+        return skipped_total
 
     def get_known_contact_by_phone(
         self,

@@ -1,25 +1,37 @@
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Body, Depends, Query
 
-from app.dependencies import get_automation_service, get_memory_analysis_service
+from app.dependencies import get_memory_analysis_service, get_memory_job_service
 from app.schemas import (
+    AnalysisJobResponse,
     AnalyzeMemoryRequest,
     AnalyzeMemoryResponse,
     ImportantMessageResponse,
     ImportantMessagesListResponse,
+    MemoryActivityResponse,
     MemoryAnalysisPreviewResponse,
     MemoryCurrentResponse,
-    MemoryStatusResponse,
     MemorySnapshotResponse,
     MemorySnapshotsListResponse,
+    MemoryStatusResponse,
+    ModelRunResponse,
     ProjectMemoryResponse,
-    RefineMemoryResponse,
-    AnalysisJobResponse,
+    WhatsAppSyncRunResponse,
 )
-from app.services.automation_service import AutomationService
+from app.services.memory_job_service import MemoryActivitySnapshot, MemoryJobService
 from app.services.memory_service import MemoryAnalysisService
-from app.services.supabase_store import ImportantMessageRecord, MemorySnapshotRecord, PersonaRecord, ProjectMemoryRecord
+from app.services.supabase_store import (
+    AnalysisJobRecord,
+    ImportantMessageRecord,
+    MemorySnapshotRecord,
+    ModelRunRecord,
+    PersonaRecord,
+    ProjectMemoryRecord,
+    WhatsAppSyncRunRecord,
+)
 
 router = APIRouter(prefix="/api/memories", tags=["memories"])
 
@@ -28,24 +40,33 @@ router = APIRouter(prefix="/api/memories", tags=["memories"])
 async def get_current_memory(
     memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
 ) -> MemoryCurrentResponse:
-    persona = memory_service.get_current_persona()
-    return _to_persona_response(persona)
+    return _to_persona_response(memory_service.get_current_persona())
 
 
 @router.get("/status", response_model=MemoryStatusResponse)
 async def get_memory_status(
     memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
+    memory_job_service: MemoryJobService = Depends(get_memory_job_service),
 ) -> MemoryStatusResponse:
     status = memory_service.get_memory_status()
+    activity = await memory_job_service.get_activity_snapshot()
+    current_job, latest_completed_job = _resolve_job_refs(activity.jobs)
     return MemoryStatusResponse(
         has_initial_analysis=status.has_initial_analysis,
         last_analyzed_at=status.last_analyzed_at,
-        pending_new_message_count=status.pending_new_message_count,
-        next_process_message_count=status.next_process_message_count,
-        messages_until_auto_process=status.messages_until_auto_process,
-        can_run_first_analysis=status.can_run_first_analysis,
-        can_run_next_batch=status.can_run_next_batch,
+        new_messages_after_first_analysis=status.new_messages_after_first_analysis,
+        current_job=_to_job_response(current_job),
+        latest_completed_job=_to_job_response(latest_completed_job),
+        can_execute_analysis=current_job is None and status.new_messages_after_first_analysis > 0,
     )
+
+
+@router.get("/activity", response_model=MemoryActivityResponse)
+async def get_memory_activity(
+    memory_job_service: MemoryJobService = Depends(get_memory_job_service),
+) -> MemoryActivityResponse:
+    activity = await memory_job_service.get_activity_snapshot()
+    return _to_activity_response(activity)
 
 
 @router.get("/snapshots", response_model=MemorySnapshotsListResponse)
@@ -66,90 +87,42 @@ async def get_important_messages(
     return ImportantMessagesListResponse(messages=[_to_important_message_response(message) for message in messages])
 
 
-@router.post("/analyze", response_model=AnalyzeMemoryResponse)
-async def analyze_memory(
+@router.post("/execute", response_model=AnalyzeMemoryResponse)
+async def execute_memory_analysis(
     request: AnalyzeMemoryRequest | None = Body(default=None),
-    window_hours: int | None = Query(default=None, ge=1),
-    automation_service: AutomationService = Depends(get_automation_service),
+    memory_job_service: MemoryJobService = Depends(get_memory_job_service),
     memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
 ) -> AnalyzeMemoryResponse:
-    if request is not None and request.target_message_count is not None:
-        intent = request.intent or (
-            "improve_memory" if memory_service.get_current_persona().last_analyzed_at else "first_analysis"
-        )
-        job = await automation_service.enqueue_manual_analysis(
-            intent=intent,
-            target_message_count=request.target_message_count,
-            max_lookback_hours=request.max_lookback_hours or 72,
-            detail_mode=request.detail_mode,
-        )
-    else:
-        resolved_window_hours = (
-            request.window_hours
-            if request is not None and request.window_hours is not None
-            else window_hours or 24
-        )
-        target_message_count = min(
-            memory_service.settings.memory_analysis_max_messages,
-            max(20, resolved_window_hours * 4),
-        )
-        intent = request.intent or (
-            "improve_memory" if memory_service.get_current_persona().last_analyzed_at else "first_analysis"
-        )
-        job = await automation_service.enqueue_manual_analysis(
-            intent=intent,
-            target_message_count=target_message_count,
-            max_lookback_hours=resolved_window_hours,
-            detail_mode=request.detail_mode if request is not None else "balanced",
-        )
-    current = memory_service.get_current_persona()
-    snapshots = memory_service.list_snapshots(limit=1)
-    snapshot = snapshots[0] if snapshots else None
-    jobs = memory_service.store.list_analysis_jobs(user_id=current.user_id, limit=5)
-    # Procura um job rodando ou o último concluído
-    running_job = next((j for j in jobs if j.status in ("queued", "running")), None)
-    latest_job = running_job or (jobs[0] if jobs else None)
-    
-    return AnalyzeMemoryResponse(
-        current=_to_persona_response(current),
-        snapshot=_to_snapshot_response(snapshot) if snapshot else None,
-        projects=[_to_project_response(project) for project in memory_service.list_projects()],
-        job=_to_job_response(latest_job) if latest_job else None,
-    )
+    job = await memory_job_service.execute_manual_analysis(intent=request.intent if request else None)
+    return _build_analyze_memory_response(memory_service=memory_service, job=job)
+
+
+@router.post("/analyze", response_model=AnalyzeMemoryResponse)
+async def analyze_memory_alias(
+    request: AnalyzeMemoryRequest | None = Body(default=None),
+    memory_job_service: MemoryJobService = Depends(get_memory_job_service),
+    memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
+) -> AnalyzeMemoryResponse:
+    job = await memory_job_service.execute_manual_analysis(intent=request.intent if request else None)
+    return _build_analyze_memory_response(memory_service=memory_service, job=job)
 
 
 @router.post("/first-analysis", response_model=AnalyzeMemoryResponse)
 async def run_first_memory_analysis(
-    automation_service: AutomationService = Depends(get_automation_service),
+    memory_job_service: MemoryJobService = Depends(get_memory_job_service),
     memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
 ) -> AnalyzeMemoryResponse:
-    job = await automation_service.enqueue_manual_first_analysis()
-    current = memory_service.get_current_persona()
-    snapshots = memory_service.list_snapshots(limit=1)
-    snapshot = snapshots[0] if snapshots else None
-    return AnalyzeMemoryResponse(
-        current=_to_persona_response(current),
-        snapshot=_to_snapshot_response(snapshot) if snapshot else None,
-        projects=[_to_project_response(project) for project in memory_service.list_projects()],
-        job=_to_job_response(job),
-    )
+    job = await memory_job_service.execute_manual_analysis(intent="first_analysis")
+    return _build_analyze_memory_response(memory_service=memory_service, job=job)
 
 
 @router.post("/process-next-batch", response_model=AnalyzeMemoryResponse)
 async def run_next_memory_batch(
-    automation_service: AutomationService = Depends(get_automation_service),
+    memory_job_service: MemoryJobService = Depends(get_memory_job_service),
     memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
 ) -> AnalyzeMemoryResponse:
-    job = await automation_service.enqueue_manual_next_batch()
-    current = memory_service.get_current_persona()
-    snapshots = memory_service.list_snapshots(limit=1)
-    snapshot = snapshots[0] if snapshots else None
-    return AnalyzeMemoryResponse(
-        current=_to_persona_response(current),
-        snapshot=_to_snapshot_response(snapshot) if snapshot else None,
-        projects=[_to_project_response(project) for project in memory_service.list_projects()],
-        job=_to_job_response(job),
-    )
+    job = await memory_job_service.execute_manual_analysis(intent="improve_memory")
+    return _build_analyze_memory_response(memory_service=memory_service, job=job)
 
 
 @router.post("/preview", response_model=MemoryAnalysisPreviewResponse)
@@ -211,26 +184,49 @@ async def preview_memory_analysis(
     )
 
 
-@router.post("/refine", response_model=RefineMemoryResponse)
-async def refine_saved_memory(
-    automation_service: AutomationService = Depends(get_automation_service),
+@router.get("/projects", response_model=list[ProjectMemoryResponse])
+async def get_memory_projects(
     memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
-) -> RefineMemoryResponse:
-    job = await automation_service.enqueue_manual_refinement()
-    return RefineMemoryResponse(
-        current=_to_persona_response(memory_service.get_current_persona()),
+) -> list[ProjectMemoryResponse]:
+    return [_to_project_response(project) for project in memory_service.list_projects()]
+
+
+def _build_analyze_memory_response(
+    *,
+    memory_service: MemoryAnalysisService,
+    job: AnalysisJobRecord | None,
+) -> AnalyzeMemoryResponse:
+    current = memory_service.get_current_persona()
+    snapshots = memory_service.list_snapshots(limit=1)
+    snapshot = snapshots[0] if snapshots else None
+    return AnalyzeMemoryResponse(
+        current=_to_persona_response(current),
+        snapshot=_to_snapshot_response(snapshot) if snapshot else None,
         projects=[_to_project_response(project) for project in memory_service.list_projects()],
         job=_to_job_response(job),
     )
 
 
+def _resolve_job_refs(jobs: list[AnalysisJobRecord]) -> tuple[AnalysisJobRecord | None, AnalysisJobRecord | None]:
+    current_job = next((job for job in jobs if job.status in {"queued", "running"}), None)
+    latest_completed_job = next((job for job in jobs if job.status in {"succeeded", "failed"}), None)
+    return current_job, latest_completed_job
 
-@router.get("/projects", response_model=list[ProjectMemoryResponse])
-async def get_memory_projects(
-    memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
-) -> list[ProjectMemoryResponse]:
-    projects = memory_service.list_projects()
-    return [_to_project_response(project) for project in projects]
+
+def _to_activity_response(activity: MemoryActivitySnapshot) -> MemoryActivityResponse:
+    queued_jobs_count = sum(1 for job in activity.jobs if job.status == "queued")
+    return MemoryActivityResponse(
+        sync_runs=[_to_sync_run_response(sync_run) for sync_run in activity.sync_runs],
+        jobs=[_to_job_response(job) for job in activity.jobs if _to_job_response(job) is not None],
+        model_runs=[_to_model_run_response(model_run) for model_run in activity.model_runs],
+        running_job_id=activity.running_job_id,
+        decisions=[],
+        queued_jobs_count=queued_jobs_count,
+        daily_auto_jobs_count=0,
+        settings=None,
+    )
+
+
 def _to_persona_response(persona: PersonaRecord) -> MemoryCurrentResponse:
     return MemoryCurrentResponse(
         user_id=str(persona.user_id),
@@ -296,6 +292,42 @@ def _to_important_message_response(message: ImportantMessageRecord) -> Important
         saved_at=message.saved_at,
         last_reviewed_at=message.last_reviewed_at,
         discarded_at=message.discarded_at,
+    )
+
+
+def _to_sync_run_response(sync_run: WhatsAppSyncRunRecord) -> WhatsAppSyncRunResponse:
+    return WhatsAppSyncRunResponse(
+        id=sync_run.id,
+        trigger=sync_run.trigger,
+        status=sync_run.status,
+        messages_seen_count=sync_run.messages_seen_count,
+        messages_saved_count=sync_run.messages_saved_count,
+        messages_ignored_count=sync_run.messages_ignored_count,
+        messages_pruned_count=sync_run.messages_pruned_count,
+        oldest_message_at=sync_run.oldest_message_at,
+        newest_message_at=sync_run.newest_message_at,
+        error_text=sync_run.error_text,
+        started_at=sync_run.started_at,
+        finished_at=sync_run.finished_at,
+        last_activity_at=sync_run.last_activity_at,
+    )
+
+
+def _to_model_run_response(model_run: ModelRunRecord) -> ModelRunResponse:
+    return ModelRunResponse(
+        id=model_run.id,
+        job_id=model_run.job_id,
+        provider=model_run.provider,
+        model_name=model_run.model_name,
+        run_type=model_run.run_type,
+        success=model_run.success,
+        latency_ms=model_run.latency_ms,
+        input_tokens=model_run.input_tokens,
+        output_tokens=model_run.output_tokens,
+        reasoning_tokens=model_run.reasoning_tokens,
+        estimated_cost_usd=model_run.estimated_cost_usd,
+        error_text=model_run.error_text,
+        created_at=model_run.created_at,
     )
 
 

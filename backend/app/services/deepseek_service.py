@@ -53,6 +53,10 @@ class DeepSeekMemoryRefinementResult(BaseModel):
     active_projects: list[DeepSeekProjectMemory] = Field(default_factory=list)
 
 
+class DeepSeekProjectMergeResult(BaseModel):
+    active_projects: list[DeepSeekProjectMemory] = Field(default_factory=list)
+
+
 class DeepSeekContactMemoryRefinementResult(BaseModel):
     contact_memories: list[DeepSeekPersonMemory] = Field(default_factory=list)
 
@@ -200,6 +204,36 @@ class DeepSeekService:
             payload=payload,
             parser=self._parse_contact_refinement_result,
             validator=self._validate_contact_refinement_result,
+        )
+
+    async def merge_projects_incrementally(
+        self,
+        *,
+        current_life_summary: str,
+        current_project_context: str,
+        candidate_projects_block: str,
+        recent_window_summary: str,
+        conversation_context: str,
+    ) -> DeepSeekProjectMergeResult:
+        payload = self._build_completion_payload(
+            system_prompt=(
+                "Voce reconcilia projetos ativos do AuraCore. Sua funcao e combinar os projetos ja salvos "
+                "com novos sinais vindos da analise recente e devolver uma lista canonica, curta e sem duplicatas. "
+                "Retorne apenas JSON valido."
+            ),
+            user_prompt=self._build_project_merge_prompt(
+                current_life_summary=current_life_summary,
+                current_project_context=current_project_context,
+                candidate_projects_block=candidate_projects_block,
+                recent_window_summary=recent_window_summary,
+                conversation_context=conversation_context,
+            ),
+            max_tokens=5000 if self._is_reasoning_model() else 2400,
+        )
+        return await self._request_parsed_completion(
+            payload=payload,
+            parser=self._parse_project_merge_result,
+            validator=self._validate_project_merge_result,
         )
 
     async def extract_important_messages(
@@ -531,6 +565,59 @@ Regras:
 - Nao inclua markdown fences.
 """.strip()
 
+    def _build_project_merge_prompt(
+        self,
+        *,
+        current_life_summary: str,
+        current_project_context: str,
+        candidate_projects_block: str,
+        recent_window_summary: str,
+        conversation_context: str,
+    ) -> str:
+        return f"""
+Reconcile os projetos ativos do dono com base no que ja existe salvo e nos novos sinais da leitura mais recente.
+
+Resumo atual da vida do dono:
+{current_life_summary.strip() or "(memoria consolidada ainda vazia)"}
+
+Projetos atualmente salvos:
+{current_project_context.strip() or "(nenhum projeto salvo ainda)"}
+
+Projetos detectados na leitura mais recente:
+{candidate_projects_block.strip() or "(nenhum projeto novo detectado na ultima leitura)"}
+
+Resumo da janela mais recente:
+{recent_window_summary.strip() or "(sem resumo da janela)"}
+
+Contexto resumido das conversas recentes:
+{conversation_context.strip() or "(sem contexto adicional de conversa)"}
+
+Retorne um JSON com exatamente este formato:
+{{
+  "active_projects": [
+    {{
+      "name": "string",
+      "summary": "string",
+      "status": "string",
+      "what_is_being_built": "string",
+      "built_for": "string",
+      "next_steps": ["string"],
+      "evidence": ["string"]
+    }}
+  ]
+}}
+
+Regras:
+- A saida deve ser a lista canonica atual de projetos ativos do dono.
+- Una projetos duplicados ou muito parecidos em um unico item mais claro.
+- Remova projetos que parecem antigos, fracos, resolvidos ou sem continuidade real.
+- Nao invente projeto novo se o sinal estiver fraco.
+- Prefira poucos projetos fortes a muitos projetos vagos.
+- Sempre que possivel, explique o que esta sendo construido e para quem.
+- Mantenha no maximo 8 projetos.
+- Nao inclua markdown fences.
+""".strip()
+
     def _build_contact_refinement_prompt(
         self,
         *,
@@ -771,6 +858,13 @@ Regras:
         if not parsed.updated_life_summary.strip():
             raise DeepSeekError("DeepSeek retornou uma memoria refinada vazia.")
 
+    def _validate_project_merge_result(self, parsed: DeepSeekProjectMergeResult) -> None:
+        for project in parsed.active_projects:
+            if not project.name.strip():
+                raise DeepSeekError("DeepSeek retornou um projeto reconciliado sem nome.")
+            if not project.summary.strip():
+                raise DeepSeekError("DeepSeek retornou um projeto reconciliado sem resumo.")
+
     def _validate_contact_refinement_result(self, parsed: DeepSeekContactMemoryRefinementResult) -> None:
         for person in parsed.contact_memories:
             if not person.person_key.strip():
@@ -818,19 +912,11 @@ Regras:
         return 8000 if self._is_reasoning_model() else 3500
 
     def _parse_result(self, content: str) -> DeepSeekMemoryResult:
-        normalized_content = content.strip()
-        if normalized_content.startswith("```"):
-            normalized_content = normalized_content.strip("`")
-            normalized_content = normalized_content.replace("json", "", 1).strip()
-
-        try:
-            raw = json.loads(normalized_content)
-        except json.JSONDecodeError as exc:
-            raise DeepSeekError("DeepSeek returned invalid JSON output.") from exc
-
-        if not isinstance(raw, dict):
-            raise DeepSeekError("DeepSeek returned a JSON payload in an unexpected shape.")
-
+        raw = self._parse_json_dict(
+            content,
+            error_message="DeepSeek returned invalid JSON output.",
+            shape_error_message="DeepSeek returned a JSON payload in an unexpected shape.",
+        )
         return DeepSeekMemoryResult(
             updated_life_summary=self._as_text(raw.get("updated_life_summary")),
             window_summary=self._as_text(raw.get("window_summary")),
@@ -843,17 +929,78 @@ Regras:
             contact_memories=self._as_person_memories(raw.get("contact_memories")),
         )
 
-        try:
-            raw = json.loads(normalized_content)
-        except json.JSONDecodeError as exc:
-            raise DeepSeekError("DeepSeek retornou JSON invalido na revisao das mensagens importantes.") from exc
+    def _parse_refinement_result(self, content: str) -> DeepSeekMemoryRefinementResult:
+        raw = self._parse_json_dict(
+            content,
+            error_message="DeepSeek retornou JSON invalido no refinamento da memoria.",
+            shape_error_message="DeepSeek retornou um payload inesperado no refinamento da memoria.",
+        )
+        return DeepSeekMemoryRefinementResult(
+            updated_life_summary=self._as_text(raw.get("updated_life_summary")),
+            active_projects=self._as_projects(raw.get("active_projects")),
+        )
 
-        if not isinstance(raw, dict):
-            raise DeepSeekError("DeepSeek retornou um payload inesperado na revisao das mensagens importantes.")
+    def _parse_project_merge_result(self, content: str) -> DeepSeekProjectMergeResult:
+        raw = self._parse_json_dict(
+            content,
+            error_message="DeepSeek retornou JSON invalido na reconciliacao de projetos.",
+            shape_error_message="DeepSeek retornou um payload inesperado na reconciliacao de projetos.",
+        )
+        return DeepSeekProjectMergeResult(
+            active_projects=self._as_projects(raw.get("active_projects")),
+        )
+
+    def _parse_contact_refinement_result(self, content: str) -> DeepSeekContactMemoryRefinementResult:
+        raw = self._parse_json_dict(
+            content,
+            error_message="DeepSeek retornou JSON invalido no refinamento de contatos.",
+            shape_error_message="DeepSeek retornou um payload inesperado no refinamento de contatos.",
+        )
+        return DeepSeekContactMemoryRefinementResult(
+            contact_memories=self._as_person_memories(raw.get("contact_memories")),
+        )
+
+    def _parse_important_messages_result(self, content: str) -> DeepSeekImportantMessagesResult:
+        raw = self._parse_json_dict(
+            content,
+            error_message="DeepSeek retornou JSON invalido na selecao de mensagens importantes.",
+            shape_error_message="DeepSeek retornou um payload inesperado na selecao de mensagens importantes.",
+        )
+        return DeepSeekImportantMessagesResult(
+            important_messages=self._as_important_messages(raw.get("important_messages")),
+        )
+
+    def _parse_important_messages_review_result(self, content: str) -> DeepSeekImportantMessagesReviewResult:
+        raw = self._parse_json_dict(
+            content,
+            error_message="DeepSeek retornou JSON invalido na revisao das mensagens importantes.",
+            shape_error_message="DeepSeek retornou um payload inesperado na revisao das mensagens importantes.",
+        )
 
         return DeepSeekImportantMessagesReviewResult(
             reviews=self._as_important_message_reviews(raw.get("reviews")),
         )
+
+    def _parse_json_dict(
+        self,
+        content: str,
+        *,
+        error_message: str,
+        shape_error_message: str,
+    ) -> dict[str, Any]:
+        normalized_content = content.strip()
+        if normalized_content.startswith("```"):
+            normalized_content = normalized_content.strip("`")
+            normalized_content = normalized_content.replace("json", "", 1).strip()
+
+        try:
+            raw = json.loads(normalized_content)
+        except json.JSONDecodeError as exc:
+            raise DeepSeekError(error_message) from exc
+
+        if not isinstance(raw, dict):
+            raise DeepSeekError(shape_error_message)
+        return raw
 
     def _as_text(self, value: Any) -> str:
         if value is None:

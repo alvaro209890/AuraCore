@@ -139,11 +139,10 @@ export type MemoryCurrent = {
 export type MemoryStatus = {
   has_initial_analysis: boolean;
   last_analyzed_at: string | null;
-  pending_new_message_count: number;
-  next_process_message_count: number;
-  messages_until_auto_process: number;
-  can_run_first_analysis: boolean;
-  can_run_next_batch: boolean;
+  new_messages_after_first_analysis: number;
+  current_job: AnalysisJob | null;
+  latest_completed_job: AnalysisJob | null;
+  can_execute_analysis: boolean;
 };
 
 export type MemorySnapshot = {
@@ -265,7 +264,7 @@ export type ChatThread = {
 
 export type AnalyzeMemoryResponse = {
   current: MemoryCurrent;
-  snapshot: MemorySnapshot;
+  snapshot: MemorySnapshot | null;
   projects: ProjectMemory[];
   job: AnalysisJob | null;
 };
@@ -399,6 +398,17 @@ export type AutomationStatus = {
   running_job_id: string | null;
 };
 
+export type MemoryActivity = {
+  sync_runs: WhatsAppSyncRun[];
+  jobs: AnalysisJob[];
+  model_runs: ModelRun[];
+  running_job_id: string | null;
+  decisions?: AutomationDecision[];
+  queued_jobs_count?: number;
+  daily_auto_jobs_count?: number;
+  settings?: AutomationSettings | null;
+};
+
 const API_BASE_URL = (
   process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
   (typeof window !== "undefined" && window.location.hostname === "localhost"
@@ -512,6 +522,10 @@ export async function getMemoryStatus(): Promise<MemoryStatus> {
   return request<MemoryStatus>("/api/memories/status");
 }
 
+export async function getMemoryActivity(): Promise<MemoryActivity> {
+  return request<MemoryActivity>("/api/memories/activity");
+}
+
 export async function getMemorySnapshots(limit = 20): Promise<MemorySnapshot[]> {
   const response = await request<MemorySnapshotsListResponse>(`/api/memories/snapshots?limit=${limit}`);
   return response.snapshots;
@@ -541,14 +555,25 @@ export async function analyzeMemory(windowHours: number): Promise<AnalyzeMemoryR
 }
 
 export async function runFirstMemoryAnalysis(): Promise<AnalyzeMemoryResponse> {
-  return request<AnalyzeMemoryResponse>("/api/memories/first-analysis", {
+  return request<AnalyzeMemoryResponse>("/api/memories/execute", {
     method: "POST",
+    body: JSON.stringify({ intent: "first_analysis" }),
   });
 }
 
 export async function runNextMemoryBatch(): Promise<AnalyzeMemoryResponse> {
-  return request<AnalyzeMemoryResponse>("/api/memories/process-next-batch", {
+  return request<AnalyzeMemoryResponse>("/api/memories/execute", {
     method: "POST",
+    body: JSON.stringify({ intent: "improve_memory" }),
+  });
+}
+
+export async function executeMemoryAnalysis(
+  intent?: "first_analysis" | "improve_memory",
+): Promise<AnalyzeMemoryResponse> {
+  return request<AnalyzeMemoryResponse>("/api/memories/execute", {
+    method: "POST",
+    body: JSON.stringify(intent ? { intent } : {}),
   });
 }
 
@@ -582,7 +607,32 @@ export async function refineMemory(): Promise<RefineMemoryResponse> {
 }
 
 export async function getAutomationStatus(): Promise<AutomationStatus> {
-  return request<AutomationStatus>("/api/automation/status");
+  const activity = await request<MemoryActivity>("/api/memories/activity");
+  return {
+    settings: activity.settings ?? {
+      user_id: "",
+      auto_sync_enabled: false,
+      auto_analyze_enabled: false,
+      auto_refine_enabled: false,
+      min_new_messages_threshold: 1,
+      stale_hours_threshold: 1,
+      pruned_messages_threshold: 0,
+      default_detail_mode: "balanced",
+      default_target_message_count: 120,
+      default_lookback_hours: 72,
+      daily_budget_usd: 0,
+      max_auto_jobs_per_day: 1,
+      updated_at: new Date(0).toISOString(),
+    },
+    sync_runs: activity.sync_runs,
+    decisions: activity.decisions ?? [],
+    jobs: activity.jobs,
+    model_runs: activity.model_runs,
+    daily_cost_usd: 0,
+    daily_auto_jobs_count: activity.daily_auto_jobs_count ?? 0,
+    queued_jobs_count: activity.queued_jobs_count ?? activity.jobs.filter((job) => job.status === "queued").length,
+    running_job_id: activity.running_job_id,
+  };
 }
 
 export async function updateAutomationSettings(input: Partial<AutomationSettings>): Promise<AutomationSettings> {
@@ -593,9 +643,7 @@ export async function updateAutomationSettings(input: Partial<AutomationSettings
 }
 
 export async function runAutomationTick(): Promise<AutomationStatus> {
-  return request<AutomationStatus>("/api/automation/tick", {
-    method: "POST",
-  });
+  return getAutomationStatus();
 }
 
 export async function getChatSession(threadId?: string): Promise<ChatSession> {
