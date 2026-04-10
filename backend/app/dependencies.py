@@ -63,7 +63,7 @@ def get_assistant_context_service() -> AssistantContextService:
     return AssistantContextService(
         settings=get_settings(),
         store=get_supabase_store(),
-        groq_service=get_groq_service(),
+        deepseek_service=get_deepseek_service(),
     )
 
 
@@ -72,7 +72,7 @@ def get_assistant_reply_service() -> AssistantReplyService:
     return AssistantReplyService(
         settings=get_settings(),
         store=get_supabase_store(),
-        groq_service=get_groq_service(),
+        deepseek_service=get_deepseek_service(),
         context_service=get_assistant_context_service(),
     )
 
@@ -92,7 +92,6 @@ def get_chat_assistant_service() -> ChatAssistantService:
     return ChatAssistantService(
         settings=get_settings(),
         store=get_supabase_store(),
-        groq_service=get_groq_service(),
         reply_service=get_assistant_reply_service(),
     )
 
@@ -121,7 +120,7 @@ def get_whatsapp_agent_service() -> WhatsAppAgentService:
         settings=get_settings(),
         store=get_supabase_store(),
         reply_service=get_assistant_reply_service(),
-        groq_service=get_groq_service(),
+        deepseek_service=get_deepseek_service(),
         observer_gateway=get_observer_gateway_service(),
         agent_gateway=get_whatsapp_agent_gateway_service(),
     )

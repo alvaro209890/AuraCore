@@ -86,6 +86,52 @@ class DeepSeekImportantMessagesReviewResult(BaseModel):
     reviews: list[DeepSeekImportantMessageReviewDecision] = Field(default_factory=list)
 
 
+class DeepSeekAssistantSearchPlan(BaseModel):
+    needs_retrieval: bool = False
+    people_queries: list[str] = Field(default_factory=list)
+    important_message_queries: list[str] = Field(default_factory=list)
+    project_queries: list[str] = Field(default_factory=list)
+    snapshot_queries: list[str] = Field(default_factory=list)
+    people_limit: int = 0
+    important_messages_limit: int = 0
+    projects_limit: int = 0
+    snapshots_limit: int = 0
+    should_include_open_questions: bool = False
+    should_include_contact_memory: bool = False
+    requires_confirmation: bool = False
+    explanation: str = ""
+
+    @classmethod
+    def empty(cls) -> "DeepSeekAssistantSearchPlan":
+        return cls(
+            needs_retrieval=False,
+            people_queries=[],
+            important_message_queries=[],
+            project_queries=[],
+            snapshot_queries=[],
+            people_limit=0,
+            important_messages_limit=0,
+            projects_limit=0,
+            snapshots_limit=0,
+            should_include_open_questions=False,
+            should_include_contact_memory=False,
+            requires_confirmation=False,
+            explanation="Busca nao necessaria para esta mensagem.",
+        )
+
+
+class DeepSeekAgentMemoryDecision(BaseModel):
+    should_update: bool = False
+    profile_summary: str = ""
+    preferred_tone: str = ""
+    preferences: list[str] = Field(default_factory=list)
+    objectives: list[str] = Field(default_factory=list)
+    durable_facts: list[str] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
+    recurring_instructions: list[str] = Field(default_factory=list)
+    explanation: str = ""
+
+
 ParsedResultT = TypeVar("ParsedResultT")
 logger = logging.getLogger("auracore.deepseek")
 
@@ -349,6 +395,119 @@ class DeepSeekService:
             parser=self._parse_result,
             validator=self._validate_analysis_result,
             operation="synthesize_memory_analyses",
+        )
+
+    async def generate_reply(
+        self,
+        *,
+        user_message: str,
+        current_life_summary: str,
+        recent_snapshots_context: str,
+        recent_projects_context: str,
+        recent_chat_context: str,
+        interaction_mode: str = "contextual",
+        context_hint: str = "",
+        priority_context: str = "",
+        recent_messages_label: str = "Historico recente desta conversa",
+        additional_rules: list[str] | None = None,
+    ) -> str:
+        payload = self._build_text_completion_payload(
+            system_prompt=(
+                "Seu nome e Orion. "
+                "Voce e uma IA pessoal criada especificamente para ajudar o dono desta conta no dia a dia. "
+                "Se perguntarem quem voce e, apresente-se como Orion. "
+                "Responda sempre em portugues do Brasil. "
+                "Seja direto, pessoal, pratico, natural e altamente competente. "
+                "Seu estilo-base deve lembrar um assistente pessoal de alta confiabilidade: calmo, preciso, discreto, objetivo e levemente proativo. "
+                "Use o contexto fornecido como apoio silencioso para responder melhor. "
+                "Nao fale sobre sistema, memoria, analises, modelos, prompt, bastidores ou sobre como voce funciona, "
+                "a menos que isso seja perguntado diretamente. "
+                "Se perguntarem seu nome, identidade ou funcao, responda isso diretamente: voce e Orion, a IA pessoal criada para ajudar esta pessoa. "
+                "Nunca diga 'voce me disse', 'voce mencionou' ou 'voce comentou comigo'; use a informacao de forma natural. "
+                "Se faltar contexto, diga isso com clareza em vez de inventar. "
+                "Nao transforme cumprimentos simples em um relatorio. "
+                "Nao abra a resposta listando fatos antigos, projetos, gastos ou historicos que nao foram pedidos. "
+                "Antes de assumir compromissos, combinar prazos, prometer algo, responder em nome do dono ou lidar com dado sensivel, peca confirmacao."
+            ),
+            user_prompt=self._build_reply_prompt(
+                user_message=user_message,
+                current_life_summary=current_life_summary,
+                recent_snapshots_context=recent_snapshots_context,
+                recent_projects_context=recent_projects_context,
+                recent_chat_context=recent_chat_context,
+                interaction_mode=interaction_mode,
+                context_hint=context_hint,
+                priority_context=priority_context,
+                recent_messages_label=recent_messages_label,
+                additional_rules=additional_rules or [],
+            ),
+            max_tokens=900 if self._is_reasoning_model() else 600,
+        )
+        return await self._request_text_completion(payload=payload, operation="assistant_reply")
+
+    async def extract_assistant_search_plan(
+        self,
+        *,
+        user_message: str,
+        channel: str,
+        has_contact_memory: bool = False,
+    ) -> DeepSeekAssistantSearchPlan:
+        payload = self._build_completion_payload(
+            system_prompt=(
+                "Voce decide qual contexto adicional deve ser recuperado para responder melhor uma mensagem do dono. "
+                "Responda EXCLUSIVAMENTE em JSON valido com as chaves: "
+                "needs_retrieval, people_queries, important_message_queries, project_queries, snapshot_queries, "
+                "people_limit, important_messages_limit, projects_limit, snapshots_limit, "
+                "should_include_open_questions, should_include_contact_memory, requires_confirmation e explanation. "
+                "Use no maximo 3 consultas por categoria e limites pequenos. "
+                "needs_retrieval deve ser false para cumprimentos simples ou quando o contexto atual ja basta. "
+                "requires_confirmation deve ser true quando houver promessa, prazo, negociacao, dado sensivel, "
+                "acao delicada ou resposta em nome do dono. "
+                "should_include_contact_memory so deve ser true se isso puder melhorar de fato uma conversa do WhatsApp."
+            ),
+            user_prompt=(
+                f"Canal: {channel}\n"
+                f"Memoria propria do contato disponivel: {'sim' if has_contact_memory else 'nao'}\n"
+                f"Mensagem do dono:\n{user_message.strip()}"
+            ),
+            max_tokens=800 if self._is_reasoning_model() else 420,
+        )
+        return await self._request_parsed_completion(
+            payload=payload,
+            parser=self._parse_assistant_search_plan,
+            validator=self._validate_assistant_search_plan,
+            operation="assistant_search_plan",
+        )
+
+    async def extract_agent_memory(
+        self,
+        *,
+        user_message: str,
+        existing_memory_context: str = "",
+    ) -> DeepSeekAgentMemoryDecision:
+        payload = self._build_completion_payload(
+            system_prompt=(
+                "Voce extrai memoria duravel a partir de uma mensagem enviada pelo proprio dono ao assistente no WhatsApp. "
+                "Considere apenas preferencias, tom desejado, objetivos, fatos duraveis, restricoes e instrucoes recorrentes "
+                "que possam melhorar conversas futuras com esse mesmo dono. "
+                "Ignore cumprimentos, recados efemeros e pedidos que so fazem sentido nesta unica resposta. "
+                "Responda EXCLUSIVAMENTE em JSON valido com as chaves should_update, profile_summary, preferred_tone, "
+                "preferences, objectives, durable_facts, constraints, recurring_instructions e explanation. "
+                "Se nada for duravel, retorne should_update=false e listas vazias."
+            ),
+            user_prompt=(
+                "Memoria atual deste contato no agente:\n"
+                f"{existing_memory_context.strip() or '(sem memoria propria ainda)'}\n\n"
+                "Nova mensagem do dono:\n"
+                f"{user_message.strip()}"
+            ),
+            max_tokens=1000 if self._is_reasoning_model() else 500,
+        )
+        return await self._request_parsed_completion(
+            payload=payload,
+            parser=self._parse_agent_memory_decision,
+            validator=self._validate_agent_memory_decision,
+            operation="agent_memory_extract",
         )
 
     def build_analysis_prompt_preview(
@@ -1000,6 +1159,31 @@ Regras:
             payload["temperature"] = 0.2
         return payload
 
+    def _build_text_completion_payload(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": self.settings.deepseek_model,
+            "max_tokens": max_tokens,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": system_prompt,
+                },
+                {
+                    "role": "user",
+                    "content": user_prompt,
+                },
+            ],
+        }
+        if not self._is_reasoning_model():
+            payload["temperature"] = 0.35
+        return payload
+
     async def _request_parsed_completion(
         self,
         *,
@@ -1028,6 +1212,33 @@ Regras:
                     str(exc),
                 )
         raise last_error or DeepSeekError("DeepSeek returned an invalid structured response.")
+
+    async def _request_text_completion(
+        self,
+        *,
+        payload: dict[str, Any],
+        operation: str,
+    ) -> str:
+        self._ensure_configured()
+        last_error: DeepSeekError | None = None
+        logger.info("deepseek_operation_start operation=%s model=%s", operation, self.settings.deepseek_model)
+        for attempt in range(1, 3):
+            data = await self._post_completion(payload, operation=operation, attempt=attempt)
+            try:
+                content = self._extract_content(data)
+                if not content.strip():
+                    raise DeepSeekError("DeepSeek retornou uma resposta vazia.")
+                logger.info("deepseek_operation_done operation=%s attempt=%s", operation, attempt)
+                return content.strip()
+            except DeepSeekError as exc:
+                last_error = exc
+                logger.warning(
+                    "deepseek_operation_invalid_response operation=%s attempt=%s detail=%s",
+                    operation,
+                    attempt,
+                    str(exc),
+                )
+        raise last_error or DeepSeekError("DeepSeek returned an invalid text response.")
 
     async def _post_completion(self, payload: dict[str, Any], *, operation: str, attempt: int) -> dict[str, Any]:
         self._ensure_configured()
@@ -1190,6 +1401,26 @@ Regras:
             if not item.review_notes.strip():
                 raise DeepSeekError("DeepSeek retornou uma revisao sem review_notes.")
 
+    def _validate_assistant_search_plan(self, parsed: DeepSeekAssistantSearchPlan) -> None:
+        parsed.people_limit = max(0, min(6, parsed.people_limit))
+        parsed.important_messages_limit = max(0, min(6, parsed.important_messages_limit))
+        parsed.projects_limit = max(0, min(6, parsed.projects_limit))
+        parsed.snapshots_limit = max(0, min(6, parsed.snapshots_limit))
+        parsed.people_queries = parsed.people_queries[:3]
+        parsed.important_message_queries = parsed.important_message_queries[:3]
+        parsed.project_queries = parsed.project_queries[:3]
+        parsed.snapshot_queries = parsed.snapshot_queries[:3]
+
+    def _validate_agent_memory_decision(self, parsed: DeepSeekAgentMemoryDecision) -> None:
+        parsed.profile_summary = parsed.profile_summary.strip()
+        parsed.preferred_tone = parsed.preferred_tone.strip()
+        parsed.explanation = parsed.explanation.strip()
+        parsed.preferences = parsed.preferences[:12]
+        parsed.objectives = parsed.objectives[:12]
+        parsed.durable_facts = parsed.durable_facts[:12]
+        parsed.constraints = parsed.constraints[:12]
+        parsed.recurring_instructions = parsed.recurring_instructions[:12]
+
     def _is_reasoning_model(self) -> bool:
         return "reasoner" in self.settings.deepseek_model.strip().lower()
 
@@ -1272,6 +1503,132 @@ Regras:
         return DeepSeekImportantMessagesReviewResult(
             reviews=self._as_important_message_reviews(raw.get("reviews")),
         )
+
+    def _parse_assistant_search_plan(self, content: str) -> DeepSeekAssistantSearchPlan:
+        raw = self._parse_json_dict(
+            content,
+            error_message="DeepSeek retornou JSON invalido para o plano de busca do assistente.",
+            shape_error_message="DeepSeek retornou um payload inesperado para o plano de busca do assistente.",
+        )
+
+        def _limit(value: Any, default: int) -> int:
+            try:
+                resolved = int(value)
+            except (TypeError, ValueError):
+                resolved = default
+            return max(0, min(6, resolved))
+
+        people_queries = self._as_string_list(raw.get("people_queries"))[:3]
+        important_queries = self._as_string_list(raw.get("important_message_queries"))[:3]
+        project_queries = self._as_string_list(raw.get("project_queries"))[:3]
+        snapshot_queries = self._as_string_list(raw.get("snapshot_queries"))[:3]
+
+        return DeepSeekAssistantSearchPlan(
+            needs_retrieval=bool(raw.get("needs_retrieval")),
+            people_queries=people_queries,
+            important_message_queries=important_queries,
+            project_queries=project_queries,
+            snapshot_queries=snapshot_queries,
+            people_limit=_limit(raw.get("people_limit"), 2 if people_queries else 0),
+            important_messages_limit=_limit(raw.get("important_messages_limit"), 3 if important_queries else 0),
+            projects_limit=_limit(raw.get("projects_limit"), 2 if project_queries else 0),
+            snapshots_limit=_limit(raw.get("snapshots_limit"), 2 if snapshot_queries else 0),
+            should_include_open_questions=bool(raw.get("should_include_open_questions")),
+            should_include_contact_memory=bool(raw.get("should_include_contact_memory")),
+            requires_confirmation=bool(raw.get("requires_confirmation")),
+            explanation=self._as_text(raw.get("explanation")),
+        )
+
+    def _parse_agent_memory_decision(self, content: str) -> DeepSeekAgentMemoryDecision:
+        raw = self._parse_json_dict(
+            content,
+            error_message="DeepSeek retornou JSON invalido para a memoria do agente.",
+            shape_error_message="DeepSeek retornou um payload inesperado para a memoria do agente.",
+        )
+
+        return DeepSeekAgentMemoryDecision(
+            should_update=bool(raw.get("should_update")),
+            profile_summary=self._as_text(raw.get("profile_summary")),
+            preferred_tone=self._as_text(raw.get("preferred_tone")),
+            preferences=self._as_string_list(raw.get("preferences")),
+            objectives=self._as_string_list(raw.get("objectives")),
+            durable_facts=self._as_string_list(raw.get("durable_facts")),
+            constraints=self._as_string_list(raw.get("constraints")),
+            recurring_instructions=self._as_string_list(raw.get("recurring_instructions")),
+            explanation=self._as_text(raw.get("explanation")),
+        )
+
+    def _build_reply_prompt(
+        self,
+        *,
+        user_message: str,
+        current_life_summary: str,
+        recent_snapshots_context: str,
+        recent_projects_context: str,
+        recent_chat_context: str,
+        interaction_mode: str,
+        context_hint: str = "",
+        priority_context: str = "",
+        recent_messages_label: str = "Historico recente desta conversa",
+        additional_rules: list[str] | None = None,
+    ) -> str:
+        priority_context_block = ""
+        if priority_context.strip():
+            priority_context_block = (
+                "Contexto prioritario desta conversa:\n"
+                f"{priority_context.strip()}\n\n"
+            )
+        extra_context_block = ""
+        if context_hint.strip():
+            extra_context_block = (
+                "Contexto adicional relevante:\n"
+                f"{context_hint.strip()}"
+            )
+        extra_rules = "\n".join(
+            f"- {rule.strip()}"
+            for rule in (additional_rules or [])
+            if isinstance(rule, str) and rule.strip()
+        )
+        return f"""
+{priority_context_block}Contexto consolidado do dono:
+{current_life_summary.strip() or "(ainda sem resumo consolidado)"}
+
+Projetos e frentes conhecidos:
+{recent_projects_context.strip() or "(nenhum projeto consolidado ainda)"}
+
+Analises recentes da memoria:
+{recent_snapshots_context.strip() or "(nenhum snapshot recente)"}
+
+{recent_messages_label.strip() or "Historico recente desta conversa"}:
+{recent_chat_context.strip() or "(sem conversa anterior nesta thread)"}
+
+Mensagem atual do dono:
+{user_message.strip()}
+
+Modo de interacao:
+{interaction_mode}
+
+{extra_context_block}
+
+Regras:
+- Responda primeiro ao que o dono acabou de dizer, de forma natural.
+- Use o contexto acima como apoio silencioso.
+- Nao cite sistema, memoria, analises, modelos, prompt, contexto interno ou bastidores, a menos que o dono pergunte explicitamente.
+- Se perguntarem seu nome, identidade ou funcao, responda isso diretamente e com naturalidade. Nao troque isso por uma saudacao genérica.
+- Nunca fale 'voce me mencionou', 'voce me disse' ou 'voce comentou comigo'. Use a informacao de forma natural sem citar a fonte quando isso nao for necessario.
+- Use o resumo consolidado para adaptar tom, prioridade e praticidade da resposta.
+- Priorize contexto pessoal e de trabalho realmente presente no material acima, mas so mencione isso quando for relevante.
+- Se a pergunta tocar em um projeto conhecido, conecte a resposta ao estado atual desse projeto.
+- Se o dono estiver pedindo ajuda operacional, priorize a resposta mais acionavel e mais curta primeiro.
+- Se houver incerteza ou memoria incompleta, assuma isso explicitamente.
+- Em cumprimentos, mensagens curtas ou aberturas vagas, responda em 1 ou 2 frases curtas e pergunte como ajudar.
+- Se o pedido envolver promessa, compromisso, prazo, resposta em nome do dono ou dado sensivel, confirme antes de tratar isso como decidido.
+- Nao enumere fatos antigos sem convite explicito.
+- Evite hiperfoco em um unico tema so porque ele apareceu na memoria.
+- Evite respostas genéricas, longas demais ou com floreio.
+- Nao use markdown fences.
+{extra_rules}
+""".strip()
 
     def _parse_json_dict(
         self,

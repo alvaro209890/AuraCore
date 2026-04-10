@@ -6,7 +6,6 @@ from uuid import uuid4
 
 from app.config import Settings
 from app.services.assistant_reply_service import AssistantReplyService
-from app.services.groq_service import GroqChatService
 from app.services.supabase_store import (
     ChatMessageRecord,
     ChatThreadRecord,
@@ -52,12 +51,10 @@ class ChatAssistantService:
         *,
         settings: Settings,
         store: SupabaseStore,
-        groq_service: GroqChatService,
         reply_service: AssistantReplyService,
     ) -> None:
         self.settings = settings
         self.store = store
-        self.groq_service = groq_service
         self.reply_service = reply_service
 
     def get_session(self, *, thread_id: str | None = None) -> ChatSessionState:

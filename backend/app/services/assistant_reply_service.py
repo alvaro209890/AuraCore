@@ -8,7 +8,7 @@ from app.services.assistant_context_service import (
     AssistantContextService,
     AssistantConversationTurn,
 )
-from app.services.groq_service import GroqChatService
+from app.services.deepseek_service import DeepSeekService
 from app.services.supabase_store import ChatMessageRecord, SupabaseStore, WhatsAppAgentMessageRecord
 
 ConversationRecord = ChatMessageRecord | WhatsAppAgentMessageRecord | AssistantConversationTurn
@@ -20,12 +20,12 @@ class AssistantReplyService:
         *,
         settings: Settings,
         store: SupabaseStore,
-        groq_service: GroqChatService,
+        deepseek_service: DeepSeekService,
         context_service: AssistantContextService,
     ) -> None:
         self.settings = settings
         self.store = store
-        self.groq_service = groq_service
+        self.deepseek_service = deepseek_service
         self.context_service = context_service
 
     async def generate_reply(
@@ -50,7 +50,7 @@ class AssistantReplyService:
             contact_memory_context=contact_memory_context,
             additional_rules=additional_rules,
         )
-        return await self.groq_service.generate_reply(
+        return await self.deepseek_service.generate_reply(
             user_message=user_message,
             current_life_summary=context_package.current_life_summary,
             recent_snapshots_context=context_package.recent_snapshots_context,

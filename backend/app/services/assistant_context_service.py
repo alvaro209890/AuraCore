@@ -8,7 +8,7 @@ import re
 from typing import Literal, Sequence
 
 from app.config import Settings
-from app.services.groq_service import GroqAssistantSearchPlan, GroqChatService
+from app.services.deepseek_service import DeepSeekAssistantSearchPlan, DeepSeekService
 from app.services.supabase_store import (
     ImportantMessageRecord,
     MemorySnapshotRecord,
@@ -48,11 +48,11 @@ class AssistantContextService:
         *,
         settings: Settings,
         store: SupabaseStore,
-        groq_service: GroqChatService,
+        deepseek_service: DeepSeekService,
     ) -> None:
         self.settings = settings
         self.store = store
-        self.groq_service = groq_service
+        self.deepseek_service = deepseek_service
 
     async def build_reply_context(
         self,
@@ -87,6 +87,7 @@ class AssistantContextService:
         )
         interaction_mode = self._resolve_interaction_mode(user_message)
         light_touch = interaction_mode == "light_touch"
+        identity_query = self._is_identity_query(user_message)
 
         plan = await self._resolve_search_plan(
             user_message=user_message,
@@ -105,6 +106,10 @@ class AssistantContextService:
             )
 
         effective_priority_parts = [part.strip() for part in (priority_context or "",) if part and part.strip()]
+        if identity_query:
+            effective_priority_parts.append(
+                "O dono perguntou sua identidade. Responda diretamente que seu nome e Orion, que voce e a IA pessoal criada para ajudar essa pessoa, e depois siga a conversa sem cair em saudacao genérica."
+            )
         if contact_memory_context and contact_memory_context.strip():
             if channel == "whatsapp_agent" and (not light_touch or plan.should_include_contact_memory):
                 effective_priority_parts.append(contact_memory_context.strip())
@@ -120,6 +125,7 @@ class AssistantContextService:
 
         resolved_rules = [
             "Seu nome e Orion. Voce e uma IA pessoal feita para ajudar o dono desta conta.",
+            "Quando perguntarem seu nome, quem voce e ou qual sua funcao, responda isso diretamente e com naturalidade. Nao troque isso por uma saudacao generica.",
             "Se o pedido envolver compromisso, prazo, promessa, envio de dado sensivel, instrucoes em nome do dono ou qualquer decisao delicada, confirme antes de assumir isso como resolvido.",
             "Seu estilo deve ser de um assistente altamente competente: calmo, preciso, discreto, pratico e levemente proativo, sem soar teatral.",
             *[rule.strip() for rule in (additional_rules or []) if isinstance(rule, str) and rule.strip()],
@@ -160,12 +166,12 @@ class AssistantContextService:
         channel: AssistantChannel,
         interaction_mode: str,
         has_contact_memory: bool,
-    ) -> GroqAssistantSearchPlan:
+    ) -> DeepSeekAssistantSearchPlan:
         if interaction_mode == "light_touch":
-            return GroqAssistantSearchPlan.empty()
+            return DeepSeekAssistantSearchPlan.empty()
 
         try:
-            plan = await self.groq_service.extract_assistant_search_plan(
+            plan = await self.deepseek_service.extract_assistant_search_plan(
                 user_message=user_message,
                 channel=channel,
                 has_contact_memory=has_contact_memory,
@@ -180,9 +186,9 @@ class AssistantContextService:
         *,
         user_message: str,
         has_contact_memory: bool,
-    ) -> GroqAssistantSearchPlan:
+    ) -> DeepSeekAssistantSearchPlan:
         requires_confirmation = self._looks_sensitive(user_message)
-        return GroqAssistantSearchPlan(
+        return DeepSeekAssistantSearchPlan(
             needs_retrieval=False,
             people_queries=[],
             important_message_queries=[],
@@ -204,7 +210,7 @@ class AssistantContextService:
         persona: PersonaRecord,
         projects: list[ProjectMemoryRecord],
         snapshots: list[MemorySnapshotRecord],
-        plan: GroqAssistantSearchPlan,
+        plan: DeepSeekAssistantSearchPlan,
     ) -> list[str]:
         sections: list[str] = []
 
@@ -471,6 +477,26 @@ class AssistantContextService:
         if len(normalized) <= 18 and normalized.rstrip("!?.,") in {"oi", "ola", "olá", "opa", "fala"}:
             return "light_touch"
         return "contextual"
+
+    def _is_identity_query(self, message_text: str) -> bool:
+        normalized = " ".join(message_text.casefold().split()).strip().rstrip("!?.,")
+        identity_markers = (
+            "qual seu nome",
+            "quem é você",
+            "quem e voce",
+            "quem é vc",
+            "quem e vc",
+            "como você se chama",
+            "como voce se chama",
+            "seu nome",
+            "você é quem",
+            "voce e quem",
+            "o que você é",
+            "o que voce e",
+            "qual sua função",
+            "qual sua funcao",
+        )
+        return any(marker in normalized for marker in identity_markers)
 
     def _build_persona_context(self, persona: PersonaRecord) -> str:
         sections: list[str] = []

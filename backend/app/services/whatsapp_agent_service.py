@@ -15,7 +15,7 @@ from app.schemas import (
     WhatsAppAgentStatusResponse,
 )
 from app.services.assistant_reply_service import AssistantReplyService
-from app.services.groq_service import GroqAgentMemoryDecision, GroqChatService
+from app.services.deepseek_service import DeepSeekAgentMemoryDecision, DeepSeekService
 from app.services.observer_gateway import ObserverGatewayService, WhatsAppAgentGatewayService
 from app.services.supabase_store import (
     SupabaseStore,
@@ -57,14 +57,14 @@ class WhatsAppAgentService:
         settings: Settings,
         store: SupabaseStore,
         reply_service: AssistantReplyService,
-        groq_service: GroqChatService,
+        deepseek_service: DeepSeekService,
         observer_gateway: ObserverGatewayService,
         agent_gateway: WhatsAppAgentGatewayService,
     ) -> None:
         self.settings = settings
         self.store = store
         self.reply_service = reply_service
-        self.groq_service = groq_service
+        self.deepseek_service = deepseek_service
         self.observer_gateway = observer_gateway
         self.agent_gateway = agent_gateway
 
@@ -327,8 +327,8 @@ class WhatsAppAgentService:
         reply_model_run = self.store.create_model_run(
             user_id=self.settings.default_user_id,
             job_id=None,
-            provider="groq",
-            model_name=self.settings.groq_model,
+            provider="deepseek",
+            model_name=self.settings.deepseek_model,
             run_type="whatsapp_agent_reply",
             success=assistant_reply is not None,
             latency_ms=reply_elapsed_ms,
@@ -375,7 +375,7 @@ class WhatsAppAgentService:
             response_latency_ms=reply_elapsed_ms,
             model_run_id=reply_model_run_id,
             metadata={
-                "generated_by": "groq",
+                "generated_by": "deepseek",
                 "reply_to_message_id": inbound_message.whatsapp_message_id,
                 "delivery_chat_jid": delivery_chat_jid,
             },
@@ -512,10 +512,10 @@ class WhatsAppAgentService:
             )
 
         started = perf_counter()
-        decision: GroqAgentMemoryDecision | None = None
+        decision: DeepSeekAgentMemoryDecision | None = None
         error_text: str | None = None
         try:
-            decision = await self.groq_service.extract_agent_memory(
+            decision = await self.deepseek_service.extract_agent_memory(
                 user_message=inbound_message.content,
                 existing_memory_context=self._render_contact_memory_context(contact_memory),
             )
@@ -526,8 +526,8 @@ class WhatsAppAgentService:
         model_run = self.store.create_model_run(
             user_id=self.settings.default_user_id,
             job_id=None,
-            provider="groq",
-            model_name=self.settings.groq_model,
+            provider="deepseek",
+            model_name=self.settings.deepseek_model,
             run_type="whatsapp_agent_memory_extract",
             success=decision is not None,
             latency_ms=elapsed_ms,
@@ -605,7 +605,7 @@ class WhatsAppAgentService:
         self,
         *,
         current: WhatsAppAgentContactMemoryRecord | None,
-        decision: GroqAgentMemoryDecision,
+        decision: DeepSeekAgentMemoryDecision,
         thread: WhatsAppAgentThreadRecord,
         session: WhatsAppAgentThreadSessionRecord,
         learned_at: datetime,
@@ -651,7 +651,7 @@ class WhatsAppAgentService:
             return incoming
         return f"{incoming} {current}".strip()[:600]
 
-    def _decision_has_memory_update(self, decision: GroqAgentMemoryDecision) -> bool:
+    def _decision_has_memory_update(self, decision: DeepSeekAgentMemoryDecision) -> bool:
         return bool(
             decision.should_update
             and (
