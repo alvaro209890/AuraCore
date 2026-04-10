@@ -79,6 +79,7 @@ class AutomationService:
         self._tick_lock = asyncio.Lock()
         self._scheduled_tick_task: asyncio.Task[AnalysisJobRecord | None] | None = None
         self._scheduled_settle_task: asyncio.Task[None] | None = None
+        self._scheduled_settle_deadline: datetime | None = None
 
     async def start_manual_sync(self, *, trigger: str = "manual") -> WhatsAppSyncRunRecord:
         started_at = datetime.now(UTC)
@@ -116,7 +117,10 @@ class AutomationService:
         )
 
     def schedule_sync_settle(self, *, delay_seconds: float = 13.0) -> None:
+        proposed_deadline = datetime.now(UTC) + timedelta(seconds=delay_seconds)
         if self._scheduled_settle_task is not None and not self._scheduled_settle_task.done():
+            if self._scheduled_settle_deadline is not None and self._scheduled_settle_deadline <= proposed_deadline:
+                return
             self._scheduled_settle_task.cancel()
 
         async def _delayed_tick() -> None:
@@ -127,8 +131,13 @@ class AutomationService:
                 return
             except Exception:
                 logger.exception("scheduled_sync_settle_failed")
+            finally:
+                if self._scheduled_settle_task is asyncio.current_task():
+                    self._scheduled_settle_task = None
+                    self._scheduled_settle_deadline = None
 
         self._scheduled_settle_task = asyncio.create_task(_delayed_tick(), name="auracore-sync-settle")
+        self._scheduled_settle_deadline = proposed_deadline
 
     def mark_sync_failed(self, *, sync_run_id: str, error_text: str) -> WhatsAppSyncRunRecord | None:
         return self.store.mark_whatsapp_sync_run_failed(
@@ -272,33 +281,17 @@ class AutomationService:
             if force_analysis and has_pending_job:
                 reason_code = "job_already_pending"
                 explanation = "Ja existe uma leitura em andamento ou na fila; a sincronizacao manual nao abriu outro lote em paralelo."
-            elif not force_analysis and not automation_settings.auto_analyze_enabled:
-                reason_code = "auto_analyze_disabled"
-                explanation = "A automacao de analise esta desligada; o backend registrou o lote disponivel, mas nao o enfileirou."
-            elif not force_analysis and daily_cost_usd >= automation_settings.daily_budget_usd:
-                reason_code = "daily_budget_reached"
-                explanation = (
-                    f"O custo estimado acumulado hoje ja chegou a US$ {daily_cost_usd:.4f}, acima do teto automatico configurado."
-                )
-            elif not force_analysis and daily_auto_jobs_count >= automation_settings.max_auto_jobs_per_day:
-                reason_code = "max_auto_jobs_reached"
-                explanation = "O limite diario de jobs automaticos ja foi atingido; este lote ficou aguardando acao manual."
-            elif not force_analysis and has_pending_auto_job:
-                reason_code = "job_already_pending"
-                explanation = "Ja existe um job automatico em andamento ou na fila; o sistema nao empilha outro lote em paralelo."
             else:
-                action = "queue"
-                should_analyze = True
-                reason_code = "batch_ready"
+                reason_code = "awaiting_next_batch"
                 explanation = (
                     f"Existem {memory_status.pending_new_message_count} mensagens novas pendentes. "
-                    f"O backend vai processar automaticamente o proximo lote economico de {selected_message_count} mensagens."
+                    f"O proximo lote com {selected_message_count} mensagens ficou disponivel, mas agora so pode ser processado manualmente."
                 )
         elif memory_status.has_initial_analysis:
             reason_code = "awaiting_next_batch"
             explanation = (
                 f"Ainda existem {memory_status.pending_new_message_count} mensagens novas pendentes. "
-                f"O proximo processamento automatico so dispara quando a fila chegar a {memory_status.incremental_min_messages}."
+                f"Depois da primeira analise, os proximos processamentos so acontecem manualmente."
             )
 
         decision = self.store.create_automation_decision(
@@ -582,7 +575,9 @@ class AutomationService:
         async with self._tick_lock:
             self._recover_stale_pending_jobs()
             await self._maybe_review_important_messages()
-            await self.settle_sync_runs()
+            finalized_runs = await self.settle_sync_runs()
+            if not finalized_runs:
+                await self._maybe_schedule_analysis_from_live_backlog()
             return await self.execute_next_job()
 
     def _schedule_tick(self) -> None:
@@ -871,18 +866,11 @@ class AutomationService:
         if not status.has_initial_analysis or not status.can_run_next_batch:
             return
 
-        recent_jobs = self.store.list_analysis_jobs(user_id=self.settings.default_user_id, limit=20)
-        has_other_pending_job = any(job.status in {"queued", "running"} for job in recent_jobs)
-        if has_other_pending_job:
-            return
-
-        async def _evaluate_follow_up() -> None:
-            try:
-                await self.evaluate_and_schedule(trigger_source="automation")
-            except Exception:
-                logger.exception("follow_up_automation_evaluation_failed")
-
-        asyncio.create_task(_evaluate_follow_up(), name="auracore-follow-up-evaluation")
+        logger.info(
+            "follow_up_analysis_waiting_manual pending=%s min_batch=%s",
+            status.pending_new_message_count,
+            status.incremental_min_messages,
+        )
 
     def _finalize_observer_cutoff_if_needed(self, job: AnalysisJobRecord) -> None:
         if job.intent != "first_analysis":
@@ -908,6 +896,24 @@ class AutomationService:
             since=day_start,
             trigger_source="automation",
         )
+
+    async def _maybe_schedule_analysis_from_live_backlog(self) -> None:
+        status = self.memory_service.get_memory_status()
+        if not status.can_run_next_batch:
+            return
+
+        recent_jobs = self.store.list_analysis_jobs(user_id=self.settings.default_user_id, limit=20)
+        has_pending_job = any(job.status in {"queued", "running"} for job in recent_jobs)
+        if has_pending_job:
+            return
+
+        if not status.has_initial_analysis and status.pending_new_message_count >= status.first_analysis_limit:
+            logger.info(
+                "automation_live_backlog_ready pending=%s limit=%s action=evaluate_first_analysis",
+                status.pending_new_message_count,
+                status.first_analysis_limit,
+            )
+            await self.evaluate_and_schedule(trigger_source="automation")
 
     async def _maybe_review_important_messages(self) -> None:
         local_now = datetime.now(self._important_messages_timezone)

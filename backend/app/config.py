@@ -56,6 +56,10 @@ class Settings(BaseSettings):
         6500,
         alias="MEMORY_FIRST_ANALYSIS_CHUNK_CHAR_BUDGET",
     )
+    memory_first_analysis_synthesis_group_size: int = Field(
+        2,
+        alias="MEMORY_FIRST_ANALYSIS_SYNTHESIS_GROUP_SIZE",
+    )
     chat_max_history_messages: int = Field(18, alias="CHAT_MAX_HISTORY_MESSAGES")
     chat_context_snapshots: int = Field(5, alias="CHAT_CONTEXT_SNAPSHOTS")
     chat_context_projects: int = Field(8, alias="CHAT_CONTEXT_PROJECTS")

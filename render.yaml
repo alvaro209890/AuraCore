@@ -50,6 +50,8 @@ services:
         value: "36"
       - key: MEMORY_FIRST_ANALYSIS_CHUNK_CHAR_BUDGET
         value: "6500"
+      - key: MEMORY_FIRST_ANALYSIS_SYNTHESIS_GROUP_SIZE
+        value: "2"
       - key: CHAT_MAX_HISTORY_MESSAGES
         value: "18"
       - key: CHAT_CONTEXT_SNAPSHOTS

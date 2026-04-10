@@ -178,6 +178,15 @@ class FirstAnalysisChunk:
     selected_transcript_chars: int
 
 
+@dataclass(slots=True)
+class FirstAnalysisSynthesisNode:
+    label: str
+    source_messages: list[StoredMessageRecord]
+    window_start: datetime
+    window_end: datetime
+    result: DeepSeekMemoryResult
+
+
 class MemoryAnalysisService:
     def __init__(
         self,
@@ -1454,7 +1463,7 @@ class MemoryAnalysisService:
             self.settings.memory_first_analysis_chunk_char_budget,
         )
 
-        partial_results: list[DeepSeekMemoryResult] = []
+        partial_nodes: list[FirstAnalysisSynthesisNode] = []
         for index, chunk in enumerate(chunks, start=1):
             logger.info(
                 "first_analysis_chunk_start chunk=%s/%s messages=%s chars=%s window_start=%s window_end=%s",
@@ -1489,31 +1498,25 @@ class MemoryAnalysisService:
                 len(partial.contact_memories),
                 len(partial.open_questions),
             )
+            partial_nodes.append(
+                FirstAnalysisSynthesisNode(
+                    label=f"chunk-{index}",
+                    source_messages=chunk.source_messages,
+                    window_start=chunk.window_start,
+                    window_end=chunk.window_end,
+                    result=partial,
+                )
+            )
 
-        logger.info("first_analysis_chunk_synthesis_start chunk_count=%s", len(chunks))
-        synthesized = await self.deepseek_service.synthesize_memory_analyses(
-            partial_analyses_block=self._build_partial_analyses_block(chunks, partial_results),
-            conversation_context=plan.conversation_context,
+        return await self._synthesize_first_analysis_nodes_hierarchically(
+            nodes=partial_nodes,
+            plan=plan,
             current_life_summary=current_life_summary,
             prior_analyses_context=prior_analyses_context,
             project_context=project_context,
             chat_context=chat_context,
             open_questions_context=open_questions_context,
-            intent="first_analysis",
-            window_hours=plan.window_hours,
-            window_start=plan.window_start,
-            window_end=plan.window_end,
-            source_message_count=len(plan.source_messages),
-            partial_analysis_count=len(partial_results),
         )
-        logger.info(
-            "first_analysis_chunk_synthesis_done chunk_count=%s projects=%s contacts=%s open_questions=%s",
-            len(chunks),
-            len(synthesized.active_projects),
-            len(synthesized.contact_memories),
-            len(synthesized.open_questions),
-        )
-        return synthesized
 
     def _build_first_analysis_chunks(self, messages: list[StoredMessageRecord]) -> list[FirstAnalysisChunk]:
         if not messages:
@@ -1551,13 +1554,132 @@ class MemoryAnalysisService:
 
         return chunks
 
+    async def _synthesize_first_analysis_nodes_hierarchically(
+        self,
+        *,
+        nodes: list[FirstAnalysisSynthesisNode],
+        plan: FixedAnalysisPlan,
+        current_life_summary: str,
+        prior_analyses_context: str,
+        project_context: str,
+        chat_context: str,
+        open_questions_context: str,
+    ) -> DeepSeekMemoryResult:
+        if not nodes:
+            raise MemoryAnalysisError("Nenhum bloco de sintese foi gerado para a primeira analise.")
+
+        if len(nodes) == 1:
+            logger.info(
+                "first_analysis_chunk_synthesis_done levels=%s final_nodes=%s projects=%s contacts=%s open_questions=%s",
+                0,
+                1,
+                len(nodes[0].result.active_projects),
+                len(nodes[0].result.contact_memories),
+                len(nodes[0].result.open_questions),
+            )
+            return nodes[0].result
+
+        level = 1
+        group_size = max(2, self.settings.memory_first_analysis_synthesis_group_size)
+        current_nodes = nodes
+
+        while len(current_nodes) > 1:
+            logger.info(
+                "first_analysis_synthesis_level_start level=%s node_count=%s group_size=%s",
+                level,
+                len(current_nodes),
+                group_size,
+            )
+            next_nodes: list[FirstAnalysisSynthesisNode] = []
+            group_count = ceil(len(current_nodes) / group_size)
+
+            for group_index, group_start in enumerate(range(0, len(current_nodes), group_size), start=1):
+                group = current_nodes[group_start : group_start + group_size]
+                if len(group) == 1:
+                    logger.info(
+                        "first_analysis_synthesis_group_passthrough level=%s group=%s/%s label=%s",
+                        level,
+                        group_index,
+                        group_count,
+                        group[0].label,
+                    )
+                    next_nodes.append(group[0])
+                    continue
+
+                merged_messages = self._merge_unique_messages(
+                    [message for node in group for message in node.source_messages]
+                )
+                group_window_start = min(node.window_start for node in group)
+                group_window_end = max(node.window_end for node in group)
+                group_conversation_context = self._build_conversation_context(merged_messages)
+                partial_analyses_block = self._build_partial_analyses_block(group)
+                logger.info(
+                    "first_analysis_synthesis_group_start level=%s group=%s/%s node_count=%s messages=%s window_start=%s window_end=%s",
+                    level,
+                    group_index,
+                    group_count,
+                    len(group),
+                    len(merged_messages),
+                    group_window_start.isoformat(),
+                    group_window_end.isoformat(),
+                )
+                synthesized = await self.deepseek_service.synthesize_memory_analyses(
+                    partial_analyses_block=partial_analyses_block,
+                    conversation_context=group_conversation_context,
+                    current_life_summary=current_life_summary,
+                    prior_analyses_context=prior_analyses_context,
+                    project_context=project_context,
+                    chat_context=chat_context,
+                    open_questions_context=open_questions_context,
+                    intent="first_analysis",
+                    window_hours=max(1, ceil((group_window_end - group_window_start).total_seconds() / 3600)),
+                    window_start=group_window_start,
+                    window_end=group_window_end,
+                    source_message_count=len(merged_messages),
+                    partial_analysis_count=len(group),
+                )
+                next_label = f"synthesis-l{level}-g{group_index}"
+                logger.info(
+                    "first_analysis_synthesis_group_done level=%s group=%s/%s label=%s projects=%s contacts=%s open_questions=%s",
+                    level,
+                    group_index,
+                    group_count,
+                    next_label,
+                    len(synthesized.active_projects),
+                    len(synthesized.contact_memories),
+                    len(synthesized.open_questions),
+                )
+                next_nodes.append(
+                    FirstAnalysisSynthesisNode(
+                        label=next_label,
+                        source_messages=merged_messages,
+                        window_start=group_window_start,
+                        window_end=group_window_end,
+                        result=synthesized,
+                    )
+                )
+
+            current_nodes = next_nodes
+            level += 1
+
+        final_result = current_nodes[0].result
+        logger.info(
+            "first_analysis_chunk_synthesis_done levels=%s final_nodes=%s projects=%s contacts=%s open_questions=%s",
+            level - 1,
+            len(current_nodes),
+            len(final_result.active_projects),
+            len(final_result.contact_memories),
+            len(final_result.open_questions),
+        )
+        return final_result
+
     def _build_partial_analyses_block(
         self,
-        chunks: list[FirstAnalysisChunk],
-        partial_results: list[DeepSeekMemoryResult],
+        nodes: list[FirstAnalysisSynthesisNode],
     ) -> str:
         sections: list[str] = []
-        for index, (chunk, result) in enumerate(zip(chunks, partial_results, strict=False), start=1):
+        for index, node in enumerate(nodes, start=1):
+            result = node.result
             project_lines = [
                 (
                     f"  - nome={project.name}; status={project.status or 'indefinido'}; "
@@ -1577,13 +1699,13 @@ class MemoryAnalysisService:
                 for person in result.contact_memories[:8]
             ]
             section_lines = [
-                f"### Parcial {index}",
+                f"### Parcial {index} ({node.label})",
                 (
                     "Janela: "
-                    f"{chunk.window_start.astimezone(UTC).strftime('%Y-%m-%d %H:%M UTC')} ate "
-                    f"{chunk.window_end.astimezone(UTC).strftime('%Y-%m-%d %H:%M UTC')}"
+                    f"{node.window_start.astimezone(UTC).strftime('%Y-%m-%d %H:%M UTC')} ate "
+                    f"{node.window_end.astimezone(UTC).strftime('%Y-%m-%d %H:%M UTC')}"
                 ),
-                f"Mensagens: {len(chunk.source_messages)}",
+                f"Mensagens: {len(node.source_messages)}",
                 f"Resumo consolidado parcial: {result.updated_life_summary}",
                 f"Resumo da janela parcial: {result.window_summary}",
                 f"Aprendizados: {'; '.join(result.key_learnings[:8]) or 'nenhum'}",
