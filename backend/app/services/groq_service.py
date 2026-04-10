@@ -19,6 +19,41 @@ class GroqChatSearchIntent:
     contact_queries: list[str]
     vault_queries: list[str]
 
+
+@dataclass(slots=True)
+class GroqAssistantSearchPlan:
+    needs_retrieval: bool
+    people_queries: list[str]
+    important_message_queries: list[str]
+    project_queries: list[str]
+    snapshot_queries: list[str]
+    people_limit: int
+    important_messages_limit: int
+    projects_limit: int
+    snapshots_limit: int
+    should_include_open_questions: bool
+    should_include_contact_memory: bool
+    requires_confirmation: bool
+    explanation: str
+
+    @classmethod
+    def empty(cls) -> "GroqAssistantSearchPlan":
+        return cls(
+            needs_retrieval=False,
+            people_queries=[],
+            important_message_queries=[],
+            project_queries=[],
+            snapshot_queries=[],
+            people_limit=0,
+            important_messages_limit=0,
+            projects_limit=0,
+            snapshots_limit=0,
+            should_include_open_questions=False,
+            should_include_contact_memory=False,
+            requires_confirmation=False,
+            explanation="Busca nao necessaria para esta mensagem.",
+        )
+
 @dataclass(slots=True)
 class GroqPreviewDecision:
     score: int
@@ -72,15 +107,20 @@ class GroqChatService:
                 {
                     "role": "system",
                     "content": (
+                        "Seu nome e Orion. "
+                        "Voce e uma IA pessoal criada especificamente para ajudar o dono desta conta no dia a dia. "
+                        "Se perguntarem quem voce e, apresente-se como Orion. "
                         "Responda sempre em portugues do Brasil. "
-                        "Seja direto, pessoal, pratico e natural. "
+                        "Seja direto, pessoal, pratico, natural e altamente competente. "
+                        "Seu estilo-base deve lembrar um assistente pessoal de alta confiabilidade: calmo, preciso, discreto, objetivo e levemente proativo. "
                         "Use o contexto fornecido como apoio silencioso para responder melhor. "
                         "Nao fale sobre sistema, memoria, analises, modelos, prompt, bastidores ou sobre como voce funciona, "
                         "a menos que isso seja perguntado diretamente. "
                         "Nunca diga 'voce me disse', 'voce mencionou' ou 'voce comentou comigo'; use a informacao de forma natural. "
                         "Se faltar contexto, diga isso com clareza em vez de inventar. "
                         "Nao transforme cumprimentos simples em um relatorio. "
-                        "Nao abra a resposta listando fatos antigos, projetos, gastos ou historicos que nao foram pedidos."
+                        "Nao abra a resposta listando fatos antigos, projetos, gastos ou historicos que nao foram pedidos. "
+                        "Antes de assumir compromissos, combinar prazos, prometer algo, responder em nome do dono ou lidar com dado sensivel, peca confirmacao."
                     ),
                 },
                 {
@@ -244,6 +284,68 @@ class GroqChatService:
 
         return self._parse_search_intent(content)
 
+    async def extract_assistant_search_plan(
+        self,
+        *,
+        user_message: str,
+        channel: str,
+        has_contact_memory: bool = False,
+    ) -> GroqAssistantSearchPlan:
+        if not self.settings.groq_api_key:
+            raise GroqChatError("GROQ_API_KEY nao configurada no backend local.")
+
+        headers = {
+            "Authorization": f"Bearer {self.settings.groq_api_key}",
+            "Content-Type": "application/json",
+        }
+
+        system_content = (
+            "Voce decide qual contexto adicional deve ser recuperado para responder melhor uma mensagem do dono. "
+            "Responda EXCLUSIVAMENTE em JSON valido com as chaves: "
+            "needs_retrieval, people_queries, important_message_queries, project_queries, snapshot_queries, "
+            "people_limit, important_messages_limit, projects_limit, snapshots_limit, "
+            "should_include_open_questions, should_include_contact_memory, requires_confirmation e explanation. "
+            "Use no maximo 3 consultas por categoria e limites pequenos. "
+            "needs_retrieval deve ser false para cumprimentos simples ou quando o contexto atual ja basta. "
+            "requires_confirmation deve ser true quando houver promessa, prazo, negociacao, dado sensivel, "
+            "acao delicada ou resposta em nome do dono. "
+            "should_include_contact_memory so deve ser true se isso puder melhorar de fato uma conversa do WhatsApp."
+        )
+
+        payload = {
+            "model": "llama-3.3-70b-versatile",
+            "temperature": 0.05,
+            "max_tokens": 240,
+            "messages": [
+                {"role": "system", "content": system_content},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Canal: {channel}\n"
+                        f"Memoria propria do contato disponivel: {'sim' if has_contact_memory else 'nao'}\n"
+                        f"Mensagem do dono:\n{user_message.strip()}"
+                    ),
+                },
+            ],
+        }
+
+        async with httpx.AsyncClient(
+            base_url=self.settings.normalized_groq_api_base_url,
+            timeout=max(5, self.settings.groq_timeout_seconds // 2),
+        ) as client:
+            response = await client.post("/chat/completions", headers=headers, json=payload)
+
+        if response.status_code >= 400:
+            detail = response.text.strip() or "Unexpected Groq error."
+            raise GroqChatError(f"Groq assistant search plan failed ({response.status_code}): {detail}")
+
+        data = response.json()
+        content = self._extract_content(data)
+        if not content.strip():
+            return GroqAssistantSearchPlan.empty()
+
+        return self._parse_assistant_search_plan(content)
+
     async def extract_agent_memory(
         self,
         *,
@@ -376,6 +478,7 @@ Regras:
 - Se o dono estiver pedindo ajuda operacional, priorize a resposta mais acionavel e mais curta primeiro.
 - Se houver incerteza ou memoria incompleta, assuma isso explicitamente.
 - Em cumprimentos, mensagens curtas ou aberturas vagas, responda em 1 ou 2 frases curtas e pergunte como ajudar.
+- Se o pedido envolver promessa, compromisso, prazo, resposta em nome do dono ou dado sensivel, confirme antes de tratar isso como decidido.
 - Nao enumere fatos antigos sem convite explicito.
 - Evite hiperfoco em um unico tema so porque ele apareceu na memoria.
 - Evite respostas genéricas, longas demais ou com floreio.
@@ -435,6 +538,44 @@ Regras:
             has_queries=bool(has_queries and has_valid_queries),
             contact_queries=normalized_contacts[:3],
             vault_queries=normalized_vault[:3],
+        )
+
+    def _parse_assistant_search_plan(self, content: str) -> GroqAssistantSearchPlan:
+        cleaned = self._strip_json_fence(content)
+        try:
+            payload = json.loads(cleaned)
+        except json.JSONDecodeError as exc:
+            raise GroqChatError("Groq retornou JSON invalido para o plano de busca do assistente.") from exc
+
+        if not isinstance(payload, dict):
+            raise GroqChatError("Groq retornou um payload inesperado para o plano de busca do assistente.")
+
+        def _limit(value: Any, default: int) -> int:
+            try:
+                resolved = int(value)
+            except (TypeError, ValueError):
+                resolved = default
+            return max(0, min(6, resolved))
+
+        people_queries = self._clean_string_list(payload.get("people_queries"))[:3]
+        important_queries = self._clean_string_list(payload.get("important_message_queries"))[:3]
+        project_queries = self._clean_string_list(payload.get("project_queries"))[:3]
+        snapshot_queries = self._clean_string_list(payload.get("snapshot_queries"))[:3]
+
+        return GroqAssistantSearchPlan(
+            needs_retrieval=bool(payload.get("needs_retrieval")),
+            people_queries=people_queries,
+            important_message_queries=important_queries,
+            project_queries=project_queries,
+            snapshot_queries=snapshot_queries,
+            people_limit=_limit(payload.get("people_limit"), 2 if people_queries else 0),
+            important_messages_limit=_limit(payload.get("important_messages_limit"), 3 if important_queries else 0),
+            projects_limit=_limit(payload.get("projects_limit"), 2 if project_queries else 0),
+            snapshots_limit=_limit(payload.get("snapshots_limit"), 2 if snapshot_queries else 0),
+            should_include_open_questions=bool(payload.get("should_include_open_questions")),
+            should_include_contact_memory=bool(payload.get("should_include_contact_memory")),
+            requires_confirmation=bool(payload.get("requires_confirmation")),
+            explanation=str(payload.get("explanation") or "").strip(),
         )
 
     def _parse_agent_memory(self, content: str) -> GroqAgentMemoryDecision:

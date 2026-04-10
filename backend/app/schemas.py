@@ -33,6 +33,7 @@ class WhatsAppAgentStatusResponse(BaseModel):
     state: str
     gateway_ready: bool
     auto_reply_enabled: bool
+    reply_scope: Literal["all_direct_contacts"] = "all_direct_contacts"
     owner_number: str | None = None
     allowed_contact_phone: str | None = None
     qr_code: str | None = None
@@ -44,6 +45,7 @@ class WhatsAppAgentStatusResponse(BaseModel):
 class WhatsAppAgentSettingsResponse(BaseModel):
     user_id: str
     auto_reply_enabled: bool
+    reply_scope: Literal["all_direct_contacts"] = "all_direct_contacts"
     allowed_contact_phone: str | None = None
     updated_at: datetime
 

@@ -25,6 +25,7 @@ export type WhatsAppAgentStatus = {
   state: string;
   gateway_ready: boolean;
   auto_reply_enabled: boolean;
+  reply_scope: "all_direct_contacts";
   owner_number: string | null;
   allowed_contact_phone: string | null;
   qr_code: string | null;
@@ -36,6 +37,7 @@ export type WhatsAppAgentStatus = {
 export type WhatsAppAgentSettings = {
   user_id: string;
   auto_reply_enabled: boolean;
+  reply_scope: "all_direct_contacts";
   allowed_contact_phone: string | null;
   updated_at: string;
 };

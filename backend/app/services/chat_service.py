@@ -110,6 +110,7 @@ class ChatAssistantService:
             user_message=normalized_text,
             recent_messages=prior_messages,
             context_hint=context_hint,
+            channel="web_chat",
         )
         self.store.append_chat_message(
             thread_id=thread.id,

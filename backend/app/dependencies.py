@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from app.services.assistant_context_service import AssistantContextService
 from app.services.assistant_reply_service import AssistantReplyService
 from app.services.chat_service import ChatAssistantService
 from app.config import Settings
@@ -58,11 +59,21 @@ def get_groq_service() -> GroqChatService:
 
 
 @lru_cache
+def get_assistant_context_service() -> AssistantContextService:
+    return AssistantContextService(
+        settings=get_settings(),
+        store=get_supabase_store(),
+        groq_service=get_groq_service(),
+    )
+
+
+@lru_cache
 def get_assistant_reply_service() -> AssistantReplyService:
     return AssistantReplyService(
         settings=get_settings(),
         store=get_supabase_store(),
         groq_service=get_groq_service(),
+        context_service=get_assistant_context_service(),
     )
 
 

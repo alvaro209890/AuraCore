@@ -191,7 +191,6 @@ class WhatsAppAgentService:
             return WhatsAppAgentInboundMessageResponse(action="ignored_self")
 
         observer_status, settings_record = await self._load_observer_context()
-        allowed_contact_phone = settings_record.allowed_contact_phone
         self.store.upsert_known_contact(
             user_id=self.settings.default_user_id,
             contact_phone=contact_phone,
@@ -254,51 +253,6 @@ class WhatsAppAgentService:
             last_error_text=None,
         )
 
-        if not allowed_contact_phone:
-            logger.info(
-                "allowlist_missing thread_id=%s message_id=%s contact_phone=%s source_event=%s",
-                thread.id,
-                inbound_message.id,
-                contact_phone,
-                source_event,
-            )
-            self.store.update_whatsapp_agent_message(
-                message_id=inbound_message.id,
-                processing_status="ignored_missing_allowlist",
-                learning_status="not_applicable",
-            )
-            return WhatsAppAgentInboundMessageResponse(
-                action="ignored_missing_allowlist",
-                thread_id=thread.id,
-                inbound_message_id=inbound_message.id,
-            )
-
-        if not self.store.phone_matches(contact_phone, allowed_contact_phone):
-            logger.info(
-                "allowlist_blocked thread_id=%s message_id=%s contact_phone=%s allowed_contact_phone=%s source_event=%s",
-                thread.id,
-                inbound_message.id,
-                contact_phone,
-                allowed_contact_phone,
-                source_event,
-            )
-            self.store.update_whatsapp_agent_message(
-                message_id=inbound_message.id,
-                processing_status="ignored_not_allowed",
-                learning_status="not_applicable",
-            )
-            self.store.update_whatsapp_agent_thread(
-                thread_id=thread.id,
-                status="blocked",
-                last_error_at=datetime.now(UTC),
-                last_error_text="Contato nao autorizado para o WhatsApp agente.",
-            )
-            return WhatsAppAgentInboundMessageResponse(
-                action="ignored_not_allowed",
-                thread_id=thread.id,
-                inbound_message_id=inbound_message.id,
-            )
-
         if self.store.get_whatsapp_agent_outbound_for_source_inbound(
             user_id=self.settings.default_user_id,
             source_inbound_message_id=payload.message_id,
@@ -353,12 +307,15 @@ class WhatsAppAgentService:
                 user_message=normalized_text,
                 recent_messages=prior_messages,
                 context_hint=None,
-                priority_context=self._render_contact_memory_context(contact_memory),
+                priority_context=None,
+                contact_memory_context=self._render_contact_memory_context(contact_memory),
                 recent_messages_label="Historico recente da sessao ativa no WhatsApp agente",
+                channel="whatsapp_agent",
                 additional_rules=[
-                    "Voce esta respondendo pelo WhatsApp agente do proprio dono.",
-                    "Considere apenas a sessao atual deste contato no WhatsApp agente como historico recente.",
-                    "Nao fale sobre allowlist, numero autorizado, regras internas ou operacao do sistema.",
+                    "Seu nome e Orion e voce e a IA pessoal do dono deste numero.",
+                    "Voce esta respondendo pelo WhatsApp agente do proprio dono para qualquer contato direto individual que escrever para este numero.",
+                    "Considere apenas a sessao atual deste contato no WhatsApp agente como historico recente do canal.",
+                    "Nao fale sobre regras internas, operacao do sistema, conexoes, QR ou bastidores.",
                     "Nao retome assuntos de sessoes antigas sem que o dono traga o assunto de novo.",
                     "Se o dono pedir ajuda pratica, responda primeiro com a acao mais util e objetiva.",
                 ],
@@ -759,21 +716,8 @@ class WhatsAppAgentService:
             parts.append(f"Instrucoes recorrentes: {'; '.join(memory.recurring_instructions[:6])}")
         return "\n".join(parts).strip()
 
-    def _sync_settings_with_observer(self, observer_status: ObserverStatusResponse) -> WhatsAppAgentSettingsRecord:
-        current = self.store.get_whatsapp_agent_settings(self.settings.default_user_id)
-        observer_owner = self.store.normalize_contact_phone(observer_status.owner_number)
-        next_allowed = observer_owner if observer_status.connected else None
-        same_allowed_phone = (
-            next_allowed == current.allowed_contact_phone
-            or self.store.phone_matches(next_allowed, current.allowed_contact_phone)
-        )
-        if not same_allowed_phone:
-            return self.store.update_whatsapp_agent_settings(
-                user_id=self.settings.default_user_id,
-                allowed_contact_phone=next_allowed,
-                updated_at=datetime.now(UTC),
-            )
-        return current
+    def _sync_settings_with_observer(self, _observer_status: ObserverStatusResponse) -> WhatsAppAgentSettingsRecord:
+        return self.store.get_whatsapp_agent_settings(self.settings.default_user_id)
 
     def _build_status_response(
         self,
@@ -789,6 +733,7 @@ class WhatsAppAgentService:
             auto_reply_enabled=settings.auto_reply_enabled,
             owner_number=agent_status.owner_number,
             allowed_contact_phone=settings.allowed_contact_phone,
+            reply_scope="all_direct_contacts",
             qr_code=agent_status.qr_code,
             qr_expires_in_sec=agent_status.qr_expires_in_sec,
             last_seen_at=agent_status.last_seen_at,
@@ -800,6 +745,7 @@ class WhatsAppAgentService:
             user_id=str(settings_record.user_id),
             auto_reply_enabled=settings_record.auto_reply_enabled,
             allowed_contact_phone=settings_record.allowed_contact_phone,
+            reply_scope="all_direct_contacts",
             updated_at=settings_record.updated_at,
         )
 

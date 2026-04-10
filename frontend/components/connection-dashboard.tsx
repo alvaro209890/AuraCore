@@ -3088,7 +3088,7 @@ function AgentTabLegacy({
   onRefresh: () => void;
 }) {
   const autoReplyEnabled = settings?.auto_reply_enabled ?? false;
-  const allowedContact = settings?.allowed_contact_phone ?? status?.allowed_contact_phone ?? "NÃ£o definido";
+  const replyScopeLabel = status?.reply_scope === "all_direct_contacts" ? "Todos os contatos diretos" : "Escopo legado";
   const activeThread = threads.find((thread) => thread.id === activeThreadId) ?? threads[0] ?? null;
   const sessionStartedLabel = activeSession?.started_at ? formatDateTime(activeSession.started_at) : "Sem sessao ativa";
   const sessionLastActivityLabel = activeSession?.last_activity_at ? formatDateTime(activeSession.last_activity_at) : "Sem atividade";
@@ -3105,7 +3105,7 @@ function AgentTabLegacy({
         <Card className="observer-qr-card agent-qr-card">
           <SectionTitle title="WhatsApp Agente" icon={Bot} />
           <p className="support-copy">
-            Escaneie o QR do agente. Ele responde apenas pelo nÃºmero secundÃ¡rio e sÃ³ conversa com o nÃºmero conectado no observador.
+            Escaneie o QR do agente. Ele responde pelo numero secundario e atende qualquer conversa direta individual recebida nele.
           </p>
 
           <div className="qr-display-shell">
@@ -3148,7 +3148,7 @@ function AgentTabLegacy({
           <div className="status-line-list">
             <StatusLine label="Gateway" value={status?.gateway_ready ? "Baileys online" : "IndisponÃ­vel"} tone="emerald" />
             <StatusLine label="SessÃ£o" value={status?.owner_number ?? "Aguardando leitura"} tone="indigo" />
-            <StatusLine label="Contato permitido" value={allowedContact} tone="amber" />
+            <StatusLine label="Escopo de resposta" value={replyScopeLabel} tone="amber" />
             <StatusLine label="Resposta automÃ¡tica" value={autoReplyEnabled ? "Ativa" : "Desativada"} tone="zinc" />
           </div>
 
@@ -3182,7 +3182,7 @@ function AgentTabLegacy({
               {autoReplyEnabled ? "Desativar respostas" : "Ativar respostas"}
             </button>
             <p className="support-copy">
-              O agente responde somente para o nÃºmero conectado no observador. Esse contato Ã© atualizado automaticamente.
+              Quando ativado, o agente responde qualquer contato direto individual que enviar mensagem para este numero.
             </p>
           </div>
 
@@ -3328,7 +3328,7 @@ function AgentTab({
   onRefresh: () => void;
 }) {
   const autoReplyEnabled = settings?.auto_reply_enabled ?? false;
-  const allowedContact = settings?.allowed_contact_phone ?? status?.allowed_contact_phone ?? "Nao definido";
+  const replyScopeLabel = status?.reply_scope === "all_direct_contacts" ? "Todos os contatos diretos" : "Escopo legado";
   const activeThread = threads.find((thread) => thread.id === activeThreadId) ?? threads[0] ?? null;
   const sessionStartedLabel = activeSession?.started_at ? formatDateTime(activeSession.started_at) : "Sem sessao ativa";
   const sessionLastActivityLabel = activeSession?.last_activity_at ? formatDateTime(activeSession.last_activity_at) : "Sem atividade";
@@ -3358,7 +3358,7 @@ function AgentTab({
           </div>
           <h2>WhatsApp Agente</h2>
           <p className="lead-copy">
-            O numero secundario responde pelo proprio canal do agente e so aceita conversa do numero conectado no observador.
+            O numero secundario responde pelo proprio canal do agente e atende qualquer conversa direta individual recebida nele.
           </p>
           <div className="agent-command-actions">
             <button className="ac-primary-button" onClick={onConnect} disabled={isConnecting || viewState === "connected"} type="button">
@@ -3388,9 +3388,9 @@ function AgentTab({
             meta={status?.connected ? "Sessao conectada no canal secundario" : "Leia o QR para conectar"}
           />
           <AgentMetricPanel
-            label="Contato autorizado"
-            value={allowedContact}
-            meta="Atualizado automaticamente a partir do observador"
+            label="Escopo de resposta"
+            value={replyScopeLabel}
+            meta="Qualquer conversa direta individual pode receber resposta automatica"
           />
           <AgentMetricPanel
             label="Resposta automatica"
@@ -3443,12 +3443,12 @@ function AgentTab({
               <div className="agent-status-grid">
                 <StatusLine label="Gateway" value={status?.gateway_ready ? "Baileys online" : "Indisponivel"} tone="emerald" />
                 <StatusLine label="Sessao" value={connectedNumber} tone="indigo" />
-                <StatusLine label="Contato permitido" value={allowedContact} tone="amber" />
+                <StatusLine label="Escopo de resposta" value={replyScopeLabel} tone="amber" />
                 <StatusLine label="Ultima atividade" value={formatDateTime(status?.last_seen_at)} tone="zinc" />
               </div>
               <div className="agent-note-panel">
                 <strong>Regra central</strong>
-                <p>O agente responde somente para o numero conectado no observador. Nenhum outro contato recebe resposta automatica.</p>
+                <p>O agente responde qualquer conversa direta individual recebida neste numero. Grupos e mensagens do proprio numero continuam ignorados.</p>
               </div>
             </div>
           </div>
@@ -4489,7 +4489,7 @@ function ChatTab({
                 <div className="gpt-empty-icon">
                   <Brain size={32} />
                 </div>
-                <h3>AuraCore</h3>
+                <h3>Orion</h3>
                 <p>Como posso ajudar você hoje?</p>
                 <div className="gpt-suggestions">
                   {quickPrompts.map((prompt) => (
@@ -4509,7 +4509,7 @@ function ChatTab({
                     </div>
                     <div className="gpt-msg-content">
                       <div className="gpt-msg-meta">
-                        <strong>{message.role === "assistant" ? "AuraCore" : "Você"}</strong>
+                        <strong>{message.role === "assistant" ? "Orion" : "Você"}</strong>
                         <span>{formatShortDateTime(message.created_at)}</span>
                       </div>
                       <div className={`gpt-msg-bubble${message.role === "user" ? " gpt-msg-bubble-user" : ""}`}>
@@ -4527,7 +4527,7 @@ function ChatTab({
                     </div>
                     <div className="gpt-msg-content">
                       <div className="gpt-msg-meta">
-                        <strong>AuraCore</strong>
+                        <strong>Orion</strong>
                         <span className="gpt-typing-indicator">digitando...</span>
                       </div>
                       <div className="gpt-msg-bubble">
@@ -5307,7 +5307,7 @@ function ManualTab({
             <div className="status-line-list">
               <StatusLine label="Status" value={agentStatus?.connected ? "Online" : "Pendente"} tone="indigo" />
               <StatusLine label="Auto-reply" value={agentSettings?.auto_reply_enabled ? "Ativo" : "Desligado"} tone="amber" />
-              <StatusLine label="Contato permitido" value={agentSettings?.allowed_contact_phone ?? "NÃ£o definido"} tone="zinc" />
+              <StatusLine label="Escopo de resposta" value={agentStatus?.reply_scope === "all_direct_contacts" ? "Todos os contatos diretos" : "Escopo legado"} tone="zinc" />
             </div>
           </Card>
         </>
