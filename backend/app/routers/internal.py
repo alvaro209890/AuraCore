@@ -6,13 +6,12 @@ from fastapi import APIRouter, Header, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
 
 from app.dependencies import (
-    get_memory_job_service,
+    get_automation_service,
     get_settings,
     get_supabase_store,
     get_whatsapp_agent_gateway_service,
 )
 from app.schemas import IngestMessagesRequest, IngestMessagesResponse
-from app.services.memory_job_service import MemoryJobService
 from app.services.supabase_store import IngestedMessageRecord, SupabaseStore
 
 router = APIRouter(prefix="/api/internal/observer", tags=["internal"])
@@ -29,7 +28,7 @@ async def ingest_messages(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid internal API token.")
 
     store = get_supabase_store()
-    memory_job_service = get_memory_job_service()
+    automation_service = get_automation_service()
     blocked_contact_phone: str | None = None
     try:
         agent_gateway = get_whatsapp_agent_gateway_service()
@@ -52,11 +51,12 @@ async def ingest_messages(
             save_result.trimmed_existing_count,
         )
     await run_in_threadpool(
-        memory_job_service.register_ingest_batch,
+        automation_service.register_ingest_batch,
         accepted_count=save_result.saved_count,
         ignored_count=ignored_count,
         timestamps=[message.timestamp for message in normalized_messages],
     )
+    automation_service.schedule_sync_settle()
     return IngestMessagesResponse(accepted_count=save_result.saved_count, ignored_count=ignored_count)
 
 

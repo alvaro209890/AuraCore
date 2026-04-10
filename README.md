@@ -9,6 +9,10 @@ AuraCore roda agora com esta topologia:
 - `banco local`: SQLite em `/media/acer/dados/Banco_de_dados/AuraCore_DB/auracore.sqlite3`.
 - `auto-update`: timer local via `systemd --user` que aplica `git pull` da `main` e reinicia os servicos afetados.
 
+Documentacao operacional detalhada:
+
+- [`docs/local-backend-runtime.md`](/home/acer/Downloads/AuraCore/docs/local-backend-runtime.md)
+
 ## Banco local
 
 - Diretório esperado: `/media/acer/dados/Banco_de_dados/AuraCore_DB`
@@ -113,6 +117,8 @@ Regras do auto-update:
 
 - O processo do gateway sobe dois canais: `observer` e `agent`.
 - O `observer` e o canal que puxa historico e mensagens novas para o banco local.
+- Quando o `observer` e religado por QR, o backend guarda ate 120 mensagens operacionais recentes para a primeira analise e enfileira essa leitura automaticamente quando a sincronizacao assenta.
+- Depois da primeira analise, o backend continua recebendo mensagens novas em tempo real e abre lotes incrementais automaticos quando a fila atinge o limiar configurado.
 - E normal ainda aparecer QR apos o `observer` conectar, porque o canal `agent` pode continuar aguardando vinculacao separada.
 - As credenciais do QR ficam persistidas no SQLite local via `wa_sessions` e `wa_session_keys`, entao o `observer` reconecta sozinho apos reboot quando a sessao continua valida no WhatsApp.
 

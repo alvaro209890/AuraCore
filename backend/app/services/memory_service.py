@@ -121,6 +121,26 @@ class MemoryStatus:
     has_initial_analysis: bool
     last_analyzed_at: datetime | None
     new_messages_after_first_analysis: int
+    first_analysis_limit: int
+    incremental_batch_size: int
+    incremental_min_messages: int
+
+    @property
+    def pending_new_message_count(self) -> int:
+        return self.new_messages_after_first_analysis
+
+    @property
+    def next_process_message_count(self) -> int:
+        limit = self.first_analysis_limit if not self.has_initial_analysis else self.incremental_batch_size
+        return min(self.pending_new_message_count, max(0, limit))
+
+    @property
+    def can_run_next_batch(self) -> bool:
+        if self.pending_new_message_count <= 0 or self.next_process_message_count <= 0:
+            return False
+        if not self.has_initial_analysis:
+            return True
+        return self.pending_new_message_count >= self.incremental_min_messages
 
 
 @dataclass(slots=True)
@@ -163,6 +183,9 @@ class MemoryAnalysisService:
             has_initial_analysis=has_initial_analysis,
             last_analyzed_at=persona.last_analyzed_at,
             new_messages_after_first_analysis=pending_new_message_count,
+            first_analysis_limit=self._resolve_first_analysis_limit(),
+            incremental_batch_size=self._resolve_incremental_batch_size(),
+            incremental_min_messages=self._resolve_incremental_min_messages(),
         )
 
     def plan_first_analysis(self) -> FixedAnalysisPlan:
