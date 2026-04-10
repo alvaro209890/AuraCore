@@ -4283,8 +4283,8 @@ function ImportantMessagesTab({
           }
         />
         <p className="support-copy">
-          Este cofre recebe, ao fim de cada análise manual, mensagens consideradas duráveis: acessos, dinheiro, projetos, riscos e
-          fatos operacionais que merecem sobreviver além do lote curto de processamento.
+          Este cofre recebe, junto da primeira análise e dos próximos lotes, mensagens consideradas duráveis: acessos, dinheiro,
+          projetos, riscos e fatos operacionais que merecem sobreviver além do lote curto de processamento.
         </p>
 
         <div className="important-top-grid">
@@ -4332,7 +4332,7 @@ function ImportantMessagesTab({
         <Card>
           <div className="empty-hint">
             <Archive size={18} />
-            <p>Nenhuma mensagem importante ativa ainda. Assim que uma análise manual concluir, o cofre começa a ser preenchido.</p>
+            <p>Nenhuma mensagem importante ativa ainda. Assim que a primeira análise ou o próximo lote concluir, o cofre começa a ser preenchido.</p>
           </div>
         </Card>
       ) : (

@@ -1856,6 +1856,14 @@ class SupabaseStore:
         messages: Sequence[ImportantMessageSeed],
         saved_at: datetime,
     ) -> int:
+        existing_by_source_id = {
+            message.source_message_id: message
+            for message in self.list_important_messages(
+                user_id,
+                limit=max(80, len(messages) * 4),
+                include_discarded=True,
+            )
+        }
         records: list[dict[str, Any]] = []
         seen_source_ids: set[str] = set()
 
@@ -1869,6 +1877,13 @@ class SupabaseStore:
             if not message_text or not importance_reason:
                 continue
             seen_source_ids.add(source_message_id)
+            existing = existing_by_source_id.get(source_message_id)
+            saved_at_value = existing.saved_at.isoformat() if existing else saved_at.isoformat()
+            last_reviewed_at_value = existing.last_reviewed_at.isoformat() if existing and existing.last_reviewed_at else None
+            review_notes_value = existing.review_notes if existing else None
+            discarded_at_value = None if existing is None or existing.status == "active" else (
+                existing.discarded_at.isoformat() if existing.discarded_at else None
+            )
             records.append(
                 {
                     "user_id": str(user_id),
@@ -1882,10 +1897,10 @@ class SupabaseStore:
                     "importance_reason": importance_reason,
                     "confidence": max(0, min(100, int(message.confidence))),
                     "status": "active",
-                    "review_notes": None,
-                    "saved_at": saved_at.isoformat(),
-                    "last_reviewed_at": None,
-                    "discarded_at": None,
+                    "review_notes": review_notes_value,
+                    "saved_at": saved_at_value,
+                    "last_reviewed_at": last_reviewed_at_value,
+                    "discarded_at": discarded_at_value,
                 }
             )
 

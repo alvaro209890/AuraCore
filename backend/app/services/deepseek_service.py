@@ -122,6 +122,7 @@ class DeepSeekService:
         prior_analyses_context: str,
         project_context: str,
         chat_context: str,
+        open_questions_context: str,
         intent: str = "improve_memory",
         window_hours: int,
         window_start: datetime,
@@ -136,6 +137,7 @@ class DeepSeekService:
             prior_analyses_context=prior_analyses_context,
             project_context=project_context,
             chat_context=chat_context,
+            open_questions_context=open_questions_context,
             intent=intent,
             window_hours=window_hours,
             window_start=window_start,
@@ -302,6 +304,7 @@ class DeepSeekService:
         prior_analyses_context: str,
         project_context: str,
         chat_context: str,
+        open_questions_context: str,
         intent: str = "improve_memory",
         window_hours: int,
         window_start: datetime,
@@ -332,6 +335,7 @@ class DeepSeekService:
                 prior_analyses_context=prior_analyses_context,
                 project_context=project_context,
                 chat_context=chat_context,
+                open_questions_context=open_questions_context,
                 intent=intent,
                 window_hours=window_hours,
                 window_start=window_start,
@@ -412,6 +416,7 @@ class DeepSeekService:
         prior_analyses_context: str,
         project_context: str,
         chat_context: str,
+        open_questions_context: str,
         intent: str,
         window_hours: int,
         window_start: datetime,
@@ -421,6 +426,7 @@ class DeepSeekService:
         previous_summary = current_life_summary.strip() or "(memoria consolidada ainda vazia)"
         previous_analyses = prior_analyses_context.strip() or "(nenhuma analise anterior relevante)"
         recent_chat_context = chat_context.strip() or "(nenhuma conversa relevante com a IA salva ainda)"
+        prioritized_open_questions = open_questions_context.strip() or "(nenhuma lacuna prioritaria registrada)"
         is_first_analysis = intent == "first_analysis"
         intro = (
             "Analise a janela abaixo de conversas diretas e monte a primeira base de memoria do usuario."
@@ -453,6 +459,9 @@ Projetos e frentes ja consolidados:
 
 Conversas recentes com a IA pessoal:
 {recent_chat_context}
+
+Lacunas prioritarias para esta leitura:
+{prioritized_open_questions}
 
 Contexto por conversa do WhatsApp:
 {conversation_context.strip() or "(nenhum agrupamento adicional de conversa disponivel)"}
@@ -513,6 +522,7 @@ Regras:
 - Use as analises anteriores como contexto, mas corrija ou refine o que parecer fraco, incompleto ou contraditorio.
 - Use tambem os projetos ja salvos para manter continuidade entre leituras e evitar perder o fio de frentes recorrentes.
 - Considere tambem o que o dono conversou com a IA no chat para entender melhor prioridades, projetos e como ele pensa.
+- Leia o bloco de lacunas prioritarias antes da transcricao e tente responder, reduzir ou recalibrar essas perguntas usando apenas o historico salvo e a janela atual.
 - Leia primeiro o bloco de contexto por conversa para entender quem e cada contato, o peso de cada conversa e a relacao mais provavel com o dono.
 - Leia tambem as memorias ja consolidadas por pessoa antes de atualizar os contatos desta janela.
 - Diferencie sinais sobre o dono dos fatos que pertencem ao contato; nao transforme caracteristicas do contato em caracteristicas do dono.
@@ -526,6 +536,8 @@ Regras:
 - Mantenha updated_life_summary factual, claro, conciso e util para um assistente pessoal futuro. Dê mais peso ao que aparece repetido, ao que tem impacto operacional e ao que altera o comportamento do dono.
 - Use os campos de lista para aprendizados concretos, padroes de comportamento e sinais incertos.
 - Se a evidencia for fraca, trate como hipotese e nao como fato consolidado.
+- Em open_questions, carregue as lacunas anteriores que continuarem sem resposta, remova as que foram resolvidas e reescreva as restantes de modo mais especifico e operacional.
+- Quando uma lacuna antiga parecer respondida, transforme a resposta em key_learnings, people_and_relationships, routine_signals ou preferences em vez de repetir a mesma duvida.
 - Preencha contact_memories apenas com pessoas que realmente aparecem nesta janela.
 - Em cada item de contact_memories, person_key deve copiar exatamente um person_key presente no bloco de contexto por conversa.
 - Em contact_memories, profile_summary deve resumir quem e essa pessoa no contexto do dono; relationship_summary deve resumir a dinamica atual entre dono e contato.
