@@ -681,47 +681,7 @@ class AutomationService:
             finished_at=datetime.now(UTC),
         )
         self.store.save_analysis_job_messages(job_id=job.id, message_ids=outcome.source_message_ids)
-        important_saved_count = 0
-        if outcome.source_messages:
-            extract_start = perf_counter()
-            try:
-                important_saved_count = await self.memory_service.extract_and_store_important_messages(
-                    messages=outcome.source_messages,
-                    analyzed_at=datetime.now(UTC),
-                )
-                extract_latency_ms = round((perf_counter() - extract_start) * 1000)
-                self.store.create_model_run(
-                    user_id=self.settings.default_user_id,
-                    job_id=job.id,
-                    provider="deepseek",
-                    model_name=self.settings.deepseek_model,
-                    run_type="important_message_extract",
-                    success=True,
-                    latency_ms=extract_latency_ms,
-                    input_tokens=None,
-                    output_tokens=None,
-                    reasoning_tokens=None,
-                    estimated_cost_usd=None,
-                    error_text=None,
-                    created_at=datetime.now(UTC),
-                )
-            except Exception as error:
-                extract_latency_ms = round((perf_counter() - extract_start) * 1000)
-                self.store.create_model_run(
-                    user_id=self.settings.default_user_id,
-                    job_id=job.id,
-                    provider="deepseek",
-                    model_name=self.settings.deepseek_model,
-                    run_type="important_message_extract",
-                    success=False,
-                    latency_ms=extract_latency_ms,
-                    input_tokens=None,
-                    output_tokens=None,
-                    reasoning_tokens=None,
-                    estimated_cost_usd=None,
-                    error_text=str(error),
-                    created_at=datetime.now(UTC),
-                )
+        important_saved_count = outcome.important_messages_saved_count
         if outcome.source_message_ids:
             processed_at = datetime.now(UTC)
             marked_count = self.store.mark_messages_processed(
@@ -800,47 +760,7 @@ class AutomationService:
             finished_at=datetime.now(UTC),
         )
         self.store.save_analysis_job_messages(job_id=job.id, message_ids=outcome.source_message_ids)
-        important_saved_count = 0
-        if outcome.source_messages:
-            extract_start = perf_counter()
-            try:
-                important_saved_count = await self.memory_service.extract_and_store_important_messages(
-                    messages=outcome.source_messages,
-                    analyzed_at=datetime.now(UTC),
-                )
-                extract_latency_ms = round((perf_counter() - extract_start) * 1000)
-                self.store.create_model_run(
-                    user_id=self.settings.default_user_id,
-                    job_id=job.id,
-                    provider="deepseek",
-                    model_name=self.settings.deepseek_model,
-                    run_type="important_message_extract",
-                    success=True,
-                    latency_ms=extract_latency_ms,
-                    input_tokens=None,
-                    output_tokens=None,
-                    reasoning_tokens=None,
-                    estimated_cost_usd=None,
-                    error_text=None,
-                    created_at=datetime.now(UTC),
-                )
-            except Exception as error:
-                extract_latency_ms = round((perf_counter() - extract_start) * 1000)
-                self.store.create_model_run(
-                    user_id=self.settings.default_user_id,
-                    job_id=job.id,
-                    provider="deepseek",
-                    model_name=self.settings.deepseek_model,
-                    run_type="important_message_extract",
-                    success=False,
-                    latency_ms=extract_latency_ms,
-                    input_tokens=None,
-                    output_tokens=None,
-                    reasoning_tokens=None,
-                    estimated_cost_usd=None,
-                    error_text=str(error),
-                    created_at=datetime.now(UTC),
-                )
+        important_saved_count = outcome.important_messages_saved_count
         if outcome.source_message_ids:
             processed_at = datetime.now(UTC)
             marked_count = self.store.mark_messages_processed(
