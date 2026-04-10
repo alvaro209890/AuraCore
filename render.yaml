@@ -44,6 +44,12 @@ services:
         value: "5"
       - key: MEMORY_ANALYSIS_SNAPSHOT_CONTEXT_CHARS
         value: "12000"
+      - key: MEMORY_FIRST_ANALYSIS_CHUNK_TRIGGER_MESSAGES
+        value: "60"
+      - key: MEMORY_FIRST_ANALYSIS_CHUNK_SIZE
+        value: "36"
+      - key: MEMORY_FIRST_ANALYSIS_CHUNK_CHAR_BUDGET
+        value: "6500"
       - key: CHAT_MAX_HISTORY_MESSAGES
         value: "18"
       - key: CHAT_CONTEXT_SNAPSHOTS

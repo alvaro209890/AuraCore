@@ -47,6 +47,15 @@ class Settings(BaseSettings):
     memory_analysis_max_window_hours: int = Field(168, alias="MEMORY_ANALYSIS_MAX_WINDOW_HOURS")
     memory_analysis_context_snapshots: int = Field(5, alias="MEMORY_ANALYSIS_CONTEXT_SNAPSHOTS")
     memory_analysis_snapshot_context_chars: int = Field(12000, alias="MEMORY_ANALYSIS_SNAPSHOT_CONTEXT_CHARS")
+    memory_first_analysis_chunk_trigger_messages: int = Field(
+        60,
+        alias="MEMORY_FIRST_ANALYSIS_CHUNK_TRIGGER_MESSAGES",
+    )
+    memory_first_analysis_chunk_size: int = Field(36, alias="MEMORY_FIRST_ANALYSIS_CHUNK_SIZE")
+    memory_first_analysis_chunk_char_budget: int = Field(
+        6500,
+        alias="MEMORY_FIRST_ANALYSIS_CHUNK_CHAR_BUDGET",
+    )
     chat_max_history_messages: int = Field(18, alias="CHAT_MAX_HISTORY_MESSAGES")
     chat_context_snapshots: int = Field(5, alias="CHAT_CONTEXT_SNAPSHOTS")
     chat_context_projects: int = Field(8, alias="CHAT_CONTEXT_PROJECTS")

@@ -304,6 +304,53 @@ class DeepSeekService:
             operation="review_important_messages",
         )
 
+    async def synthesize_memory_analyses(
+        self,
+        *,
+        partial_analyses_block: str,
+        conversation_context: str,
+        current_life_summary: str,
+        prior_analyses_context: str,
+        project_context: str,
+        chat_context: str,
+        open_questions_context: str,
+        intent: str = "first_analysis",
+        window_hours: int,
+        window_start: datetime,
+        window_end: datetime,
+        source_message_count: int,
+        partial_analysis_count: int,
+    ) -> DeepSeekMemoryResult:
+        payload = self._build_completion_payload(
+            system_prompt=(
+                "Voce consolida varias leituras parciais da mesma janela do AuraCore em uma unica memoria final. "
+                "Sua funcao e unir as analises sem perder sinal, remover duplicatas, preservar prudencia e "
+                "retornar apenas JSON valido no mesmo schema da analise principal."
+            ),
+            user_prompt=self._build_memory_synthesis_prompt(
+                partial_analyses_block=partial_analyses_block,
+                conversation_context=conversation_context,
+                current_life_summary=current_life_summary,
+                prior_analyses_context=prior_analyses_context,
+                project_context=project_context,
+                chat_context=chat_context,
+                open_questions_context=open_questions_context,
+                intent=intent,
+                window_hours=window_hours,
+                window_start=window_start,
+                window_end=window_end,
+                source_message_count=source_message_count,
+                partial_analysis_count=partial_analysis_count,
+            ),
+            max_tokens=self._analysis_max_output_tokens(intent=intent),
+        )
+        return await self._request_parsed_completion(
+            payload=payload,
+            parser=self._parse_result,
+            validator=self._validate_analysis_result,
+            operation="synthesize_memory_analyses",
+        )
+
     def build_analysis_prompt_preview(
         self,
         *,
@@ -612,6 +659,112 @@ Regras:
 - Nao inclua markdown fences.
 """.strip()
 
+    def _build_memory_synthesis_prompt(
+        self,
+        *,
+        partial_analyses_block: str,
+        conversation_context: str,
+        current_life_summary: str,
+        prior_analyses_context: str,
+        project_context: str,
+        chat_context: str,
+        open_questions_context: str,
+        intent: str,
+        window_hours: int,
+        window_start: datetime,
+        window_end: datetime,
+        source_message_count: int,
+        partial_analysis_count: int,
+    ) -> str:
+        is_first_analysis = intent == "first_analysis"
+        return f"""
+Consolide varias leituras parciais da mesma janela de mensagens em uma unica memoria final do dono.
+
+Janela em horas: {window_hours}
+Inicio da janela (UTC): {window_start.isoformat()}
+Fim da janela (UTC): {window_end.isoformat()}
+Mensagens totais incluidas: {source_message_count}
+Analises parciais recebidas: {partial_analysis_count}
+
+Resumo consolidado atual:
+{current_life_summary.strip() or "(memoria consolidada ainda vazia)"}
+
+Analises anteriores relevantes:
+{prior_analyses_context.strip() or "(nenhuma analise anterior relevante)"}
+
+Projetos e frentes ja consolidados:
+{project_context.strip() or "(nenhum projeto consolidado ainda)"}
+
+Conversas recentes com a IA pessoal:
+{chat_context.strip() or "(nenhuma conversa relevante com a IA salva ainda)"}
+
+Lacunas prioritarias para esta leitura:
+{open_questions_context.strip() or "(nenhuma lacuna prioritaria registrada)"}
+
+Contexto resumido por conversa do WhatsApp:
+{conversation_context.strip() or "(nenhum agrupamento adicional de conversa disponivel)"}
+
+Analises parciais da mesma janela:
+{partial_analyses_block.strip() or "(nenhuma analise parcial disponivel)"}
+
+Retorne um JSON com exatamente estes campos:
+- updated_life_summary: string
+- window_summary: string
+- key_learnings: string[]
+- people_and_relationships: string[]
+- routine_signals: string[]
+- preferences: string[]
+- open_questions: string[]
+- active_projects: {{ name: string, summary: string, status: string, what_is_being_built: string, built_for: string, next_steps: string[], evidence: string[] }}[]
+- contact_memories: {{ person_key: string, contact_name: string, profile_summary: string, relationship_summary: string, salient_facts: string[], open_loops: string[], recent_topics: string[] }}[]
+
+Formato esperado do JSON:
+{{
+  "updated_life_summary": "string",
+  "window_summary": "string",
+  "key_learnings": ["string"],
+  "people_and_relationships": ["string"],
+  "routine_signals": ["string"],
+  "preferences": ["string"],
+  "open_questions": ["string"],
+  "active_projects": [
+    {{
+      "name": "string",
+      "summary": "string",
+      "status": "string",
+      "what_is_being_built": "string",
+      "built_for": "string",
+      "next_steps": ["string"],
+      "evidence": ["string"]
+    }}
+  ],
+  "contact_memories": [
+    {{
+      "person_key": "string",
+      "contact_name": "string",
+      "profile_summary": "string",
+      "relationship_summary": "string",
+      "salient_facts": ["string"],
+      "open_loops": ["string"],
+      "recent_topics": ["string"]
+    }}
+  ]
+}}
+
+Regras:
+- Trate as analises parciais como partes complementares da mesma janela, nao como pessoas diferentes nem periodos independentes.
+- Una duplicatas entre listas, projetos e contatos.
+- Dê mais peso ao que aparece repetido em mais de uma parcial ou com evidencia mais concreta.
+- Se houver conflito entre parciais, prefira a versao mais prudente e mais bem sustentada.
+- updated_life_summary deve refletir a janela completa, nao a media mecanica das parciais.
+- window_summary deve resumir a janela completa em alto nivel.
+- Em active_projects, mantenha poucos projetos fortes, com no maximo 6 itens.
+- Em contact_memories, mantenha apenas pessoas realmente relevantes na janela completa.
+- Em open_questions, preserve apenas lacunas que continuarem abertas apos unir as parciais.
+- Nao inclua markdown fences.
+{"- Esta e a primeira analise persistida do dono; mantenha cobertura ampla, prudente e conservadora." if is_first_analysis else ""}
+""".strip()
+
     def _build_project_merge_prompt(
         self,
         *,
@@ -882,6 +1035,19 @@ Regras:
             "Authorization": f"Bearer {self.settings.deepseek_api_key}",
             "Content-Type": "application/json",
         }
+        messages = payload.get("messages")
+        system_prompt_chars = 0
+        user_prompt_chars = 0
+        if isinstance(messages, list):
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                role = str(message.get("role", ""))
+                content = str(message.get("content", ""))
+                if role == "system":
+                    system_prompt_chars += len(content)
+                elif role == "user":
+                    user_prompt_chars += len(content)
         start_clock = perf_counter()
         request_timeout = httpx.Timeout(
             connect=min(10.0, self.settings.deepseek_timeout_seconds),
@@ -891,11 +1057,13 @@ Regras:
         )
         hard_timeout_seconds = self.settings.deepseek_timeout_seconds + 5.0
         logger.info(
-            "deepseek_request_start operation=%s attempt=%s model=%s timeout_seconds=%s",
+            "deepseek_request_start operation=%s attempt=%s model=%s timeout_seconds=%s system_prompt_chars=%s user_prompt_chars=%s",
             operation,
             attempt,
             self.settings.deepseek_model,
             self.settings.deepseek_timeout_seconds,
+            system_prompt_chars,
+            user_prompt_chars,
         )
         try:
             async with httpx.AsyncClient(

@@ -167,6 +167,17 @@ class FixedAnalysisPlan:
     estimated_cost_ceiling_usd: float
 
 
+@dataclass(slots=True)
+class FirstAnalysisChunk:
+    source_messages: list[StoredMessageRecord]
+    transcript: str
+    conversation_context: str
+    people_memory_context: str
+    window_start: datetime
+    window_end: datetime
+    selected_transcript_chars: int
+
+
 class MemoryAnalysisService:
     def __init__(
         self,
@@ -1220,21 +1231,32 @@ class MemoryAnalysisService:
         project_context = self._build_project_context(existing_projects)
         chat_context = self._build_chat_context()
         open_questions_context = self._build_open_questions_context(current_persona)
-        deepseek_result = await self.deepseek_service.analyze_memory(
-            transcript=plan.transcript,
-            conversation_context=plan.conversation_context,
-            people_memory_context=plan.people_memory_context,
-            current_life_summary=self._build_persona_context(current_persona),
-            prior_analyses_context=prior_analyses_context,
-            project_context=project_context,
-            chat_context=chat_context,
-            open_questions_context=open_questions_context,
-            intent=plan.intent,
-            window_hours=plan.window_hours,
-            window_start=plan.window_start,
-            window_end=plan.window_end,
-            source_message_count=len(plan.source_messages),
-        )
+        current_life_summary = self._build_persona_context(current_persona)
+        if self._should_chunk_first_analysis(plan):
+            deepseek_result = await self._analyze_first_analysis_in_chunks(
+                plan,
+                current_life_summary=current_life_summary,
+                prior_analyses_context=prior_analyses_context,
+                project_context=project_context,
+                chat_context=chat_context,
+                open_questions_context=open_questions_context,
+            )
+        else:
+            deepseek_result = await self.deepseek_service.analyze_memory(
+                transcript=plan.transcript,
+                conversation_context=plan.conversation_context,
+                people_memory_context=plan.people_memory_context,
+                current_life_summary=current_life_summary,
+                prior_analyses_context=prior_analyses_context,
+                project_context=project_context,
+                chat_context=chat_context,
+                open_questions_context=open_questions_context,
+                intent=plan.intent,
+                window_hours=plan.window_hours,
+                window_start=plan.window_start,
+                window_end=plan.window_end,
+                source_message_count=len(plan.source_messages),
+            )
         logger.info(
             "fixed_plan_stage_done stage=analyze_memory intent=%s projects=%s contacts=%s open_questions=%s",
             plan.intent,
@@ -1379,6 +1401,203 @@ class MemoryAnalysisService:
             source_messages=plan.source_messages,
             selected_transcript_chars=plan.selected_transcript_chars,
         )
+
+    def _should_chunk_first_analysis(self, plan: FixedAnalysisPlan) -> bool:
+        if plan.intent != "first_analysis":
+            return False
+        trigger_messages = max(2, self.settings.memory_first_analysis_chunk_trigger_messages)
+        return len(plan.source_messages) > trigger_messages
+
+    async def _analyze_first_analysis_in_chunks(
+        self,
+        plan: FixedAnalysisPlan,
+        *,
+        current_life_summary: str,
+        prior_analyses_context: str,
+        project_context: str,
+        chat_context: str,
+        open_questions_context: str,
+    ) -> DeepSeekMemoryResult:
+        chunks = self._build_first_analysis_chunks(plan.source_messages)
+        if len(chunks) <= 1:
+            single_chunk = chunks[0] if chunks else FirstAnalysisChunk(
+                source_messages=plan.source_messages,
+                transcript=plan.transcript,
+                conversation_context=plan.conversation_context,
+                people_memory_context=plan.people_memory_context,
+                window_start=plan.window_start,
+                window_end=plan.window_end,
+                selected_transcript_chars=plan.selected_transcript_chars,
+            )
+            return await self.deepseek_service.analyze_memory(
+                transcript=single_chunk.transcript,
+                conversation_context=single_chunk.conversation_context,
+                people_memory_context=single_chunk.people_memory_context,
+                current_life_summary=current_life_summary,
+                prior_analyses_context=prior_analyses_context,
+                project_context=project_context,
+                chat_context=chat_context,
+                open_questions_context=open_questions_context,
+                intent="first_analysis",
+                window_hours=max(1, ceil((single_chunk.window_end - single_chunk.window_start).total_seconds() / 3600)),
+                window_start=single_chunk.window_start,
+                window_end=single_chunk.window_end,
+                source_message_count=len(single_chunk.source_messages),
+            )
+
+        logger.info(
+            "first_analysis_chunking_enabled total_messages=%s total_chars=%s chunk_count=%s chunk_size=%s chunk_char_budget=%s",
+            len(plan.source_messages),
+            plan.selected_transcript_chars,
+            len(chunks),
+            self.settings.memory_first_analysis_chunk_size,
+            self.settings.memory_first_analysis_chunk_char_budget,
+        )
+
+        partial_results: list[DeepSeekMemoryResult] = []
+        for index, chunk in enumerate(chunks, start=1):
+            logger.info(
+                "first_analysis_chunk_start chunk=%s/%s messages=%s chars=%s window_start=%s window_end=%s",
+                index,
+                len(chunks),
+                len(chunk.source_messages),
+                chunk.selected_transcript_chars,
+                chunk.window_start.isoformat(),
+                chunk.window_end.isoformat(),
+            )
+            partial = await self.deepseek_service.analyze_memory(
+                transcript=chunk.transcript,
+                conversation_context=chunk.conversation_context,
+                people_memory_context=chunk.people_memory_context,
+                current_life_summary=current_life_summary,
+                prior_analyses_context=prior_analyses_context,
+                project_context=project_context,
+                chat_context=chat_context,
+                open_questions_context=open_questions_context,
+                intent="first_analysis",
+                window_hours=max(1, ceil((chunk.window_end - chunk.window_start).total_seconds() / 3600)),
+                window_start=chunk.window_start,
+                window_end=chunk.window_end,
+                source_message_count=len(chunk.source_messages),
+            )
+            partial_results.append(partial)
+            logger.info(
+                "first_analysis_chunk_done chunk=%s/%s projects=%s contacts=%s open_questions=%s",
+                index,
+                len(chunks),
+                len(partial.active_projects),
+                len(partial.contact_memories),
+                len(partial.open_questions),
+            )
+
+        logger.info("first_analysis_chunk_synthesis_start chunk_count=%s", len(chunks))
+        synthesized = await self.deepseek_service.synthesize_memory_analyses(
+            partial_analyses_block=self._build_partial_analyses_block(chunks, partial_results),
+            conversation_context=plan.conversation_context,
+            current_life_summary=current_life_summary,
+            prior_analyses_context=prior_analyses_context,
+            project_context=project_context,
+            chat_context=chat_context,
+            open_questions_context=open_questions_context,
+            intent="first_analysis",
+            window_hours=plan.window_hours,
+            window_start=plan.window_start,
+            window_end=plan.window_end,
+            source_message_count=len(plan.source_messages),
+            partial_analysis_count=len(partial_results),
+        )
+        logger.info(
+            "first_analysis_chunk_synthesis_done chunk_count=%s projects=%s contacts=%s open_questions=%s",
+            len(chunks),
+            len(synthesized.active_projects),
+            len(synthesized.contact_memories),
+            len(synthesized.open_questions),
+        )
+        return synthesized
+
+    def _build_first_analysis_chunks(self, messages: list[StoredMessageRecord]) -> list[FirstAnalysisChunk]:
+        if not messages:
+            return []
+
+        chunk_size = max(8, self.settings.memory_first_analysis_chunk_size)
+        char_budget = max(1500, min(self.settings.memory_first_analysis_chunk_char_budget, self.settings.memory_analysis_max_chars))
+        ordered_messages = sorted(messages, key=lambda message: message.timestamp)
+        chunks: list[FirstAnalysisChunk] = []
+
+        start_index = 0
+        while start_index < len(ordered_messages):
+            raw_slice = ordered_messages[start_index : start_index + chunk_size]
+            transcript, selected_messages = self._build_transcript(
+                raw_slice,
+                max_messages=len(raw_slice),
+                char_budget=char_budget,
+            )
+            if not transcript.strip() or not selected_messages:
+                start_index += len(raw_slice) or 1
+                continue
+
+            chunks.append(
+                FirstAnalysisChunk(
+                    source_messages=selected_messages,
+                    transcript=transcript,
+                    conversation_context=self._build_conversation_context(selected_messages),
+                    people_memory_context=self._build_people_memory_context(selected_messages),
+                    window_start=selected_messages[0].timestamp,
+                    window_end=selected_messages[-1].timestamp,
+                    selected_transcript_chars=len(transcript),
+                )
+            )
+            start_index += len(raw_slice)
+
+        return chunks
+
+    def _build_partial_analyses_block(
+        self,
+        chunks: list[FirstAnalysisChunk],
+        partial_results: list[DeepSeekMemoryResult],
+    ) -> str:
+        sections: list[str] = []
+        for index, (chunk, result) in enumerate(zip(chunks, partial_results, strict=False), start=1):
+            project_lines = [
+                (
+                    f"  - nome={project.name}; status={project.status or 'indefinido'}; "
+                    f"resumo={project.summary}; construindo={project.what_is_being_built}; para={project.built_for}; "
+                    f"proximos={'; '.join(project.next_steps[:4]) or 'nenhum'}"
+                )
+                for project in result.active_projects[:6]
+            ]
+            contact_lines = [
+                (
+                    f"  - person_key={person.person_key}; contato={person.contact_name}; "
+                    f"perfil={person.profile_summary}; relacao={person.relationship_summary}; "
+                    f"fatos={'; '.join(person.salient_facts[:4]) or 'nenhum'}; "
+                    f"pendencias={'; '.join(person.open_loops[:4]) or 'nenhuma'}; "
+                    f"topicos={'; '.join(person.recent_topics[:4]) or 'nenhum'}"
+                )
+                for person in result.contact_memories[:8]
+            ]
+            section_lines = [
+                f"### Parcial {index}",
+                (
+                    "Janela: "
+                    f"{chunk.window_start.astimezone(UTC).strftime('%Y-%m-%d %H:%M UTC')} ate "
+                    f"{chunk.window_end.astimezone(UTC).strftime('%Y-%m-%d %H:%M UTC')}"
+                ),
+                f"Mensagens: {len(chunk.source_messages)}",
+                f"Resumo consolidado parcial: {result.updated_life_summary}",
+                f"Resumo da janela parcial: {result.window_summary}",
+                f"Aprendizados: {'; '.join(result.key_learnings[:8]) or 'nenhum'}",
+                f"Pessoas e relacoes: {'; '.join(result.people_and_relationships[:8]) or 'nenhum'}",
+                f"Rotina: {'; '.join(result.routine_signals[:8]) or 'nenhum'}",
+                f"Preferencias: {'; '.join(result.preferences[:8]) or 'nenhuma'}",
+                f"Lacunas: {'; '.join(result.open_questions[:8]) or 'nenhuma'}",
+                "Projetos detectados:",
+                *(project_lines or ["  - nenhum"]),
+                "Contatos detectados:",
+                *(contact_lines or ["  - nenhum"]),
+            ]
+            sections.append("\n".join(section_lines))
+        return "\n\n".join(sections)
 
     def _persist_person_memories(
         self,
