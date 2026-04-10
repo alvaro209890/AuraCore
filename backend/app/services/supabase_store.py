@@ -16,6 +16,33 @@ contact_resolution_logger = logging.getLogger("auracore.contact_resolution")
 
 OPERATIVE_MESSAGE_LIMIT = 150
 
+SQLITE_LEGACY_COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
+    "mensagens": {
+        "chat_jid": "TEXT",
+        "embedding": "TEXT",
+        "ingested_at": "TEXT",
+        "analysis_status": "TEXT DEFAULT 'pending'",
+        "analysis_job_id": "TEXT",
+        "analysis_started_at": "TEXT",
+        "analyzed_at": "TEXT",
+    },
+    "persona": {
+        "last_analyzed_ingested_count": "INTEGER",
+        "last_analyzed_pruned_count": "INTEGER",
+        "structural_strengths": "TEXT DEFAULT '[]'",
+        "structural_routines": "TEXT DEFAULT '[]'",
+        "structural_preferences": "TEXT DEFAULT '[]'",
+        "structural_open_questions": "TEXT DEFAULT '[]'",
+    },
+    "project_memories": {
+        "what_is_being_built": "TEXT DEFAULT ''",
+        "built_for": "TEXT DEFAULT ''",
+    },
+    "message_retention_state": {
+        "observer_history_cutoff_at": "TEXT",
+    },
+}
+
 
 @dataclass(slots=True)
 class IngestedMessageRecord:
@@ -473,6 +500,7 @@ class SupabaseStore:
         self._compat_decisions: dict[str, AutomationDecisionRecord] = {}
         self._compat_analysis_jobs: dict[str, AnalysisJobRecord] = {}
         self._compat_model_runs: dict[str, ModelRunRecord] = {}
+        self._apply_local_schema_migrations()
 
     def save_ingested_messages(self, messages: Sequence[IngestedMessageRecord]) -> IngestSaveResult:
         filtered_messages = [message for message in messages if self.is_normal_contact_phone(message.contact_phone)]
@@ -604,6 +632,50 @@ class SupabaseStore:
             saved_count=len(records),
             ignored_count=ignored_total,
             trimmed_existing_count=trimmed_existing_count + len(trimmed_existing_ids),
+        )
+
+    def _apply_local_schema_migrations(self) -> None:
+        for table_name, columns in SQLITE_LEGACY_COLUMN_MIGRATIONS.items():
+            existing_columns = self.client.list_columns(table_name)
+            if not existing_columns:
+                continue
+            for column_name, column_definition in columns.items():
+                if column_name in existing_columns:
+                    continue
+                self.client.execute(f'ALTER TABLE "{table_name}" ADD COLUMN "{column_name}" {column_definition}')
+                existing_columns.add(column_name)
+
+        self.client.execute(
+            "UPDATE mensagens SET ingested_at = timestamp "
+            "WHERE ingested_at IS NULL OR TRIM(ingested_at) = ''"
+        )
+        self.client.execute(
+            "UPDATE mensagens SET analysis_status = 'pending' "
+            "WHERE analysis_status IS NULL OR TRIM(analysis_status) = ''"
+        )
+        self.client.execute(
+            "UPDATE persona SET structural_strengths = '[]' "
+            "WHERE structural_strengths IS NULL OR TRIM(structural_strengths) = ''"
+        )
+        self.client.execute(
+            "UPDATE persona SET structural_routines = '[]' "
+            "WHERE structural_routines IS NULL OR TRIM(structural_routines) = ''"
+        )
+        self.client.execute(
+            "UPDATE persona SET structural_preferences = '[]' "
+            "WHERE structural_preferences IS NULL OR TRIM(structural_preferences) = ''"
+        )
+        self.client.execute(
+            "UPDATE persona SET structural_open_questions = '[]' "
+            "WHERE structural_open_questions IS NULL OR TRIM(structural_open_questions) = ''"
+        )
+        self.client.execute(
+            "UPDATE project_memories SET what_is_being_built = '' "
+            "WHERE what_is_being_built IS NULL"
+        )
+        self.client.execute(
+            "UPDATE project_memories SET built_for = '' "
+            "WHERE built_for IS NULL"
         )
 
     def _prepare_ingest_batch(

@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS mensagens (
   message_text TEXT NOT NULL,
   timestamp TEXT NOT NULL,
   source TEXT NOT NULL DEFAULT 'baileys',
+  embedding TEXT,
   ingested_at TEXT NOT NULL,
   analysis_status TEXT NOT NULL DEFAULT 'pending',
   analysis_job_id TEXT,

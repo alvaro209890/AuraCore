@@ -120,6 +120,17 @@ class SQLiteClient:
             rows = cursor.fetchall()
         return [self._row_to_dict(row) for row in rows]
 
+    def list_columns(self, table_name: str) -> set[str]:
+        with self._lock:
+            cursor = self._conn.execute(f"PRAGMA table_info({_quote(table_name)})")
+            rows = cursor.fetchall()
+        columns: set[str] = set()
+        for row in rows:
+            name = row["name"] if isinstance(row, sqlite3.Row) else None
+            if isinstance(name, str) and name.strip():
+                columns.add(name.strip())
+        return columns
+
     def _row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         result: dict[str, Any] = {}
         for key in row.keys():
