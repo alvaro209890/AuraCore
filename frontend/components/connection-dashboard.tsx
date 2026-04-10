@@ -1220,8 +1220,17 @@ export function ConnectionDashboard() {
 
     if (!queuedJobId) {
       if (pendingJob) {
+        const resolvedIntent = pendingJob.intent as AgentIntent;
+        if (!agentState.running || agentState.intent !== resolvedIntent) {
+          startAgentRun(resolvedIntent);
+          pushAgentLog(
+            "info",
+            pendingJob.status === "queued"
+              ? `${getIntentTitle(resolvedIntent)} automatica detectada na fila do backend. Sincronizando o andamento no painel...`
+              : `${getIntentTitle(resolvedIntent)} automatica detectada em execucao no backend. Sincronizando o andamento no painel...`,
+          );
+        }
         setQueuedJobId(pendingJob.id);
-        pushAgentLog("info", `Detectada análise em andamento (Fila: ${pendingJob.id.slice(0, 8)}). Sincronizando painel...`);
       }
       return;
     }
