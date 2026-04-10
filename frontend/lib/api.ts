@@ -426,7 +426,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         ? error.message
         : "Falha de rede ao falar com o backend.";
     throw new Error(
-      `Backend indisponivel ou bloqueado na rede/CORS. Confira se o Render esta online e se FRONTEND_ORIGINS inclui este dominio. Detalhe: ${message}`,
+      "Backend indisponivel, erro de rede ou resposta bloqueada pelo navegador. "
+        + "Isso tambem pode acontecer quando o backend cai com 500 sem devolver os headers de CORS. "
+        + `Confira os logs do Render e a comunicacao com o gateway do WhatsApp. Detalhe: ${message}`,
     );
   }
 

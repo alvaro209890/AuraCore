@@ -52,12 +52,19 @@ class _BaseWhatsAppGatewayService:
         headers = {"x-internal-api-token": self.settings.internal_api_token}
         timeout = self.settings.request_timeout_seconds
 
-        async with httpx.AsyncClient(
-            base_url=self.settings.normalized_whatsapp_gateway_url,
-            timeout=timeout,
-            headers=headers,
-        ) as client:
-            response = await client.request(method, path, json=json)
+        try:
+            async with httpx.AsyncClient(
+                base_url=self.settings.normalized_whatsapp_gateway_url,
+                timeout=timeout,
+                headers=headers,
+            ) as client:
+                response = await client.request(method, path, json=json)
+        except httpx.HTTPError as exc:
+            raise ObserverGatewayError(
+                "Failed to reach WhatsApp gateway "
+                f"at {self.settings.normalized_whatsapp_gateway_url}{path}: "
+                f"{exc.__class__.__name__}: {exc}"
+            ) from exc
 
         if response.status_code >= 400:
             detail = response.text.strip() or "Unexpected gateway error."
@@ -65,7 +72,13 @@ class _BaseWhatsAppGatewayService:
                 f"WhatsApp gateway request failed ({response.status_code}) on {path}: {detail}"
             )
 
-        payload = response.json()
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            detail = response.text.strip() or "Empty response body."
+            raise ObserverGatewayError(
+                f"WhatsApp gateway returned invalid JSON on {path}: {detail[:300]}"
+            ) from exc
         if not isinstance(payload, dict):
             raise ObserverGatewayError(f"WhatsApp gateway returned an invalid payload on {path}.")
 
