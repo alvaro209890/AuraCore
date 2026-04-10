@@ -344,6 +344,154 @@ textarea {
   max-width: 720px;
 }
 
+.overview-hero-panel {
+  align-items: center;
+  gap: 16px;
+  padding: 20px 24px;
+}
+
+.overview-action-card {
+  background:
+    radial-gradient(circle at top right, rgba(59, 130, 246, 0.14), transparent 34%),
+    linear-gradient(180deg, rgba(14, 22, 38, 0.74), rgba(8, 14, 26, 0.82));
+}
+
+.overview-action-emerald {
+  border-color: rgba(34, 197, 94, 0.25);
+}
+
+.overview-action-amber {
+  border-color: rgba(245, 158, 11, 0.22);
+}
+
+.overview-action-indigo {
+  border-color: rgba(99, 102, 241, 0.24);
+}
+
+.overview-action-zinc {
+  border-color: rgba(113, 113, 122, 0.24);
+}
+
+.overview-action-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.overview-action-head h3 {
+  margin-top: 8px;
+  font-size: 1.25rem;
+}
+
+.overview-empty-card {
+  background:
+    radial-gradient(circle at top left, rgba(59, 130, 246, 0.08), transparent 36%),
+    linear-gradient(180deg, rgba(14, 22, 38, 0.7), rgba(8, 14, 26, 0.82));
+}
+
+.overview-empty-state {
+  display: grid;
+  gap: 14px;
+}
+
+.overview-empty-checklist,
+.overview-context-list,
+.overview-journey-list {
+  display: grid;
+  gap: 10px;
+}
+
+.overview-empty-checklist span {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.48);
+  border: 1px solid rgba(59, 130, 246, 0.12);
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.overview-journey-card,
+.overview-context-card {
+  background:
+    radial-gradient(circle at top left, rgba(59, 130, 246, 0.1), transparent 30%),
+    linear-gradient(180deg, rgba(14, 22, 38, 0.66), rgba(8, 14, 26, 0.84));
+}
+
+.overview-journey-step {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(63, 63, 70, 0.4);
+  background: rgba(9, 9, 11, 0.42);
+}
+
+.overview-journey-step span {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  background: rgba(63, 63, 70, 0.28);
+  color: var(--text);
+}
+
+.overview-journey-step strong {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--text);
+  font-size: 0.92rem;
+}
+
+.overview-journey-step p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.55;
+  font-size: 0.84rem;
+}
+
+.overview-journey-ok {
+  border-color: rgba(34, 197, 94, 0.22);
+}
+
+.overview-journey-ok span {
+  background: rgba(34, 197, 94, 0.16);
+  color: #86efac;
+}
+
+.overview-journey-active {
+  border-color: rgba(99, 102, 241, 0.24);
+}
+
+.overview-journey-active span {
+  background: rgba(99, 102, 241, 0.18);
+  color: #c7d2fe;
+}
+
+.overview-journey-pending {
+  border-color: rgba(245, 158, 11, 0.18);
+}
+
+.overview-journey-pending span {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fde68a;
+}
+
+.overview-journey-blocked span {
+  background: rgba(113, 113, 122, 0.18);
+  color: #d4d4d8;
+}
+
 .hero-kicker,
 .micro-badge,
 .micro-status,
@@ -2635,6 +2783,25 @@ textarea {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.activity-maintenance-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 20px;
+  border-radius: 22px;
+  border: 1px solid rgba(248, 113, 113, 0.2);
+  background:
+    radial-gradient(circle at top right, rgba(248, 113, 113, 0.12), transparent 30%),
+    linear-gradient(180deg, rgba(28, 15, 18, 0.88), rgba(18, 10, 14, 0.82));
+}
+
+.activity-maintenance-copy {
+  display: grid;
+  gap: 8px;
+  max-width: 760px;
+}
+
 .activity-thinking-card {
   background:
     radial-gradient(circle at top left, rgba(34, 197, 94, 0.08), transparent 28%),
@@ -4112,6 +4279,12 @@ textarea {
 
   .hero-panel {
     padding: 18px;
+  }
+
+  .overview-action-head,
+  .activity-maintenance-card {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .score-gauge {

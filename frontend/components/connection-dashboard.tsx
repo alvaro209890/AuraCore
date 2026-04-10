@@ -707,6 +707,98 @@ function formatSnapshotDirectionMix(snapshot: MemorySnapshot | null): string {
   return `${formatTokenCount(snapshot.outbound_message_count)} enviadas / ${formatTokenCount(snapshot.inbound_message_count)} recebidas`;
 }
 
+function resolveOverviewNextAction(args: {
+  status: ObserverStatus | null;
+  memoryStatus: MemoryStatus | null;
+  latestSnapshot: MemorySnapshot | null;
+}): {
+  title: string;
+  detail: string;
+  buttonLabel: string;
+  target: "observer" | "memory" | "chat" | "activity";
+  tone: "emerald" | "amber" | "indigo" | "zinc";
+  badge: string;
+} {
+  const { status, memoryStatus, latestSnapshot } = args;
+  const pendingMessages = memoryStatus?.new_messages_after_first_analysis ?? 0;
+  if (!status?.connected) {
+    return {
+      title: "Conectar o observador primeiro",
+      detail: "Sem uma sessao ativa no WhatsApp, o sistema ainda nao consegue captar historico, contar mensagens novas nem preparar a primeira leitura.",
+      buttonLabel: "Abrir Observador",
+      target: "observer",
+      tone: "amber",
+      badge: "bloqueado",
+    };
+  }
+
+  if (memoryStatus?.current_job) {
+    return {
+      title: memoryStatus.current_job.intent === "first_analysis" ? "Acompanhar a primeira leitura" : "Acompanhar a atualizacao em fila",
+      detail: memoryStatus.current_job.intent === "first_analysis"
+        ? "O pipeline ja esta montando a base inicial do dono. A aba de atividade mostra cada etapa sem precisar recarregar a pagina."
+        : "Existe uma atualizacao de memoria em fila ou em andamento. Vale acompanhar o pipeline antes de disparar outra acao.",
+      buttonLabel: "Abrir Atividade",
+      target: "activity",
+      tone: "indigo",
+      badge: formatState(memoryStatus.current_job.status),
+    };
+  }
+
+  if (!memoryStatus?.has_initial_analysis) {
+    if (pendingMessages <= 0) {
+      return {
+        title: "Aguardar mensagens textuais uteis",
+        detail: "O observador ja esta pronto, mas ainda nao ha sinais suficientes para criar uma base inicial confiavel. Deixe novas conversas chegarem primeiro.",
+        buttonLabel: "Abrir Observador",
+        target: "observer",
+        tone: "zinc",
+        badge: "coletando",
+      };
+    }
+
+    return {
+      title: "Criar a memoria inicial agora",
+      detail: `Ja existem ${formatTokenCount(pendingMessages)} mensagens prontas para o bootstrap. Esta e a hora de montar a primeira base consolidada do dono.`,
+      buttonLabel: "Abrir Memoria",
+      target: "memory",
+      tone: "emerald",
+      badge: "pronto",
+    };
+  }
+
+  if (pendingMessages > 0) {
+    return {
+      title: "Rodar a proxima atualizacao",
+      detail: `A base inicial ja existe e ha ${formatTokenCount(pendingMessages)} mensagens novas aguardando consolidacao incremental.`,
+      buttonLabel: "Abrir Memoria",
+      target: "memory",
+      tone: "indigo",
+      badge: "lote novo",
+    };
+  }
+
+  if (latestSnapshot) {
+    return {
+      title: "Usar a base no chat pessoal",
+      detail: "Nao ha lote pendente agora. O melhor proximo passo e explorar a memoria consolidada no chat ou acompanhar a atividade ate o proximo sync.",
+      buttonLabel: "Abrir Chat",
+      target: "chat",
+      tone: "emerald",
+      badge: "estavel",
+    };
+  }
+
+  return {
+    title: "Revisar a atividade recente",
+    detail: "A base ainda esta curta, mas o sistema ja tem sinais operacionais. A aba de atividade mostra o que foi sincronizado e o que falta consolidar.",
+    buttonLabel: "Abrir Atividade",
+    target: "activity",
+    tone: "indigo",
+    badge: "monitorando",
+  };
+}
+
 function getProjectStrength(project: ProjectMemory): number {
   const raw = 30 + (project.next_steps.length * 10) + (project.evidence.length * 7) + (project.status ? 8 : 0);
   return Math.max(24, Math.min(100, raw));
@@ -2350,6 +2442,7 @@ export function ConnectionDashboard() {
               {activeTab === "overview" ? (
                 <OverviewTab
                   memory={memory}
+                  memoryStatus={memoryStatus}
                   latestSnapshot={latestSnapshot}
                   projects={projects}
                   status={status}
@@ -2361,6 +2454,7 @@ export function ConnectionDashboard() {
                   onGoToObserver={() => setActiveTab("observer")}
                   onGoToMemory={() => setActiveTab("memory")}
                   onGoToChat={() => setActiveTab("chat")}
+                  onGoToActivity={() => setActiveTab("activity")}
                 />
               ) : null}
 
@@ -2500,6 +2594,7 @@ export function ConnectionDashboard() {
 
 function OverviewTab({
   memory,
+  memoryStatus,
   latestSnapshot,
   projects,
   status,
@@ -2511,8 +2606,10 @@ function OverviewTab({
   onGoToObserver,
   onGoToMemory,
   onGoToChat,
+  onGoToActivity,
 }: {
   memory: MemoryCurrent | null;
+  memoryStatus: MemoryStatus | null;
   latestSnapshot: MemorySnapshot | null;
   projects: ProjectMemory[];
   status: ObserverStatus | null;
@@ -2524,137 +2621,259 @@ function OverviewTab({
   onGoToObserver: () => void;
   onGoToMemory: () => void;
   onGoToChat: () => void;
+  onGoToActivity: () => void;
 }) {
   const [subTab, setSubTab] = useState<"summary" | "mapping" | "signals">("summary");
   const structuralStrengths = memory?.structural_strengths?.length ? memory.structural_strengths : (latestSnapshot?.key_learnings ?? []);
   const structuralRoutines = memory?.structural_routines?.length ? memory.structural_routines : (latestSnapshot?.routine_signals ?? []);
   const structuralPreferences = memory?.structural_preferences?.length ? memory.structural_preferences : (latestSnapshot?.preferences ?? []);
   const structuralOpenQuestions = memory?.structural_open_questions?.length ? memory.structural_open_questions : (latestSnapshot?.open_questions ?? []);
+  const pendingMessages = memoryStatus?.new_messages_after_first_analysis ?? 0;
+  const hasMemoryBase = memoryStatus?.has_initial_analysis ?? false;
+  const currentJob = memoryStatus?.current_job ?? null;
+  const nextAction = resolveOverviewNextAction({ status, memoryStatus, latestSnapshot });
+  const latestSnapshotCoverageTone = getSnapshotCoverageTone(latestSnapshot);
+  const latestSnapshotCoverageLabel = getSnapshotCoverageLabel(latestSnapshot);
   const latestUpdateLabel = memory?.last_analyzed_at
     ? formatShortDateTime(memory.last_analyzed_at)
     : latestSnapshot?.created_at
       ? formatShortDateTime(latestSnapshot.created_at)
       : "Pendente";
+  const handlePrimaryAction = () => {
+    if (nextAction.target === "observer") {
+      onGoToObserver();
+      return;
+    }
+    if (nextAction.target === "memory") {
+      onGoToMemory();
+      return;
+    }
+    if (nextAction.target === "chat") {
+      onGoToChat();
+      return;
+    }
+    onGoToActivity();
+  };
+  const journeySteps = [
+    {
+      title: "Conectar o observador",
+      detail: status?.connected
+        ? `Sessao ativa${status.owner_number ? ` no numero ${status.owner_number}` : ""}.`
+        : "Sem sessao ativa no WhatsApp ainda.",
+      state: status?.connected ? "ok" : "pending",
+    },
+    {
+      title: "Captar sinais uteis",
+      detail: pendingMessages > 0
+        ? `${formatTokenCount(pendingMessages)} mensagens prontas para entrar na memoria.`
+        : "Ainda sem mensagens textuais suficientes para o proximo lote.",
+      state: pendingMessages > 0 ? "ok" : status?.connected ? "pending" : "blocked",
+    },
+    {
+      title: "Criar ou atualizar a memoria",
+      detail: hasMemoryBase
+        ? currentJob
+          ? `Existe uma execucao ${formatState(currentJob.status).toLowerCase()} agora.`
+          : "A base inicial ja existe e pode receber refinamentos incrementais."
+        : currentJob?.intent === "first_analysis"
+          ? "A primeira leitura ja foi iniciada e esta montando o retrato inicial."
+          : "A primeira leitura ainda nao rodou.",
+      state: hasMemoryBase ? "ok" : currentJob ? "active" : "pending",
+    },
+    {
+      title: "Usar no chat e nas operacoes",
+      detail: hasMemoryBase
+        ? "O chat pessoal e os projetos ja podem reaproveitar a memoria consolidada."
+        : "Depois da primeira leitura, o chat passa a responder com base no perfil salvo.",
+      state: hasMemoryBase ? "ok" : "pending",
+    },
+  ];
 
   return (
     <div className="page-stack">
-      <Card className="hero-panel">
+      <Card className="hero-panel overview-hero-panel">
         <div className="hero-copy">
           <div className="hero-kicker">
             <Brain size={14} />
-            AuraCore Ativo
+            Painel operacional
           </div>
-          <h3>Seu painel central do WhatsApp organiza sinais, memórias, contatos importantes e frentes ativas em um só lugar.</h3>
-          <p>O observador lê apenas conversas diretas, a memória consolida o que importa e os lotes novos atualizam o histórico sem complicar a operação.</p>
+          <h3>O que importa agora: conectar, captar sinais suficientes e montar uma memória útil sem adivinhação.</h3>
+          <p>Use esta tela para entender rapidamente em que etapa o sistema está, o que já foi consolidado e qual é o próximo passo recomendado.</p>
         </div>
         <div className="hero-actions">
-          <button className="ac-secondary-button" onClick={onGoToObserver} type="button">
-            <Eye size={15} />
-            Ver Observador
+          <button className="ac-primary-button" onClick={handlePrimaryAction} type="button">
+            <Play size={15} />
+            {nextAction.buttonLabel}
           </button>
           <button className="ac-secondary-button" onClick={onGoToMemory} type="button">
             <Database size={15} />
             Abrir Memória
           </button>
-          <button className="ac-primary-button" onClick={onGoToChat} type="button">
-            <MessageSquare size={15} />
-            Abrir Chat
+          <button className="ac-secondary-button" onClick={onGoToActivity} type="button">
+            <Activity size={15} />
+            Ver Atividade
           </button>
         </div>
       </Card>
 
       <div style={{ padding: "0 4px" }}>
         <SegmentedControl
-          options={["Painel de Resumo", "Mapa Estrutural", "Sinais Recentes"]}
+          options={["Próxima Etapa", "Mapa Estrutural", "Pulso Recente"]}
           selected={
-            subTab === "summary" ? "Painel de Resumo" : subTab === "mapping" ? "Mapa Estrutural" : "Sinais Recentes"
+            subTab === "summary" ? "Próxima Etapa" : subTab === "mapping" ? "Mapa Estrutural" : "Pulso Recente"
           }
           onChange={(val) => {
-            if (val === "Painel de Resumo") setSubTab("summary");
+            if (val === "Próxima Etapa") setSubTab("summary");
             if (val === "Mapa Estrutural") setSubTab("mapping");
-            if (val === "Sinais Recentes") setSubTab("signals");
+            if (val === "Pulso Recente") setSubTab("signals");
           }}
         />
       </div>
 
       {subTab === "summary" ? (
-        <>
-          <div className="stats-grid modern-stats-grid">
-            <ModernStatCard
-              label="Observador"
-              value={status?.connected ? "Online" : "Aguardando"}
-              meta={status?.connected ? "Captura pronta" : "Sem sessão ativa"}
-              icon={Eye}
-              tone="emerald"
-            />
-            <ModernStatCard
-              label="Número conectado"
-              value={status?.owner_number ?? "Sem número"}
-              meta="Dono do observador"
-              icon={Smartphone}
-            />
-            <ModernStatCard
-              label="Última atualização"
-              value={latestUpdateLabel}
-              meta={memory?.last_analyzed_at ? "Memória consolidada" : "Base inicial pendente"}
-              icon={Clock}
-              tone="amber"
-            />
-            <ModernStatCard
-              label="Projetos ativos"
-              value={String(projects.length)}
-              meta={projects.length > 0 ? "Frentes consolidadas" : "Ainda sem frentes consolidadas"}
-              icon={Database}
-              tone="indigo"
-            />
+        <div className="overview-grid">
+          <div className="overview-main-stack">
+            <Card className={`overview-action-card overview-action-${nextAction.tone}`}>
+              <div className="overview-action-head">
+                <div>
+                  <div className="hero-kicker">
+                    <Zap size={14} />
+                    Próxima ação recomendada
+                  </div>
+                  <h3>{nextAction.title}</h3>
+                </div>
+                <span className={`micro-status micro-status-${nextAction.tone}`}>{nextAction.badge}</span>
+              </div>
+              <p className="lead-copy">{nextAction.detail}</p>
+              <div className="hero-actions">
+                <button className="ac-primary-button" onClick={handlePrimaryAction} type="button">
+                  <ChevronRight size={15} />
+                  {nextAction.buttonLabel}
+                </button>
+                <button className="ac-secondary-button" onClick={onGoToActivity} type="button">
+                  <Activity size={15} />
+                  Acompanhar pipeline
+                </button>
+              </div>
+            </Card>
+
+            <div className="stats-grid modern-stats-grid">
+              <ModernStatCard
+                label="Observador"
+                value={status?.connected ? "Online" : "Aguardando"}
+                meta={status?.connected ? "Captura pronta para novos sinais" : "Conecte a sessao para puxar o historico"}
+                icon={Eye}
+                tone={status?.connected ? "emerald" : "amber"}
+              />
+              <ModernStatCard
+                label="Mensagens prontas"
+                value={formatTokenCount(pendingMessages)}
+                meta={pendingMessages > 0 ? "Ja podem entrar na proxima leitura" : "Nenhum lote pronto no momento"}
+                icon={MessageSquare}
+                tone={pendingMessages > 0 ? "indigo" : "zinc"}
+              />
+              <ModernStatCard
+                label="Memoria base"
+                value={hasMemoryBase ? "Criada" : "Pendente"}
+                meta={hasMemoryBase ? `Ultima consolidacao em ${latestUpdateLabel}` : "A primeira leitura ainda nao rodou"}
+                icon={Fingerprint}
+                tone={hasMemoryBase ? "emerald" : "amber"}
+              />
+              <ModernStatCard
+                label="Projetos ativos"
+                value={String(projects.length)}
+                meta={projects.length > 0 ? "Frentes ja consolidadas no banco local" : "Ainda sem frentes consolidadas"}
+                icon={FolderGit2}
+                tone={projects.length > 0 ? "indigo" : "zinc"}
+              />
+            </div>
+
+            <Card className={!memory?.life_summary?.trim() ? "overview-empty-card" : ""}>
+              <SectionTitle title="Resumo do Dono (Atual)" icon={Fingerprint} />
+              {memory?.life_summary?.trim() ? (
+                <p className="lead-copy">{memory.life_summary}</p>
+              ) : (
+                <div className="overview-empty-state">
+                  <p className="lead-copy">
+                    Ainda nao existe um perfil consolidado. O sistema precisa primeiro capturar conversas uteis e executar a leitura inicial.
+                  </p>
+                  <div className="overview-empty-checklist">
+                    <span>1. Conecte o observador e valide a sessao.</span>
+                    <span>2. Espere mensagens textuais suficientes entrarem.</span>
+                    <span>3. Rode a primeira analise para criar a base inicial.</span>
+                  </div>
+                </div>
+              )}
+            </Card>
           </div>
 
-          <Card>
-            <SectionTitle title="Resumo do Dono (Atual)" icon={Fingerprint} />
-            <p className="lead-copy">
-              {memory?.life_summary?.trim()
-                ? memory.life_summary
-                : "Ainda não existe um perfil consolidado. Conecte o observador, deixe sinais suficientes chegarem e execute a primeira leitura."}
-            </p>
-          </Card>
-        </>
+          <div className="overview-side-stack">
+            <Card className="overview-journey-card">
+              <SectionTitle title="Jornada do Sistema" icon={GitBranch} />
+              <div className="overview-journey-list">
+                {journeySteps.map((step, index) => (
+                  <div key={step.title} className={`overview-journey-step overview-journey-${step.state}`}>
+                    <span>{index + 1}</span>
+                    <div>
+                      <strong>{step.title}</strong>
+                      <p>{step.detail}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+
+            <Card className="overview-context-card">
+              <SectionTitle title="Leitura Operacional" icon={Server} />
+              <div className="overview-context-list">
+                <StatusLine label="Numero conectado" value={status?.owner_number ?? "Sem numero"} tone="indigo" />
+                <StatusLine label="WhatsApp agente" value={agentStatus?.connected ? "Online" : "Aguardando"} tone={agentStatus?.connected ? "emerald" : "amber"} />
+                <StatusLine label="Ultima consolidacao" value={latestUpdateLabel} tone="amber" />
+                <StatusLine label="Cobertura do ultimo snapshot" value={latestSnapshot ? `${latestSnapshot.coverage_score}/100` : "Sem snapshot"} tone={latestSnapshotCoverageTone} />
+              </div>
+            </Card>
+          </div>
+        </div>
       ) : null}
 
       {subTab === "mapping" ? (
         <Card>
           <SectionTitle title="Mapeamento Estrutural" icon={Brain} />
+          <p className="support-copy">
+            Este mapa mostra o que ja parece firme no comportamento do dono e o que ainda precisa de mais repeticao antes de virar memoria forte.
+          </p>
           <div className="dual-column-grid">
             <div className="signal-cluster">
-              <h4>Áreas Fortes</h4>
+              <h4>O que ja esta firme</h4>
               <SignalBlock
                 title="Forcas Cumulativas"
                 lines={structuralStrengths}
-                emptyLabel="Sem forcas recorrentes consolidadas."
+                emptyLabel="Ainda nao existem forcas recorrentes suficientes para consolidar."
               />
               <SignalBlock
                 title="Rotina Detectada"
                 lines={structuralRoutines}
-                emptyLabel="Sem sinais fortes de rotina ainda."
+                emptyLabel="O ritmo do dono ainda esta cedo demais para aparecer com clareza."
               />
               <SignalBlock
                 title="Preferências Operacionais"
                 lines={structuralPreferences}
-                emptyLabel="Sem preferências consolidadas ainda."
+                emptyLabel="As preferencias de decisao e execucao ainda nao apareceram com forca."
               />
             </div>
 
             <div className="signal-cluster">
-              <h4 className="amber">Pontos Frágeis</h4>
+              <h4 className="amber">O que ainda esta fraco</h4>
               <SignalBlock
                 title="Lacunas Ainda Abertas"
                 lines={structuralOpenQuestions}
-                emptyLabel="Sem lacunas críticas no momento."
+                emptyLabel="Ainda nao ha lacunas criticas abertas alem do proprio crescimento natural da base."
                 subtle
               />
               <SignalBlock
                 title="Projetos em Contexto"
                 lines={projects.slice(0, 3).map((project) => `${project.project_name}: ${project.status || "sem status claro"}`)}
-                emptyLabel="Nenhum projeto relevante foi consolidado ainda."
+                emptyLabel="Nenhum projeto real foi consolidado ainda. Isso costuma aparecer depois da primeira leitura ou dos primeiros refinamentos."
                 subtle
               />
             </div>
@@ -2666,25 +2885,64 @@ function OverviewTab({
         <div className="dual-column-grid">
           <Card className="score-card-modern">
             <SectionTitle title="Resumo da Última Janela" icon={BarChart3} />
-            <p className="support-copy">
-              {latestSnapshot?.window_summary ??
-                "Quando a primeira leitura concluir, este bloco passa a resumir o momento mais recente consolidado do dono."}
-            </p>
+            {latestSnapshot ? (
+              <>
+                <p className="support-copy">{latestSnapshot.window_summary}</p>
+                <div className="memory-breakdown-grid">
+                  <MemorySignalCard
+                    label="Cobertura"
+                    value={`${latestSnapshot.coverage_score}/100`}
+                    meta={latestSnapshotCoverageLabel}
+                    tone={latestSnapshotCoverageTone}
+                  />
+                  <MemorySignalCard
+                    label="Contatos distintos"
+                    value={formatTokenCount(latestSnapshot.distinct_contact_count)}
+                    meta="Ajuda a evitar que a leitura nasca viciada em uma conversa so."
+                    tone="indigo"
+                  />
+                </div>
+              </>
+            ) : (
+              <div className="overview-empty-state">
+                <p className="support-copy">
+                  Quando a primeira leitura concluir, este bloco passa a resumir o momento mais recente consolidado do dono.
+                </p>
+                <div className="overview-empty-checklist">
+                  <span>Sem snapshot salvo ainda.</span>
+                  <span>A primeira analise vai preencher este painel automaticamente.</span>
+                </div>
+              </div>
+            )}
           </Card>
 
           <Card>
             <SectionTitle title="Sinais Recentes" icon={Activity} />
-            <div className="progress-bar-stack">
-              {insightMetrics.map((metric) => (
-                <ProgressBar
-                  key={metric.label}
-                  value={metric.value}
-                  max={Math.max(...insightMetrics.map((item) => item.value), 1)}
-                  tone={metric.color === "zinc" ? "amber" : metric.color}
-                  label={metric.label}
-                />
-              ))}
-            </div>
+            {latestSnapshot ? (
+              <div className="progress-bar-stack">
+                {insightMetrics.map((metric) => (
+                  <ProgressBar
+                    key={metric.label}
+                    value={metric.value}
+                    max={Math.max(...insightMetrics.map((item) => item.value), 1)}
+                    tone={metric.color === "zinc" ? "amber" : metric.color}
+                    label={metric.label}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="overview-empty-state">
+                <p className="support-copy">
+                  Este quadro sai do zero assim que a memoria inicial nasce. Ate la, use a aba de atividade para acompanhar sync, fila e pipeline.
+                </p>
+                <div className="hero-actions">
+                  <button className="ac-secondary-button" onClick={onGoToActivity} type="button">
+                    <Activity size={15} />
+                    Abrir Atividade
+                  </button>
+                </div>
+              </div>
+            )}
           </Card>
         </div>
       ) : null}
@@ -4389,16 +4647,9 @@ function ActivityTab({
             );
           })}
         </div>
-        <button
-          className="ac-danger-button"
-          onClick={onClearDatabase}
-          disabled={isClearingDatabase || hasPendingDatabaseWork}
-          type="button"
-          title={hasPendingDatabaseWork ? "Aguarde a fila e os jobs terminarem antes de apagar o banco." : "Apagar todos os dados salvos no banco local"}
-        >
-          <Trash2 size={15} />
-          {isClearingDatabase ? "Apagando banco..." : "Excluir todo o banco"}
-        </button>
+        <span className={`micro-status micro-status-${agentState.running ? "indigo" : "zinc"}`}>
+          {agentState.running ? "pipeline ativo" : "monitorando"}
+        </span>
       </div>
 
       {/* Hero card — always visible */}
@@ -4744,6 +4995,31 @@ function ActivityTab({
           </div>
         </div>
       ) : null}
+
+      <Card className="activity-maintenance-card">
+        <div className="activity-maintenance-copy">
+          <SectionTitle title="Zona de Manutenção" icon={Trash2} />
+          <p className="support-copy">
+            Esta acao existe para reinicios realmente limpos. Ela apaga os dados persistidos do ambiente local, incluindo
+            mensagens, memoria, snapshots, sessoes e configuracoes salvas.
+          </p>
+          <p className="support-copy">
+            {hasPendingDatabaseWork
+              ? "A manutencao total esta bloqueada porque ainda existe fila manual ou pipeline ativo."
+              : "Nenhum job esta rodando agora. Se precisar zerar o ambiente local, a exclusao total ja pode ser usada."}
+          </p>
+        </div>
+        <button
+          className="ac-danger-button"
+          onClick={onClearDatabase}
+          disabled={isClearingDatabase || hasPendingDatabaseWork}
+          type="button"
+          title={hasPendingDatabaseWork ? "Aguarde a fila e os jobs terminarem antes de apagar o banco." : "Apagar todos os dados salvos no banco local"}
+        >
+          <Trash2 size={15} />
+          {isClearingDatabase ? "Apagando banco..." : "Excluir todo o banco"}
+        </button>
+      </Card>
 
       {automationError ? <InlineError title="Falha na automação" message={automationError} /> : null}
     </div>
