@@ -59,7 +59,9 @@ class AutomationStatusSnapshot:
 
 
 logger = logging.getLogger("auracore.automation")
-STALE_ANALYSIS_JOB_THRESHOLD = timedelta(minutes=5)
+MINIMUM_STALE_ANALYSIS_JOB_THRESHOLD = timedelta(minutes=15)
+MAX_SEQUENTIAL_DEEPSEEK_CALLS_PER_ANALYSIS = 6
+ANALYSIS_JOB_GRACE_SECONDS = 120
 
 
 class AutomationService:
@@ -528,6 +530,15 @@ class AutomationService:
         if job is None:
             return None
 
+        logger.info(
+            "analysis_job_started job_id=%s intent=%s trigger=%s target=%s detail_mode=%s",
+            job.id,
+            job.intent,
+            job.trigger_source,
+            job.target_message_count,
+            job.detail_mode,
+        )
+
         if job.intent == "refine_saved":
             await self._execute_fixed_refinement_job(job=job)
             return self.store.get_analysis_job(job.id)
@@ -577,20 +588,70 @@ class AutomationService:
     def _schedule_tick(self) -> None:
         if self._scheduled_tick_task is not None and not self._scheduled_tick_task.done():
             return
-        self._scheduled_tick_task = asyncio.create_task(self.tick())
+        task = asyncio.create_task(self.tick(), name="auracore-automation-tick")
+        task.add_done_callback(self._handle_scheduled_tick_done)
+        self._scheduled_tick_task = task
+
+    def warm_start(self) -> None:
+        recovered_jobs = self._requeue_orphaned_running_jobs()
+        if recovered_jobs > 0:
+            logger.warning("automation_warm_start_requeued_jobs count=%s", recovered_jobs)
+        self._schedule_tick()
+
+    def _handle_scheduled_tick_done(self, task: asyncio.Task[AnalysisJobRecord | None]) -> None:
+        if self._scheduled_tick_task is task:
+            self._scheduled_tick_task = None
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception("scheduled_automation_tick_failed")
+
+    def _requeue_orphaned_running_jobs(self) -> int:
+        recovered_jobs = 0
+        for job in self.store.list_analysis_jobs(user_id=self.settings.default_user_id, limit=20):
+            if job.status != "running":
+                continue
+            self.store.update_analysis_job(
+                job_id=job.id,
+                status="queued",
+                error_text="Job interrompido por reinicio do backend; reenfileirado automaticamente.",
+            )
+            recovered_jobs += 1
+            logger.warning(
+                "analysis_job_requeued_after_restart job_id=%s intent=%s trigger=%s",
+                job.id,
+                job.intent,
+                job.trigger_source,
+            )
+        return recovered_jobs
+
+    def _analysis_job_stale_threshold(self) -> timedelta:
+        timeout_based_threshold = timedelta(
+            seconds=(
+                self.settings.deepseek_timeout_seconds * MAX_SEQUENTIAL_DEEPSEEK_CALLS_PER_ANALYSIS
+                + ANALYSIS_JOB_GRACE_SECONDS
+            )
+        )
+        return max(MINIMUM_STALE_ANALYSIS_JOB_THRESHOLD, timeout_based_threshold)
 
     def _recover_stale_pending_jobs(self) -> None:
         now = datetime.now(UTC)
+        threshold = self._analysis_job_stale_threshold()
         for job in self.store.list_analysis_jobs(user_id=self.settings.default_user_id, limit=20):
             if job.status not in {"queued", "running"}:
                 continue
-            reference_time = job.started_at or job.created_at
-            if now - reference_time < STALE_ANALYSIS_JOB_THRESHOLD:
+            reference_time = job.started_at if job.status == "running" and job.started_at else job.created_at
+            if now - reference_time < threshold:
                 continue
             self.store.update_analysis_job(
                 job_id=job.id,
                 status="failed",
-                error_text="Job recuperado automaticamente apos ficar travado sem conclusao por mais de 5 minutos.",
+                error_text=(
+                    "Job recuperado automaticamente apos ficar travado sem conclusao por mais de "
+                    f"{int(threshold.total_seconds() // 60)} minutos."
+                ),
                 finished_at=now,
             )
             logger.warning("stale_analysis_job_recovered job_id=%s intent=%s", job.id, job.intent)
@@ -620,12 +681,14 @@ class AutomationService:
         self._recover_stale_pending_jobs()
         recent_jobs = self.store.list_analysis_jobs(user_id=self.settings.default_user_id, limit=20)
         now = datetime.now(UTC)
-        stagnant_threshold = STALE_ANALYSIS_JOB_THRESHOLD
+        stagnant_threshold = self._analysis_job_stale_threshold()
         
         pending_jobs = [
             job for job in recent_jobs 
             if job.status in {"queued", "running"} 
-            and (now - job.created_at) < stagnant_threshold
+            and (
+                now - (job.started_at if job.status == "running" and job.started_at else job.created_at)
+            ) < stagnant_threshold
         ]
         
         if pending_jobs:
@@ -647,6 +710,7 @@ class AutomationService:
                 detail_mode=job.detail_mode,  # type: ignore[arg-type]
             )
         except Exception as error:
+            logger.exception("analysis_job_failed job_id=%s intent=%s", job.id, job.intent)
             latency_ms = round((perf_counter() - start_clock) * 1000)
             self.store.update_analysis_job(
                 job_id=job.id,
@@ -726,6 +790,7 @@ class AutomationService:
         try:
             outcome = await self.memory_service.execute_fixed_analysis_plan(plan)
         except Exception as error:
+            logger.exception("fixed_analysis_job_failed job_id=%s intent=%s", job.id, job.intent)
             latency_ms = round((perf_counter() - start_clock) * 1000)
             self.store.update_analysis_job(
                 job_id=job.id,

@@ -13,7 +13,9 @@ from app.services.supabase_store import AnalysisJobRecord, ModelRunRecord, Supab
 
 
 logger = logging.getLogger("auracore.memory_jobs")
-STALE_ANALYSIS_JOB_THRESHOLD = timedelta(minutes=5)
+MINIMUM_STALE_ANALYSIS_JOB_THRESHOLD = timedelta(minutes=15)
+MAX_SEQUENTIAL_DEEPSEEK_CALLS_PER_ANALYSIS = 6
+ANALYSIS_JOB_GRACE_SECONDS = 120
 
 
 @dataclass(slots=True)
@@ -144,30 +146,44 @@ class MemoryJobService:
         self._recover_stale_pending_jobs()
         recent_jobs = self.store.list_analysis_jobs(user_id=self.settings.default_user_id, limit=20)
         now = datetime.now(UTC)
+        stagnant_threshold = self._analysis_job_stale_threshold()
         pending_jobs = [
             job
             for job in recent_jobs
-            if job.status in {"queued", "running"} and (now - (job.started_at or job.created_at)) < STALE_ANALYSIS_JOB_THRESHOLD
+            if job.status in {"queued", "running"}
+            and (
+                now - (job.started_at if job.status == "running" and job.started_at else job.created_at)
+            ) < stagnant_threshold
         ]
         if pending_jobs:
             raise MemoryAnalysisError(
                 "Ja existe uma analise manual em fila ou em execucao. Aguarde a conclusao antes de iniciar outra."
             )
 
+    def _analysis_job_stale_threshold(self) -> timedelta:
+        timeout_based_threshold = timedelta(
+            seconds=(
+                self.settings.deepseek_timeout_seconds * MAX_SEQUENTIAL_DEEPSEEK_CALLS_PER_ANALYSIS
+                + ANALYSIS_JOB_GRACE_SECONDS
+            )
+        )
+        return max(MINIMUM_STALE_ANALYSIS_JOB_THRESHOLD, timeout_based_threshold)
+
     def _recover_stale_pending_jobs(self) -> None:
         now = datetime.now(UTC)
+        threshold = self._analysis_job_stale_threshold()
         for job in self.store.list_analysis_jobs(user_id=self.settings.default_user_id, limit=20):
             if job.status not in {"queued", "running"}:
                 continue
-            reference_time = job.started_at or job.created_at
-            if now - reference_time < STALE_ANALYSIS_JOB_THRESHOLD:
+            reference_time = job.started_at if job.status == "running" and job.started_at else job.created_at
+            if now - reference_time < threshold:
                 continue
             self.store.update_analysis_job(
                 job_id=job.id,
                 status="failed",
                 error_text=(
                     "Job recuperado automaticamente apos ficar travado sem conclusao "
-                    "por mais de 5 minutos."
+                    f"por mais de {int(threshold.total_seconds() // 60)} minutos."
                 ),
                 finished_at=now,
             )

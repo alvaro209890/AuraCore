@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 
 from app.routers.automation import router as automation_router
 from app.routers.chat import router as chat_router
-from app.dependencies import get_settings
+from app.dependencies import get_automation_service, get_settings
 from app.routers.internal_agent import router as internal_agent_router
 from app.routers.internal import router as internal_router
 from app.routers.internal_storage import router as internal_storage_router
@@ -46,6 +46,11 @@ app.include_router(internal_router)
 app.include_router(internal_agent_router)
 app.include_router(internal_storage_router)
 app.include_router(whatsapp_agent_router)
+
+
+@app.on_event("startup")
+async def schedule_automation_warm_start() -> None:
+    get_automation_service().warm_start()
 
 
 @app.get("/", tags=["meta"])
