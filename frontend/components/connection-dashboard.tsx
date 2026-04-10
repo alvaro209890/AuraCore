@@ -30,6 +30,7 @@ import {
   Sparkles,
   Smartphone,
   Terminal,
+  Trash2,
   User,
   XCircle,
   Zap,
@@ -39,6 +40,7 @@ import {
   createChatThread,
   connectAgent,
   connectObserver,
+  clearSavedDatabase,
   executeMemoryAnalysis,
   getAgentStatus,
   getAgentWorkspace,
@@ -963,6 +965,7 @@ export function ConnectionDashboard() {
   const [streamingText, setStreamingText] = useState<string | null>(null);
   const [isLoadingChatThread, setIsLoadingChatThread] = useState(false);
   const [isCreatingChatThread, setIsCreatingChatThread] = useState(false);
+  const [isClearingDatabase, setIsClearingDatabase] = useState(false);
   const [pollingEnabled, setPollingEnabled] = useState(false);
   const [agentPollingEnabled, setAgentPollingEnabled] = useState(false);
   const [agentState, setAgentState] = useState<AgentState>({
@@ -2019,6 +2022,44 @@ export function ConnectionDashboard() {
     }
   }
 
+  async function handleClearSavedDatabase(): Promise<void> {
+    if (isClearingDatabase) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Isso vai apagar TODOS os dados salvos no banco de dados local, incluindo memoria, mensagens, snapshots, chat, sessoes e configuracoes persistidas. Deseja continuar?",
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setIsClearingDatabase(true);
+    setMemoryActivityError(null);
+
+    try {
+      await clearSavedDatabase();
+      setQueuedJobId(null);
+      setAgentState({
+        mode: "idle",
+        intent: null,
+        running: false,
+        progress: 0,
+        status: IDLE_AGENT_STATUS,
+        error: null,
+        completedAt: new Date().toISOString(),
+      });
+      setAgentLogs([makeLog("success", "Todos os dados salvos no banco local foram apagados com sucesso.")]);
+      await hydrateDashboard("manual");
+    } catch (error) {
+      const message = getErrorMessage(error);
+      setMemoryActivityError(message);
+      pushAgentLog("error", `Falha ao apagar o banco salvo: ${message}`);
+    } finally {
+      setIsClearingDatabase(false);
+    }
+  }
+
   async function openChatThread(threadId: string): Promise<void> {
     if (!threadId || threadId === activeChatThreadId) {
       return;
@@ -2382,6 +2423,8 @@ export function ConnectionDashboard() {
                   snapshotsCount={snapshots.length}
                   automationStatus={automationStatus}
                   automationError={automationError}
+                  isClearingDatabase={isClearingDatabase}
+                  onClearDatabase={() => void handleClearSavedDatabase()}
                 />
               ) : null}
 
@@ -4215,6 +4258,8 @@ function ActivityTab({
   snapshotsCount,
   automationStatus,
   automationError,
+  isClearingDatabase,
+  onClearDatabase,
 }: {
   agentState: AgentState;
   steps: AgentStep[];
@@ -4225,6 +4270,8 @@ function ActivityTab({
   snapshotsCount: number;
   automationStatus: AutomationStatus | null;
   automationError: string | null;
+  isClearingDatabase: boolean;
+  onClearDatabase: () => void;
 }) {
   const [activitySubTab, setActivitySubTab] = useState<"overview" | "persist" | "logs">("overview");
   const memoryReady = hasEstablishedMemory(memory, latestSnapshot);
@@ -4233,6 +4280,11 @@ function ActivityTab({
   const latestSyncRun = automationStatus?.sync_runs[0] ?? null;
   const latestJob = automationStatus?.jobs[0] ?? null;
   const latestModelRun = automationStatus?.model_runs[0] ?? null;
+  const hasPendingDatabaseWork = Boolean(
+    agentState.running ||
+    automationStatus?.running_job_id ||
+    automationStatus?.queued_jobs_count,
+  );
   const thinkingLines = buildActivityThinking({
     intent: resolvedIntent,
     hasMemory: memoryReady,
@@ -4264,22 +4316,33 @@ function ActivityTab({
 
   return (
     <div className="page-stack narrow-stack">
-      {/* Sub-tab bar */}
-      <div className="activity-subtab-bar">
-        {subTabs.map((tab) => {
-          const Icon = tab.icon;
-          return (
-            <button
-              key={tab.id}
-              className={`activity-subtab${activitySubTab === tab.id ? " activity-subtab-active" : ""}`}
-              onClick={() => setActivitySubTab(tab.id)}
-              type="button"
-            >
-              <Icon size={14} />
-              {tab.label}
-            </button>
-          );
-        })}
+      <div className="section-head">
+        <div className="activity-subtab-bar">
+          {subTabs.map((tab) => {
+            const Icon = tab.icon;
+            return (
+              <button
+                key={tab.id}
+                className={`activity-subtab${activitySubTab === tab.id ? " activity-subtab-active" : ""}`}
+                onClick={() => setActivitySubTab(tab.id)}
+                type="button"
+              >
+                <Icon size={14} />
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
+        <button
+          className="ac-danger-button"
+          onClick={onClearDatabase}
+          disabled={isClearingDatabase || hasPendingDatabaseWork}
+          type="button"
+          title={hasPendingDatabaseWork ? "Aguarde a fila e os jobs terminarem antes de apagar o banco." : "Apagar todos os dados salvos no banco local"}
+        >
+          <Trash2 size={15} />
+          {isClearingDatabase ? "Apagando banco..." : "Excluir todo o banco"}
+        </button>
       </div>
 
       {/* Hero card — always visible */}

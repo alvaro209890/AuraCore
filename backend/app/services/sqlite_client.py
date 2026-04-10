@@ -114,6 +114,11 @@ class SQLiteClient:
             self._conn.commit()
             return cursor
 
+    def execute_script(self, sql: str) -> None:
+        with self._lock:
+            self._conn.executescript(sql)
+            self._conn.commit()
+
     def fetchall(self, sql: str, params: Iterable[Any] = ()) -> list[dict[str, Any]]:
         with self._lock:
             cursor = self._conn.execute(sql, tuple(params))

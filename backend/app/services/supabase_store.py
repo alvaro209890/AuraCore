@@ -4656,6 +4656,45 @@ class SupabaseStore:
         self.client.table("wa_session_keys").delete().eq("session_id", session_id).execute()
         self.client.table("wa_sessions").delete().eq("session_id", session_id).execute()
 
+    def clear_all_saved_data(self) -> None:
+        self.client.execute_script(
+            """
+            PRAGMA foreign_keys = OFF;
+            DELETE FROM analysis_job_messages;
+            DELETE FROM model_runs;
+            DELETE FROM analysis_jobs;
+            DELETE FROM automation_decisions;
+            DELETE FROM wa_sync_runs;
+            DELETE FROM whatsapp_agent_contact_memories;
+            DELETE FROM whatsapp_agent_messages;
+            DELETE FROM whatsapp_agent_thread_sessions;
+            DELETE FROM whatsapp_agent_threads;
+            DELETE FROM whatsapp_agent_settings;
+            DELETE FROM chat_messages;
+            DELETE FROM chat_threads;
+            DELETE FROM important_messages;
+            DELETE FROM person_memory_snapshots;
+            DELETE FROM person_memories;
+            DELETE FROM project_memories;
+            DELETE FROM memory_snapshots;
+            DELETE FROM persona;
+            DELETE FROM whatsapp_known_contacts;
+            DELETE FROM message_retention_state;
+            DELETE FROM processed_message_ids;
+            DELETE FROM mensagens;
+            DELETE FROM automation_settings;
+            DELETE FROM wa_session_keys;
+            DELETE FROM wa_sessions;
+            PRAGMA foreign_keys = ON;
+            """
+        )
+        self.client.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        self.client.execute("VACUUM")
+        self._compat_sync_runs.clear()
+        self._compat_decisions.clear()
+        self._compat_analysis_jobs.clear()
+        self._compat_model_runs.clear()
+
     def _insert_memory_snapshot(self, snapshot: MemorySnapshotRecord) -> None:
         record = {
             "id": snapshot.id,

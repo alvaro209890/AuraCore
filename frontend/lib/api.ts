@@ -297,6 +297,10 @@ export type ChatWorkspace = {
   session: ChatSession;
 };
 
+export type SimpleOkResponse = {
+  ok: boolean;
+};
+
 export type AutomationSettings = {
   user_id: string;
   auto_sync_enabled: boolean;
@@ -546,6 +550,12 @@ export async function getImportantMessages(limit = 80): Promise<ImportantMessage
 
 export async function getMemoryProjects(): Promise<ProjectMemory[]> {
   return request<ProjectMemory[]>("/api/memories/projects");
+}
+
+export async function clearSavedDatabase(): Promise<SimpleOkResponse> {
+  return request<SimpleOkResponse>("/api/memories/database", {
+    method: "DELETE",
+  });
 }
 
 export async function analyzeMemory(windowHours: number): Promise<AnalyzeMemoryResponse> {

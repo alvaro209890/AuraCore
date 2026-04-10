@@ -2,9 +2,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
+from fastapi.concurrency import run_in_threadpool
 
-from app.dependencies import get_memory_analysis_service, get_memory_job_service
+from app.dependencies import (
+    get_memory_analysis_service,
+    get_memory_job_service,
+    get_observer_gateway_service,
+    get_supabase_store,
+    get_whatsapp_agent_gateway_service,
+)
 from app.schemas import (
     AnalysisJobResponse,
     AnalyzeMemoryRequest,
@@ -19,10 +26,12 @@ from app.schemas import (
     MemoryStatusResponse,
     ModelRunResponse,
     ProjectMemoryResponse,
+    SimpleOkResponse,
     WhatsAppSyncRunResponse,
 )
 from app.services.memory_job_service import MemoryActivitySnapshot, MemoryJobService
 from app.services.memory_service import MemoryAnalysisService
+from app.services.observer_gateway import ObserverGatewayService, WhatsAppAgentGatewayService
 from app.services.supabase_store import (
     AnalysisJobRecord,
     ImportantMessageRecord,
@@ -30,6 +39,7 @@ from app.services.supabase_store import (
     ModelRunRecord,
     PersonaRecord,
     ProjectMemoryRecord,
+    SupabaseStore,
     WhatsAppSyncRunRecord,
 )
 
@@ -189,6 +199,31 @@ async def get_memory_projects(
     memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
 ) -> list[ProjectMemoryResponse]:
     return [_to_project_response(project) for project in memory_service.list_projects()]
+
+
+@router.delete("/database", response_model=SimpleOkResponse)
+async def clear_saved_database(
+    memory_job_service: MemoryJobService = Depends(get_memory_job_service),
+    store: SupabaseStore = Depends(get_supabase_store),
+    observer_gateway: ObserverGatewayService = Depends(get_observer_gateway_service),
+    agent_gateway: WhatsAppAgentGatewayService = Depends(get_whatsapp_agent_gateway_service),
+) -> SimpleOkResponse:
+    activity = await memory_job_service.get_activity_snapshot()
+    if activity.running_job_id is not None or any(job.status in {"queued", "running"} for job in activity.jobs):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Existe uma analise em andamento ou na fila. Aguarde terminar antes de apagar o banco.",
+        )
+    try:
+        await observer_gateway.reset_observer()
+    except Exception:
+        pass
+    try:
+        await agent_gateway.reset_agent()
+    except Exception:
+        pass
+    await run_in_threadpool(store.clear_all_saved_data)
+    return SimpleOkResponse()
 
 
 def _build_analyze_memory_response(
