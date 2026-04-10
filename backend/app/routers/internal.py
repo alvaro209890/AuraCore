@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Header, HTTPException, status
+from fastapi.concurrency import run_in_threadpool
 
 from app.dependencies import (
     get_memory_job_service,
@@ -38,7 +39,7 @@ async def ingest_messages(
         blocked_contact_phone = None
 
     normalized_messages = _build_records(payload, store, blocked_contact_phone)
-    save_result = store.save_ingested_messages(normalized_messages)
+    save_result = await run_in_threadpool(store.save_ingested_messages, normalized_messages)
     ignored_count = max(0, len(payload.messages) - len(normalized_messages)) + save_result.ignored_count
     if payload.messages:
         logger.info(
@@ -50,7 +51,8 @@ async def ingest_messages(
             ignored_count,
             save_result.trimmed_existing_count,
         )
-    memory_job_service.register_ingest_batch(
+    await run_in_threadpool(
+        memory_job_service.register_ingest_batch,
         accepted_count=save_result.saved_count,
         ignored_count=ignored_count,
         timestamps=[message.timestamp for message in normalized_messages],

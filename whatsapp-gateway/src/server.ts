@@ -133,3 +133,11 @@ process.on("SIGTERM", () => {
 process.on("SIGINT", () => {
   void shutdown("SIGINT");
 });
+
+process.on("uncaughtException", (error) => {
+  console.error("Uncaught exception in AuraCore WhatsApp gateway", error);
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled rejection in AuraCore WhatsApp gateway", reason);
+});

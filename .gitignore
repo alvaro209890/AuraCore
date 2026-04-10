@@ -13,6 +13,7 @@ node_modules/
 dist/
 build/
 .firebase/
+.local-run/
 frontend/out/
 *.tsbuildinfo
 whatsapp-gateway/dist/

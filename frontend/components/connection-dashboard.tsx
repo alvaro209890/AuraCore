@@ -149,21 +149,21 @@ type NavItem = {
   icon: LucideIcon;
 };
 
-const CONNECTING_STATUS_POLL_INTERVAL_MS = 700;
-const LIVE_STATUS_POLL_INTERVAL_MS = 1200;
-const QR_REFRESH_INTERVAL_MS = 25000;
-const ATTENTION_REFRESH_THROTTLE_MS = 800;
+const CONNECTING_STATUS_POLL_INTERVAL_MS = 2200;
+const LIVE_STATUS_POLL_INTERVAL_MS = 5000;
+const QR_REFRESH_INTERVAL_MS = 45000;
+const ATTENTION_REFRESH_THROTTLE_MS = 2500;
 const LIVE_REFRESH_INTERVALS: Record<TabId, number> = {
-  overview: 1800,
-  observer: 1600,
-  agent: 1400,
-  memory: 2200,
-  important: 2400,
-  projects: 2400,
-  chat: 1600,
-  activity: 2200,
-  automation: 2200,
-  manual: 2200,
+  overview: 9000,
+  observer: 5000,
+  agent: 6000,
+  memory: 10000,
+  important: 12000,
+  projects: 12000,
+  chat: 8000,
+  activity: 10000,
+  automation: 10000,
+  manual: 15000,
 };
 const NAV_GROUPS: NavGroup[] = [
   {
@@ -279,6 +279,13 @@ function mergeStatus(previous: ObserverStatus | null, next: ObserverStatus): Obs
 }
 
 function formatState(state: string): string {
+  const normalized = state.trim().toLowerCase();
+  if (normalized === "open") return "Online";
+  if (normalized === "connecting") return "Conectando";
+  if (normalized === "reconnecting") return "Reconectando";
+  if (normalized === "close") return "Desconectado";
+  if (normalized === "logged_out") return "Deslogado";
+
   return state
     .split(/[_\s-]+/)
     .filter(Boolean)
@@ -1186,17 +1193,23 @@ export function ConnectionDashboard() {
     }
 
     const shouldRefreshChatWorkspace = (
-      activeTab === "overview" ||
       activeTab === "manual" ||
-      activeTab === "chat" ||
-      activeTab === "memory" ||
-      activeTab === "projects"
+      activeTab === "chat"
     ) && !isLoadingChatThread && !isCreatingChatThread && !isSendingChat && streamingText === null;
     const shouldRefreshAgentWorkspace = (
-      activeTab === "overview" ||
       activeTab === "manual" ||
       activeTab === "agent"
     ) && !isAgentConnecting && !isAgentResetting;
+    const shouldRefreshMemoryCurrent = (
+      activeTab === "overview" ||
+      activeTab === "manual" ||
+      activeTab === "memory"
+    );
+    const shouldRefreshProjects = (
+      activeTab === "overview" ||
+      activeTab === "manual" ||
+      activeTab === "projects"
+    );
     const shouldRefreshMemoryStatus = (
       activeTab === "overview" ||
       activeTab === "manual" ||
@@ -1206,9 +1219,8 @@ export function ConnectionDashboard() {
       activeTab === "automation"
     );
     const shouldRefreshSnapshots = activeTab === "overview" || activeTab === "manual" || activeTab === "memory";
-    const shouldRefreshImportantMessages = activeTab === "overview" || activeTab === "manual" || activeTab === "important";
+    const shouldRefreshImportantMessages = activeTab === "manual" || activeTab === "important";
     const shouldRefreshAutomation = !isTickingAutomation && (
-      activeTab === "overview" ||
       activeTab === "manual" ||
       activeTab === "activity" ||
       activeTab === "automation" ||
@@ -1220,6 +1232,8 @@ export function ConnectionDashboard() {
       const [
         agentWorkspaceResult,
         chatWorkspaceResult,
+        memoryResult,
+        projectsResult,
         memoryStatusResult,
         snapshotsResult,
         importantMessagesResult,
@@ -1227,8 +1241,10 @@ export function ConnectionDashboard() {
       ] = await Promise.allSettled([
         shouldRefreshAgentWorkspace ? getAgentWorkspace(activeAgentThreadId ?? undefined) : Promise.resolve(null),
         shouldRefreshChatWorkspace ? getChatWorkspace(activeChatThreadId ?? undefined) : Promise.resolve(null),
+        shouldRefreshMemoryCurrent ? getCurrentMemory() : Promise.resolve(null),
+        shouldRefreshProjects ? getMemoryProjects() : Promise.resolve(null),
         shouldRefreshMemoryStatus ? getMemoryStatus() : Promise.resolve(null),
-        shouldRefreshSnapshots ? getMemorySnapshots(6) : Promise.resolve(null),
+        shouldRefreshSnapshots ? getMemorySnapshots(activeTab === "overview" ? 1 : 6) : Promise.resolve(null),
         shouldRefreshImportantMessages ? getImportantMessages(80) : Promise.resolve(null),
         shouldRefreshAutomation ? getAutomationStatus() : Promise.resolve(null),
       ]);
@@ -1249,6 +1265,21 @@ export function ConnectionDashboard() {
         });
       } else if (chatWorkspaceResult.status === "rejected" && shouldRefreshChatWorkspace) {
         setChatError(getErrorMessage(chatWorkspaceResult.reason));
+      }
+
+      if (memoryResult.status === "fulfilled" && memoryResult.value) {
+        const nextMemory = memoryResult.value;
+        startTransition(() => {
+          setMemory(nextMemory);
+          setMemoryError(null);
+        });
+      }
+
+      if (projectsResult.status === "fulfilled" && Array.isArray(projectsResult.value)) {
+        const nextProjects = projectsResult.value;
+        startTransition(() => {
+          setProjects(nextProjects);
+        });
       }
 
       if (memoryStatusResult.status === "fulfilled" && memoryStatusResult.value) {
@@ -1431,22 +1462,34 @@ export function ConnectionDashboard() {
       setIsHydrating(true);
     }
 
+    const shouldLoadAgentWorkspace = activeTab === "agent" || activeTab === "manual";
+    const shouldLoadChatWorkspace = activeTab === "chat" || activeTab === "manual";
+    const shouldLoadSnapshots = activeTab === "overview" || activeTab === "memory" || activeTab === "manual";
+    const shouldLoadImportantMessages = activeTab === "important" || activeTab === "manual";
+    const shouldLoadAutomation = activeTab === "activity" || activeTab === "automation" || activeTab === "manual" || queuedJobId !== null;
+
     const [
       statusResult,
+      agentStatusResult,
       agentWorkspaceResult,
       chatResult,
+      memoryResult,
+      projectsResult,
       memoryStatusResult,
       snapshotsResult,
       importantMessagesResult,
       automationResult,
     ] = await Promise.allSettled([
       getObserverStatus(false),
-      getAgentWorkspace(activeAgentThreadId ?? undefined),
-      getChatWorkspace(activeChatThreadId ?? undefined),
+      getAgentStatus(),
+      shouldLoadAgentWorkspace ? getAgentWorkspace(activeAgentThreadId ?? undefined) : Promise.resolve(null),
+      shouldLoadChatWorkspace ? getChatWorkspace(activeChatThreadId ?? undefined) : Promise.resolve(null),
+      getCurrentMemory(),
+      getMemoryProjects(),
       getMemoryStatus(),
-      getMemorySnapshots(6),
-      getImportantMessages(80),
-      getAutomationStatus(),
+      shouldLoadSnapshots ? getMemorySnapshots(activeTab === "overview" ? 1 : 6) : Promise.resolve([]),
+      shouldLoadImportantMessages ? getImportantMessages(80) : Promise.resolve([]),
+      shouldLoadAutomation ? getAutomationStatus() : Promise.resolve(null),
     ]);
 
     if (statusResult.status === "fulfilled") {
@@ -1460,44 +1503,63 @@ export function ConnectionDashboard() {
       setConnectionError(getErrorMessage(statusResult.reason));
     }
 
-    if (agentWorkspaceResult.status === "fulfilled") {
-      applyAgentWorkspace(agentWorkspaceResult.value);
+    if (agentStatusResult.status === "fulfilled") {
+      applyAgentStatus(agentStatusResult.value, false);
     } else {
-      const message = getErrorMessage(agentWorkspaceResult.reason);
+      const message = getErrorMessage(agentStatusResult.reason);
       setAgentConnectionError(message);
       setAgentViewState("error");
       setAgentPollingEnabled(false);
     }
 
-    if (chatResult.status === "fulfilled") {
+    if (agentWorkspaceResult.status === "fulfilled" && agentWorkspaceResult.value) {
+      applyAgentWorkspace(agentWorkspaceResult.value);
+    } else if (agentWorkspaceResult.status === "rejected") {
+      const message = getErrorMessage(agentWorkspaceResult.reason);
+      setAgentConnectionError(message);
+      setAgentViewState("error");
+    }
+
+    if (chatResult.status === "fulfilled" && chatResult.value) {
       applyChatWorkspace(chatResult.value);
-    } else {
+    } else if (chatResult.status === "rejected") {
       const message = getErrorMessage(chatResult.reason);
       setChatError(message);
       setMemoryError(message);
+    }
+
+    if (memoryResult.status === "fulfilled") {
+      setMemory(memoryResult.value);
+      setMemoryError(null);
+    } else if (!shouldLoadChatWorkspace) {
+      setMemoryError(getErrorMessage(memoryResult.reason));
+    }
+
+    if (projectsResult.status === "fulfilled" && Array.isArray(projectsResult.value)) {
+      setProjects(projectsResult.value);
     }
 
     if (memoryStatusResult.status === "fulfilled") {
       setMemoryStatus(memoryStatusResult.value);
     }
 
-    if (snapshotsResult.status === "fulfilled") {
+    if (snapshotsResult.status === "fulfilled" && snapshotsResult.value) {
       setSnapshots(snapshotsResult.value);
     }
 
-    if (importantMessagesResult.status === "fulfilled") {
+    if (importantMessagesResult.status === "fulfilled" && importantMessagesResult.value) {
       setImportantMessages(importantMessagesResult.value);
       setImportantMessagesError(null);
-    } else {
+    } else if (importantMessagesResult.status === "rejected") {
       setImportantMessagesError(getErrorMessage(importantMessagesResult.reason));
     }
 
-    if (automationResult.status === "fulfilled") {
+    if (automationResult.status === "fulfilled" && automationResult.value) {
       const snap = automationResult.value;
       setAutomationStatus(snap);
       setAutomationError(null);
       syncQueuedJobFromAutomationSnapshot(snap);
-    } else {
+    } else if (automationResult.status === "rejected") {
       setAutomationError(getErrorMessage(automationResult.reason));
     }
 

@@ -17,7 +17,7 @@ import { SupabaseAuthStateStore } from "./supabase-auth-state";
 const logger = Pino({ level: config.nodeEnv === "development" ? "debug" : "info" });
 const baileysLogger = Pino({ level: "silent" });
 
-export type ObserverState = "open" | "connecting" | "close";
+export type ObserverState = "open" | "connecting" | "reconnecting" | "close";
 
 export type GatewayObserverStatus = {
   instance_name: string;
@@ -384,7 +384,7 @@ export class WhatsAppGatewayChannel {
         disconnectCode !== DisconnectReason.loggedOut;
 
       this.connected = false;
-      this.state = "close";
+      this.state = shouldReconnect ? "reconnecting" : "close";
       this.clearQr();
       this.lastError =
         disconnectCode === DisconnectReason.loggedOut

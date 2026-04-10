@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.dependencies import get_memory_job_service, get_observer_gateway_service
 from app.schemas import ObserverMessageRefreshResponse, ObserverStatusResponse
 from app.services.memory_job_service import MemoryJobService
-from app.services.observer_gateway import ObserverGatewayService
+from app.services.observer_gateway import ObserverGatewayError, ObserverGatewayService
 
 router = APIRouter(prefix="/api/observer", tags=["observer"])
 
@@ -14,14 +14,20 @@ router = APIRouter(prefix="/api/observer", tags=["observer"])
 async def connect_observer(
     gateway: ObserverGatewayService = Depends(get_observer_gateway_service),
 ) -> ObserverStatusResponse:
-    return await gateway.connect_observer()
+    try:
+        return await gateway.connect_observer()
+    except ObserverGatewayError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.post("/reset", response_model=ObserverStatusResponse)
 async def reset_observer(
     gateway: ObserverGatewayService = Depends(get_observer_gateway_service),
 ) -> ObserverStatusResponse:
-    return await gateway.reset_observer()
+    try:
+        return await gateway.reset_observer()
+    except ObserverGatewayError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.post("/messages/refresh", response_model=ObserverMessageRefreshResponse)
@@ -32,6 +38,9 @@ async def refresh_observer_messages(
     sync_run = await memory_job_service.start_manual_sync(trigger="manual")
     try:
         status = await gateway.refresh_observer_messages()
+    except ObserverGatewayError as exc:
+        memory_job_service.mark_sync_failed(sync_run_id=sync_run.id, error_text=str(exc))
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     except Exception as error:
         memory_job_service.mark_sync_failed(sync_run_id=sync_run.id, error_text=str(error))
         raise
@@ -52,4 +61,7 @@ async def observer_status(
     refresh_qr: bool = Query(default=False),
     gateway: ObserverGatewayService = Depends(get_observer_gateway_service),
 ) -> ObserverStatusResponse:
-    return await gateway.get_observer_status(refresh_qr=refresh_qr)
+    try:
+        return await gateway.get_observer_status(refresh_qr=refresh_qr)
+    except ObserverGatewayError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc

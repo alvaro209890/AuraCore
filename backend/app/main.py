@@ -17,7 +17,6 @@ from app.services.chat_service import ChatServiceError
 from app.services.deepseek_service import DeepSeekError
 from app.services.groq_service import GroqChatError
 from app.services.memory_service import MemoryAnalysisError
-from app.services.observer_gateway import ObserverGatewayError
 
 logging.basicConfig(
     level=logging.INFO,
@@ -57,13 +56,6 @@ async def root() -> dict[str, str]:
 @app.get("/health", tags=["meta"])
 async def healthcheck() -> dict[str, str]:
     return {"status": "healthy"}
-
-
-@app.exception_handler(ObserverGatewayError)
-async def observer_gateway_error_handler(_: Request, exc: ObserverGatewayError) -> JSONResponse:
-    return JSONResponse(status_code=502, content={"detail": str(exc)})
-
-
 @app.exception_handler(DeepSeekError)
 async def deepseek_error_handler(_: Request, exc: DeepSeekError) -> JSONResponse:
     return JSONResponse(status_code=502, content={"detail": str(exc)})

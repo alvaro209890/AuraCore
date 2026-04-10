@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Body, Depends, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from app.dependencies import get_whatsapp_agent_service
 from app.schemas import (
@@ -11,6 +11,7 @@ from app.schemas import (
     WhatsAppAgentThreadsListResponse,
     WhatsAppAgentWorkspaceResponse,
 )
+from app.services.observer_gateway import ObserverGatewayError
 from app.services.whatsapp_agent_service import WhatsAppAgentService
 
 router = APIRouter(prefix="/api/whatsapp-agent", tags=["whatsapp-agent"])
@@ -20,28 +21,40 @@ router = APIRouter(prefix="/api/whatsapp-agent", tags=["whatsapp-agent"])
 async def get_agent_status(
     agent_service: WhatsAppAgentService = Depends(get_whatsapp_agent_service),
 ) -> WhatsAppAgentStatusResponse:
-    return await agent_service.get_status()
+    try:
+        return await agent_service.get_status()
+    except ObserverGatewayError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.post("/connect", response_model=WhatsAppAgentStatusResponse)
 async def connect_agent(
     agent_service: WhatsAppAgentService = Depends(get_whatsapp_agent_service),
 ) -> WhatsAppAgentStatusResponse:
-    return await agent_service.connect_agent()
+    try:
+        return await agent_service.connect_agent()
+    except ObserverGatewayError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.post("/reset", response_model=WhatsAppAgentStatusResponse)
 async def reset_agent(
     agent_service: WhatsAppAgentService = Depends(get_whatsapp_agent_service),
 ) -> WhatsAppAgentStatusResponse:
-    return await agent_service.reset_agent()
+    try:
+        return await agent_service.reset_agent()
+    except ObserverGatewayError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.get("/settings", response_model=WhatsAppAgentSettingsResponse)
 async def get_agent_settings(
     agent_service: WhatsAppAgentService = Depends(get_whatsapp_agent_service),
 ) -> WhatsAppAgentSettingsResponse:
-    snapshot = await agent_service.build_workspace()
+    try:
+        snapshot = await agent_service.build_workspace()
+    except ObserverGatewayError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     return snapshot.settings
 
 
@@ -58,7 +71,10 @@ async def get_agent_workspace(
     thread_id: str | None = Query(default=None),
     agent_service: WhatsAppAgentService = Depends(get_whatsapp_agent_service),
 ) -> WhatsAppAgentWorkspaceResponse:
-    snapshot = await agent_service.build_workspace(thread_id=thread_id)
+    try:
+        snapshot = await agent_service.build_workspace(thread_id=thread_id)
+    except ObserverGatewayError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     return WhatsAppAgentWorkspaceResponse(
         status=snapshot.status,
         settings=snapshot.settings,
