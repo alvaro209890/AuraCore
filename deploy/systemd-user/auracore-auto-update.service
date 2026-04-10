@@ -1,0 +1,9 @@
+[Unit]
+Description=AuraCore Auto Update (user)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/acer/Downloads/AuraCore
+ExecStart=/bin/bash /home/acer/Downloads/AuraCore/scripts/auto-update.sh
