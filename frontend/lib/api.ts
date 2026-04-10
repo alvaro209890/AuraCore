@@ -151,6 +151,10 @@ export type MemorySnapshot = {
   window_start: string;
   window_end: string;
   source_message_count: number;
+  distinct_contact_count: number;
+  inbound_message_count: number;
+  outbound_message_count: number;
+  coverage_score: number;
   window_summary: string;
   key_learnings: string[];
   people_and_relationships: string[];

@@ -41,6 +41,12 @@ SQLITE_LEGACY_COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
     "message_retention_state": {
         "observer_history_cutoff_at": "TEXT",
     },
+    "memory_snapshots": {
+        "distinct_contact_count": "INTEGER DEFAULT 0",
+        "inbound_message_count": "INTEGER DEFAULT 0",
+        "outbound_message_count": "INTEGER DEFAULT 0",
+        "coverage_score": "INTEGER DEFAULT 0",
+    },
 }
 
 
@@ -105,6 +111,10 @@ class MemorySnapshotRecord:
     window_start: datetime
     window_end: datetime
     source_message_count: int
+    distinct_contact_count: int
+    inbound_message_count: int
+    outbound_message_count: int
+    coverage_score: int
     window_summary: str
     key_learnings: list[str]
     people_and_relationships: list[str]
@@ -676,6 +686,22 @@ class SupabaseStore:
         self.client.execute(
             "UPDATE project_memories SET built_for = '' "
             "WHERE built_for IS NULL"
+        )
+        self.client.execute(
+            "UPDATE memory_snapshots SET distinct_contact_count = 0 "
+            "WHERE distinct_contact_count IS NULL"
+        )
+        self.client.execute(
+            "UPDATE memory_snapshots SET inbound_message_count = 0 "
+            "WHERE inbound_message_count IS NULL"
+        )
+        self.client.execute(
+            "UPDATE memory_snapshots SET outbound_message_count = 0 "
+            "WHERE outbound_message_count IS NULL"
+        )
+        self.client.execute(
+            "UPDATE memory_snapshots SET coverage_score = 0 "
+            "WHERE coverage_score IS NULL"
         )
 
     def _prepare_ingest_batch(
@@ -1443,6 +1469,7 @@ class SupabaseStore:
             self.client.table("memory_snapshots")
             .select(
                 "id,user_id,window_hours,window_start,window_end,source_message_count,"
+                "distinct_contact_count,inbound_message_count,outbound_message_count,coverage_score,"
                 "window_summary,key_learnings,people_and_relationships,routine_signals,"
                 "preferences,open_questions,created_at"
             )
@@ -1465,6 +1492,10 @@ class SupabaseStore:
                     window_start=self._parse_datetime(row.get("window_start")) or datetime.now(UTC),
                     window_end=self._parse_datetime(row.get("window_end")) or datetime.now(UTC),
                     source_message_count=int(row.get("source_message_count") or 0),
+                    distinct_contact_count=int(row.get("distinct_contact_count") or 0),
+                    inbound_message_count=int(row.get("inbound_message_count") or 0),
+                    outbound_message_count=int(row.get("outbound_message_count") or 0),
+                    coverage_score=int(row.get("coverage_score") or 0),
                     window_summary=str(row.get("window_summary") or ""),
                     key_learnings=self._parse_string_list(row.get("key_learnings")),
                     people_and_relationships=self._parse_string_list(row.get("people_and_relationships")),
@@ -4703,6 +4734,10 @@ class SupabaseStore:
             "window_start": snapshot.window_start.isoformat(),
             "window_end": snapshot.window_end.isoformat(),
             "source_message_count": snapshot.source_message_count,
+            "distinct_contact_count": snapshot.distinct_contact_count,
+            "inbound_message_count": snapshot.inbound_message_count,
+            "outbound_message_count": snapshot.outbound_message_count,
+            "coverage_score": snapshot.coverage_score,
             "window_summary": snapshot.window_summary,
             "key_learnings": snapshot.key_learnings,
             "people_and_relationships": snapshot.people_and_relationships,

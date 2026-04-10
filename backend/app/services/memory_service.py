@@ -41,6 +41,12 @@ class MemoryAnalysisError(RuntimeError):
 
 logger = logging.getLogger("auracore.memory_analysis")
 
+BOOTSTRAP_BUCKET_WEIGHTS: tuple[tuple[str, float], ...] = (
+    ("recent", 0.5),
+    ("week", 0.3),
+    ("older", 0.2),
+)
+
 
 @dataclass(slots=True)
 class MemoryAnalysisOutcome:
@@ -254,6 +260,8 @@ class MemoryAnalysisService:
             window_end=window_end,
             source_message_count=len(included_messages),
         )
+        if not current_persona.last_analyzed_at:
+            deepseek_result = self._stabilize_first_analysis_result(deepseek_result)
 
         effective_life_summary = self._resolve_effective_life_summary(
             deepseek_result.updated_life_summary,
@@ -266,6 +274,7 @@ class MemoryAnalysisService:
             window_start=window_start,
             window_end=window_end,
             source_message_count=len(included_messages),
+            source_messages=included_messages,
             created_at=window_end,
         )
         structural_strengths, structural_routines, structural_preferences, structural_open_questions = (
@@ -382,6 +391,8 @@ class MemoryAnalysisService:
             window_end=window_end,
             source_message_count=len(included_messages),
         )
+        if not current_persona.last_analyzed_at:
+            deepseek_result = self._stabilize_first_analysis_result(deepseek_result)
 
         effective_life_summary = self._resolve_effective_life_summary(
             deepseek_result.updated_life_summary,
@@ -394,6 +405,7 @@ class MemoryAnalysisService:
             window_start=window_start,
             window_end=window_end,
             source_message_count=len(included_messages),
+            source_messages=included_messages,
             created_at=window_end,
         )
         structural_strengths, structural_routines, structural_preferences, structural_open_questions = (
@@ -505,6 +517,7 @@ class MemoryAnalysisService:
             prior_analyses_context=prior_analyses_context,
             project_context=project_context,
             chat_context=chat_context,
+            intent="improve_memory" if current_persona.last_analyzed_at else "first_analysis",
             window_hours=max_lookback_hours,
             window_start=window_start,
             window_end=window_end,
@@ -738,6 +751,124 @@ class MemoryAnalysisService:
         target = 28000 if mode == "first_analysis" else 14000
         return min(self.settings.memory_analysis_max_chars, target)
 
+    def _resolve_bootstrap_bucket_targets(
+        self,
+        messages_by_bucket: dict[str, list[StoredMessageRecord]],
+        *,
+        max_messages: int,
+    ) -> dict[str, int]:
+        targets = {bucket: 0 for bucket, _weight in BOOTSTRAP_BUCKET_WEIGHTS}
+        for bucket, weight in BOOTSTRAP_BUCKET_WEIGHTS:
+            if not messages_by_bucket.get(bucket):
+                continue
+            targets[bucket] = min(len(messages_by_bucket[bucket]), max(1, round(max_messages * weight)))
+
+        allocated = sum(targets.values())
+        if allocated > max_messages:
+            overflow = allocated - max_messages
+            for bucket, _weight in reversed(BOOTSTRAP_BUCKET_WEIGHTS):
+                removable = min(overflow, max(0, targets[bucket] - 1))
+                targets[bucket] -= removable
+                overflow -= removable
+                if overflow <= 0:
+                    break
+
+        remaining = max_messages - sum(targets.values())
+        if remaining > 0:
+            for bucket, _weight in BOOTSTRAP_BUCKET_WEIGHTS:
+                available = max(0, len(messages_by_bucket.get(bucket, [])) - targets[bucket])
+                if available <= 0:
+                    continue
+                addition = min(remaining, available)
+                targets[bucket] += addition
+                remaining -= addition
+                if remaining <= 0:
+                    break
+
+        return targets
+
+    def _select_bootstrap_bucket_messages(
+        self,
+        messages: list[StoredMessageRecord],
+        *,
+        target_total: int,
+    ) -> list[StoredMessageRecord]:
+        if not messages or target_total <= 0:
+            return []
+
+        outbound_messages = [message for message in messages if message.direction == "outbound"]
+        inbound_messages = [message for message in messages if message.direction != "outbound"]
+        outbound_target = min(len(outbound_messages), round(target_total * 0.4))
+        if outbound_messages and outbound_target <= 0:
+            outbound_target = 1
+        inbound_target = max(0, target_total - outbound_target)
+        if inbound_messages and inbound_target <= 0:
+            inbound_target = 1
+        total_target = target_total
+
+        selected = [
+            *self._select_balanced_messages(outbound_messages, max_messages=outbound_target, prefer_recent=True),
+            *self._select_balanced_messages(inbound_messages, max_messages=inbound_target, prefer_recent=True),
+        ]
+        selected = self._merge_unique_messages(selected)
+        if len(selected) >= total_target:
+            return selected[:total_target]
+
+        fallback = self._select_balanced_messages(messages, max_messages=total_target * 2, prefer_recent=True)
+        selected = self._merge_unique_messages([*selected, *fallback])
+        return selected[:total_target]
+
+    def _select_bootstrap_messages(
+        self,
+        messages: list[StoredMessageRecord],
+        *,
+        max_messages: int,
+    ) -> list[StoredMessageRecord]:
+        if not messages:
+            return []
+
+        latest_timestamp = max(message.timestamp for message in messages)
+        messages_by_bucket: dict[str, list[StoredMessageRecord]] = {
+            "recent": [],
+            "week": [],
+            "older": [],
+        }
+        for message in sorted(messages, key=lambda item: item.timestamp, reverse=True):
+            age_hours = max(0.0, (latest_timestamp - message.timestamp).total_seconds() / 3600)
+            if age_hours <= 24:
+                messages_by_bucket["recent"].append(message)
+            elif age_hours <= 24 * 7:
+                messages_by_bucket["week"].append(message)
+            else:
+                messages_by_bucket["older"].append(message)
+
+        targets = self._resolve_bootstrap_bucket_targets(messages_by_bucket, max_messages=max_messages)
+        selected: list[StoredMessageRecord] = []
+        for bucket, _weight in BOOTSTRAP_BUCKET_WEIGHTS:
+            selected.extend(
+                self._select_bootstrap_bucket_messages(
+                    messages_by_bucket.get(bucket, []),
+                    target_total=targets[bucket],
+                )
+            )
+
+        selected = self._merge_unique_messages(selected)
+        if len(selected) < max_messages:
+            fallback = self._select_balanced_messages(messages, max_messages=max_messages * 2, prefer_recent=True)
+            selected = self._merge_unique_messages([*selected, *fallback])
+
+        return sorted(selected[:max_messages], key=lambda message: message.timestamp)
+
+    def _merge_unique_messages(self, messages: list[StoredMessageRecord]) -> list[StoredMessageRecord]:
+        seen_ids: set[str] = set()
+        unique: list[StoredMessageRecord] = []
+        for message in sorted(messages, key=lambda item: item.timestamp):
+            if message.message_id in seen_ids:
+                continue
+            seen_ids.add(message.message_id)
+            unique.append(message)
+        return unique
+
     def _select_balanced_messages(
         self,
         messages: list[StoredMessageRecord],
@@ -915,10 +1046,9 @@ class MemoryAnalysisService:
                     f"Encontrei {pending_count} mensagens pendentes, mas nenhuma delas contém texto analisável (apenas imagens, áudios ou figurinhas)."
                 )
 
-            selected_messages = self._select_balanced_messages(
+            selected_messages = self._select_bootstrap_messages(
                 textual_candidates,
                 max_messages=min(self._resolve_first_analysis_limit(), len(textual_candidates)),
-                prefer_recent=True,
             )
             intent: Literal["first_analysis", "improve_memory"] = "first_analysis"
             detail_mode: Literal["light", "balanced", "deep"] = "deep"
@@ -982,6 +1112,7 @@ class MemoryAnalysisService:
             prior_analyses_context=prior_analyses_context,
             project_context=project_context,
             chat_context=chat_context,
+            intent=intent,
             window_hours=window_hours,
             window_start=window_start,
             window_end=window_end,
@@ -1049,6 +1180,8 @@ class MemoryAnalysisService:
             window_end=plan.window_end,
             source_message_count=len(plan.source_messages),
         )
+        if plan.intent == "first_analysis":
+            deepseek_result = self._stabilize_first_analysis_result(deepseek_result)
 
         analyzed_at = datetime.now(UTC)
         effective_life_summary = self._resolve_effective_life_summary(
@@ -1061,6 +1194,7 @@ class MemoryAnalysisService:
             window_start=plan.window_start,
             window_end=plan.window_end,
             source_message_count=len(plan.source_messages),
+            source_messages=plan.source_messages,
             created_at=analyzed_at,
         )
         merged_project_seeds = await self._merge_project_seeds_incrementally(
@@ -1834,8 +1968,15 @@ class MemoryAnalysisService:
         window_start: datetime,
         window_end: datetime,
         source_message_count: int,
+        source_messages: list[StoredMessageRecord] | None = None,
         created_at: datetime,
     ) -> MemorySnapshotRecord:
+        (
+            distinct_contact_count,
+            inbound_message_count,
+            outbound_message_count,
+            coverage_score,
+        ) = self._compute_snapshot_coverage(source_messages or [], window_hours=window_hours)
         return MemorySnapshotRecord(
             id=str(uuid4()),
             user_id=self.settings.default_user_id,
@@ -1843,6 +1984,10 @@ class MemoryAnalysisService:
             window_start=window_start,
             window_end=window_end,
             source_message_count=source_message_count,
+            distinct_contact_count=distinct_contact_count,
+            inbound_message_count=inbound_message_count,
+            outbound_message_count=outbound_message_count,
+            coverage_score=coverage_score,
             window_summary=result.window_summary,
             key_learnings=result.key_learnings,
             people_and_relationships=result.people_and_relationships,
@@ -1850,6 +1995,66 @@ class MemoryAnalysisService:
             preferences=result.preferences,
             open_questions=result.open_questions,
             created_at=created_at,
+        )
+
+    def _compute_snapshot_coverage(
+        self,
+        messages: list[StoredMessageRecord],
+        *,
+        window_hours: int,
+    ) -> tuple[int, int, int, int]:
+        if not messages:
+            return 0, 0, 0, 0
+
+        contact_keys = {
+            self.store.build_person_key(
+                contact_phone=message.contact_phone,
+                chat_jid=message.chat_jid,
+                contact_name=message.contact_name,
+            )
+            for message in messages
+        }
+        inbound_message_count = sum(1 for message in messages if message.direction != "outbound")
+        outbound_message_count = sum(1 for message in messages if message.direction == "outbound")
+        total_messages = max(1, len(messages))
+        first_analysis_limit = max(1, self._resolve_first_analysis_limit())
+        contact_score = min(35, len(contact_keys) * 5)
+        volume_score = min(25, round((total_messages / first_analysis_limit) * 25))
+        outbound_ratio = outbound_message_count / total_messages
+        balance_score = round(max(0.0, 1.0 - (abs(outbound_ratio - 0.4) / 0.4)) * 20)
+        window_score = min(20, round(min(1.0, window_hours / 72) * 20))
+        coverage_score = max(0, min(100, contact_score + volume_score + balance_score + window_score))
+        return len(contact_keys), inbound_message_count, outbound_message_count, coverage_score
+
+    def _stabilize_first_analysis_result(self, result: DeepSeekMemoryResult) -> DeepSeekMemoryResult:
+        unique_projects: list[DeepSeekProjectMemory] = []
+        seen_project_names: set[str] = set()
+        for project in result.active_projects:
+            project_name = " ".join(project.name.split()).strip()
+            if len(project_name) < 3:
+                continue
+            project_key = project_name.casefold()
+            if project_key in seen_project_names:
+                continue
+            if len(project.summary.strip()) < 20 and not project.next_steps and not project.evidence:
+                continue
+            seen_project_names.add(project_key)
+            unique_projects.append(project)
+            if len(unique_projects) >= 4:
+                break
+
+        return result.model_copy(
+            update={
+                "updated_life_summary": result.updated_life_summary.strip(),
+                "window_summary": result.window_summary.strip(),
+                "key_learnings": result.key_learnings[:6],
+                "people_and_relationships": result.people_and_relationships[:6],
+                "routine_signals": result.routine_signals[:6],
+                "preferences": result.preferences[:6],
+                "open_questions": result.open_questions[:6],
+                "active_projects": unique_projects,
+                "contact_memories": result.contact_memories[:8],
+            }
         )
 
     def _build_transcript(

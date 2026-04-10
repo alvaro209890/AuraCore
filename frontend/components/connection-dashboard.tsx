@@ -672,6 +672,41 @@ function getSignalMetrics(snapshot: MemorySnapshot | null): InsightMetric[] {
   ];
 }
 
+function getSnapshotCoverageTone(snapshot: MemorySnapshot | null): "emerald" | "amber" | "indigo" | "zinc" {
+  const score = snapshot?.coverage_score ?? 0;
+  if (score >= 75) {
+    return "emerald";
+  }
+  if (score >= 55) {
+    return "indigo";
+  }
+  if (score >= 30) {
+    return "amber";
+  }
+  return "zinc";
+}
+
+function getSnapshotCoverageLabel(snapshot: MemorySnapshot | null): string {
+  const score = snapshot?.coverage_score ?? 0;
+  if (score >= 75) {
+    return "Cobertura ampla do bootstrap";
+  }
+  if (score >= 55) {
+    return "Cobertura boa para uma base inicial";
+  }
+  if (score >= 30) {
+    return "Cobertura parcial, ainda melhorando";
+  }
+  return "Cobertura ainda muito curta";
+}
+
+function formatSnapshotDirectionMix(snapshot: MemorySnapshot | null): string {
+  if (!snapshot) {
+    return "0 enviadas / 0 recebidas";
+  }
+  return `${formatTokenCount(snapshot.outbound_message_count)} enviadas / ${formatTokenCount(snapshot.inbound_message_count)} recebidas`;
+}
+
 function getProjectStrength(project: ProjectMemory): number {
   const raw = 30 + (project.next_steps.length * 10) + (project.evidence.length * 7) + (project.status ? 8 : 0);
   return Math.max(24, Math.min(100, raw));
@@ -3339,6 +3374,7 @@ function MemoryTab({
   const latestSyncRun = memoryActivity?.sync_runs[0] ?? null;
   const latestJob = memoryActivity?.jobs[0] ?? latestCompletedJob;
   const latestModelRun = memoryActivity?.model_runs[0] ?? null;
+  const latestSnapshotCoverageTone = getSnapshotCoverageTone(latestSnapshot);
   const traceItems = buildActivityTrace({
     agentState,
     latestSyncRun,
@@ -3423,8 +3459,8 @@ function MemoryTab({
         {!memoryReady ? (
           <>
             <p className="support-copy">
-              A primeira analise separa o backlog inicial, marca o que foi usado como analisado, envia os importantes para o cofre
-              e monta a primeira versao dos projetos e da memoria do dono.
+              A primeira analise agora mistura recencia, diversidade de contatos e mensagens do proprio dono para montar
+              uma base inicial menos enviesada, ja salvando importantes, projetos e a primeira memoria consolidada.
             </p>
             <button
               className="ac-success-button"
@@ -3566,12 +3602,32 @@ function MemoryTab({
               Baseado em {formatTokenCount(latestSnapshot.source_message_count)} mensagens entre{" "}
               {formatDateTime(latestSnapshot.window_start)} e {formatDateTime(latestSnapshot.window_end)}.
             </p>
+            <div className="memory-breakdown-grid">
+              <MemorySignalCard
+                label="Cobertura do lote"
+                value={`${latestSnapshot.coverage_score}/100`}
+                meta={`${getSnapshotCoverageLabel(latestSnapshot)} com ${formatTokenCount(latestSnapshot.distinct_contact_count)} contatos distintos.`}
+                tone={latestSnapshotCoverageTone}
+              />
+              <MemorySignalCard
+                label="Direcao das mensagens"
+                value={formatSnapshotDirectionMix(latestSnapshot)}
+                meta="Ajuda a separar o que o dono afirma, pede e decide do que foi dito pelos contatos."
+                tone="indigo"
+              />
+              <MemorySignalCard
+                label="Amplitude temporal"
+                value={`${formatTokenCount(latestSnapshot.window_hours)}h`}
+                meta="A primeira leitura tenta cobrir curto prazo e historico recente para nao nascer viciada em um unico momento."
+                tone="amber"
+              />
+            </div>
             <p>Este bloco mostra somente a janela mais recente. O retrato cumulativo do dono fica logo abaixo.</p>
           </div>
         ) : (
           <div className="empty-hint">
             <Database size={18} />
-            <p>Sem snapshot ainda. A primeira leitura cria a base consolidada do dono.</p>
+            <p>Sem snapshot ainda. A primeira leitura vai criar a base consolidada do dono com um lote inicial balanceado.</p>
           </div>
         )}
       </Card>
@@ -4475,8 +4531,12 @@ function ActivityTab({
             <MemorySignalCard
               label="Último snapshot"
               value={latestSnapshot ? formatShortDateTime(latestSnapshot.created_at) : "..."}
-              meta={latestSnapshot ? `${formatTokenCount(latestSnapshot.source_message_count)} mensagens consolidadas` : "Aguardando primeira leitura"}
-              tone="amber"
+              meta={
+                latestSnapshot
+                  ? `${formatTokenCount(latestSnapshot.source_message_count)} mensagens • ${formatTokenCount(latestSnapshot.distinct_contact_count)} contatos • cobertura ${latestSnapshot.coverage_score}/100`
+                  : "Aguardando primeira leitura"
+              }
+              tone={getSnapshotCoverageTone(latestSnapshot)}
             />
           </div>
 

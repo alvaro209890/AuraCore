@@ -317,6 +317,10 @@ class MemorySnapshotResponse(BaseModel):
     window_start: datetime
     window_end: datetime
     source_message_count: int = Field(ge=0)
+    distinct_contact_count: int = Field(ge=0)
+    inbound_message_count: int = Field(ge=0)
+    outbound_message_count: int = Field(ge=0)
+    coverage_score: int = Field(ge=0, le=100)
     window_summary: str
     key_learnings: list[str] = Field(default_factory=list)
     people_and_relationships: list[str] = Field(default_factory=list)

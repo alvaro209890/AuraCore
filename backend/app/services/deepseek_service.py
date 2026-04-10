@@ -136,6 +136,7 @@ class DeepSeekService:
             prior_analyses_context=prior_analyses_context,
             project_context=project_context,
             chat_context=chat_context,
+            intent=intent,
             window_hours=window_hours,
             window_start=window_start,
             window_end=window_end,
@@ -301,11 +302,13 @@ class DeepSeekService:
         prior_analyses_context: str,
         project_context: str,
         chat_context: str,
+        intent: str = "improve_memory",
         window_hours: int,
         window_start: datetime,
         window_end: datetime,
         source_message_count: int,
     ) -> DeepSeekPromptPreview:
+        is_first_analysis = intent == "first_analysis"
         return DeepSeekPromptPreview(
             system_prompt=(
                 "Voce e o analista principal de memoria do AuraCore. Sua funcao e transformar conversas "
@@ -314,6 +317,12 @@ class DeepSeekService:
                 "Priorize sinais sobre identidade, forma de agir, criterio de decisao, ritmo, projetos, "
                 "responsabilidades e tensoes reais do dono. Quando algo for incerto, trate como sinal ou "
                 "hipotese nas listas, sem afirmar como certeza no resumo consolidado."
+                + (
+                    " Esta e a primeira analise salva do dono. Prefira cobertura ampla e conservadora: "
+                    "menos conviccao, menos projetos, menos inferencias psicologicas e mais lacunas explicitas."
+                    if is_first_analysis
+                    else ""
+                )
             ),
             user_prompt=self._build_prompt(
                 transcript=transcript,
@@ -323,6 +332,7 @@ class DeepSeekService:
                 prior_analyses_context=prior_analyses_context,
                 project_context=project_context,
                 chat_context=chat_context,
+                intent=intent,
                 window_hours=window_hours,
                 window_start=window_start,
                 window_end=window_end,
@@ -402,6 +412,7 @@ class DeepSeekService:
         prior_analyses_context: str,
         project_context: str,
         chat_context: str,
+        intent: str,
         window_hours: int,
         window_start: datetime,
         window_end: datetime,
@@ -410,8 +421,21 @@ class DeepSeekService:
         previous_summary = current_life_summary.strip() or "(memoria consolidada ainda vazia)"
         previous_analyses = prior_analyses_context.strip() or "(nenhuma analise anterior relevante)"
         recent_chat_context = chat_context.strip() or "(nenhuma conversa relevante com a IA salva ainda)"
+        is_first_analysis = intent == "first_analysis"
+        intro = (
+            "Analise a janela abaixo de conversas diretas e monte a primeira base de memoria do usuario."
+            if is_first_analysis
+            else "Analise a janela abaixo de conversas diretas e atualize a memoria do usuario."
+        )
+        bootstrap_rules = """
+- Esta e a primeira analise persistida do dono; trate a memoria como bootstrap inicial, nao como retrato definitivo.
+- Em updated_life_summary, seja prudente: prefira descrever direcoes gerais e responsabilidades visiveis em vez de interpretar demais a personalidade.
+- Em active_projects, mantenha no maximo 4 itens e inclua apenas frentes que tenham sinais repetidos, impacto operacional ou evidencia concreta.
+- Use open_questions para registrar duvidas importantes que precisarao de mais conversa futura em vez de fechar conclusoes cedo demais.
+- Se houver conflito entre um sinal forte mas isolado e o restante do contexto, reduza a forca da afirmacao e explicite a incerteza nas listas.
+""".strip()
         return f"""
-Analise a janela abaixo de conversas diretas e atualize a memoria do usuario.
+{intro}
 
 Janela em horas: {window_hours}
 Inicio da janela (UTC): {window_start.isoformat()}
@@ -509,6 +533,7 @@ Regras:
 - Em contact_memories, mantenha no maximo 6 fatos, 5 pendencias e 5 topicos por pessoa.
 - Nao mencione que voce e uma IA.
 - Nao inclua markdown fences.
+{bootstrap_rules if is_first_analysis else ""}
 """.strip()
 
     def _build_refinement_prompt(
