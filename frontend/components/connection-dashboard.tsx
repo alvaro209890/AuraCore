@@ -445,16 +445,30 @@ function buildPersistedActivityLogs(status: MemoryActivity | null): AgentLog[] {
     id: `sync-${syncRun.id}`,
     tone: (syncRun.status === "failed" ? "error" : "info") as LogTone,
     createdAt: syncRun.finished_at ?? syncRun.last_activity_at ?? syncRun.started_at,
-    message: `Sync ${syncRun.status}: ${syncRun.messages_saved_count} salvas e ${syncRun.messages_ignored_count} ignoradas.`,
+    message:
+      syncRun.status === "failed"
+        ? `Sync falhou depois de ver ${syncRun.messages_seen_count} mensagens. ${syncRun.error_text || "Sem detalhe adicional."}`
+        : `Sync ${syncRun.status}: ${syncRun.messages_saved_count} salvas, ${syncRun.messages_ignored_count} ignoradas e ${syncRun.messages_pruned_count} podadas.`,
   }));
   const jobLogs = status.jobs.slice(0, 4).map((job) => ({
     id: `job-${job.id}`,
     tone: (job.status === "failed" ? "error" : job.status === "succeeded" ? "success" : "info") as LogTone,
     createdAt: job.finished_at ?? job.started_at ?? job.created_at,
-    message: `Job ${job.status}: ${getIntentTitle(job.intent as AgentIntent)} em ${job.detail_mode}, alvo ${job.target_message_count} msgs.`,
+    message:
+      job.status === "failed"
+        ? `Job ${job.status}: ${getIntentTitle(job.intent as AgentIntent)} falhou. ${job.error_text || "Sem detalhe persistido."}`
+        : `Job ${job.status}: ${getIntentTitle(job.intent as AgentIntent)} em ${job.detail_mode}, alvo ${job.target_message_count} msgs, selecionadas ${job.selected_message_count}.`,
+  }));
+  const modelLogs = status.model_runs.slice(0, 3).map((run) => ({
+    id: `model-${run.id}`,
+    tone: (run.success ? "success" : "error") as LogTone,
+    createdAt: run.created_at,
+    message: run.success
+      ? `${run.provider} concluiu ${run.run_type} em ${run.latency_ms ?? 0} ms${run.estimated_cost_usd ? `, teto estimado USD ${run.estimated_cost_usd.toFixed(4)}` : ""}.`
+      : `${run.provider} falhou em ${run.run_type}. ${run.error_text || "Sem detalhe adicional."}`,
   }));
 
-  return [...syncLogs, ...jobLogs].sort((left, right) => (
+  return [...syncLogs, ...jobLogs, ...modelLogs].sort((left, right) => (
     new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
   ));
 }
@@ -600,15 +614,21 @@ function getProgressIncrement(progress: number): number {
   return 1;
 }
 
-function getStepsForMode(mode: AgentMode): AgentStep[] {
-  return ANALYZE_STEPS;
+function getStepsForIntent(intent: AgentIntent | null, hasEstablishedMemory: boolean): AgentStep[] {
+  const resolvedIntent = intent ?? (hasEstablishedMemory ? "improve_memory" : "first_analysis");
+  return resolvedIntent === "improve_memory" ? REFINE_STEPS : ANALYZE_STEPS;
 }
 
-function getRunningStatus(mode: AgentMode, progress: number): string {
+function getRunningStatus(
+  mode: AgentMode,
+  progress: number,
+  intent: AgentIntent | null,
+  hasEstablishedMemory: boolean,
+): string {
   if (mode === "idle") {
     return IDLE_AGENT_STATUS;
   }
-  const step = [...getStepsForMode(mode)].reverse().find((candidate) => progress >= candidate.threshold);
+  const step = [...getStepsForIntent(intent, hasEstablishedMemory)].reverse().find((candidate) => progress >= candidate.threshold);
   return step?.label ?? "Preparando atualização";
 }
 
@@ -979,12 +999,17 @@ export function ConnectionDashboard() {
   const observerStatusInFlightRef = useRef(false);
   const agentStatusInFlightRef = useRef(false);
   const dashboardRefreshInFlightRef = useRef(false);
+  const lastObservedSyncRef = useRef<string | null>(null);
+  const lastObservedJobRef = useRef<string | null>(null);
+  const lastObservedModelRunRef = useRef<string | null>(null);
   const pollStatusRef = useRef<((announceTransition?: boolean) => Promise<void>) | null>(null);
   const pollAgentStatusRef = useRef<((announceTransition?: boolean) => Promise<void>) | null>(null);
   const refreshLiveDataRef = useRef<(() => Promise<void>) | null>(null);
 
   const latestSnapshot = snapshots[0] ?? null;
   const memoryIsEstablished = memoryStatus?.has_initial_analysis ?? false;
+  const currentMemoryJob = memoryStatus?.current_job ?? null;
+  const memoryJobIsPending = currentMemoryJob?.status === "queued" || currentMemoryJob?.status === "running";
   const activeChatThread = useMemo(
     () => chatThreads.find((thread) => thread.id === activeChatThreadId) ?? chatThreads[0] ?? null,
     [activeChatThreadId, chatThreads],
@@ -1012,7 +1037,10 @@ export function ConnectionDashboard() {
     [agentPollingEnabled, agentStatus?.connected],
   );
 
-  const currentSteps = useMemo(() => getStepsForMode(agentState.mode), [agentState.mode]);
+  const currentSteps = useMemo(
+    () => getStepsForIntent(agentState.intent, memoryIsEstablished),
+    [agentState.intent, memoryIsEstablished],
+  );
   const insightMetrics = useMemo(() => getSignalMetrics(latestSnapshot), [latestSnapshot]);
   const persistedActivityLogs = useMemo(() => buildPersistedActivityLogs(memoryActivity), [memoryActivity]);
   const activityLogs = useMemo(
@@ -1024,13 +1052,14 @@ export function ConnectionDashboard() {
   );
 
   async function refreshMemoryArtifactsAfterJob(): Promise<void> {
-    const [memoryResult, projectsResult, memoryStatusResult, snapshotsResult, importantMessagesResult] =
+    const [memoryResult, projectsResult, memoryStatusResult, snapshotsResult, importantMessagesResult, memoryActivityResult] =
       await Promise.allSettled([
         getCurrentMemory(),
         getMemoryProjects(),
         getMemoryStatus(),
         getMemorySnapshots(6),
         getImportantMessages(80),
+        getMemoryActivity(),
       ]);
 
     startTransition(() => {
@@ -1048,6 +1077,10 @@ export function ConnectionDashboard() {
       }
       if (importantMessagesResult.status === "fulfilled") {
         setImportantMessages(importantMessagesResult.value);
+      }
+      if (memoryActivityResult.status === "fulfilled") {
+        setMemoryActivity(memoryActivityResult.value);
+        setMemoryActivityError(null);
       }
     });
   }
@@ -1222,6 +1255,7 @@ export function ConnectionDashboard() {
     const shouldRefreshImportantMessages = activeTab === "manual" || activeTab === "important";
     const shouldRefreshAutomation = !isTickingAutomation && (
       activeTab === "manual" ||
+      activeTab === "memory" ||
       activeTab === "activity" ||
       activeTab === "automation" ||
       queuedJobId !== null
@@ -1378,6 +1412,18 @@ export function ConnectionDashboard() {
   }, [isHydrating, liveRefreshIntervalMs]);
 
   useEffect(() => {
+    if (isHydrating || (!queuedJobId && !memoryJobIsPending && !agentState.running)) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void refreshLiveDataRef.current?.();
+    }, 2200);
+
+    return () => window.clearInterval(intervalId);
+  }, [agentState.running, isHydrating, memoryJobIsPending, queuedJobId]);
+
+  useEffect(() => {
     if (isHydrating) {
       return;
     }
@@ -1423,6 +1469,50 @@ export function ConnectionDashboard() {
   }, [chatMessages, activeTab]);
 
   useEffect(() => {
+    if (!memoryActivity) {
+      return;
+    }
+
+    const latestSyncRun = memoryActivity.sync_runs[0] ?? null;
+    if (latestSyncRun && latestSyncRun.id !== lastObservedSyncRef.current) {
+      lastObservedSyncRef.current = latestSyncRun.id;
+      pushAgentLog(
+        latestSyncRun.status === "failed" ? "error" : "info",
+        latestSyncRun.status === "failed"
+          ? `Sync recente falhou. ${latestSyncRun.error_text || "Sem detalhe persistido."}`
+          : `Sync recente ${latestSyncRun.status}: ${latestSyncRun.messages_saved_count} mensagens úteis ficaram prontas para análise.`,
+      );
+    }
+
+    const latestJob = memoryActivity.jobs[0] ?? null;
+    if (latestJob) {
+      const signature = `${latestJob.id}:${latestJob.status}`;
+      if (signature !== lastObservedJobRef.current) {
+        lastObservedJobRef.current = signature;
+        pushAgentLog(
+          latestJob.status === "failed" ? "error" : latestJob.status === "succeeded" ? "success" : "info",
+          latestJob.status === "failed"
+            ? `${getIntentTitle(latestJob.intent as AgentIntent)} falhou. ${latestJob.error_text || "Sem detalhe persistido."}`
+            : latestJob.status === "succeeded"
+              ? `${getIntentTitle(latestJob.intent as AgentIntent)} terminou com ${latestJob.selected_message_count} mensagens processadas.`
+              : `${getIntentTitle(latestJob.intent as AgentIntent)} está ${latestJob.status} no backend.`,
+        );
+      }
+    }
+
+    const latestModelRun = memoryActivity.model_runs[0] ?? null;
+    if (latestModelRun && latestModelRun.id !== lastObservedModelRunRef.current) {
+      lastObservedModelRunRef.current = latestModelRun.id;
+      pushAgentLog(
+        latestModelRun.success ? "success" : "error",
+        latestModelRun.success
+          ? `${latestModelRun.provider} concluiu ${latestModelRun.run_type} em ${latestModelRun.latency_ms ?? 0} ms.`
+          : `${latestModelRun.provider} falhou em ${latestModelRun.run_type}. ${latestModelRun.error_text || "Sem detalhe persistido."}`,
+      );
+    }
+  }, [memoryActivity]);
+
+  useEffect(() => {
     return () => {
       if (agentTimerRef.current) {
         window.clearInterval(agentTimerRef.current);
@@ -1466,7 +1556,7 @@ export function ConnectionDashboard() {
     const shouldLoadChatWorkspace = activeTab === "chat" || activeTab === "manual";
     const shouldLoadSnapshots = activeTab === "overview" || activeTab === "memory" || activeTab === "manual";
     const shouldLoadImportantMessages = activeTab === "important" || activeTab === "manual";
-    const shouldLoadAutomation = activeTab === "activity" || activeTab === "automation" || activeTab === "manual" || queuedJobId !== null;
+    const shouldLoadAutomation = activeTab === "memory" || activeTab === "activity" || activeTab === "automation" || activeTab === "manual" || queuedJobId !== null;
 
     const [
       statusResult,
@@ -1631,13 +1721,12 @@ export function ConnectionDashboard() {
     }
 
     agentStepIndexRef.current = 0;
-    setActiveTab("activity");
     setAgentState({
       mode,
       intent,
       running: true,
       progress: 4,
-      status: getRunningStatus(mode, 4),
+      status: getRunningStatus(mode, 4, intent, memoryIsEstablished),
       error: null,
       completedAt: null,
     });
@@ -1656,7 +1745,7 @@ export function ConnectionDashboard() {
         }
 
         const nextProgress = Math.min(previous.progress + getProgressIncrement(previous.progress), 94);
-        const steps = getStepsForMode(mode);
+        const steps = getStepsForIntent(intent, memoryIsEstablished);
         while (agentStepIndexRef.current < steps.length && nextProgress >= steps[agentStepIndexRef.current].threshold) {
           const step = steps[agentStepIndexRef.current];
           pushAgentLog("info", `${step.label}. ${step.detail}`);
@@ -1666,7 +1755,7 @@ export function ConnectionDashboard() {
         return {
           ...previous,
           progress: nextProgress,
-          status: getRunningStatus(mode, nextProgress),
+          status: getRunningStatus(mode, nextProgress, intent, memoryIsEstablished),
         };
       });
     }, 520);
@@ -1906,6 +1995,7 @@ export function ConnectionDashboard() {
               ? "Tarefa aceita pelo servidor e já entrou em processamento."
               : "Tarefa registrada na fila do servidor. Iniciando processamento em segundo plano...",
           );
+          void refreshLiveDataRef.current?.();
         } else {
            setMemory(response.current);
            setProjects(response.projects);
@@ -2154,16 +2244,21 @@ export function ConnectionDashboard() {
               onClick={() => void runMemoryJob(memoryIsEstablished ? "improve_memory" : "first_analysis")}
               disabled={
                 agentState.running ||
+                memoryJobIsPending ||
                 !memoryStatus?.can_execute_analysis
               }
               type="button"
             >
               <Play size={15} />
-              {agentState.running && agentState.mode === "analyze"
-                ? "Lendo..."
-                : memoryIsEstablished
-                  ? "Atualizar Sistema"
-                  : "Primeira Análise"}
+              {memoryJobIsPending
+                ? currentMemoryJob?.intent === "first_analysis"
+                  ? "Primeira análise em andamento"
+                  : "Atualização em andamento"
+                : agentState.running && agentState.mode === "analyze"
+                  ? "Lendo..."
+                  : memoryIsEstablished
+                    ? "Atualizar Sistema"
+                    : "Primeira Análise"}
             </button>
           </div>
         </header>
@@ -2235,8 +2330,11 @@ export function ConnectionDashboard() {
                   memoryStatus={memoryStatus}
                   memory={memory}
                   latestSnapshot={latestSnapshot}
+                  memoryActivity={memoryActivity}
                   memoryError={memoryError}
                   agentState={agentState}
+                  steps={currentSteps}
+                  logs={activityLogs}
                   onInitialAnalysis={() => void runMemoryJob("first_analysis")}
                   onImproveMemory={() => void runMemoryJob("improve_memory")}
                   queuedJobId={queuedJobId}
@@ -3163,8 +3261,11 @@ function MemoryTab({
   memoryStatus,
   memory,
   latestSnapshot,
+  memoryActivity,
   memoryError,
   agentState,
+  steps,
+  logs,
   queuedJobId,
   onInitialAnalysis,
   onImproveMemory,
@@ -3172,8 +3273,11 @@ function MemoryTab({
   memoryStatus: MemoryStatus | null;
   memory: MemoryCurrent | null;
   latestSnapshot: MemorySnapshot | null;
+  memoryActivity: MemoryActivity | null;
   memoryError: string | null;
   agentState: AgentState;
+  steps: AgentStep[];
+  logs: AgentLog[];
   queuedJobId: string | null;
   onInitialAnalysis: () => void;
   onImproveMemory: () => void;
@@ -3187,6 +3291,19 @@ function MemoryTab({
   const currentJob = memoryStatus?.current_job ?? null;
   const latestCompletedJob = memoryStatus?.latest_completed_job ?? null;
   const canExecuteAnalysis = memoryStatus?.can_execute_analysis ?? false;
+  const currentJobIsPending = currentJob?.status === "queued" || currentJob?.status === "running";
+  const hasPendingJob = currentJobIsPending || !!queuedJobId;
+  const latestSyncRun = memoryActivity?.sync_runs[0] ?? null;
+  const latestJob = memoryActivity?.jobs[0] ?? latestCompletedJob;
+  const latestModelRun = memoryActivity?.model_runs[0] ?? null;
+  const traceItems = buildActivityTrace({
+    agentState,
+    latestSyncRun,
+    latestDecision: null,
+    latestJob,
+    latestModelRun,
+  }).slice(0, 4);
+  const displayedLogs = logs.slice(0, 8);
   const executeLabel = !memoryReady
     ? pendingNewMessages > 0
       ? `Fazer Primeira Analise (${formatTokenCount(pendingNewMessages)} mensagens disponiveis)`
@@ -3194,6 +3311,21 @@ function MemoryTab({
     : pendingNewMessages > 0
       ? `Executar Analise (${formatTokenCount(pendingNewMessages)} novas)`
       : "Aguardando mensagens novas";
+  const blockedReason = currentJobIsPending
+    ? currentJob.intent === "first_analysis"
+      ? currentJob.status === "queued"
+        ? "A primeira analise ja foi colocada na fila automatica pelo backend."
+        : "A primeira analise ja foi iniciada automaticamente pelo backend usando o lote inicial do WhatsApp."
+      : currentJob.status === "queued"
+        ? "Ja existe uma atualizacao de memoria na fila."
+        : "Ja existe uma atualizacao de memoria em andamento."
+    : !canExecuteAnalysis
+      ? !memoryReady
+        ? "Ainda nao ha mensagens textuais novas disponiveis para criar a base inicial."
+        : pendingNewMessages > 0
+          ? "Ainda nao ha sinal suficiente para rodar o proximo lote manual."
+          : "Ainda nao ha mensagens novas pendentes para atualizar a memoria."
+      : null;
 
   return (
     <div className="page-stack">
@@ -3254,12 +3386,21 @@ function MemoryTab({
             <button
               className="ac-success-button"
               onClick={onInitialAnalysis}
-              disabled={agentState.running || !!queuedJobId || !canExecuteAnalysis}
+              disabled={agentState.running || hasPendingJob || !canExecuteAnalysis}
               type="button"
             >
               <Play size={15} />
-              {agentState.running && agentState.intent === "first_analysis" ? "Executando..." : !!queuedJobId ? "Aguardando fila..." : executeLabel}
+              {currentJobIsPending
+                ? currentJob.status === "queued"
+                  ? "Primeira analise na fila..."
+                  : "Primeira analise em andamento..."
+                : agentState.running && agentState.intent === "first_analysis"
+                  ? "Executando..."
+                  : !!queuedJobId
+                    ? "Aguardando fila..."
+                    : executeLabel}
             </button>
+            {blockedReason ? <p className="support-copy">{blockedReason}</p> : null}
           </>
         ) : (
           <>
@@ -3270,15 +3411,108 @@ function MemoryTab({
             <button
               className="ac-primary-button"
               onClick={onImproveMemory}
-              disabled={agentState.running || !!queuedJobId || !canExecuteAnalysis}
+              disabled={agentState.running || hasPendingJob || !canExecuteAnalysis}
               type="button"
             >
               <Sparkles size={15} />
-              {agentState.running && agentState.intent === "improve_memory" ? "Processando..." : !!queuedJobId ? "Fila ativa..." : executeLabel}
+              {currentJobIsPending
+                ? currentJob.status === "queued"
+                  ? "Atualizacao na fila..."
+                  : "Atualizacao em andamento..."
+                : agentState.running && agentState.intent === "improve_memory"
+                  ? "Processando..."
+                  : !!queuedJobId
+                    ? "Fila ativa..."
+                    : executeLabel}
             </button>
+            {blockedReason ? <p className="support-copy">{blockedReason}</p> : null}
           </>
         )}
       </Card>
+
+      <div className="activity-lab-columns">
+        <Card className="activity-trace-card">
+          <SectionTitle title="Pipeline Ao Vivo" icon={Cpu} />
+          <p className="support-copy">
+            Esta trilha mostra o que o backend está fazendo agora e avança automaticamente quando o job muda de fila para execução e depois para concluído.
+          </p>
+          <div className="step-pill-row">
+            {steps.map((step) => {
+              const completed = agentState.progress >= step.threshold;
+              const active =
+                agentState.running &&
+                agentState.progress >= step.threshold &&
+                !steps.some((candidate) => candidate.threshold > step.threshold && agentState.progress >= candidate.threshold);
+              return (
+                <span
+                  key={step.label}
+                  className={`step-pill${completed ? " step-pill-done" : ""}${active ? " step-pill-active" : ""}`}
+                >
+                  {completed ? <CheckCircle2 size={12} /> : active ? <RefreshCw size={12} className="spin" /> : <Clock size={12} />}
+                  {step.label}
+                </span>
+              );
+            })}
+          </div>
+          <div className="activity-trace-list">
+            {traceItems.length > 0 ? (
+              traceItems.map((item) => (
+                <div key={item.id} className={`activity-trace-item activity-trace-${item.tone}`}>
+                  <div className="activity-trace-dot" />
+                  <div className="activity-trace-content">
+                    <div className="activity-trace-top">
+                      <strong>{item.title}</strong>
+                      <span>{item.timestamp ? formatShortDateTime(item.timestamp) : "Agora"}</span>
+                    </div>
+                    <p>{item.detail}</p>
+                    <div className="activity-trace-meta">
+                      <span>{getActivityToneLabel(item.tone)}</span>
+                      {item.meta ? <span>{item.meta}</span> : null}
+                    </div>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="empty-hint">
+                <Terminal size={18} />
+                <p>Nenhum evento recente ainda. Assim que a análise começar, a linha do tempo aparece aqui sem precisar recarregar.</p>
+              </div>
+            )}
+          </div>
+        </Card>
+
+        <div className="terminal-shell activity-terminal-shell">
+          <div className="terminal-header activity-terminal-header">
+            <div className="activity-terminal-leds">
+              <span className="terminal-dot terminal-dot-red" />
+              <span className="terminal-dot terminal-dot-yellow" />
+              <span className="terminal-dot terminal-dot-green" />
+            </div>
+            <div className="activity-terminal-titles">
+              <strong>memory-analysis.log</strong>
+              <span>eventos reais e estados interpretados do pipeline</span>
+            </div>
+            <span className={`micro-status micro-status-${agentState.running || hasPendingJob ? "indigo" : "zinc"}`}>
+              {agentState.running || hasPendingJob ? "auto-refresh ligado" : "monitorando"}
+            </span>
+          </div>
+          <div className="terminal-body">
+            {displayedLogs.length > 0 ? (
+              displayedLogs.map((log) => (
+                <div key={log.id} className={`terminal-line activity-terminal-line activity-terminal-${log.tone}`}>
+                  <span className="terminal-time">{formatShortDateTime(log.createdAt)}</span>
+                  <span>{log.message}</span>
+                </div>
+              ))
+            ) : (
+              <div className="empty-hint">
+                <Terminal size={18} />
+                <p>Sem logs recentes por enquanto.</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
 
       <Card>
         <SectionTitle title="Ultima Janela Recente" icon={FileText} />

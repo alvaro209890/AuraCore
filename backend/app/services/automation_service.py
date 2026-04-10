@@ -59,6 +59,7 @@ class AutomationStatusSnapshot:
 
 
 logger = logging.getLogger("auracore.automation")
+STALE_ANALYSIS_JOB_THRESHOLD = timedelta(minutes=5)
 
 
 class AutomationService:
@@ -568,7 +569,7 @@ class AutomationService:
 
     async def tick(self) -> AnalysisJobRecord | None:
         async with self._tick_lock:
-            self._recover_stale_running_jobs()
+            self._recover_stale_pending_jobs()
             await self._maybe_review_important_messages()
             await self.settle_sync_runs()
             return await self.execute_next_job()
@@ -578,19 +579,18 @@ class AutomationService:
             return
         self._scheduled_tick_task = asyncio.create_task(self.tick())
 
-    def _recover_stale_running_jobs(self) -> None:
+    def _recover_stale_pending_jobs(self) -> None:
         now = datetime.now(UTC)
-        stale_after = timedelta(minutes=15)
         for job in self.store.list_analysis_jobs(user_id=self.settings.default_user_id, limit=20):
-            if job.status != "running":
+            if job.status not in {"queued", "running"}:
                 continue
             reference_time = job.started_at or job.created_at
-            if now - reference_time < stale_after:
+            if now - reference_time < STALE_ANALYSIS_JOB_THRESHOLD:
                 continue
             self.store.update_analysis_job(
                 job_id=job.id,
                 status="failed",
-                error_text="Job recuperado automaticamente apos ficar travado em running por mais de 15 minutos.",
+                error_text="Job recuperado automaticamente apos ficar travado sem conclusao por mais de 5 minutos.",
                 finished_at=now,
             )
             logger.warning("stale_analysis_job_recovered job_id=%s intent=%s", job.id, job.intent)
@@ -617,9 +617,10 @@ class AutomationService:
         )
 
     def _ensure_no_pending_job(self) -> None:
+        self._recover_stale_pending_jobs()
         recent_jobs = self.store.list_analysis_jobs(user_id=self.settings.default_user_id, limit=20)
         now = datetime.now(UTC)
-        stagnant_threshold = timedelta(minutes=15)
+        stagnant_threshold = STALE_ANALYSIS_JOB_THRESHOLD
         
         pending_jobs = [
             job for job in recent_jobs 

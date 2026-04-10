@@ -255,6 +255,11 @@ class MemoryAnalysisService:
             source_message_count=len(included_messages),
         )
 
+        effective_life_summary = self._resolve_effective_life_summary(
+            deepseek_result.updated_life_summary,
+            fallback_summary=current_summary,
+        )
+
         snapshot = self._build_snapshot(
             result=deepseek_result,
             window_hours=window_hours,
@@ -276,7 +281,7 @@ class MemoryAnalysisService:
         )
         persona = self.store.persist_memory_analysis(
             snapshot=snapshot,
-            updated_life_summary=deepseek_result.updated_life_summary,
+            updated_life_summary=effective_life_summary,
             analyzed_at=window_end,
             structural_strengths=structural_strengths,
             structural_routines=structural_routines,
@@ -378,6 +383,11 @@ class MemoryAnalysisService:
             source_message_count=len(included_messages),
         )
 
+        effective_life_summary = self._resolve_effective_life_summary(
+            deepseek_result.updated_life_summary,
+            fallback_summary=current_summary,
+        )
+
         snapshot = self._build_snapshot(
             result=deepseek_result,
             window_hours=max_lookback_hours,
@@ -399,7 +409,7 @@ class MemoryAnalysisService:
         )
         persona = self.store.persist_memory_analysis(
             snapshot=snapshot,
-            updated_life_summary=deepseek_result.updated_life_summary,
+            updated_life_summary=effective_life_summary,
             analyzed_at=window_end,
             structural_strengths=structural_strengths,
             structural_routines=structural_routines,
@@ -787,6 +797,12 @@ class MemoryAnalysisService:
             sections.append("Lacunas ainda abertas:\n- " + "\n- ".join(persona.structural_open_questions[:5]))
         return "\n\n".join(section for section in sections if section).strip()
 
+    def _resolve_effective_life_summary(self, raw_summary: str, *, fallback_summary: str) -> str:
+        normalized_summary = str(raw_summary or "").strip()
+        if normalized_summary:
+            return normalized_summary
+        return str(fallback_summary or "").strip()
+
     def _build_structural_profile_from_snapshots(
         self,
         snapshots: list[MemorySnapshotRecord],
@@ -1035,7 +1051,10 @@ class MemoryAnalysisService:
         )
 
         analyzed_at = datetime.now(UTC)
-        effective_life_summary = deepseek_result.updated_life_summary.strip() or self._build_persona_context(current_persona)
+        effective_life_summary = self._resolve_effective_life_summary(
+            deepseek_result.updated_life_summary,
+            fallback_summary=self._build_persona_context(current_persona),
+        )
         snapshot = self._build_snapshot(
             result=deepseek_result,
             window_hours=plan.window_hours,
@@ -1069,7 +1088,7 @@ class MemoryAnalysisService:
         )
         persona = self.store.persist_memory_analysis(
             snapshot=snapshot,
-            updated_life_summary=deepseek_result.updated_life_summary,
+            updated_life_summary=effective_life_summary,
             analyzed_at=analyzed_at,
             structural_strengths=structural_strengths,
             structural_routines=structural_routines,
@@ -1442,12 +1461,16 @@ class MemoryAnalysisService:
         )
 
         refined_at = datetime.now(UTC)
+        effective_life_summary = self._resolve_effective_life_summary(
+            refined.updated_life_summary,
+            fallback_summary=self._build_persona_context(current_persona),
+        )
         structural_strengths, structural_routines, structural_preferences, structural_open_questions = (
             self._build_structural_profile_from_snapshots(snapshots)
         )
         persona = self.store.update_persona_summary(
             user_id=self.settings.default_user_id,
-            updated_life_summary=refined.updated_life_summary,
+            updated_life_summary=effective_life_summary,
             analyzed_at=refined_at,
             structural_strengths=structural_strengths,
             structural_routines=structural_routines,

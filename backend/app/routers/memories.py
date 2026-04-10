@@ -57,7 +57,7 @@ async def get_memory_status(
         new_messages_after_first_analysis=status.new_messages_after_first_analysis,
         current_job=_to_job_response(current_job),
         latest_completed_job=_to_job_response(latest_completed_job),
-        can_execute_analysis=current_job is None and status.new_messages_after_first_analysis > 0,
+        can_execute_analysis=current_job is None and status.can_run_next_batch,
     )
 
 

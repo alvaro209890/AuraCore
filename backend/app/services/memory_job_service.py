@@ -13,6 +13,7 @@ from app.services.supabase_store import AnalysisJobRecord, ModelRunRecord, Supab
 
 
 logger = logging.getLogger("auracore.memory_jobs")
+STALE_ANALYSIS_JOB_THRESHOLD = timedelta(minutes=5)
 
 
 @dataclass(slots=True)
@@ -81,6 +82,7 @@ class MemoryJobService:
         )
 
     async def get_activity_snapshot(self) -> MemoryActivitySnapshot:
+        self._recover_stale_pending_jobs()
         sync_runs = self.store.list_whatsapp_sync_runs(user_id=self.settings.default_user_id, limit=8)
         jobs = self.store.list_analysis_jobs(user_id=self.settings.default_user_id, limit=12)
         model_runs = self.store.list_model_runs(user_id=self.settings.default_user_id, limit=12)
@@ -139,18 +141,37 @@ class MemoryJobService:
             return refreshed_job
 
     def _ensure_no_pending_job(self) -> None:
+        self._recover_stale_pending_jobs()
         recent_jobs = self.store.list_analysis_jobs(user_id=self.settings.default_user_id, limit=20)
         now = datetime.now(UTC)
-        stagnant_threshold = timedelta(minutes=20)
         pending_jobs = [
             job
             for job in recent_jobs
-            if job.status in {"queued", "running"} and (now - job.created_at) < stagnant_threshold
+            if job.status in {"queued", "running"} and (now - (job.started_at or job.created_at)) < STALE_ANALYSIS_JOB_THRESHOLD
         ]
         if pending_jobs:
             raise MemoryAnalysisError(
                 "Ja existe uma analise manual em fila ou em execucao. Aguarde a conclusao antes de iniciar outra."
             )
+
+    def _recover_stale_pending_jobs(self) -> None:
+        now = datetime.now(UTC)
+        for job in self.store.list_analysis_jobs(user_id=self.settings.default_user_id, limit=20):
+            if job.status not in {"queued", "running"}:
+                continue
+            reference_time = job.started_at or job.created_at
+            if now - reference_time < STALE_ANALYSIS_JOB_THRESHOLD:
+                continue
+            self.store.update_analysis_job(
+                job_id=job.id,
+                status="failed",
+                error_text=(
+                    "Job recuperado automaticamente apos ficar travado sem conclusao "
+                    "por mais de 5 minutos."
+                ),
+                finished_at=now,
+            )
+            logger.warning("stale_memory_job_recovered job_id=%s intent=%s", job.id, job.intent)
 
     async def _run_fixed_plan_job(
         self,
