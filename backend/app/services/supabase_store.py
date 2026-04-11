@@ -4014,7 +4014,13 @@ class SupabaseStore:
             return None
         known = self.get_known_group_by_chat_jid(user_id=user_id, chat_jid=normalized_jid)
         updated_at = datetime.now(UTC)
-        resolved_name = self._optional_text(chat_name) or (known.chat_name if known is not None else None) or normalized_jid
+        incoming_name = self._optional_text(chat_name)
+        known_name = known.chat_name if known is not None else None
+        resolved_name = self._resolve_group_name(
+            incoming_name=incoming_name,
+            chat_jid=normalized_jid,
+            known_name=known_name,
+        )
         resolved_seen_at = self._latest_datetime(known.last_seen_at if known is not None else None, seen_at)
         payload = {
             "id": known.id if known is not None else str(uuid4()),
@@ -4031,6 +4037,8 @@ class SupabaseStore:
             if not self._is_missing_table_error(exc, "whatsapp_known_groups"):
                 raise
             return None
+        if resolved_name and not self._is_placeholder_group_name(resolved_name, chat_jid=normalized_jid):
+            self._backfill_group_message_names(user_id=user_id, chat_jid=normalized_jid, chat_name=resolved_name)
         return self.get_known_group_by_chat_jid(user_id=user_id, chat_jid=normalized_jid)
 
     def list_known_groups(self, *, user_id: UUID) -> list[KnownGroupRecord]:
@@ -5617,6 +5625,68 @@ class SupabaseStore:
     def _normalize_chat_type(self, value: Any) -> str:
         text = str(value or "").strip().lower()
         return "group" if text == "group" else "direct"
+
+    def _resolve_group_name(
+        self,
+        *,
+        incoming_name: str | None,
+        chat_jid: str,
+        known_name: str | None,
+    ) -> str:
+        if incoming_name and not self._is_placeholder_group_name(incoming_name, chat_jid=chat_jid):
+            return incoming_name
+        if known_name and not self._is_placeholder_group_name(known_name, chat_jid=chat_jid):
+            return known_name
+        return incoming_name or known_name or chat_jid
+
+    def _is_placeholder_group_name(self, value: str | None, *, chat_jid: str | None) -> bool:
+        text = self._optional_text(value)
+        if not text:
+            return True
+        normalized = text.strip()
+        if chat_jid and normalized == chat_jid:
+            return True
+        group_id = (self._optional_text(chat_jid) or "").split("@")[0]
+        if not group_id:
+            return False
+        lowered = normalized.casefold()
+        return lowered in {
+            f"grupo {group_id}".casefold(),
+            f"group {group_id}".casefold(),
+        }
+
+    def _backfill_group_message_names(
+        self,
+        *,
+        user_id: UUID,
+        chat_jid: str,
+        chat_name: str,
+    ) -> None:
+        try:
+            self.client.execute(
+                """
+                UPDATE mensagens
+                SET chat_name = ?
+                WHERE user_id = ?
+                  AND chat_type = 'group'
+                  AND chat_jid = ?
+                  AND (
+                    chat_name IS NULL
+                    OR trim(chat_name) = ''
+                    OR trim(chat_name) = ?
+                    OR trim(chat_name) = ?
+                  )
+                """,
+                (
+                    chat_name,
+                    str(user_id),
+                    chat_jid,
+                    chat_jid,
+                    f"Grupo {(chat_jid.split('@')[0] or '').strip()}",
+                ),
+            )
+        except Exception:
+            return
 
     def is_group_chat_jid(self, value: str | None) -> bool:
         return self._is_group_chat_jid(value)

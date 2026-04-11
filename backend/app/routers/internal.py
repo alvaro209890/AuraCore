@@ -11,7 +11,12 @@ from app.dependencies import (
     get_supabase_store,
     get_whatsapp_agent_gateway_service,
 )
-from app.schemas import IngestMessagesRequest, IngestMessagesResponse
+from app.schemas import (
+    GroupMetadataUpdateRequest,
+    IngestMessagesRequest,
+    IngestMessagesResponse,
+    SimpleOkResponse,
+)
 from app.services.supabase_store import IngestedMessageRecord, SupabaseStore
 
 router = APIRouter(prefix="/api/internal/observer", tags=["internal"])
@@ -58,6 +63,32 @@ async def ingest_messages(
     )
     automation_service.schedule_sync_settle()
     return IngestMessagesResponse(accepted_count=save_result.saved_count, ignored_count=ignored_count)
+
+
+@router.post("/groups/upsert", response_model=SimpleOkResponse)
+async def upsert_groups(
+    payload: GroupMetadataUpdateRequest,
+    x_internal_api_token: str | None = Header(default=None),
+) -> SimpleOkResponse:
+    settings = get_settings()
+    if x_internal_api_token != settings.internal_api_token:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid internal API token.")
+
+    store = get_supabase_store()
+    updated_count = 0
+    for item in payload.groups:
+        updated = await run_in_threadpool(
+            store.upsert_known_group,
+            user_id=store.default_user_id,
+            chat_jid=item.chat_jid,
+            chat_name=item.chat_name,
+            seen_at=item.seen_at,
+        )
+        if updated is not None:
+            updated_count += 1
+    if payload.groups:
+        logger.info("observer_groups_upserted received=%s updated=%s", len(payload.groups), updated_count)
+    return SimpleOkResponse()
 
 
 def _build_records(

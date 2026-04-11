@@ -81,6 +81,13 @@ type GatewayHistorySync = {
   contacts?: GatewayContactLike[];
 };
 
+type GatewayGroupMetadata = {
+  id?: string | null;
+  subject?: string | null;
+  notify?: string | null;
+  name?: string | null;
+};
+
 type MessageKeyWithLid = BaileysProto.IMessageKey & {
   participantPn?: string | null;
   remoteJidAlt?: string | null;
@@ -199,6 +206,7 @@ export class WhatsAppGatewayChannel {
   private readonly pendingLidMessages = new Map<string, BufferedLidMessage[]>();
   private readonly sentMessagesCache = new Map<string, BaileysProto.IMessage>();
   private readonly pendingBackendBatches: PendingBackendBatch[] = [];
+  private readonly knownGroupNames = new Map<string, string>();
   private backendRetryTimer: NodeJS.Timeout | null = null;
   private backendDeliveryInFlight = false;
 
@@ -270,6 +278,7 @@ export class WhatsAppGatewayChannel {
     this.lastError = "session_reset";
     this.lidToPhoneJid.clear();
     this.pendingLidMessages.clear();
+    this.knownGroupNames.clear();
     this.allowReconnect = true;
     await this.connect();
   }
@@ -361,6 +370,16 @@ export class WhatsAppGatewayChannel {
       void this.handleHistorySync(historySet as GatewayHistorySync);
     });
 
+    socket.ev.on("groups.upsert", (groups) => {
+      if (this.connectionEpoch !== epoch) return;
+      void this.absorbGroupMetadata(groups as GatewayGroupMetadata[], "groups_upsert");
+    });
+
+    socket.ev.on("groups.update", (groups) => {
+      if (this.connectionEpoch !== epoch) return;
+      void this.absorbGroupMetadata(groups as GatewayGroupMetadata[], "groups_update");
+    });
+
     const ws = socket.ws as { on?: (event: string, listener: (node: unknown) => void) => void } | undefined;
     if (ws?.on) {
       ws.on("CB:message", (node: unknown) => {
@@ -396,6 +415,7 @@ export class WhatsAppGatewayChannel {
       this.ownerNumber = jidToPhone(this.socket?.user?.id);
       this.lastError = null;
       this.clearQr();
+      await this.refreshKnownGroups();
       logger.info({ channel: this.channelName, ownerNumber: this.ownerNumber }, "WhatsApp channel connected.");
       return;
     }
@@ -440,6 +460,92 @@ export class WhatsAppGatewayChannel {
       this.absorbContactLidMappings(historySet.contacts, "history_sync");
     }
     await this.ingestMessages(historySet.messages, historySet.isLatest ? "history_sync_latest" : "history_sync");
+  }
+
+  private async refreshKnownGroups(): Promise<void> {
+    if (this.channelName !== "observer" || !this.socket?.groupFetchAllParticipating) {
+      return;
+    }
+    try {
+      const groups = await this.socket.groupFetchAllParticipating();
+      await this.absorbGroupMetadata(Object.values(groups ?? {}) as GatewayGroupMetadata[], "group_fetch_all");
+    } catch (error) {
+      logger.warn(
+        {
+          channel: this.channelName,
+          errorMessage: error instanceof Error ? error.message : String(error),
+        },
+        "Failed to refresh WhatsApp group metadata.",
+      );
+    }
+  }
+
+  private async absorbGroupMetadata(groups: GatewayGroupMetadata[] | undefined, source: string): Promise<void> {
+    if (!groups || groups.length === 0) {
+      return;
+    }
+
+    const payload: Array<{ chat_jid: string; chat_name: string; seen_at: string }> = [];
+    const seen = new Set<string>();
+    for (const group of groups) {
+      const jid = String(group?.id ?? "").trim();
+      if (!jid || !isGroupJid(jid) || seen.has(jid)) {
+        continue;
+      }
+      const candidates = [group?.subject, group?.name, group?.notify];
+      let resolvedName = "";
+      for (const candidate of candidates) {
+        const text = String(candidate ?? "").trim();
+        if (text) {
+          resolvedName = text;
+          break;
+        }
+      }
+      if (!resolvedName) {
+        continue;
+      }
+      seen.add(jid);
+      this.knownGroupNames.set(jid, resolvedName);
+      payload.push({
+        chat_jid: jid,
+        chat_name: resolvedName,
+        seen_at: new Date().toISOString(),
+      });
+    }
+
+    if (payload.length === 0) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`${config.auracoreApiBaseUrl}/api/internal/observer/groups/upsert`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-internal-api-token": config.internalApiToken,
+        },
+        body: JSON.stringify({ groups: payload }),
+      });
+      if (!response.ok) {
+        const detail = await response.text();
+        logger.warn(
+          { channel: this.channelName, source, count: payload.length, status: response.status, detail },
+          "AuraCore backend rejected group metadata upsert.",
+        );
+        return;
+      }
+      logger.info({ channel: this.channelName, source, count: payload.length }, "Delivered group metadata to AuraCore backend.");
+    } catch (error) {
+      logger.warn(
+        {
+          channel: this.channelName,
+          source,
+          count: payload.length,
+          errorMessage: error instanceof Error ? error.message : String(error),
+        },
+        "Failed to deliver group metadata to AuraCore backend.",
+      );
+    }
   }
 
   private async ingestMessages(
@@ -689,6 +795,14 @@ export class WhatsAppGatewayChannel {
   }
 
   private resolveGroupName(rawRemoteJid: string, resolvedChatJid: string): string {
+    const cachedResolvedName = this.knownGroupNames.get(resolvedChatJid);
+    if (cachedResolvedName) {
+      return cachedResolvedName;
+    }
+    const cachedRawName = this.knownGroupNames.get(rawRemoteJid);
+    if (cachedRawName) {
+      return cachedRawName;
+    }
     const socketWithContacts = this.socket as
       | (WASocket & {
           contacts?: Record<string, ContactProfile>;
@@ -708,6 +822,10 @@ export class WhatsAppGatewayChannel {
     for (const candidate of candidates) {
       const text = String(candidate ?? "").trim();
       if (text) {
+        const groupJid = isGroupJid(resolvedChatJid) ? resolvedChatJid : rawRemoteJid;
+        if (groupJid) {
+          this.knownGroupNames.set(groupJid, text);
+        }
         return text;
       }
     }

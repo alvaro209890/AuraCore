@@ -177,6 +177,18 @@ class IngestMessagesResponse(BaseModel):
     ignored_count: int = Field(default=0, ge=0)
 
 
+class GroupMetadataUpdateRequestItem(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    chat_jid: str = Field(min_length=1)
+    chat_name: str = Field(min_length=1)
+    seen_at: datetime | None = None
+
+
+class GroupMetadataUpdateRequest(BaseModel):
+    groups: list[GroupMetadataUpdateRequestItem] = Field(default_factory=list)
+
+
 class WhatsAppAgentInboundMessageRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 

@@ -156,22 +156,36 @@ type NavItem = {
   icon: LucideIcon;
 };
 
-const CONNECTING_STATUS_POLL_INTERVAL_MS = 2200;
-const LIVE_STATUS_POLL_INTERVAL_MS = 5000;
+type HeavyLiveResourceKey = "groups" | "projects" | "snapshots" | "important";
+
+const CONNECTING_STATUS_POLL_INTERVAL_MS = 3200;
+const LIVE_STATUS_POLL_INTERVAL_MS = 9000;
 const QR_REFRESH_INTERVAL_MS = 45000;
 const ATTENTION_REFRESH_THROTTLE_MS = 2500;
 const LIVE_REFRESH_INTERVALS: Record<TabId, number> = {
-  overview: 9000,
-  observer: 5000,
-  agent: 6000,
-  groups: 10000,
-  memory: 10000,
-  important: 12000,
+  overview: 14000,
+  observer: 8000,
+  agent: 9000,
+  groups: 18000,
+  memory: 16000,
+  important: 20000,
+  projects: 20000,
+  chat: 10000,
+  activity: 12000,
+  automation: 12000,
+  manual: 20000,
+};
+const HEAVY_RESOURCE_REFRESH_MIN_INTERVAL_MS: Record<HeavyLiveResourceKey, number> = {
+  groups: 18000,
+  projects: 22000,
+  snapshots: 22000,
+  important: 24000,
+};
+const BUSY_HEAVY_RESOURCE_REFRESH_MIN_INTERVAL_MS: Record<HeavyLiveResourceKey, number> = {
+  groups: 12000,
   projects: 12000,
-  chat: 8000,
-  activity: 10000,
-  automation: 10000,
-  manual: 15000,
+  snapshots: 12000,
+  important: 14000,
 };
 const NAV_GROUPS: NavGroup[] = [
   {
@@ -1142,6 +1156,12 @@ export function ConnectionDashboard() {
   const lastObservedSyncRef = useRef<string | null>(null);
   const lastObservedJobRef = useRef<string | null>(null);
   const lastObservedModelRunRef = useRef<string | null>(null);
+  const heavyResourceRefreshedAtRef = useRef<Record<HeavyLiveResourceKey, number>>({
+    groups: 0,
+    projects: 0,
+    snapshots: 0,
+    important: 0,
+  });
   const pollStatusRef = useRef<((announceTransition?: boolean) => Promise<void>) | null>(null);
   const pollAgentStatusRef = useRef<((announceTransition?: boolean) => Promise<void>) | null>(null);
   const refreshLiveDataRef = useRef<(() => Promise<void>) | null>(null);
@@ -1150,6 +1170,7 @@ export function ConnectionDashboard() {
   const memoryIsEstablished = memoryStatus?.has_initial_analysis ?? false;
   const currentMemoryJob = memoryStatus?.current_job ?? null;
   const memoryJobIsPending = currentMemoryJob?.status === "queued" || currentMemoryJob?.status === "running";
+  const analysisIsBusy = memoryJobIsPending || queuedJobId !== null || agentState.running;
   const activeChatThread = useMemo(
     () => chatThreads.find((thread) => thread.id === activeChatThreadId) ?? chatThreads[0] ?? null,
     [activeChatThreadId, chatThreads],
@@ -1191,6 +1212,19 @@ export function ConnectionDashboard() {
     [agentLogs, persistedActivityLogs],
   );
 
+  function markHeavyResourceRefreshed(resource: HeavyLiveResourceKey): void {
+    heavyResourceRefreshedAtRef.current[resource] = Date.now();
+  }
+
+  function shouldRefreshHeavyResource(resource: HeavyLiveResourceKey, busy = false): boolean {
+    const lastRefreshedAt = heavyResourceRefreshedAtRef.current[resource] ?? 0;
+    const minInterval = busy
+      ? BUSY_HEAVY_RESOURCE_REFRESH_MIN_INTERVAL_MS[resource]
+      : HEAVY_RESOURCE_REFRESH_MIN_INTERVAL_MS[resource];
+
+    return !lastRefreshedAt || Date.now() - lastRefreshedAt >= minInterval;
+  }
+
   async function refreshMemoryArtifactsAfterJob(): Promise<void> {
     const [memoryResult, projectsResult, memoryStatusResult, snapshotsResult, importantMessagesResult, memoryActivityResult, groupsResult] =
       await Promise.allSettled([
@@ -1209,15 +1243,18 @@ export function ConnectionDashboard() {
       }
       if (projectsResult.status === "fulfilled") {
         setProjects(projectsResult.value);
+        markHeavyResourceRefreshed("projects");
       }
       if (memoryStatusResult.status === "fulfilled") {
         setMemoryStatus(memoryStatusResult.value);
       }
       if (snapshotsResult.status === "fulfilled") {
         setSnapshots(snapshotsResult.value);
+        markHeavyResourceRefreshed("snapshots");
       }
       if (importantMessagesResult.status === "fulfilled") {
         setImportantMessages(importantMessagesResult.value);
+        markHeavyResourceRefreshed("important");
       }
       if (memoryActivityResult.status === "fulfilled") {
         setMemoryActivity(memoryActivityResult.value);
@@ -1226,6 +1263,7 @@ export function ConnectionDashboard() {
       if (groupsResult.status === "fulfilled") {
         setMemoryGroups(groupsResult.value);
         setMemoryGroupsError(null);
+        markHeavyResourceRefreshed("groups");
       }
     });
   }
@@ -1415,12 +1453,11 @@ export function ConnectionDashboard() {
       activeTab === "manual" ||
       activeTab === "memory"
     );
-    const shouldRefreshMemoryGroups = activeTab === "manual" || activeTab === "groups";
     const shouldRefreshProjects = (
-      activeTab === "overview" ||
+      activeTab === "projects" ||
       activeTab === "manual" ||
-      activeTab === "projects"
-    );
+      (activeTab === "overview" && analysisIsBusy)
+    ) && shouldRefreshHeavyResource("projects", analysisIsBusy);
     const shouldRefreshMemoryStatus = (
       activeTab === "overview" ||
       activeTab === "manual" ||
@@ -1429,8 +1466,15 @@ export function ConnectionDashboard() {
       activeTab === "activity" ||
       activeTab === "automation"
     );
-    const shouldRefreshSnapshots = activeTab === "overview" || activeTab === "manual" || activeTab === "memory";
-    const shouldRefreshImportantMessages = activeTab === "manual" || activeTab === "important";
+    const shouldRefreshSnapshots = (
+      activeTab === "memory" ||
+      activeTab === "manual" ||
+      (activeTab === "overview" && analysisIsBusy)
+    ) && shouldRefreshHeavyResource("snapshots", analysisIsBusy);
+    const shouldRefreshImportantMessages = (
+      activeTab === "manual" ||
+      activeTab === "important"
+    ) && shouldRefreshHeavyResource("important", analysisIsBusy);
     const shouldRefreshAutomation = !isTickingAutomation && (
       activeTab === "manual" ||
       activeTab === "memory" ||
@@ -1438,6 +1482,8 @@ export function ConnectionDashboard() {
       activeTab === "automation" ||
       queuedJobId !== null
     );
+    const shouldRefreshHeavyGroups = shouldRefreshHeavyResource("groups", analysisIsBusy);
+    const shouldRefreshMemoryGroups = (activeTab === "manual" || activeTab === "groups") && shouldRefreshHeavyGroups;
 
     dashboardRefreshInFlightRef.current = true;
     try {
@@ -1495,6 +1541,7 @@ export function ConnectionDashboard() {
           setMemoryGroups(nextGroups);
           setMemoryGroupsError(null);
         });
+        markHeavyResourceRefreshed("groups");
       } else if (memoryGroupsResult.status === "rejected" && shouldRefreshMemoryGroups) {
         setMemoryGroupsError(getErrorMessage(memoryGroupsResult.reason));
       }
@@ -1504,6 +1551,7 @@ export function ConnectionDashboard() {
         startTransition(() => {
           setProjects(nextProjects);
         });
+        markHeavyResourceRefreshed("projects");
       }
 
       if (memoryStatusResult.status === "fulfilled" && memoryStatusResult.value) {
@@ -1518,6 +1566,7 @@ export function ConnectionDashboard() {
         startTransition(() => {
           setSnapshots(nextSnapshots);
         });
+        markHeavyResourceRefreshed("snapshots");
       }
 
       if (importantMessagesResult.status === "fulfilled" && importantMessagesResult.value) {
@@ -1526,6 +1575,7 @@ export function ConnectionDashboard() {
           setImportantMessages(nextImportantMessages);
           setImportantMessagesError(null);
         });
+        markHeavyResourceRefreshed("important");
       } else if (importantMessagesResult.status === "rejected" && shouldRefreshImportantMessages) {
         setImportantMessagesError(getErrorMessage(importantMessagesResult.reason));
       }
@@ -1820,12 +1870,14 @@ export function ConnectionDashboard() {
     if (groupsResult.status === "fulfilled" && Array.isArray(groupsResult.value)) {
       setMemoryGroups(groupsResult.value);
       setMemoryGroupsError(null);
+      markHeavyResourceRefreshed("groups");
     } else if (groupsResult.status === "rejected") {
       setMemoryGroupsError(getErrorMessage(groupsResult.reason));
     }
 
     if (projectsResult.status === "fulfilled" && Array.isArray(projectsResult.value)) {
       setProjects(projectsResult.value);
+      markHeavyResourceRefreshed("projects");
     }
 
     if (memoryStatusResult.status === "fulfilled") {
@@ -1834,11 +1886,13 @@ export function ConnectionDashboard() {
 
     if (snapshotsResult.status === "fulfilled" && snapshotsResult.value) {
       setSnapshots(snapshotsResult.value);
+      markHeavyResourceRefreshed("snapshots");
     }
 
     if (importantMessagesResult.status === "fulfilled" && importantMessagesResult.value) {
       setImportantMessages(importantMessagesResult.value);
       setImportantMessagesError(null);
+      markHeavyResourceRefreshed("important");
     } else if (importantMessagesResult.status === "rejected") {
       setImportantMessagesError(getErrorMessage(importantMessagesResult.reason));
     }
@@ -2198,9 +2252,11 @@ export function ConnectionDashboard() {
         } else {
            setMemory(response.current);
            setProjects(response.projects);
+           markHeavyResourceRefreshed("projects");
            if (response.snapshot) {
              const nextSnapshot = response.snapshot;
              setSnapshots((previous) => [nextSnapshot, ...previous.filter((snapshot) => snapshot.id !== nextSnapshot.id)].slice(0, 6));
+             markHeavyResourceRefreshed("snapshots");
            }
            finishAgentRunSuccess(
              intent,
