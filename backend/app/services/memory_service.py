@@ -1135,6 +1135,7 @@ class MemoryAnalysisService:
                 newest_first=True,
                 include_groups=False,
             )
+            candidate_messages = self._exclude_owner_messages(candidate_messages)
             # Prioriza mensagens que tenham texto útil
             textual_candidates = [m for m in candidate_messages if m.message_text.strip()]
             
@@ -1163,6 +1164,7 @@ class MemoryAnalysisService:
                 newest_first=False,
                 include_groups=True,
             )
+            candidate_messages = self._exclude_owner_messages(candidate_messages)
             # Prioriza mensagens que tenham texto útil
             textual_candidates = [m for m in candidate_messages if m.message_text.strip()]
             
@@ -1351,6 +1353,10 @@ class MemoryAnalysisService:
                 len(deepseek_result.active_projects),
                 len(deepseek_result.contact_memories),
             )
+        deepseek_result = self._sanitize_analysis_result(
+            deepseek_result,
+            source_messages=plan.source_messages,
+        )
 
         analyzed_at = datetime.now(UTC)
         effective_life_summary = self._resolve_effective_life_summary(
@@ -1384,6 +1390,7 @@ class MemoryAnalysisService:
             candidate_projects=deepseek_result.active_projects,
             window_summary=deepseek_result.window_summary,
             conversation_context=plan.conversation_context,
+            source_messages=plan.source_messages,
         )
         logger.info(
             "fixed_plan_stage_done stage=merge_projects intent=%s merged_projects=%s",
@@ -1924,6 +1931,158 @@ class MemoryAnalysisService:
             sections.append("\n".join(section_lines))
         return "\n\n".join(sections)
 
+    def _get_observer_owner_phone(self) -> str | None:
+        return self.store.get_whatsapp_session_owner_phone(session_id="observer")
+
+    def _is_owner_direct_message(
+        self,
+        message: StoredMessageRecord,
+        *,
+        owner_phone: str | None = None,
+    ) -> bool:
+        if self._is_group_message(message):
+            return False
+        resolved_owner_phone = owner_phone or self._get_observer_owner_phone()
+        if not resolved_owner_phone or not message.contact_phone:
+            return False
+        return self.store.phone_matches(message.contact_phone, resolved_owner_phone)
+
+    def _exclude_owner_messages(self, messages: list[StoredMessageRecord]) -> list[StoredMessageRecord]:
+        owner_phone = self._get_observer_owner_phone()
+        if not owner_phone:
+            return messages
+
+        filtered = [message for message in messages if not self._is_owner_direct_message(message, owner_phone=owner_phone)]
+        removed_count = len(messages) - len(filtered)
+        if removed_count > 0:
+            logger.info("owner_messages_filtered removed=%s remaining=%s", removed_count, len(filtered))
+        return filtered
+
+    def _is_named_person_label(self, value: str | None) -> bool:
+        text = (value or "").strip()
+        if not text:
+            return False
+        if text.lower() in {"contato", "participante", "grupo"}:
+            return False
+        if self.store.is_normal_contact_phone(text):
+            return False
+        return bool(re.search(r"[A-Za-zÀ-ÿ]", text))
+
+    def _text_mentions_name(self, text: str, name: str) -> bool:
+        if not text.strip() or not name.strip():
+            return False
+        pattern = re.compile(rf"(?<!\w){re.escape(name.strip())}(?!\w)", re.IGNORECASE)
+        return pattern.search(text) is not None
+
+    def _build_project_name_replacements(self, messages: list[StoredMessageRecord]) -> dict[str, str]:
+        candidate_names: set[str] = set()
+        explicit_names: set[str] = set()
+
+        for message in messages:
+            if self._is_owner_direct_message(message):
+                continue
+            name = self._message_person_name(message).strip()
+            if not self._is_named_person_label(name):
+                continue
+            candidate_names.add(name)
+            if self._text_mentions_name(message.message_text, name):
+                explicit_names.add(name)
+
+        return {name: "o contato" for name in candidate_names if name not in explicit_names}
+
+    def _sanitize_project_text(self, value: str, replacements: dict[str, str]) -> str:
+        text = " ".join(value.split()).strip()
+        if not text or not replacements:
+            return text
+
+        sanitized = text
+        for original, replacement in replacements.items():
+            sanitized = re.sub(
+                rf"(?<!\w){re.escape(original)}(?!\w)",
+                replacement,
+                sanitized,
+                flags=re.IGNORECASE,
+            )
+
+        return re.sub(r"\s{2,}", " ", sanitized).strip(" ,;")
+
+    def _sanitize_project_string_list(self, values: list[str], replacements: dict[str, str], *, limit: int) -> list[str]:
+        sanitized: list[str] = []
+        for value in values:
+            cleaned = self._sanitize_project_text(value, replacements)
+            if cleaned:
+                sanitized.append(cleaned)
+        return sanitized[:limit]
+
+    def _sanitize_project_candidates(
+        self,
+        projects: list[DeepSeekProjectMemory],
+        *,
+        source_messages: list[StoredMessageRecord],
+    ) -> list[DeepSeekProjectMemory]:
+        replacements = self._build_project_name_replacements(source_messages)
+        if not projects:
+            return []
+
+        sanitized_projects: list[DeepSeekProjectMemory] = []
+        seen_names: set[str] = set()
+        for project in projects:
+            sanitized_project = DeepSeekProjectMemory(
+                name=self._sanitize_project_text(project.name, replacements),
+                summary=self._sanitize_project_text(project.summary, replacements),
+                status=self._sanitize_project_text(project.status, replacements),
+                what_is_being_built=self._sanitize_project_text(project.what_is_being_built, replacements),
+                built_for=self._sanitize_project_text(project.built_for, replacements),
+                next_steps=self._sanitize_project_string_list(project.next_steps, replacements, limit=6),
+                evidence=self._sanitize_project_string_list(project.evidence, replacements, limit=8),
+            )
+            if not sanitized_project.name or not sanitized_project.summary:
+                continue
+            dedupe_key = sanitized_project.name.casefold()
+            if dedupe_key in seen_names:
+                continue
+            seen_names.add(dedupe_key)
+            sanitized_projects.append(sanitized_project)
+
+        if replacements:
+            logger.info(
+                "project_names_sanitized replacements=%s projects_in=%s projects_out=%s",
+                sorted(replacements.keys()),
+                len(projects),
+                len(sanitized_projects),
+            )
+        return sanitized_projects[:6]
+
+    def _sanitize_analysis_result(
+        self,
+        result: DeepSeekMemoryResult,
+        *,
+        source_messages: list[StoredMessageRecord],
+    ) -> DeepSeekMemoryResult:
+        filtered_messages = self._exclude_owner_messages(source_messages)
+        grouped_messages = self._group_messages_by_person(filtered_messages)
+        replacements = self._build_project_name_replacements(filtered_messages)
+        sanitized_contacts = [
+            person
+            for person in result.contact_memories
+            if person.person_key in grouped_messages
+        ]
+
+        return DeepSeekMemoryResult(
+            updated_life_summary=self._sanitize_project_text(result.updated_life_summary, replacements),
+            window_summary=self._sanitize_project_text(result.window_summary, replacements),
+            key_learnings=self._sanitize_project_string_list(result.key_learnings, replacements, limit=12),
+            people_and_relationships=self._sanitize_project_string_list(result.people_and_relationships, replacements, limit=12),
+            routine_signals=self._sanitize_project_string_list(result.routine_signals, replacements, limit=12),
+            preferences=self._sanitize_project_string_list(result.preferences, replacements, limit=12),
+            open_questions=self._sanitize_project_string_list(result.open_questions, replacements, limit=12),
+            active_projects=self._sanitize_project_candidates(
+                result.active_projects,
+                source_messages=filtered_messages,
+            ),
+            contact_memories=sanitized_contacts[:24],
+        )
+
     def _persist_person_memories(
         self,
         *,
@@ -1936,12 +2095,15 @@ class MemoryAnalysisService:
         if not grouped_messages or not deepseek_result.contact_memories:
             return []
 
+        owner_phone = self._get_observer_owner_phone()
         seeds: list[PersonMemorySeed] = []
         for person in deepseek_result.contact_memories:
             grouped = grouped_messages.get(person.person_key)
             if not grouped:
                 continue
             last_message = grouped[-1]
+            if self._is_owner_direct_message(last_message, owner_phone=owner_phone):
+                continue
             seeds.append(
                 PersonMemorySeed(
                     person_key=person.person_key,
@@ -1978,24 +2140,32 @@ class MemoryAnalysisService:
         candidate_projects: list[DeepSeekProjectMemory],
         window_summary: str,
         conversation_context: str,
+        source_messages: list[StoredMessageRecord],
     ) -> list[ProjectMemorySeed]:
-        if not existing_projects and not candidate_projects:
+        sanitized_candidates = self._sanitize_project_candidates(
+            candidate_projects,
+            source_messages=source_messages,
+        )
+        if not existing_projects and not sanitized_candidates:
             logger.info("merge_projects_skipped reason=no_existing_and_no_candidates")
             return []
         merged_result = await self.deepseek_service.merge_projects_incrementally(
             current_life_summary=updated_life_summary,
             current_project_context=self._build_project_context(existing_projects),
-            candidate_projects_block=self._build_candidate_projects_block(candidate_projects),
+            candidate_projects_block=self._build_candidate_projects_block(sanitized_candidates),
             recent_window_summary=window_summary,
             conversation_context=conversation_context,
         )
         seeds = self._project_memory_seeds_from_deepseek(
-            merged_result.active_projects if merged_result.active_projects else candidate_projects,
+            self._sanitize_project_candidates(
+                merged_result.active_projects if merged_result.active_projects else sanitized_candidates,
+                source_messages=source_messages,
+            ),
         )
         logger.info(
             "merge_projects_result existing=%s candidates=%s merged=%s",
             len(existing_projects),
-            len(candidate_projects),
+            len(sanitized_candidates),
             len(seeds),
         )
         return seeds[:8]

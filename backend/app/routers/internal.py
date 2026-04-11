@@ -7,6 +7,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from app.dependencies import (
     get_automation_service,
+    get_observer_gateway_service,
     get_settings,
     get_supabase_store,
     get_whatsapp_agent_gateway_service,
@@ -36,11 +37,18 @@ async def ingest_messages(
     automation_service = get_automation_service()
     blocked_contact_phone: str | None = None
     try:
-        agent_gateway = get_whatsapp_agent_gateway_service()
-        agent_status = await agent_gateway.get_agent_status()
-        blocked_contact_phone = store.normalize_contact_phone(agent_status.owner_number)
+        observer_gateway = get_observer_gateway_service()
+        observer_status = await observer_gateway.get_status()
+        blocked_contact_phone = store.normalize_contact_phone(observer_status.owner_number)
     except Exception:
         blocked_contact_phone = None
+    if not blocked_contact_phone:
+        try:
+            agent_gateway = get_whatsapp_agent_gateway_service()
+            agent_status = await agent_gateway.get_agent_status()
+            blocked_contact_phone = store.normalize_contact_phone(agent_status.owner_number)
+        except Exception:
+            blocked_contact_phone = None
 
     normalized_messages = _build_records(payload, store, blocked_contact_phone)
     save_result = await run_in_threadpool(store.save_ingested_messages, normalized_messages)

@@ -75,8 +75,12 @@ class SQLiteClient:
     def __init__(self, db_path: str, *, schema_path: Path | None = None) -> None:
         path = Path(db_path).expanduser()
         parent = path.parent
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise RuntimeError(f"Unable to create AuraCore database directory: {parent}") from exc
         if not parent.is_dir():
-            raise RuntimeError(f"AuraCore database directory does not exist: {parent}")
+            raise RuntimeError(f"AuraCore database directory is not available: {parent}")
         if not os.access(parent, os.W_OK):
             raise RuntimeError(f"AuraCore database directory is not writable: {parent}")
         if path.exists() and not os.access(path, os.W_OK):

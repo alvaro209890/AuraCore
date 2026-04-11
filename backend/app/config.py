@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     app_name: str = "AuraCore Observer API"
     environment: str = "development"
     database_path: str = Field(
-        "/media/acer/dados/Banco_de_dados/AuraCore_DB/auracore.sqlite3",
+        "/home/acer/Documentos/Bando_de_dados/Aura_Core/sqlite/auracore.sqlite3",
         alias="AURACORE_DB_PATH",
     )
     default_user_id: UUID = Field(
@@ -26,7 +26,7 @@ class Settings(BaseSettings):
         alias="DEFAULT_USER_ID",
     )
     frontend_origins: str = Field(
-        "http://localhost:3000,https://auracore-82bf2.web.app,https://auracore-82bf2.firebaseapp.com",
+        "http://localhost:3000,http://127.0.0.1:3000,https://auracore-82bf2.web.app,https://auracore-82bf2.firebaseapp.com",
         alias="FRONTEND_ORIGINS",
     )
     whatsapp_gateway_url: str = Field(..., alias="WHATSAPP_GATEWAY_URL")
@@ -77,6 +77,7 @@ class Settings(BaseSettings):
             return origins
         return [
             "http://localhost:3000",
+            "http://127.0.0.1:3000",
             "https://auracore-82bf2.web.app",
             "https://auracore-82bf2.firebaseapp.com",
         ]

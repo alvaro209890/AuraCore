@@ -1,6 +1,8 @@
 .env
 .env.*
 !.env.example
+!frontend/.env.development.example
+!frontend/.env.production.example
 .codex
 __pycache__/
 *.pyc

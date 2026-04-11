@@ -768,10 +768,12 @@ Regras:
 - Quando houver grupos, use o nome do grupo e o participante para entender se algo foi dito pelo dono, por outra pessoa ou pelo grupo como contexto coletivo.
 - Procure entender como o dono do numero age, fala, decide, trabalha, se relaciona e organiza a rotina.
 - Priorize sinais comportamentais e estruturais do dono do numero, nao apenas um inventario de contatos.
+- Nunca trate o proprio dono do numero como se fosse um contato separado. Se a conversa parecer ser com o proprio dono, nao crie contact_memories nem cite essa pessoa como destinatario de projeto.
 - Ao citar pessoas e relacoes, infira quem parece ser cada conversa no contexto da vida do dono, sem inventar vinculos que nao tenham apoio no historico.
 - Preencha active_projects apenas com projetos, trabalhos, produtos, operacoes ou frentes reais que parecam recorrentes ou importantes para o dono.
 - Em cada item de active_projects, explicite o que esta sendo desenvolvido e para quem a entrega, sistema ou servico parece ser direcionado.
 - Em active_projects, use no maximo 6 itens e descarte assuntos soltos sem continuidade.
+- So use nomes de pessoas em active_projects, built_for, evidence, people_and_relationships ou contact_memories quando o nome estiver explicitamente no texto das mensagens ou ja estiver sustentado pela memoria anterior da mesma person_key. Nomes que aparecem apenas no rotulo tecnico da conversa nao bastam.
 - Mantenha updated_life_summary factual, claro, conciso e util para um assistente pessoal futuro. Dê mais peso ao que aparece repetido, ao que tem impacto operacional e ao que altera o comportamento do dono.
 - Use os campos de lista para aprendizados concretos, padroes de comportamento e sinais incertos.
 - Se a evidencia for fraca, trate como hipotese e nao como fato consolidado.
@@ -942,6 +944,8 @@ Regras:
 - Dê mais peso ao que aparece repetido em mais de uma parcial ou com evidencia mais concreta.
 - Se houver conflito entre parciais, prefira a versao mais prudente e mais bem sustentada.
 - Quando houver mensagens de grupo nas parciais, mantenha a atribuicao correta por participante e nao colapse o grupo inteiro como se fosse uma pessoa unica.
+- Nunca transforme o proprio dono em contato separado nem atribua a ele o papel de destinatario de um projeto.
+- So use nomes de pessoas se eles aparecerem explicitamente no texto das mensagens ou vierem sustentados pela memoria anterior da mesma person_key.
 - updated_life_summary deve refletir a janela completa, nao a media mecanica das parciais.
 - window_summary deve resumir a janela completa em alto nivel.
 - Em active_projects, mantenha poucos projetos fortes, com no maximo 6 itens.
@@ -1000,6 +1004,8 @@ Regras:
 - Nao invente projeto novo se o sinal estiver fraco.
 - Prefira poucos projetos fortes a muitos projetos vagos.
 - Sempre que possivel, explique o que esta sendo construido e para quem.
+- Nunca trate o proprio dono como cliente, contato ou publico do projeto.
+- So mantenha nomes de pessoas se eles estiverem explicitamente citados no texto das mensagens ou sustentados por memoria anterior confiavel.
 - Mantenha no maximo 8 projetos.
 - Nao inclua markdown fences.
 """.strip()

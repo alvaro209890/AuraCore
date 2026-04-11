@@ -471,6 +471,18 @@ function isPrivateIpv4Host(hostname: string): boolean {
     || /^172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}$/.test(hostname);
 }
 
+function isLocalApiBaseUrl(value: string | null | undefined): boolean {
+  if (!value) {
+    return false;
+  }
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" && (isLoopbackHost(parsed.hostname) || isPrivateIpv4Host(parsed.hostname));
+  } catch {
+    return false;
+  }
+}
+
 function buildApiBaseCandidates(): string[] {
   const candidates: string[] = [];
   const seen = new Set<string>();
@@ -486,29 +498,38 @@ function buildApiBaseCandidates(): string[] {
     candidates.push(normalized);
   };
 
-  if (activeApiBaseUrl) {
-    addCandidate(activeApiBaseUrl);
-  }
-
   if (typeof window !== "undefined") {
     const browserHost = window.location.hostname.trim().toLowerCase();
     const isFirebaseHost = browserHost.endsWith(".web.app") || browserHost.endsWith(".firebaseapp.com");
     const localCandidates = ["http://127.0.0.1:8000", "http://localhost:8000"];
+    const explicitIsLocal = isLocalApiBaseUrl(EXPLICIT_API_BASE_URL);
+    const activeIsLocal = isLocalApiBaseUrl(activeApiBaseUrl);
+
+    if (isFirebaseHost) {
+      if (activeApiBaseUrl && !activeIsLocal) {
+        addCandidate(activeApiBaseUrl);
+      }
+      if (EXPLICIT_API_BASE_URL && !explicitIsLocal) {
+        addCandidate(EXPLICIT_API_BASE_URL);
+      }
+      addCandidate(REMOTE_FALLBACK_API_BASE_URL);
+      return candidates;
+    }
+
+    if (activeApiBaseUrl) {
+      addCandidate(activeApiBaseUrl);
+    }
 
     if (isLoopbackHost(browserHost) || isPrivateIpv4Host(browserHost)) {
       addCandidate(`http://${browserHost}:8000`);
     }
 
-    if (isFirebaseHost) {
-      localCandidates.forEach(addCandidate);
-    }
-
     addCandidate(EXPLICIT_API_BASE_URL);
-
-    if (!isFirebaseHost) {
-      localCandidates.forEach(addCandidate);
-    }
+    localCandidates.forEach(addCandidate);
   } else {
+    if (activeApiBaseUrl) {
+      addCandidate(activeApiBaseUrl);
+    }
     addCandidate(EXPLICIT_API_BASE_URL);
   }
 

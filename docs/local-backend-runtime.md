@@ -9,7 +9,13 @@ Este documento descreve como o backend local desta máquina está executando em 
 - WhatsApp gateway: `127.0.0.1:10001`
 - Túnel público: `https://api.cursar.space`
 - Frontend publicado: `https://auracore-82bf2.web.app`
-- Banco SQLite local: `/media/acer/dados/Banco_de_dados/AuraCore_DB/auracore.sqlite3`
+- Banco SQLite local: `/home/acer/Documentos/Bando_de_dados/Aura_Core/sqlite/auracore.sqlite3`
+
+Estrutura local preparada no disco:
+
+- `/home/acer/Documentos/Bando_de_dados/Aura_Core/sqlite`
+- `/home/acer/Documentos/Bando_de_dados/Aura_Core/backups`
+- `/home/acer/Documentos/Bando_de_dados/Aura_Core/exports`
 
 ## Subida do backend nesta máquina
 

@@ -6,7 +6,7 @@ AuraCore roda agora com esta topologia:
 - `backend`: FastAPI rodando neste PC.
 - `whatsapp-gateway`: Node.js + Baileys rodando neste PC.
 - `cloudflared`: publica a API local em `https://api.cursar.space`.
-- `banco local`: SQLite em `/media/acer/dados/Banco_de_dados/AuraCore_DB/auracore.sqlite3`.
+- `banco local`: SQLite em `/home/acer/Documentos/Bando_de_dados/Aura_Core/sqlite/auracore.sqlite3`.
 - `auto-update`: timer local via `systemd --user` que aplica `git pull` da `main` e reinicia os servicos afetados.
 
 Documentacao operacional detalhada:
@@ -15,9 +15,12 @@ Documentacao operacional detalhada:
 
 ## Banco local
 
-- Diretório esperado: `/media/acer/dados/Banco_de_dados/AuraCore_DB`
-- Arquivo principal: `/media/acer/dados/Banco_de_dados/AuraCore_DB/auracore.sqlite3`
-- O backend inicializa automaticamente o schema SQLite no primeiro boot.
+- Diretório raiz esperado: `/home/acer/Documentos/Bando_de_dados/Aura_Core`
+- Diretório do SQLite: `/home/acer/Documentos/Bando_de_dados/Aura_Core/sqlite`
+- Diretório de backups: `/home/acer/Documentos/Bando_de_dados/Aura_Core/backups`
+- Diretório de exportações: `/home/acer/Documentos/Bando_de_dados/Aura_Core/exports`
+- Arquivo principal: `/home/acer/Documentos/Bando_de_dados/Aura_Core/sqlite/auracore.sqlite3`
+- O backend cria automaticamente os diretórios do banco e inicializa o schema SQLite no primeiro boot.
 - O backend tambem aplica migracoes locais nao destrutivas no startup quando faltam colunas legadas do SQLite.
 - A migracao atual inclui compatibilidade para `mensagens.embedding`, alem das colunas de analise e retencao usadas pelas telas novas.
 - A sessão do WhatsApp também fica nesse banco via `wa_sessions` e `wa_session_keys`.
@@ -50,7 +53,13 @@ Campos obrigatórios:
 
 ### Frontend
 
-Use [`frontend/.env.example`](/home/acer/Downloads/AuraCore/frontend/.env.example) para dev local.
+Use:
+
+- [`frontend/.env.development.example`](/home/acer/Downloads/AuraCore/frontend/.env.development.example) como base do desenvolvimento local
+- [`frontend/.env.production.example`](/home/acer/Downloads/AuraCore/frontend/.env.production.example) como base do build publicado no Firebase
+- use `frontend/.env.development.local` para este PC em dev
+- use `frontend/.env.production.local` para o build/export que vai para o Firebase
+- não use mais `frontend/.env.local`, porque ele sobrescreve dev e produção ao mesmo tempo
 
 Para o build publicado no Firebase, o valor esperado é:
 
@@ -97,8 +106,13 @@ Instalação rootless neste PC:
 
 ```bash
 bash /home/acer/Downloads/AuraCore/scripts/install-user-services.sh
-systemctl --user restart auracore-backend.service auracore-whatsapp-gateway.service auracore-cloudflared.service
 ```
+
+Esse instalador:
+
+- cria `/home/acer/Documentos/Bando_de_dados/Aura_Core/{sqlite,backups,exports}`
+- instala as units em `~/.config/systemd/user`
+- habilita e sobe backend, gateway, cloudflared e o timer de auto-update
 
 Persistencia no boot deste PC:
 

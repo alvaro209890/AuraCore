@@ -141,6 +141,11 @@ type AgentState = {
   completedAt: string | null;
 };
 
+type DisplayAgentState = AgentState & {
+  stageIndex: number | null;
+  badgeTone: "teal" | "emerald" | "amber" | "zinc";
+};
+
 type AutomationDraft = Record<string, never> | null;
 
 type InsightMetric = {
@@ -546,6 +551,141 @@ function getActivityToneLabel(tone: ActivityTraceItem["tone"]): string {
   }
 }
 
+function isPendingAnalysisJob(job: AnalysisJob | null | undefined): job is AnalysisJob {
+  return Boolean(job && (job.status === "queued" || job.status === "running"));
+}
+
+function resolvePendingAnalysisJob(args: {
+  currentJob: AnalysisJob | null;
+  activity: MemoryActivity | null;
+  queuedJobId: string | null;
+}): AnalysisJob | null {
+  const { currentJob, activity, queuedJobId } = args;
+  if (isPendingAnalysisJob(currentJob)) {
+    return currentJob;
+  }
+  if (!activity) {
+    return null;
+  }
+  if (queuedJobId) {
+    const matchingJob = activity.jobs.find((job) => job.id === queuedJobId) ?? null;
+    if (isPendingAnalysisJob(matchingJob)) {
+      return matchingJob;
+    }
+  }
+  return activity.jobs.find((job) => isPendingAnalysisJob(job)) ?? null;
+}
+
+function resolveRelatedSyncRun(activity: MemoryActivity | null, job: AnalysisJob | null): WhatsAppSyncRun | null {
+  if (!activity) {
+    return null;
+  }
+  if (job?.sync_run_id) {
+    const matchingRun = activity.sync_runs.find((run) => run.id === job.sync_run_id) ?? null;
+    if (matchingRun) {
+      return matchingRun;
+    }
+  }
+  return activity.sync_runs.find((run) => run.status === "running") ?? activity.sync_runs[0] ?? null;
+}
+
+function resolveRelatedModelRun(activity: MemoryActivity | null, job: AnalysisJob | null): ModelRun | null {
+  if (!activity) {
+    return null;
+  }
+  if (job) {
+    const matchingRun = activity.model_runs.find((run) => run.job_id === job.id) ?? null;
+    if (matchingRun) {
+      return matchingRun;
+    }
+  }
+  return activity.model_runs[0] ?? null;
+}
+
+function resolveLiveStageIndex(intent: AgentIntent, job: AnalysisJob | null, syncRun: WhatsAppSyncRun | null): number | null {
+  if (syncRun?.status === "running" && !job) {
+    return 0;
+  }
+  if (!job) {
+    return null;
+  }
+  if (job.status === "queued") {
+    return 1;
+  }
+  if (job.status === "running") {
+    return intent === "first_analysis" ? 3 : 2;
+  }
+  return null;
+}
+
+function resolveLiveProgress(intent: AgentIntent, job: AnalysisJob | null, syncRun: WhatsAppSyncRun | null): number {
+  if (syncRun?.status === "running" && !job) {
+    return 12;
+  }
+  if (!job) {
+    return 0;
+  }
+  if (job.status === "queued") {
+    return 24;
+  }
+  if (job.status === "running") {
+    return intent === "first_analysis" ? 58 : 66;
+  }
+  return 0;
+}
+
+function resolveLiveStatus(args: {
+  intent: AgentIntent;
+  job: AnalysisJob | null;
+  syncRun: WhatsAppSyncRun | null;
+  modelRun: ModelRun | null;
+}): string {
+  const { intent, job, syncRun, modelRun } = args;
+  if (syncRun?.status === "running" && !job) {
+    return syncRun.messages_seen_count > 0
+      ? `Coleta real em andamento. ${formatTokenCount(syncRun.messages_seen_count)} mensagens vistas ate agora.`
+      : "Coleta real do WhatsApp em andamento.";
+  }
+  if (!job) {
+    return IDLE_AGENT_STATUS;
+  }
+  if (job.status === "queued") {
+    return intent === "first_analysis"
+      ? "Primeira analise enfileirada no backend. O painel avanca apenas quando o servidor persistir a proxima fase."
+      : "Atualizacao de memoria enfileirada no backend. O painel avanca apenas quando o servidor persistir a proxima fase.";
+  }
+  if (job.status === "running") {
+    const batchSize = syncRun?.messages_saved_count || job.selected_message_count;
+    const base = intent === "first_analysis"
+      ? "Primeira analise real em execucao no backend."
+      : "Atualizacao real de memoria em execucao no backend.";
+    if (batchSize > 0) {
+      return `${base} Lote atual com ${formatTokenCount(batchSize)} mensagens uteis.`;
+    }
+    if (modelRun?.job_id === job.id) {
+      return `${base} O motor ja devolveu resposta e o backend esta fechando a persistencia final.`;
+    }
+    return `${base} O andamento agora reflete apenas marcos persistidos.`;
+  }
+  return IDLE_AGENT_STATUS;
+}
+
+function getStepVisualState(agentState: DisplayAgentState, stepIndex: number, stepsLength: number): {
+  completed: boolean;
+  active: boolean;
+} {
+  if (agentState.running) {
+    return {
+      completed: agentState.stageIndex !== null && stepIndex < agentState.stageIndex,
+      active: agentState.stageIndex === stepIndex,
+    };
+  }
+  if (agentState.progress >= 100) {
+    return { completed: stepIndex < stepsLength, active: false };
+  }
+  return { completed: false, active: false };
+}
+
 function buildActivityTrace(args: {
   agentState: AgentState;
   latestSyncRun: WhatsAppSyncRun | null;
@@ -630,38 +770,9 @@ function getErrorMessage(error: unknown): string {
   return "Não foi possível concluir a operação.";
 }
 
-function getProgressIncrement(progress: number): number {
-  if (progress < 18) {
-    return 7;
-  }
-  if (progress < 38) {
-    return 5;
-  }
-  if (progress < 60) {
-    return 4;
-  }
-  if (progress < 80) {
-    return 3;
-  }
-  return 1;
-}
-
 function getStepsForIntent(intent: AgentIntent | null, hasEstablishedMemory: boolean): AgentStep[] {
   const resolvedIntent = intent ?? (hasEstablishedMemory ? "improve_memory" : "first_analysis");
   return resolvedIntent === "improve_memory" ? REFINE_STEPS : ANALYZE_STEPS;
-}
-
-function getRunningStatus(
-  mode: AgentMode,
-  progress: number,
-  intent: AgentIntent | null,
-  hasEstablishedMemory: boolean,
-): string {
-  if (mode === "idle") {
-    return IDLE_AGENT_STATUS;
-  }
-  const step = [...getStepsForIntent(intent, hasEstablishedMemory)].reverse().find((candidate) => progress >= candidate.threshold);
-  return step?.label ?? "Preparando atualização";
 }
 
 function makeLog(tone: LogTone, message: string): AgentLog {
@@ -1254,8 +1365,6 @@ export function ConnectionDashboard() {
   const lastAgentQrRefreshAtRef = useRef<number | null>(null);
   const lastAttentionRefreshAtRef = useRef<number | null>(null);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
-  const agentTimerRef = useRef<number | null>(null);
-  const agentStepIndexRef = useRef(0);
   const observerStatusInFlightRef = useRef(false);
   const agentStatusInFlightRef = useRef(false);
   const dashboardRefreshInFlightRef = useRef(false);
@@ -1277,7 +1386,44 @@ export function ConnectionDashboard() {
   const memoryIsEstablished = memoryStatus?.has_initial_analysis ?? false;
   const currentMemoryJob = memoryStatus?.current_job ?? null;
   const memoryJobIsPending = currentMemoryJob?.status === "queued" || currentMemoryJob?.status === "running";
-  const analysisIsBusy = memoryJobIsPending || queuedJobId !== null || agentState.running;
+  const displayAgentState = useMemo<DisplayAgentState>(() => {
+    const pendingJob = resolvePendingAnalysisJob({
+      currentJob: currentMemoryJob,
+      activity: memoryActivity,
+      queuedJobId,
+    });
+    const resolvedIntent = (pendingJob?.intent as AgentIntent | undefined) ?? agentState.intent ?? (memoryIsEstablished ? "improve_memory" : "first_analysis");
+    const syncRun = resolveRelatedSyncRun(memoryActivity, pendingJob);
+    const modelRun = resolveRelatedModelRun(memoryActivity, pendingJob);
+    const stageIndex = resolveLiveStageIndex(resolvedIntent, pendingJob, syncRun);
+
+    if (pendingJob || (syncRun?.status === "running" && !pendingJob)) {
+      return {
+        mode: "analyze",
+        intent: resolvedIntent,
+        running: true,
+        progress: resolveLiveProgress(resolvedIntent, pendingJob, syncRun),
+        status: resolveLiveStatus({
+          intent: resolvedIntent,
+          job: pendingJob,
+          syncRun,
+          modelRun,
+        }),
+        error: null,
+        completedAt: null,
+        stageIndex,
+        badgeTone: "teal",
+      };
+    }
+
+    return {
+      ...agentState,
+      intent: agentState.intent ?? resolvedIntent,
+      stageIndex: null,
+      badgeTone: agentState.error ? "amber" : agentState.progress >= 100 ? "emerald" : "zinc",
+    };
+  }, [agentState, currentMemoryJob, memoryActivity, memoryIsEstablished, queuedJobId]);
+  const analysisIsBusy = memoryJobIsPending || queuedJobId !== null || displayAgentState.running;
   const activeChatThread = useMemo(
     () => chatThreads.find((thread) => thread.id === activeChatThreadId) ?? chatThreads[0] ?? null,
     [activeChatThreadId, chatThreads],
@@ -1306,8 +1452,8 @@ export function ConnectionDashboard() {
   );
 
   const currentSteps = useMemo(
-    () => getStepsForIntent(agentState.intent, memoryIsEstablished),
-    [agentState.intent, memoryIsEstablished],
+    () => getStepsForIntent(displayAgentState.intent, memoryIsEstablished),
+    [displayAgentState.intent, memoryIsEstablished],
   );
   const insightMetrics = useMemo(() => getSignalMetrics(latestSnapshot), [latestSnapshot]);
   const persistedActivityLogs = useMemo(() => buildPersistedActivityLogs(memoryActivity), [memoryActivity]);
@@ -1934,14 +2080,6 @@ export function ConnectionDashboard() {
     }
   }, [memoryActivity]);
 
-  useEffect(() => {
-    return () => {
-      if (agentTimerRef.current) {
-        window.clearInterval(agentTimerRef.current);
-      }
-    };
-  }, []);
-
   function applyChatWorkspace(workspace: ChatWorkspace): void {
     setChatThreads(workspace.threads);
     setActiveChatThreadId(workspace.active_thread_id);
@@ -2162,17 +2300,12 @@ export function ConnectionDashboard() {
 
   function startAgentRun(intent: AgentIntent): void {
     const mode: Exclude<AgentMode, "idle"> = "analyze";
-    if (agentTimerRef.current) {
-      window.clearInterval(agentTimerRef.current);
-    }
-
-    agentStepIndexRef.current = 0;
     setAgentState({
       mode,
       intent,
       running: true,
       progress: 4,
-      status: getRunningStatus(mode, 4, intent, memoryIsEstablished),
+      status: "Solicitando execucao real ao backend...",
       error: null,
       completedAt: null,
     });
@@ -2183,35 +2316,10 @@ export function ConnectionDashboard() {
         ? "Primeira analise iniciada. O agente vai criar a base inicial do dono usando mensagens diretas recentes."
         : "Atualizacao incremental iniciada. O agente vai combinar mensagens novas com snapshots, projetos e chat pessoal.",
     );
-
-    agentTimerRef.current = window.setInterval(() => {
-      setAgentState((previous) => {
-        if (!previous.running || previous.mode !== mode) {
-          return previous;
-        }
-
-        const nextProgress = Math.min(previous.progress + getProgressIncrement(previous.progress), 94);
-        const steps = getStepsForIntent(intent, memoryIsEstablished);
-        while (agentStepIndexRef.current < steps.length && nextProgress >= steps[agentStepIndexRef.current].threshold) {
-          const step = steps[agentStepIndexRef.current];
-          pushAgentLog("info", `${step.label}. ${step.detail}`);
-          agentStepIndexRef.current += 1;
-        }
-
-        return {
-          ...previous,
-          progress: nextProgress,
-          status: getRunningStatus(mode, nextProgress, intent, memoryIsEstablished),
-        };
-      });
-    }, 520);
   }
 
   function finishAgentRunSuccess(intent: AgentIntent, message: string): void {
     const mode: Exclude<AgentMode, "idle"> = "analyze";
-    if (agentTimerRef.current) {
-      window.clearInterval(agentTimerRef.current);
-    }
     setAgentState({
       mode,
       intent,
@@ -2226,9 +2334,6 @@ export function ConnectionDashboard() {
 
   function finishAgentRunError(intent: AgentIntent, message: string): void {
     const mode: Exclude<AgentMode, "idle"> = "analyze";
-    if (agentTimerRef.current) {
-      window.clearInterval(agentTimerRef.current);
-    }
     setAgentState({
       mode,
       intent,
@@ -2830,7 +2935,7 @@ export function ConnectionDashboard() {
                   latestSnapshot={latestSnapshot}
                   memoryActivity={memoryActivity}
                   memoryError={memoryError}
-                  agentState={agentState}
+                  agentState={displayAgentState}
                   steps={currentSteps}
                   logs={activityLogs}
                   onInitialAnalysis={() => void runMemoryJob("first_analysis")}
@@ -2886,7 +2991,7 @@ export function ConnectionDashboard() {
 
               {activeTab === "activity" ? (
                 <ActivityTab
-                  agentState={agentState}
+                  agentState={displayAgentState}
                   steps={currentSteps}
                   logs={activityLogs}
                   memory={memory}
@@ -4083,7 +4188,7 @@ function MemoryTab({
   latestSnapshot: MemorySnapshot | null;
   memoryActivity: MemoryActivity | null;
   memoryError: string | null;
-  agentState: AgentState;
+  agentState: DisplayAgentState;
   steps: AgentStep[];
   logs: AgentLog[];
   queuedJobId: string | null;
@@ -4246,12 +4351,8 @@ function MemoryTab({
             Esta trilha mostra o que o backend está fazendo agora e avança automaticamente quando o job muda de fila para execução e depois para concluído.
           </p>
           <div className="step-pill-row">
-            {steps.map((step) => {
-              const completed = agentState.progress >= step.threshold;
-              const active =
-                agentState.running &&
-                agentState.progress >= step.threshold &&
-                !steps.some((candidate) => candidate.threshold > step.threshold && agentState.progress >= candidate.threshold);
+            {steps.map((step, stepIndex) => {
+              const { completed, active } = getStepVisualState(agentState, stepIndex, steps.length);
               return (
                 <span
                   key={step.label}
@@ -5595,7 +5696,7 @@ function ActivityTab({
   isClearingDatabase,
   onClearDatabase,
 }: {
-  agentState: AgentState;
+  agentState: DisplayAgentState;
   steps: AgentStep[];
   logs: AgentLog[];
   memory: MemoryCurrent | null;
@@ -5667,7 +5768,7 @@ function ActivityTab({
             );
           })}
         </div>
-        <span className={`micro-status micro-status-${agentState.running ? "indigo" : "zinc"}`}>
+        <span className={`micro-status micro-status-${agentState.running ? "teal" : "zinc"}`}>
           {agentState.running ? "pipeline ativo" : "monitorando"}
         </span>
       </div>
@@ -5678,7 +5779,7 @@ function ActivityTab({
           <svg viewBox="0 0 120 120">
             <circle className="activity-ring-base" cx="60" cy="60" r="50" />
             <circle
-              className="activity-ring-fill"
+              className={`activity-ring-fill${agentState.running ? " activity-ring-fill-live" : ""}${agentState.error ? " activity-ring-fill-error" : ""}${agentState.progress >= 100 && !agentState.error ? " activity-ring-fill-complete" : ""}`}
               cx="60"
               cy="60"
               r="50"
@@ -5695,18 +5796,14 @@ function ActivityTab({
               <Terminal size={18} />
               {getIntentTitle(resolvedIntent)}
             </h3>
-            <span className={`micro-status micro-status-${agentState.running ? "indigo" : "emerald"}`}>
+            <span className={`micro-status micro-status-${agentState.badgeTone}`}>
               {agentState.running ? "Processando" : "Ocioso"}
             </span>
           </div>
           <p>{agentState.status}</p>
           <div className="step-pill-row">
-            {steps.map((step) => {
-              const completed = agentState.progress >= step.threshold;
-              const active =
-                agentState.running &&
-                agentState.progress >= step.threshold &&
-                !steps.some((candidate) => candidate.threshold > step.threshold && agentState.progress >= candidate.threshold);
+            {steps.map((step, stepIndex) => {
+              const { completed, active } = getStepVisualState(agentState, stepIndex, steps.length);
               return (
                 <span
                   key={step.label}
