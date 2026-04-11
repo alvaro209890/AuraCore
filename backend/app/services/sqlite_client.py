@@ -94,9 +94,36 @@ class SQLiteClient:
             self.initialize_schema(schema_path)
 
     def initialize_schema(self, schema_path: Path) -> None:
+        self._run_forward_migrations()
+        migrations_path = schema_path.with_name("sqlite_migrations.sql")
+        if migrations_path.is_file():
+            migrations_sql = migrations_path.read_text(encoding="utf-8")
+            with self._lock:
+                self._conn.executescript(migrations_sql)
+                self._conn.commit()
         schema_sql = schema_path.read_text(encoding="utf-8")
         with self._lock:
             self._conn.executescript(schema_sql)
+            self._conn.commit()
+
+    def _run_forward_migrations(self) -> None:
+        """Add missing columns to existing tables so CREATE INDEX does not fail."""
+        migrations: list[tuple[str, str, str]] = [
+            ("mensagens", "chat_type", "ALTER TABLE mensagens ADD COLUMN chat_type TEXT NOT NULL DEFAULT 'direct'"),
+            ("mensagens", "chat_name", "ALTER TABLE mensagens ADD COLUMN chat_name TEXT"),
+            ("mensagens", "participant_name", "ALTER TABLE mensagens ADD COLUMN participant_name TEXT"),
+            ("mensagens", "participant_phone", "ALTER TABLE mensagens ADD COLUMN participant_phone TEXT"),
+            ("mensagens", "participant_jid", "ALTER TABLE mensagens ADD COLUMN participant_jid TEXT"),
+        ]
+        with self._lock:
+            for table_name, column_name, alter_sql in migrations:
+                try:
+                    self._conn.execute(f"SELECT {column_name} FROM {table_name} LIMIT 0")
+                except Exception:
+                    try:
+                        self._conn.execute(alter_sql)
+                    except Exception:
+                        pass
             self._conn.commit()
 
     def table(self, table_name: str) -> SQLiteQuery:
