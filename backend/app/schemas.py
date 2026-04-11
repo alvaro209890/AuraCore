@@ -151,11 +151,16 @@ class IngestMessageRequestItem(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     message_id: str = Field(min_length=1)
+    chat_type: Literal["direct", "group"] = "direct"
+    chat_name: str | None = None
     direction: Literal["inbound", "outbound"]
     contact_name: str | None = None
     contact_name_source: str | None = None
     chat_jid: str = Field(min_length=1)
-    contact_phone: str = Field(min_length=1)
+    contact_phone: str | None = None
+    participant_name: str | None = None
+    participant_phone: str | None = None
+    participant_jid: str | None = None
     message_text: str = Field(min_length=1)
     timestamp: datetime
     source: str = Field(default="baileys", min_length=1)
@@ -311,6 +316,24 @@ class MemoryStatusResponse(BaseModel):
     current_job: "AnalysisJobResponse | None" = None
     latest_completed_job: "AnalysisJobResponse | None" = None
     can_execute_analysis: bool
+
+
+class WhatsAppGroupSelectionResponse(BaseModel):
+    chat_jid: str
+    chat_name: str
+    enabled_for_analysis: bool
+    last_seen_at: datetime | None = None
+    last_message_at: datetime | None = None
+    message_count: int = Field(ge=0)
+    pending_message_count: int = Field(ge=0)
+
+
+class WhatsAppGroupSelectionsListResponse(BaseModel):
+    groups: list[WhatsAppGroupSelectionResponse] = Field(default_factory=list)
+
+
+class UpdateWhatsAppGroupSelectionRequest(BaseModel):
+    enabled_for_analysis: bool
 
 
 class MemorySnapshotResponse(BaseModel):

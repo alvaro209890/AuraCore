@@ -69,11 +69,43 @@ def _build_records(
     for item in payload.messages:
         message_text = item.message_text.strip()
         chat_jid = item.chat_jid.strip()
-        contact_phone = item.contact_phone.strip()
+        chat_type = str(item.chat_type or "direct").strip().lower()
+        if not message_text or not chat_jid:
+            continue
+
+        if chat_type == "group":
+            if not store.is_group_chat_jid(chat_jid):
+                continue
+            normalized_contact_phone = store.normalize_contact_phone(item.contact_phone)
+            normalized_participant_phone = store.normalize_contact_phone(item.participant_phone)
+            resolved_contact_name = (
+                (item.participant_name or item.contact_name or item.chat_name or item.participant_phone or chat_jid).strip()
+            )
+            records.append(
+                IngestedMessageRecord(
+                    message_id=item.message_id.strip(),
+                    user_id=store.default_user_id,
+                    chat_type="group",
+                    chat_name=(item.chat_name or chat_jid).strip(),
+                    direction=item.direction,
+                    contact_name=resolved_contact_name,
+                    contact_name_source=(item.contact_name_source or "unknown").strip() or "unknown",
+                    chat_jid=chat_jid,
+                    contact_phone=normalized_contact_phone,
+                    message_text=message_text,
+                    timestamp=item.timestamp,
+                    participant_name=(item.participant_name or item.contact_name or "").strip() or None,
+                    participant_phone=normalized_participant_phone,
+                    participant_jid=(item.participant_jid or "").strip() or None,
+                    source=item.source.strip() or "baileys",
+                    source_event=(item.source_event or "").strip() or None,
+                )
+            )
+            continue
+
+        contact_phone = (item.contact_phone or "").strip()
         if (
-            not message_text
-            or not chat_jid
-            or not store.is_direct_chat_jid(chat_jid)
+            not store.is_direct_chat_jid(chat_jid)
             or not contact_phone
             or not store.is_normal_contact_phone(contact_phone)
         ):
@@ -86,6 +118,8 @@ def _build_records(
             IngestedMessageRecord(
                 message_id=item.message_id.strip(),
                 user_id=store.default_user_id,
+                chat_type="direct",
+                chat_name=(item.chat_name or item.contact_name or contact_phone).strip(),
                 direction=item.direction,
                 contact_name=(item.contact_name or contact_phone).strip(),
                 contact_name_source=(item.contact_name_source or "unknown").strip() or "unknown",
@@ -93,6 +127,9 @@ def _build_records(
                 contact_phone=normalized_phone or contact_phone,
                 message_text=message_text,
                 timestamp=item.timestamp,
+                participant_name=None,
+                participant_phone=None,
+                participant_jid=None,
                 source=item.source.strip() or "baileys",
                 source_event=(item.source_event or "").strip() or None,
             )

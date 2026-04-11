@@ -18,6 +18,7 @@ drop table if exists public.project_memories;
 drop table if exists public.memory_snapshots;
 drop table if exists public.persona;
 drop table if exists public.whatsapp_known_contacts;
+drop table if exists public.whatsapp_known_groups;
 drop table if exists public.message_retention_state;
 drop table if exists public.processed_message_ids;
 drop table if exists public.mensagens;

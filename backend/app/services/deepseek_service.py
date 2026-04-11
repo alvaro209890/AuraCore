@@ -178,6 +178,7 @@ class DeepSeekService:
         window_start: datetime,
         window_end: datetime,
         source_message_count: int,
+        contains_group_messages: bool = False,
     ) -> DeepSeekMemoryResult:
         prompt_preview = self.build_analysis_prompt_preview(
             transcript=transcript,
@@ -193,6 +194,7 @@ class DeepSeekService:
             window_start=window_start,
             window_end=window_end,
             source_message_count=source_message_count,
+            contains_group_messages=contains_group_messages,
         )
         payload = self._build_completion_payload(
             system_prompt=prompt_preview.system_prompt,
@@ -366,6 +368,7 @@ class DeepSeekService:
         window_end: datetime,
         source_message_count: int,
         partial_analysis_count: int,
+        contains_group_messages: bool = False,
     ) -> DeepSeekMemoryResult:
         payload = self._build_completion_payload(
             system_prompt=(
@@ -387,6 +390,7 @@ class DeepSeekService:
                 window_end=window_end,
                 source_message_count=source_message_count,
                 partial_analysis_count=partial_analysis_count,
+                contains_group_messages=contains_group_messages,
             ),
             max_tokens=self._analysis_max_output_tokens(intent=intent),
         )
@@ -526,6 +530,7 @@ class DeepSeekService:
         window_start: datetime,
         window_end: datetime,
         source_message_count: int,
+        contains_group_messages: bool = False,
     ) -> DeepSeekPromptPreview:
         is_first_analysis = intent == "first_analysis"
         return DeepSeekPromptPreview(
@@ -536,6 +541,13 @@ class DeepSeekService:
                 "Priorize sinais sobre identidade, forma de agir, criterio de decisao, ritmo, projetos, "
                 "responsabilidades e tensoes reais do dono. Quando algo for incerto, trate como sinal ou "
                 "hipotese nas listas, sem afirmar como certeza no resumo consolidado."
+                + (
+                    " Esta leitura mistura conversas diretas e grupos selecionados do WhatsApp. Em mensagens "
+                    "de grupo, atribua falas, opinioes, pedidos, promessas e fatos ao participante correto "
+                    "antes de inferir algo sobre o dono."
+                    if contains_group_messages and not is_first_analysis
+                    else ""
+                )
                 + (
                     " Esta e a primeira analise salva do dono. Prefira cobertura ampla e conservadora: "
                     "menos conviccao, menos projetos, menos inferencias psicologicas e mais lacunas explicitas."
@@ -557,6 +569,7 @@ class DeepSeekService:
                 window_start=window_start,
                 window_end=window_end,
                 source_message_count=source_message_count,
+                contains_group_messages=contains_group_messages,
             ),
         )
 
@@ -638,6 +651,7 @@ class DeepSeekService:
         window_start: datetime,
         window_end: datetime,
         source_message_count: int,
+        contains_group_messages: bool = False,
     ) -> str:
         previous_summary = current_life_summary.strip() or "(memoria consolidada ainda vazia)"
         previous_analyses = prior_analyses_context.strip() or "(nenhuma analise anterior relevante)"
@@ -647,7 +661,11 @@ class DeepSeekService:
         intro = (
             "Analise a janela abaixo de conversas diretas e monte a primeira base de memoria do usuario."
             if is_first_analysis
-            else "Analise a janela abaixo de conversas diretas e atualize a memoria do usuario."
+            else (
+                "Analise a janela abaixo de conversas do WhatsApp e atualize a memoria do usuario."
+                if contains_group_messages
+                else "Analise a janela abaixo de conversas diretas e atualize a memoria do usuario."
+            )
         )
         bootstrap_rules = """
 - Esta e a primeira analise persistida do dono; trate a memoria como bootstrap inicial, nao como retrato definitivo.
@@ -743,6 +761,8 @@ Regras:
 - Leia tambem as memorias ja consolidadas por pessoa antes de atualizar os contatos desta janela.
 - Diferencie sinais sobre o dono dos fatos que pertencem ao contato; nao transforme caracteristicas do contato em caracteristicas do dono.
 - Use a direcao das mensagens para separar o que o dono afirma, pede, decide ou promete do que esta sendo dito pelos contatos.
+- Quando houver grupos, separe o contexto do grupo do contexto da pessoa: nao atribua ao dono fatos, opinioes ou planos que pertencem a outro participante.
+- Quando houver grupos, use o nome do grupo e o participante para entender se algo foi dito pelo dono, por outra pessoa ou pelo grupo como contexto coletivo.
 - Procure entender como o dono do numero age, fala, decide, trabalha, se relaciona e organiza a rotina.
 - Priorize sinais comportamentais e estruturais do dono do numero, nao apenas um inventario de contatos.
 - Ao citar pessoas e relacoes, infira quem parece ser cada conversa no contexto da vida do dono, sem inventar vinculos que nao tenham apoio no historico.
@@ -834,6 +854,7 @@ Regras:
         window_end: datetime,
         source_message_count: int,
         partial_analysis_count: int,
+        contains_group_messages: bool = False,
     ) -> str:
         is_first_analysis = intent == "first_analysis"
         return f"""
@@ -915,6 +936,7 @@ Regras:
 - Una duplicatas entre listas, projetos e contatos.
 - Dê mais peso ao que aparece repetido em mais de uma parcial ou com evidencia mais concreta.
 - Se houver conflito entre parciais, prefira a versao mais prudente e mais bem sustentada.
+- Quando houver mensagens de grupo nas parciais, mantenha a atribuicao correta por participante e nao colapse o grupo inteiro como se fosse uma pessoa unica.
 - updated_life_summary deve refletir a janela completa, nao a media mecanica das parciais.
 - window_summary deve resumir a janela completa em alto nivel.
 - Em active_projects, mantenha poucos projetos fortes, com no maximo 6 itens.

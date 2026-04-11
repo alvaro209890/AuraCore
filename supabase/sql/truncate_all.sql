@@ -19,6 +19,7 @@ truncate table
   public.memory_snapshots,
   public.persona,
   public.whatsapp_known_contacts,
+  public.whatsapp_known_groups,
   public.message_retention_state,
   public.processed_message_ids,
   public.mensagens,

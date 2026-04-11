@@ -205,7 +205,10 @@ class MemoryAnalysisService:
     def get_memory_status(self) -> MemoryStatus:
         persona = self.get_current_persona()
         has_initial_analysis = bool(persona.last_analyzed_at or persona.last_snapshot_id)
-        pending_new_message_count = self.store.count_pending_messages(self.settings.default_user_id)
+        pending_new_message_count = self.store.count_pending_messages(
+            self.settings.default_user_id,
+            include_groups=self._analysis_includes_groups(has_memory=has_initial_analysis),
+        )
         return MemoryStatus(
             has_initial_analysis=has_initial_analysis,
             last_analyzed_at=persona.last_analyzed_at,
@@ -240,10 +243,15 @@ class MemoryAnalysisService:
 
         window_end = datetime.now(UTC)
         window_start = window_end - timedelta(hours=window_hours)
+        current_persona = self.get_current_persona()
+        include_groups = self._analysis_includes_groups(
+            has_memory=bool(current_persona.last_analyzed_at or current_persona.last_snapshot_id)
+        )
         messages = self.store.list_messages_in_window(
             user_id=self.settings.default_user_id,
             window_start=window_start,
             window_end=window_end,
+            include_groups=include_groups,
         )
         if not messages:
             raise MemoryAnalysisError(
@@ -255,7 +263,6 @@ class MemoryAnalysisService:
         if not transcript.strip() or not included_messages:
             raise MemoryAnalysisError("Essa janela nao contem mensagens textuais analisaveis.")
 
-        current_persona = self.get_current_persona()
         current_summary = self._build_persona_context(current_persona)
         prior_analyses_context = self._build_prior_analyses_context()
         project_context = self._build_project_context(
@@ -282,6 +289,7 @@ class MemoryAnalysisService:
             window_start=window_start,
             window_end=window_end,
             source_message_count=len(included_messages),
+            contains_group_messages=any(self._is_group_message(message) for message in included_messages),
         )
         if not current_persona.last_analyzed_at:
             deepseek_result = self._stabilize_first_analysis_result(deepseek_result)
@@ -366,10 +374,15 @@ class MemoryAnalysisService:
 
         window_end = datetime.now(UTC)
         window_start = window_end - timedelta(hours=max_lookback_hours)
+        current_persona = self.get_current_persona()
+        include_groups = self._analysis_includes_groups(
+            has_memory=bool(current_persona.last_analyzed_at or current_persona.last_snapshot_id)
+        )
         messages = self.store.list_messages_in_window(
             user_id=self.settings.default_user_id,
             window_start=window_start,
             window_end=window_end,
+            include_groups=include_groups,
         )
         if not messages:
             raise MemoryAnalysisError(
@@ -385,7 +398,6 @@ class MemoryAnalysisService:
         if not transcript.strip() or not included_messages:
             raise MemoryAnalysisError("As configuracoes escolhidas nao produziram mensagens textuais analisaveis.")
 
-        current_persona = self.get_current_persona()
         current_summary = self._build_persona_context(current_persona)
         prior_analyses_context = self._build_prior_analyses_context()
         project_context = self._build_project_context(
@@ -412,6 +424,7 @@ class MemoryAnalysisService:
             window_start=window_start,
             window_end=window_end,
             source_message_count=len(included_messages),
+            contains_group_messages=any(self._is_group_message(message) for message in included_messages),
         )
         if not current_persona.last_analyzed_at:
             deepseek_result = self._stabilize_first_analysis_result(deepseek_result)
@@ -495,16 +508,20 @@ class MemoryAnalysisService:
         resolved_char_budget = self._resolve_char_budget(detail_mode)
         window_end = datetime.now(UTC)
         window_start = window_end - timedelta(hours=max_lookback_hours)
+        current_persona = self.get_current_persona()
+        has_memory = current_persona.last_analyzed_at is not None or bool(current_persona.last_snapshot_id)
         messages = self.store.list_messages_in_window(
             user_id=self.settings.default_user_id,
             window_start=window_start,
             window_end=window_end,
+            include_groups=self._analysis_includes_groups(has_memory=has_memory),
         )
         available_message_count = len(messages)
-        retained_message_count = self.store.count_messages(self.settings.default_user_id)
-        current_persona = self.get_current_persona()
+        retained_message_count = self.store.count_messages(
+            self.settings.default_user_id,
+            include_groups=self._analysis_includes_groups(has_memory=has_memory),
+        )
         automation_settings = self.store.get_automation_settings(self.settings.default_user_id)
-        has_memory = current_persona.last_analyzed_at is not None or bool(current_persona.last_snapshot_id)
         resolved_intent = "improve_memory" if has_memory else "first_analysis"
         new_message_count, replaced_message_count = self._resolve_message_deltas_since_last_analysis(current_persona)
         transcript, included_messages = self._build_transcript(
@@ -543,6 +560,7 @@ class MemoryAnalysisService:
             window_start=window_start,
             window_end=window_end,
             source_message_count=selected_message_count,
+            contains_group_messages=any(self._is_group_message(message) for message in included_messages),
         )
         estimated_input_tokens = self._estimate_text_tokens(prompt_preview.system_prompt) + self._estimate_text_tokens(prompt_preview.user_prompt)
         estimated_prompt_context_tokens = max(0, estimated_input_tokens - selected_transcript_tokens)
@@ -724,7 +742,11 @@ class MemoryAnalysisService:
         )
 
     def _resolve_message_deltas_since_last_analysis(self, persona: PersonaRecord) -> tuple[int, int]:
-        pending_count = self.store.count_pending_messages(self.settings.default_user_id)
+        has_memory = persona.last_analyzed_at is not None or bool(persona.last_snapshot_id)
+        pending_count = self.store.count_pending_messages(
+            self.settings.default_user_id,
+            include_groups=self._analysis_includes_groups(has_memory=has_memory),
+        )
         retention_state = self.store.get_message_retention_state(self.settings.default_user_id)
         baseline_ingested = persona.last_analyzed_ingested_count
         baseline_pruned = persona.last_analyzed_pruned_count
@@ -903,12 +925,8 @@ class MemoryAnalysisService:
         ordered = sorted(messages, key=lambda message: message.timestamp, reverse=prefer_recent)
         groups: dict[str, list[StoredMessageRecord]] = {}
         for message in ordered:
-            person_key = self.store.build_person_key(
-                contact_phone=message.contact_phone,
-                chat_jid=message.chat_jid,
-                contact_name=message.contact_name,
-            )
-            groups.setdefault(person_key, []).append(message)
+            bucket_key = self._message_selection_bucket_key(message)
+            groups.setdefault(bucket_key, []).append(message)
 
         ordered_keys = sorted(
             groups.keys(),
@@ -1102,6 +1120,7 @@ class MemoryAnalysisService:
                     max(self._resolve_first_analysis_limit() * 4, min(pending_count, self._resolve_first_analysis_limit() * 8)),
                 ),
                 newest_first=True,
+                include_groups=False,
             )
             # Prioriza mensagens que tenham texto útil
             textual_candidates = [m for m in candidate_messages if m.message_text.strip()]
@@ -1129,6 +1148,7 @@ class MemoryAnalysisService:
                     max(self._resolve_incremental_batch_size() * 4, min(pending_count, self._resolve_incremental_batch_size() * 8)),
                 ),
                 newest_first=False,
+                include_groups=True,
             )
             # Prioriza mensagens que tenham texto útil
             textual_candidates = [m for m in candidate_messages if m.message_text.strip()]
@@ -1184,6 +1204,7 @@ class MemoryAnalysisService:
             window_start=window_start,
             window_end=window_end,
             source_message_count=len(selected_messages),
+            contains_group_messages=any(self._is_group_message(message) for message in selected_messages),
         )
         estimated_input_tokens = self._estimate_text_tokens(prompt_preview.system_prompt) + self._estimate_text_tokens(prompt_preview.user_prompt)
         planning_profile = self.deepseek_service.get_planning_profile(intent=intent)
@@ -1266,6 +1287,7 @@ class MemoryAnalysisService:
                 window_start=plan.window_start,
                 window_end=plan.window_end,
                 source_message_count=len(plan.source_messages),
+                contains_group_messages=any(self._is_group_message(message) for message in plan.source_messages),
             )
         logger.info(
             "fixed_plan_stage_done stage=analyze_memory intent=%s projects=%s contacts=%s open_questions=%s",
@@ -1453,6 +1475,7 @@ class MemoryAnalysisService:
                 window_start=single_chunk.window_start,
                 window_end=single_chunk.window_end,
                 source_message_count=len(single_chunk.source_messages),
+                contains_group_messages=any(self._is_group_message(message) for message in single_chunk.source_messages),
             )
 
         logger.info(
@@ -1489,8 +1512,8 @@ class MemoryAnalysisService:
                 window_start=chunk.window_start,
                 window_end=chunk.window_end,
                 source_message_count=len(chunk.source_messages),
+                contains_group_messages=any(self._is_group_message(message) for message in chunk.source_messages),
             )
-            partial_results.append(partial)
             logger.info(
                 "first_analysis_chunk_done chunk=%s/%s projects=%s contacts=%s open_questions=%s",
                 index,
@@ -1638,6 +1661,7 @@ class MemoryAnalysisService:
                     window_end=group_window_end,
                     source_message_count=len(merged_messages),
                     partial_analysis_count=len(group),
+                    contains_group_messages=any(self._is_group_message(message) for message in merged_messages),
                 )
                 next_label = f"synthesis-l{level}-g{group_index}"
                 logger.info(
@@ -1743,9 +1767,9 @@ class MemoryAnalysisService:
             seeds.append(
                 PersonMemorySeed(
                     person_key=person.person_key,
-                    contact_name=person.contact_name.strip() or last_message.contact_name,
-                    contact_phone=last_message.contact_phone,
-                    chat_jid=last_message.chat_jid,
+                    contact_name=person.contact_name.strip() or self._message_person_name(last_message),
+                    contact_phone=self._message_person_phone(last_message),
+                    chat_jid=self._message_person_jid(last_message),
                     profile_summary=person.profile_summary,
                     relationship_summary=person.relationship_summary,
                     salient_facts=person.salient_facts,
@@ -2373,14 +2397,79 @@ class MemoryAnalysisService:
 
         return "\n".join(sections)
 
+    def _analysis_includes_groups(self, *, has_memory: bool) -> bool:
+        return has_memory
+
+    def _is_group_message(self, message: StoredMessageRecord) -> bool:
+        return str(message.chat_type or "").strip().lower() == "group"
+
+    def _message_person_key(self, message: StoredMessageRecord) -> str | None:
+        if self._is_group_message(message):
+            if message.direction == "outbound":
+                return None
+            return self.store.build_person_key(
+                contact_phone=message.participant_phone,
+                chat_jid=message.participant_jid,
+                contact_name=message.participant_name or message.contact_name,
+            )
+        return self.store.build_person_key(
+            contact_phone=message.contact_phone,
+            chat_jid=message.chat_jid,
+            contact_name=message.contact_name,
+        )
+
+    def _message_person_name(self, message: StoredMessageRecord) -> str:
+        if self._is_group_message(message):
+            return (
+                (message.participant_name or "").strip()
+                or message.contact_name.strip()
+                or message.participant_phone
+                or message.participant_jid
+                or "Participante"
+            )
+        return message.contact_name.strip() or message.contact_phone or "Contato"
+
+    def _message_person_phone(self, message: StoredMessageRecord) -> str | None:
+        if self._is_group_message(message):
+            return message.participant_phone if message.direction != "outbound" else None
+        return message.contact_phone
+
+    def _message_person_jid(self, message: StoredMessageRecord) -> str | None:
+        if self._is_group_message(message):
+            return message.participant_jid if message.direction != "outbound" else None
+        return message.chat_jid
+
+    def _message_conversation_key(self, message: StoredMessageRecord) -> str:
+        if self._is_group_message(message):
+            chat_jid = (message.chat_jid or message.chat_name or "grupo").strip().lower()
+            return f"group:{chat_jid}"
+        return "direct:" + self.store.build_person_key(
+            contact_phone=message.contact_phone,
+            chat_jid=message.chat_jid,
+            contact_name=message.contact_name,
+        )
+
+    def _message_conversation_label(self, message: StoredMessageRecord) -> str:
+        if self._is_group_message(message):
+            return (message.chat_name or "").strip() or message.chat_jid or "Grupo"
+        return message.contact_name.strip() or message.contact_phone or "Contato"
+
+    def _message_selection_bucket_key(self, message: StoredMessageRecord) -> str:
+        if self._is_group_message(message):
+            return self._message_conversation_key(message)
+        return self._message_person_key(message) or self._message_conversation_key(message)
+
+    def _message_speaker_label(self, message: StoredMessageRecord) -> str:
+        if message.direction == "outbound":
+            return "Dono"
+        return self._message_person_name(message)
+
     def _group_messages_by_person(self, messages: list[StoredMessageRecord]) -> dict[str, list[StoredMessageRecord]]:
         groups: dict[str, list[StoredMessageRecord]] = {}
         for message in messages:
-            person_key = self.store.build_person_key(
-                contact_phone=message.contact_phone,
-                chat_jid=message.chat_jid,
-                contact_name=message.contact_name,
-            )
+            person_key = self._message_person_key(message)
+            if person_key is None:
+                continue
             groups.setdefault(person_key, []).append(message)
         return groups
 
@@ -2442,16 +2531,14 @@ class MemoryAnalysisService:
 
         groups: dict[str, dict[str, object]] = {}
         for message in messages:
-            key = self.store.build_person_key(
-                contact_phone=message.contact_phone,
-                chat_jid=message.chat_jid,
-                contact_name=message.contact_name,
-            )
+            key = self._message_conversation_key(message)
             group = groups.get(key)
+            is_group = self._is_group_message(message)
             if group is None:
                 group = {
-                    "person_key": key,
-                    "contact_name": message.contact_name.strip() or message.contact_phone or "Contato",
+                    "conversation_key": key,
+                    "conversation_label": self._message_conversation_label(message),
+                    "chat_type": "group" if is_group else "direct",
                     "contact_phone": message.contact_phone,
                     "chat_jid": message.chat_jid,
                     "inbound_count": 0,
@@ -2474,7 +2561,11 @@ class MemoryAnalysisService:
 
             samples = group["samples"]
             if isinstance(samples, list) and len(samples) < 2:
-                direction_label = "Dono -> contato" if message.direction == "outbound" else "Contato -> dono"
+                if is_group:
+                    speaker = self._message_speaker_label(message)
+                    direction_label = "Dono -> grupo" if message.direction == "outbound" else f"{speaker} -> grupo"
+                else:
+                    direction_label = "Dono -> contato" if message.direction == "outbound" else "Contato -> dono"
                 samples.append(f"{direction_label}: {self._summarize_message_text(message.message_text, 140)}")
 
         ordered_groups = sorted(
@@ -2492,8 +2583,9 @@ class MemoryAnalysisService:
         for group in ordered_groups[:12]:
             total_messages = int(group["inbound_count"]) + int(group["outbound_count"])
             lines = [
-                f"- person_key: {group['person_key']}",
-                f"  Conversa: {group['contact_name']}",
+                f"- conversation_key: {group['conversation_key']}",
+                f"  Conversa: {group['conversation_label']}",
+                f"  Tipo: {'grupo' if group['chat_type'] == 'group' else 'direta'}",
                 f"  Identificador: {group['contact_phone'] or group['chat_jid'] or 'indisponivel'}",
                 (
                     f"  Volume: {total_messages} mensagens "
@@ -2565,11 +2657,7 @@ class MemoryAnalysisService:
             return 0, 0, 0, 0
 
         contact_keys = {
-            self.store.build_person_key(
-                contact_phone=message.contact_phone,
-                chat_jid=message.chat_jid,
-                contact_name=message.contact_name,
-            )
+            self._message_person_key(message) or self._message_conversation_key(message)
             for message in messages
         }
         inbound_message_count = sum(1 for message in messages if message.direction != "outbound")
@@ -2653,9 +2741,18 @@ class MemoryAnalysisService:
 
     def _render_message_line(self, message: StoredMessageRecord) -> str:
         timestamp = message.timestamp.astimezone(UTC).strftime("%Y-%m-%d %H:%M")
-        contact = message.contact_name.strip() or message.contact_phone or "Contato"
-        direction = f"Dono -> {contact}" if message.direction == "outbound" else f"{contact} -> Dono"
         text = " ".join(message.message_text.split())
+        if self._is_group_message(message):
+            group_label = self._message_conversation_label(message)
+            speaker = self._message_speaker_label(message)
+            direction = (
+                f"Dono -> Grupo {group_label}"
+                if message.direction == "outbound"
+                else f"{speaker} -> Grupo {group_label}"
+            )
+            return f"[{timestamp} UTC] {direction}: {text}"
+        contact = self._message_conversation_label(message)
+        direction = f"Dono -> {contact}" if message.direction == "outbound" else f"{contact} -> Dono"
         return f"[{timestamp} UTC] {direction}: {text}"
 
     def _summarize_message_text(self, text: str, max_length: int) -> str:
@@ -2671,11 +2768,17 @@ class MemoryAnalysisService:
             if not text:
                 continue
             timestamp = message.timestamp.astimezone(UTC).strftime("%Y-%m-%d %H:%M")
-            speaker = message.contact_name.strip() or message.contact_phone or "Contato"
             direction = "outbound" if message.direction == "outbound" else "inbound"
-            lines.append(
-                f"- message_id={message.message_id} | {timestamp} UTC | {direction} | contato={speaker} | texto={text}"
-            )
+            if self._is_group_message(message):
+                lines.append(
+                    f"- message_id={message.message_id} | {timestamp} UTC | {direction} | "
+                    f"grupo={self._message_conversation_label(message)} | participante={self._message_speaker_label(message)} | texto={text}"
+                )
+            else:
+                lines.append(
+                    f"- message_id={message.message_id} | {timestamp} UTC | {direction} | "
+                    f"contato={self._message_speaker_label(message)} | texto={text}"
+                )
         return "\n".join(lines)
 
     def _build_saved_important_messages_block(self, messages: list[ImportantMessageRecord]) -> str:
@@ -2917,7 +3020,7 @@ class MemoryAnalysisService:
                 0,
                 "Sem material",
                 False,
-                "Ainda nao ha mensagens diretas textuais suficientes nessa janela para justificar leitura.",
+                "Ainda nao ha mensagens textuais suficientes nessa janela para justificar leitura.",
             )
 
         hours_since_last_analysis = None
@@ -2972,7 +3075,7 @@ class MemoryAnalysisService:
             label = self._label_for_score(score)
             summary = (
                 f"A ultima analise ja tem {round(hours_since_last_analysis)}h e a janela atual ainda traz "
-                f"{selected_message_count} mensagens diretas aproveitaveis. Vale uma releitura para manter a memoria fresca."
+                f"{selected_message_count} mensagens aproveitaveis. Vale uma releitura para manter a memoria fresca."
             )
             return score, label, True, summary
 

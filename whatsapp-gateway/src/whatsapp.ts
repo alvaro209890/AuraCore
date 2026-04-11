@@ -45,12 +45,17 @@ type ContactNameSource =
 
 type IngestMessagePayload = {
   message_id: string;
+  chat_type: "direct" | "group";
+  chat_name: string;
   direction: "inbound" | "outbound";
   from_me: boolean;
   contact_name: string;
   contact_name_source: string;
   chat_jid: string;
-  contact_phone: string;
+  contact_phone: string | null;
+  participant_name: string | null;
+  participant_phone: string | null;
+  participant_jid: string | null;
   message_text: string;
   timestamp: string;
   source: "baileys";
@@ -62,6 +67,7 @@ type ContactProfile = {
   notify?: string | null;
   verifiedName?: string | null;
   verifiedBizName?: string | null;
+  subject?: string | null;
 };
 
 type GatewayContactLike = ContactProfile & {
@@ -303,7 +309,15 @@ export class WhatsAppGatewayChannel {
       logger: baileysLogger,
       printQRInTerminal: false,
       syncFullHistory: this.channelName === "observer",
-      shouldIgnoreJid: (jid) => !isDirectUserJid(jid),
+      shouldIgnoreJid: (jid) => {
+        if (isStatusJid(jid) || isBroadcastJid(jid) || isNewsletterJid(jid)) {
+          return true;
+        }
+        if (this.channelName === "observer") {
+          return false;
+        }
+        return !isDirectUserJid(jid);
+      },
       browser: Browsers.macOS(`AuraCore-${this.instanceName}`),
       // Let Baileys recover linked-device decrypt retries that show up as
       // "Aguardando mensagem" by looking up the original outgoing payload.
@@ -602,7 +616,12 @@ export class WhatsAppGatewayChannel {
       return null;
     }
 
-    if (!isDirectUserJid(resolvedChatJid)) {
+    const isGroupChat = isGroupJid(rawRemoteJid) || isGroupJid(resolvedChatJid);
+    if (isGroupChat && this.channelName !== "observer") {
+      return null;
+    }
+
+    if (!isGroupChat && !isDirectUserJid(resolvedChatJid)) {
       return null;
     }
 
@@ -613,6 +632,29 @@ export class WhatsAppGatewayChannel {
     const messageText = extractMessageText(message).trim();
     if (!messageText) {
       return null;
+    }
+
+    if (isGroupChat) {
+      const chatName = this.resolveGroupName(rawRemoteJid, resolvedChatJid);
+      const participant = this.resolveParticipantIdentity(message, key);
+      return {
+        message_id: key.id,
+        chat_type: "group",
+        chat_name: chatName,
+        direction: key.fromMe ? "outbound" : "inbound",
+        from_me: Boolean(key.fromMe),
+        contact_name: participant.value,
+        contact_name_source: participant.source,
+        chat_jid: rawRemoteJid,
+        contact_phone: participant.phone,
+        participant_name: participant.value,
+        participant_phone: participant.phone,
+        participant_jid: participant.jid,
+        message_text: messageText,
+        timestamp: toIsoTimestamp(message.messageTimestamp),
+        source: "baileys",
+        source_event: sourceEvent,
+      };
     }
 
     const contactPhone = jidToPhone(resolvedChatJid);
@@ -628,17 +670,129 @@ export class WhatsAppGatewayChannel {
     );
     return {
       message_id: key.id,
+      chat_type: "direct",
+      chat_name: contactName || contactPhone,
       direction: key.fromMe ? "outbound" : "inbound",
       from_me: Boolean(key.fromMe),
       contact_name: contactName || contactPhone,
       contact_name_source: contactNameSource,
       chat_jid: resolvedChatJid,
       contact_phone: contactPhone,
+      participant_name: null,
+      participant_phone: null,
+      participant_jid: null,
       message_text: messageText,
       timestamp: toIsoTimestamp(message.messageTimestamp),
       source: "baileys",
       source_event: sourceEvent,
     };
+  }
+
+  private resolveGroupName(rawRemoteJid: string, resolvedChatJid: string): string {
+    const socketWithContacts = this.socket as
+      | (WASocket & {
+          contacts?: Record<string, ContactProfile>;
+        })
+      | null;
+    const resolvedContact = socketWithContacts?.contacts?.[resolvedChatJid];
+    const rawContact = socketWithContacts?.contacts?.[rawRemoteJid];
+    const candidates = [
+      resolvedContact?.subject,
+      rawContact?.subject,
+      resolvedContact?.name,
+      rawContact?.name,
+      resolvedContact?.notify,
+      rawContact?.notify,
+    ];
+
+    for (const candidate of candidates) {
+      const text = String(candidate ?? "").trim();
+      if (text) {
+        return text;
+      }
+    }
+
+    const groupId = (rawRemoteJid || resolvedChatJid).split("@")[0] ?? "";
+    return groupId ? `Grupo ${groupId}` : "Grupo";
+  }
+
+  private resolveParticipantIdentity(
+    message: BaileysProto.IWebMessageInfo,
+    key: BaileysProto.IMessageKey,
+  ): { value: string; source: ContactNameSource; phone: string | null; jid: string | null } {
+    if (key.fromMe) {
+      return { value: "Dono", source: "phone", phone: this.ownerNumber, jid: this.socket?.user?.id ?? null };
+    }
+
+    const participantJid = this.resolveParticipantJid(key);
+    const normalizedParticipantJid = this.normalizePhoneJidCandidate(participantJid) ?? participantJid?.trim() ?? null;
+    const participantPhone = normalizedParticipantJid ? jidToPhone(normalizedParticipantJid) || null : null;
+    const socketWithContacts = this.socket as
+      | (WASocket & {
+          contacts?: Record<string, ContactProfile>;
+        })
+      | null;
+    const participantContact = normalizedParticipantJid ? socketWithContacts?.contacts?.[normalizedParticipantJid] : null;
+    const rawContact = participantJid ? socketWithContacts?.contacts?.[participantJid] : null;
+    const cachedName = participantPhone ? this.knownContactNames.get(participantPhone) : null;
+    const cachedSource = participantPhone ? this.knownContactNameSources.get(participantPhone) : null;
+    const candidates: Array<{ value: string | null | undefined; source: ContactNameSource }> = [
+      { value: participantContact?.name || rawContact?.name, source: "saved_contact" },
+      { value: participantContact?.verifiedBizName || rawContact?.verifiedBizName, source: "verified_business" },
+      { value: participantContact?.verifiedName || rawContact?.verifiedName, source: "verified_name" },
+      { value: message.pushName || participantContact?.notify || rawContact?.notify, source: "push_name" },
+      {
+        value: cachedName,
+        source:
+          cachedSource && cachedSource !== "phone"
+            ? (cachedSource as ContactNameSource)
+            : "cached_history",
+      },
+    ];
+
+    for (const candidate of candidates) {
+      const text = String(candidate.value ?? "").trim();
+      if (!this.isUsefulContactName(text, participantPhone)) {
+        continue;
+      }
+      if (participantPhone) {
+        this.rememberContactName(participantPhone, text, candidate.source);
+      }
+      return { value: text, source: candidate.source, phone: participantPhone, jid: normalizedParticipantJid };
+    }
+
+    if (participantPhone) {
+      return { value: participantPhone, source: "phone", phone: participantPhone, jid: normalizedParticipantJid };
+    }
+
+    if (normalizedParticipantJid) {
+      return { value: normalizedParticipantJid.split("@")[0] ?? "Participante", source: "phone", phone: null, jid: normalizedParticipantJid };
+    }
+
+    return { value: "Participante", source: "phone", phone: null, jid: null };
+  }
+
+  private resolveParticipantJid(key: BaileysProto.IMessageKey): string | null {
+    const enrichedKey = key as MessageKeyWithLid;
+    const candidates = [key.participant, enrichedKey.participantPn, enrichedKey.remoteJidAlt];
+    for (const candidate of candidates) {
+      const trimmed = String(candidate ?? "").trim();
+      if (!trimmed) {
+        continue;
+      }
+      const normalizedPhoneJid = this.normalizePhoneJidCandidate(trimmed);
+      if (normalizedPhoneJid) {
+        return normalizedPhoneJid;
+      }
+      if (trimmed.endsWith("@lid")) {
+        const normalized = this.normalizePhoneJidCandidate(trimmed);
+        if (normalized) {
+          return normalized;
+        }
+      }
+      return trimmed;
+    }
+    return null;
   }
 
   private resolveContactName(
@@ -890,10 +1044,13 @@ export class WhatsAppGatewayChannel {
     this.knownContactNameSources.set(contactPhone, source);
   }
 
-  private isUsefulContactName(name: string | null | undefined, contactPhone: string): boolean {
+  private isUsefulContactName(name: string | null | undefined, contactPhone: string | null | undefined): boolean {
     const trimmed = String(name ?? "").trim();
     if (!trimmed) {
       return false;
+    }
+    if (!contactPhone) {
+      return true;
     }
     if (trimmed === contactPhone) {
       return false;

@@ -1,9 +1,14 @@
 CREATE TABLE IF NOT EXISTS mensagens (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,
+  chat_type TEXT NOT NULL DEFAULT 'direct',
+  chat_name TEXT,
   contact_name TEXT NOT NULL,
   chat_jid TEXT,
   contact_phone TEXT,
+  participant_name TEXT,
+  participant_phone TEXT,
+  participant_jid TEXT,
   direction TEXT NOT NULL DEFAULT 'inbound',
   message_text TEXT NOT NULL,
   timestamp TEXT NOT NULL,
@@ -17,6 +22,7 @@ CREATE TABLE IF NOT EXISTS mensagens (
 );
 
 CREATE INDEX IF NOT EXISTS mensagens_user_timestamp_idx ON mensagens (user_id, timestamp DESC);
+CREATE INDEX IF NOT EXISTS mensagens_user_chat_type_timestamp_idx ON mensagens (user_id, chat_type, timestamp DESC);
 CREATE INDEX IF NOT EXISTS mensagens_user_direction_timestamp_idx ON mensagens (user_id, direction, timestamp DESC);
 CREATE INDEX IF NOT EXISTS mensagens_user_chat_jid_timestamp_idx ON mensagens (user_id, chat_jid, timestamp DESC);
 CREATE INDEX IF NOT EXISTS mensagens_user_contact_phone_timestamp_idx ON mensagens (user_id, contact_phone, timestamp DESC);
@@ -45,6 +51,21 @@ CREATE TABLE IF NOT EXISTS whatsapp_known_contacts (
 CREATE INDEX IF NOT EXISTS whatsapp_known_contacts_user_phone_idx ON whatsapp_known_contacts (user_id, contact_phone);
 CREATE INDEX IF NOT EXISTS whatsapp_known_contacts_user_chat_jid_idx ON whatsapp_known_contacts (user_id, chat_jid);
 CREATE INDEX IF NOT EXISTS whatsapp_known_contacts_user_seen_idx ON whatsapp_known_contacts (user_id, last_seen_at DESC);
+
+CREATE TABLE IF NOT EXISTS whatsapp_known_groups (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  chat_jid TEXT NOT NULL,
+  chat_name TEXT NOT NULL DEFAULT '',
+  enabled_for_analysis INTEGER NOT NULL DEFAULT 0,
+  last_seen_at TEXT,
+  updated_at TEXT NOT NULL,
+  UNIQUE (user_id, chat_jid)
+);
+
+CREATE INDEX IF NOT EXISTS whatsapp_known_groups_user_chat_idx ON whatsapp_known_groups (user_id, chat_jid);
+CREATE INDEX IF NOT EXISTS whatsapp_known_groups_user_enabled_idx ON whatsapp_known_groups (user_id, enabled_for_analysis, updated_at DESC);
+CREATE INDEX IF NOT EXISTS whatsapp_known_groups_user_seen_idx ON whatsapp_known_groups (user_id, last_seen_at DESC);
 
 CREATE TABLE IF NOT EXISTS persona (
   user_id TEXT PRIMARY KEY,

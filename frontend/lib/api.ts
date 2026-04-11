@@ -147,6 +147,16 @@ export type MemoryStatus = {
   can_execute_analysis: boolean;
 };
 
+export type WhatsAppGroupSelection = {
+  chat_jid: string;
+  chat_name: string;
+  enabled_for_analysis: boolean;
+  last_seen_at: string | null;
+  last_message_at: string | null;
+  message_count: number;
+  pending_message_count: number;
+};
+
 export type MemorySnapshot = {
   id: string;
   window_hours: number;
@@ -283,6 +293,10 @@ export type RefineMemoryResponse = {
 
 export type MemorySnapshotsListResponse = {
   snapshots: MemorySnapshot[];
+};
+
+export type WhatsAppGroupSelectionsListResponse = {
+  groups: WhatsAppGroupSelection[];
 };
 
 export type ImportantMessagesListResponse = {
@@ -619,6 +633,21 @@ export async function getImportantMessages(limit = 80): Promise<ImportantMessage
 
 export async function getMemoryProjects(): Promise<ProjectMemory[]> {
   return request<ProjectMemory[]>("/api/memories/projects");
+}
+
+export async function getMemoryGroups(): Promise<WhatsAppGroupSelection[]> {
+  const response = await request<WhatsAppGroupSelectionsListResponse>("/api/memories/groups");
+  return response.groups;
+}
+
+export async function updateMemoryGroupSelection(
+  chatJid: string,
+  enabledForAnalysis: boolean,
+): Promise<WhatsAppGroupSelection> {
+  return request<WhatsAppGroupSelection>(`/api/memories/groups/${encodeURIComponent(chatJid)}`, {
+    method: "PUT",
+    body: JSON.stringify({ enabled_for_analysis: enabledForAnalysis }),
+  });
 }
 
 export async function clearSavedDatabase(): Promise<SimpleOkResponse> {

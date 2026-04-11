@@ -27,7 +27,10 @@ from app.schemas import (
     ModelRunResponse,
     ProjectMemoryResponse,
     SimpleOkResponse,
+    UpdateWhatsAppGroupSelectionRequest,
     WhatsAppSyncRunResponse,
+    WhatsAppGroupSelectionResponse,
+    WhatsAppGroupSelectionsListResponse,
 )
 from app.services.memory_job_service import MemoryActivitySnapshot, MemoryJobService
 from app.services.memory_service import MemoryAnalysisService
@@ -35,6 +38,7 @@ from app.services.observer_gateway import ObserverGatewayService, WhatsAppAgentG
 from app.services.supabase_store import (
     AnalysisJobRecord,
     ImportantMessageRecord,
+    KnownGroupRecord,
     MemorySnapshotRecord,
     ModelRunRecord,
     PersonaRecord,
@@ -201,6 +205,56 @@ async def get_memory_projects(
     return [_to_project_response(project) for project in memory_service.list_projects()]
 
 
+@router.get("/groups", response_model=WhatsAppGroupSelectionsListResponse)
+async def get_memory_groups(
+    store: SupabaseStore = Depends(get_supabase_store),
+) -> WhatsAppGroupSelectionsListResponse:
+    groups = await run_in_threadpool(store.list_known_groups, user_id=store.default_user_id)
+    responses: list[WhatsAppGroupSelectionResponse] = []
+    for group in groups:
+        last_message_at, message_count, pending_message_count = await run_in_threadpool(
+            store.get_known_group_message_stats,
+            user_id=store.default_user_id,
+            chat_jid=group.chat_jid,
+        )
+        responses.append(
+            _to_group_selection_response(
+                group,
+                last_message_at=last_message_at,
+                message_count=message_count,
+                pending_message_count=pending_message_count,
+            )
+        )
+    return WhatsAppGroupSelectionsListResponse(groups=responses)
+
+
+@router.put("/groups/{chat_jid:path}", response_model=WhatsAppGroupSelectionResponse)
+async def update_memory_group_selection(
+    chat_jid: str,
+    request: UpdateWhatsAppGroupSelectionRequest,
+    store: SupabaseStore = Depends(get_supabase_store),
+) -> WhatsAppGroupSelectionResponse:
+    updated = await run_in_threadpool(
+        store.update_known_group_selection,
+        user_id=store.default_user_id,
+        chat_jid=chat_jid,
+        enabled_for_analysis=request.enabled_for_analysis,
+    )
+    if updated is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Grupo nao encontrado.")
+    last_message_at, message_count, pending_message_count = await run_in_threadpool(
+        store.get_known_group_message_stats,
+        user_id=store.default_user_id,
+        chat_jid=updated.chat_jid,
+    )
+    return _to_group_selection_response(
+        updated,
+        last_message_at=last_message_at,
+        message_count=message_count,
+        pending_message_count=pending_message_count,
+    )
+
+
 @router.delete("/database", response_model=SimpleOkResponse)
 async def clear_saved_database(
     memory_job_service: MemoryJobService = Depends(get_memory_job_service),
@@ -310,6 +364,24 @@ def _to_project_response(project: ProjectMemoryRecord) -> ProjectMemoryResponse:
         source_snapshot_id=project.source_snapshot_id,
         last_seen_at=project.last_seen_at,
         updated_at=project.updated_at,
+    )
+
+
+def _to_group_selection_response(
+    group: KnownGroupRecord,
+    *,
+    last_message_at: Any,
+    message_count: int,
+    pending_message_count: int,
+) -> WhatsAppGroupSelectionResponse:
+    return WhatsAppGroupSelectionResponse(
+        chat_jid=group.chat_jid,
+        chat_name=group.chat_name,
+        enabled_for_analysis=group.enabled_for_analysis,
+        last_seen_at=group.last_seen_at,
+        last_message_at=last_message_at,
+        message_count=message_count,
+        pending_message_count=pending_message_count,
     )
 
 

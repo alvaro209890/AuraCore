@@ -18,7 +18,12 @@ OPERATIVE_MESSAGE_LIMIT = 150
 
 SQLITE_LEGACY_COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
     "mensagens": {
+        "chat_type": "TEXT DEFAULT 'direct'",
+        "chat_name": "TEXT",
         "chat_jid": "TEXT",
+        "participant_name": "TEXT",
+        "participant_phone": "TEXT",
+        "participant_jid": "TEXT",
         "embedding": "TEXT",
         "ingested_at": "TEXT",
         "analysis_status": "TEXT DEFAULT 'pending'",
@@ -41,6 +46,12 @@ SQLITE_LEGACY_COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
     "message_retention_state": {
         "observer_history_cutoff_at": "TEXT",
     },
+    "whatsapp_known_groups": {
+        "chat_name": "TEXT DEFAULT ''",
+        "enabled_for_analysis": "INTEGER DEFAULT 0",
+        "last_seen_at": "TEXT",
+        "updated_at": "TEXT",
+    },
     "memory_snapshots": {
         "distinct_contact_count": "INTEGER DEFAULT 0",
         "inbound_message_count": "INTEGER DEFAULT 0",
@@ -54,12 +65,17 @@ SQLITE_LEGACY_COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
 class IngestedMessageRecord:
     message_id: str
     user_id: UUID
+    chat_type: str
+    chat_name: str | None
     direction: str
     contact_name: str
     chat_jid: str
     contact_phone: str | None
     message_text: str
     timestamp: datetime
+    participant_name: str | None = None
+    participant_phone: str | None = None
+    participant_jid: str | None = None
     contact_name_source: str = "unknown"
     source: str = "baileys"
     source_event: str | None = None
@@ -76,6 +92,8 @@ class IngestSaveResult:
 class StoredMessageRecord:
     message_id: str
     user_id: UUID
+    chat_type: str
+    chat_name: str | None
     direction: str
     contact_name: str
     chat_jid: str | None
@@ -83,6 +101,9 @@ class StoredMessageRecord:
     message_text: str
     timestamp: datetime
     source: str
+    participant_name: str | None = None
+    participant_phone: str | None = None
+    participant_jid: str | None = None
     analysis_status: str = "pending"
     analysis_job_id: str | None = None
     analysis_started_at: datetime | None = None
@@ -227,6 +248,17 @@ class KnownContactRecord:
     chat_jid: str | None
     contact_name: str
     name_source: str
+    last_seen_at: datetime | None
+    updated_at: datetime
+
+
+@dataclass(slots=True)
+class KnownGroupRecord:
+    id: str
+    user_id: UUID
+    chat_jid: str
+    chat_name: str
+    enabled_for_analysis: bool
     last_seen_at: datetime | None
     updated_at: datetime
 
@@ -513,23 +545,48 @@ class SupabaseStore:
         self._apply_local_schema_migrations()
 
     def save_ingested_messages(self, messages: Sequence[IngestedMessageRecord]) -> IngestSaveResult:
-        filtered_messages = [message for message in messages if self.is_normal_contact_phone(message.contact_phone)]
+        filtered_messages = [message for message in messages if self._is_valid_ingest_message(message)]
         if not filtered_messages:
             return IngestSaveResult(saved_count=0, ignored_count=0)
 
         for message in filtered_messages:
-            self.upsert_known_contact(
-                user_id=self.default_user_id,
-                contact_phone=message.contact_phone,
-                chat_jid=message.chat_jid,
-                contact_name=message.contact_name,
-                name_source=message.contact_name_source,
-                seen_at=message.timestamp,
-            )
+            if self._normalize_chat_type(message.chat_type) == "group":
+                self.upsert_known_group(
+                    user_id=self.default_user_id,
+                    chat_jid=message.chat_jid,
+                    chat_name=message.chat_name or message.contact_name,
+                    seen_at=message.timestamp,
+                )
+                if self.is_normal_contact_phone(message.participant_phone):
+                    self.upsert_known_contact(
+                        user_id=self.default_user_id,
+                        contact_phone=message.participant_phone,
+                        chat_jid=message.participant_jid,
+                        contact_name=message.participant_name or message.contact_name,
+                        name_source=message.contact_name_source,
+                        seen_at=message.timestamp,
+                    )
+            else:
+                self.upsert_known_contact(
+                    user_id=self.default_user_id,
+                    contact_phone=message.contact_phone,
+                    chat_jid=message.chat_jid,
+                    contact_name=message.contact_name,
+                    name_source=message.contact_name_source,
+                    seen_at=message.timestamp,
+                )
 
         self.reconcile_observer_backlog(user_id=self.default_user_id)
         known_contact_names = self._load_known_contact_names(
-            [message.contact_phone for message in filtered_messages if message.contact_phone]
+            [
+                phone
+                for message in filtered_messages
+                for phone in (
+                    message.contact_phone if self._normalize_chat_type(message.chat_type) != "group" else None,
+                    message.participant_phone,
+                )
+                if phone
+            ]
         )
         existing_ids = self._fetch_existing_message_ids([message.message_id for message in filtered_messages])
         new_messages = [
@@ -544,7 +601,11 @@ class SupabaseStore:
         pending_messages: list[IngestedMessageRecord] = []
         stale_history_messages: list[IngestedMessageRecord] = []
         for message in new_messages:
-            if cutoff_at is not None and message.timestamp < cutoff_at:
+            if (
+                cutoff_at is not None
+                and self._normalize_chat_type(message.chat_type) != "group"
+                and message.timestamp < cutoff_at
+            ):
                 stale_history_messages.append(message)
             else:
                 pending_messages.append(message)
@@ -562,17 +623,32 @@ class SupabaseStore:
         resolved_now = datetime.now(UTC)
         records: list[dict[str, Any]] = []
         for message in pending_messages:
+            person_phone = (
+                message.participant_phone
+                if self._normalize_chat_type(message.chat_type) == "group"
+                else message.contact_phone
+            )
+            incoming_contact_name = (
+                message.participant_name
+                if self._normalize_chat_type(message.chat_type) == "group"
+                else message.contact_name
+            )
             records.append(
                 {
                     "id": message.message_id,
                     "user_id": str(message.user_id),
+                    "chat_type": self._normalize_chat_type(message.chat_type),
+                    "chat_name": self._optional_text(message.chat_name) or self._optional_text(message.contact_name),
                     "contact_name": self._resolve_contact_name(
-                        incoming_name=message.contact_name,
-                        contact_phone=message.contact_phone,
-                        known_name=known_contact_names.get(message.contact_phone or ""),
+                        incoming_name=incoming_contact_name,
+                        contact_phone=person_phone,
+                        known_name=known_contact_names.get(person_phone or ""),
                     ),
                     "chat_jid": message.chat_jid,
                     "contact_phone": message.contact_phone,
+                    "participant_name": self._optional_text(message.participant_name),
+                    "participant_phone": self.normalize_contact_phone(message.participant_phone),
+                    "participant_jid": self._optional_text(message.participant_jid),
                     "direction": message.direction,
                     "message_text": message.message_text,
                     "timestamp": message.timestamp.isoformat(),
@@ -598,7 +674,12 @@ class SupabaseStore:
             self.client.table("mensagens").upsert(records, on_conflict="id").execute()
         except Exception as exc:
             if not (
-                self._is_missing_column_error(exc, column_name="chat_jid", table_name="mensagens")
+                self._is_missing_column_error(exc, column_name="chat_type", table_name="mensagens")
+                or self._is_missing_column_error(exc, column_name="chat_name", table_name="mensagens")
+                or self._is_missing_column_error(exc, column_name="chat_jid", table_name="mensagens")
+                or self._is_missing_column_error(exc, column_name="participant_name", table_name="mensagens")
+                or self._is_missing_column_error(exc, column_name="participant_phone", table_name="mensagens")
+                or self._is_missing_column_error(exc, column_name="participant_jid", table_name="mensagens")
                 or self._is_missing_column_error(exc, column_name="ingested_at", table_name="mensagens")
                 or self._is_missing_column_error(exc, column_name="analysis_status", table_name="mensagens")
                 or self._is_missing_column_error(exc, column_name="analysis_job_id", table_name="mensagens")
@@ -609,7 +690,12 @@ class SupabaseStore:
             legacy_records = []
             for record in records:
                 legacy_record = dict(record)
+                legacy_record.pop("chat_type", None)
+                legacy_record.pop("chat_name", None)
                 legacy_record.pop("chat_jid", None)
+                legacy_record.pop("participant_name", None)
+                legacy_record.pop("participant_phone", None)
+                legacy_record.pop("participant_jid", None)
                 legacy_record.pop("ingested_at", None)
                 legacy_record.pop("analysis_status", None)
                 legacy_record.pop("analysis_job_id", None)
@@ -617,14 +703,17 @@ class SupabaseStore:
                 legacy_record.pop("analyzed_at", None)
                 legacy_records.append(legacy_record)
             self.client.table("mensagens").upsert(legacy_records, on_conflict="id").execute()
-        if new_message_count > 0:
+        direct_pending_messages = [
+            message for message in pending_messages if self._normalize_chat_type(message.chat_type) != "group"
+        ]
+        if direct_pending_messages:
             latest_ingested_at = max(
-                (message.timestamp for message in pending_messages),
+                (message.timestamp for message in direct_pending_messages),
                 default=None,
             )
             self.bump_message_retention_state(
                 user_id=self.default_user_id,
-                ingested_increment=new_message_count,
+                ingested_increment=len(direct_pending_messages),
                 last_message_at=latest_ingested_at,
             )
         self.prune_non_direct_messages(self.default_user_id)
@@ -712,11 +801,82 @@ class SupabaseStore:
         if not cleaned_messages:
             return [], [], []
 
+        direct_messages = [
+            message for message in cleaned_messages if self._normalize_chat_type(message.chat_type) != "group"
+        ]
+        group_messages = [
+            message for message in cleaned_messages if self._normalize_chat_type(message.chat_type) == "group"
+        ]
+
+        accepted_direct, overflow_direct, trimmed_direct_ids = self._prepare_direct_ingest_batch(direct_messages)
+        accepted_group, overflow_group, trimmed_group_ids = self._prepare_group_ingest_batch(group_messages)
+        return (
+            [*accepted_direct, *accepted_group],
+            [*overflow_direct, *overflow_group],
+            [*trimmed_direct_ids, *trimmed_group_ids],
+        )
+
+    def _prepare_direct_ingest_batch(
+        self,
+        pending_messages: Sequence[IngestedMessageRecord],
+    ) -> tuple[list[IngestedMessageRecord], list[str], list[str]]:
+        cleaned_messages = [message for message in pending_messages if message.message_id.strip()]
+        if not cleaned_messages:
+            return [], [], []
+
         if self._has_initial_memory_analysis():
             return cleaned_messages, [], []
 
         limit = self.first_analysis_queue_limit
-        existing_pending = self._list_pending_message_refs(user_id=self.default_user_id)
+        existing_pending = self._list_pending_message_refs(user_id=self.default_user_id, chat_type="direct")
+        combined: list[tuple[datetime, str, str | None, IngestedMessageRecord | None]] = [
+            (message.timestamp, message.message_id, "incoming", message)
+            for message in cleaned_messages
+        ]
+        combined.extend(
+            (timestamp, message_id, "existing", None)
+            for message_id, timestamp in existing_pending
+        )
+        combined.sort(key=lambda item: (item[0], item[1]), reverse=True)
+
+        kept_entries = combined[:limit]
+        kept_new_ids = {
+            message_id
+            for _timestamp, message_id, source, _message in kept_entries
+            if source == "incoming"
+        }
+        kept_existing_ids = {
+            message_id
+            for _timestamp, message_id, source, _message in kept_entries
+            if source == "existing"
+        }
+        accepted_messages = [
+            message
+            for message in cleaned_messages
+            if message.message_id in kept_new_ids
+        ]
+        overflow_message_ids = [
+            message.message_id
+            for message in cleaned_messages
+            if message.message_id not in kept_new_ids
+        ]
+        trimmed_existing_ids = [
+            message_id
+            for message_id, _timestamp in existing_pending
+            if message_id not in kept_existing_ids
+        ]
+        return accepted_messages, overflow_message_ids, trimmed_existing_ids
+
+    def _prepare_group_ingest_batch(
+        self,
+        pending_messages: Sequence[IngestedMessageRecord],
+    ) -> tuple[list[IngestedMessageRecord], list[str], list[str]]:
+        cleaned_messages = [message for message in pending_messages if message.message_id.strip()]
+        if not cleaned_messages:
+            return [], [], []
+
+        limit = self.message_retention_max_rows
+        existing_pending = self._list_pending_message_refs(user_id=self.default_user_id, chat_type="group")
         combined: list[tuple[datetime, str, str | None, IngestedMessageRecord | None]] = [
             (message.timestamp, message.message_id, "incoming", message)
             for message in cleaned_messages
@@ -792,20 +952,107 @@ class SupabaseStore:
             deleted_total += len(chunk)
         return deleted_total
 
+    def _stored_message_select_clause(self) -> str:
+        return (
+            "id,user_id,chat_type,chat_name,contact_name,chat_jid,contact_phone,"
+            "participant_name,participant_phone,participant_jid,direction,message_text,timestamp,source,"
+            "analysis_status,analysis_job_id,analysis_started_at,analyzed_at"
+        )
+
+    def _stored_message_select_clause_legacy(self) -> str:
+        return "id,user_id,contact_name,chat_jid,contact_phone,direction,message_text,timestamp,source"
+
+    def _extract_known_contact_name_phones(self, rows: Sequence[dict[str, Any]]) -> list[str | None]:
+        phones: list[str | None] = []
+        for row in rows:
+            phones.append(self._optional_text(row.get("contact_phone")))
+            phones.append(self._optional_text(row.get("participant_phone")))
+        return phones
+
+    def _build_stored_message_from_row(
+        self,
+        row: dict[str, Any],
+        *,
+        fallback_user_id: UUID,
+        known_contact_names: dict[str, str],
+    ) -> StoredMessageRecord | None:
+        message_id = str(row.get("id") or "").strip()
+        if not message_id:
+            return None
+        message_text = str(row.get("message_text") or "").strip()
+        if not message_text:
+            return None
+
+        chat_type = self._normalize_chat_type(row.get("chat_type"))
+        contact_phone = self.normalize_contact_phone(self._optional_text(row.get("contact_phone")))
+        participant_phone = self.normalize_contact_phone(self._optional_text(row.get("participant_phone")))
+        person_phone = participant_phone if chat_type == "group" else contact_phone
+        incoming_contact_name = (
+            self._optional_text(row.get("participant_name"))
+            if chat_type == "group"
+            else self._optional_text(row.get("contact_name"))
+        )
+        known_name = known_contact_names.get(person_phone or "", "")
+        if chat_type == "group" and not incoming_contact_name:
+            incoming_contact_name = self._optional_text(row.get("contact_name"))
+
+        if person_phone:
+            resolved_contact_name = self._resolve_contact_name(
+                incoming_name=incoming_contact_name,
+                contact_phone=person_phone,
+                known_name=known_name,
+            )
+        else:
+            resolved_contact_name = incoming_contact_name or self._optional_text(row.get("participant_jid")) or "Participante"
+
+        chat_name = self._optional_text(row.get("chat_name"))
+        if not chat_name:
+            chat_name = resolved_contact_name if chat_type == "direct" else self._optional_text(row.get("chat_jid")) or "Grupo"
+
+        return StoredMessageRecord(
+            message_id=message_id,
+            user_id=self._parse_uuid(row.get("user_id")) or fallback_user_id,
+            chat_type=chat_type,
+            chat_name=chat_name,
+            direction=str(row.get("direction") or "inbound"),
+            contact_name=resolved_contact_name,
+            chat_jid=self._optional_text(row.get("chat_jid")),
+            contact_phone=contact_phone,
+            message_text=message_text,
+            timestamp=self._parse_datetime(row.get("timestamp")) or datetime.now(UTC),
+            source=str(row.get("source") or "unknown"),
+            participant_name=self._optional_text(row.get("participant_name")),
+            participant_phone=participant_phone,
+            participant_jid=self._optional_text(row.get("participant_jid")),
+            analysis_status=self._optional_text(row.get("analysis_status")) or "pending",
+            analysis_job_id=self._optional_text(row.get("analysis_job_id")),
+            analysis_started_at=self._parse_datetime(row.get("analysis_started_at")),
+            analyzed_at=self._parse_datetime(row.get("analyzed_at")),
+        )
+
+    def _message_is_selected_for_analysis(
+        self,
+        message: StoredMessageRecord,
+        *,
+        include_groups: bool,
+        enabled_group_jids: set[str],
+    ) -> bool:
+        if self._normalize_chat_type(message.chat_type) == "group":
+            return bool(include_groups and message.chat_jid and message.chat_jid in enabled_group_jids)
+        return bool(self.is_normal_contact_phone(message.contact_phone) and (message.chat_jid is None or self.is_direct_chat_jid(message.chat_jid)))
+
     def list_messages_in_window(
         self,
         *,
         user_id: UUID,
         window_start: datetime,
         window_end: datetime,
+        include_groups: bool = False,
     ) -> list[StoredMessageRecord]:
         try:
             response = (
                 self.client.table("mensagens")
-                .select(
-                    "id,user_id,contact_name,chat_jid,contact_phone,direction,message_text,"
-                    "timestamp,source,analysis_status,analysis_job_id,analysis_started_at,analyzed_at"
-                )
+                .select(self._stored_message_select_clause())
                 .eq("user_id", str(user_id))
                 .gte("timestamp", window_start.isoformat())
                 .lte("timestamp", window_end.isoformat())
@@ -813,11 +1060,18 @@ class SupabaseStore:
                 .execute()
             )
         except Exception as exc:
-            if not self._is_missing_column_error(exc, column_name="chat_jid", table_name="mensagens"):
+            if not (
+                self._is_missing_column_error(exc, column_name="chat_type", table_name="mensagens")
+                or self._is_missing_column_error(exc, column_name="chat_name", table_name="mensagens")
+                or self._is_missing_column_error(exc, column_name="participant_name", table_name="mensagens")
+                or self._is_missing_column_error(exc, column_name="participant_phone", table_name="mensagens")
+                or self._is_missing_column_error(exc, column_name="participant_jid", table_name="mensagens")
+                or self._is_missing_column_error(exc, column_name="chat_jid", table_name="mensagens")
+            ):
                 raise
             response = (
                 self.client.table("mensagens")
-                .select("id,user_id,contact_name,contact_phone,direction,message_text,timestamp,source")
+                .select(self._stored_message_select_clause_legacy())
                 .eq("user_id", str(user_id))
                 .gte("timestamp", window_start.isoformat())
                 .lte("timestamp", window_end.isoformat())
@@ -825,39 +1079,25 @@ class SupabaseStore:
                 .execute()
             )
 
-        rows = response.data or []
-        known_contact_names = self._load_known_contact_names(
-            [self._optional_text(row.get("contact_phone")) for row in rows if isinstance(row, dict)]
-        )
+        rows = [row for row in (response.data or []) if isinstance(row, dict)]
+        known_contact_names = self._load_known_contact_names(self._extract_known_contact_name_phones(rows))
+        enabled_group_jids = self._list_enabled_group_chat_jids(user_id=user_id) if include_groups else set()
         messages: list[StoredMessageRecord] = []
         for row in rows:
-            if not isinstance(row, dict):
-                continue
-            message_text = str(row.get("message_text") or "").strip()
-            contact_phone = self._optional_text(row.get("contact_phone"))
-            if not message_text or not self.is_normal_contact_phone(contact_phone):
-                continue
-            messages.append(
-                StoredMessageRecord(
-                    message_id=str(row.get("id") or ""),
-                    user_id=self._parse_uuid(row.get("user_id")) or user_id,
-                    direction=str(row.get("direction") or "inbound"),
-                    contact_name=self._resolve_contact_name(
-                        incoming_name=self._optional_text(row.get("contact_name")),
-                        contact_phone=contact_phone,
-                        known_name=known_contact_names.get(contact_phone or ""),
-                    ),
-                    chat_jid=self._optional_text(row.get("chat_jid")),
-                    contact_phone=contact_phone,
-                    message_text=message_text,
-                    timestamp=self._parse_datetime(row.get("timestamp")) or datetime.now(UTC),
-                    source=str(row.get("source") or "unknown"),
-                    analysis_status=self._optional_text(row.get("analysis_status")) or "pending",
-                    analysis_job_id=self._optional_text(row.get("analysis_job_id")),
-                    analysis_started_at=self._parse_datetime(row.get("analysis_started_at")),
-                    analyzed_at=self._parse_datetime(row.get("analyzed_at")),
-                )
+            parsed = self._build_stored_message_from_row(
+                row,
+                fallback_user_id=user_id,
+                known_contact_names=known_contact_names,
             )
+            if parsed is None:
+                continue
+            if not self._message_is_selected_for_analysis(
+                parsed,
+                include_groups=include_groups,
+                enabled_group_jids=enabled_group_jids,
+            ):
+                continue
+            messages.append(parsed)
         return messages
 
     def list_pending_messages(
@@ -866,23 +1106,23 @@ class SupabaseStore:
         user_id: UUID,
         limit: int,
         newest_first: bool = False,
+        include_groups: bool = False,
     ) -> list[StoredMessageRecord]:
         self.reconcile_observer_backlog(user_id=user_id)
-        resolved_limit = max(1, min(limit, self.first_analysis_queue_limit))
+        upper_limit = self.message_retention_max_rows if include_groups else self.first_analysis_queue_limit
+        resolved_limit = max(1, min(limit, upper_limit))
         messages: list[StoredMessageRecord] = []
         seen_ids: set[str] = set()
-        chunk_size = min(500, self.first_analysis_queue_limit)
+        chunk_size = min(500, upper_limit)
         offset = 0
+        enabled_group_jids = self._list_enabled_group_chat_jids(user_id=user_id) if include_groups else set()
 
-        while len(messages) < resolved_limit and offset < self.first_analysis_queue_limit:
-            range_end = min(offset + chunk_size - 1, self.first_analysis_queue_limit - 1)
+        while len(messages) < resolved_limit and offset < upper_limit:
+            range_end = min(offset + chunk_size - 1, upper_limit - 1)
             try:
                 response = (
                     self.client.table("mensagens")
-                    .select(
-                        "id,user_id,contact_name,chat_jid,contact_phone,direction,message_text,"
-                        "timestamp,source,analysis_status,analysis_job_id,analysis_started_at,analyzed_at"
-                    )
+                    .select(self._stored_message_select_clause())
                     .eq("user_id", str(user_id))
                     .eq("analysis_status", "pending")
                     .order("timestamp", desc=newest_first)
@@ -896,12 +1136,19 @@ class SupabaseStore:
                         limit=resolved_limit,
                         newest_first=newest_first,
                     )
-                if not self._is_missing_column_error(exc, column_name="chat_jid", table_name="mensagens"):
+                if not (
+                    self._is_missing_column_error(exc, column_name="chat_type", table_name="mensagens")
+                    or self._is_missing_column_error(exc, column_name="chat_name", table_name="mensagens")
+                    or self._is_missing_column_error(exc, column_name="participant_name", table_name="mensagens")
+                    or self._is_missing_column_error(exc, column_name="participant_phone", table_name="mensagens")
+                    or self._is_missing_column_error(exc, column_name="participant_jid", table_name="mensagens")
+                    or self._is_missing_column_error(exc, column_name="chat_jid", table_name="mensagens")
+                ):
                     raise
                 response = (
                     self.client.table("mensagens")
                     .select(
-                        "id,user_id,contact_name,contact_phone,direction,message_text,timestamp,source,"
+                        "id,user_id,contact_name,chat_jid,contact_phone,direction,message_text,timestamp,source,"
                         "analysis_status,analysis_job_id,analysis_started_at,analyzed_at"
                     )
                     .eq("user_id", str(user_id))
@@ -914,40 +1161,24 @@ class SupabaseStore:
             rows = [row for row in (response.data or []) if isinstance(row, dict)]
             if not rows:
                 break
-            known_contact_names = self._load_known_contact_names(
-                [self._optional_text(row.get("contact_phone")) for row in rows]
-            )
+            known_contact_names = self._load_known_contact_names(self._extract_known_contact_name_phones(rows))
 
             for row in rows:
-                message_id = str(row.get("id") or "").strip()
-                if not message_id or message_id in seen_ids:
-                    continue
-                message_text = str(row.get("message_text") or "").strip()
-                contact_phone = self._optional_text(row.get("contact_phone"))
-                if not message_text or not self.is_normal_contact_phone(contact_phone):
-                    continue
-                seen_ids.add(message_id)
-                messages.append(
-                    StoredMessageRecord(
-                        message_id=message_id,
-                        user_id=self._parse_uuid(row.get("user_id")) or user_id,
-                        direction=str(row.get("direction") or "inbound"),
-                        contact_name=self._resolve_contact_name(
-                            incoming_name=self._optional_text(row.get("contact_name")),
-                            contact_phone=contact_phone,
-                            known_name=known_contact_names.get(contact_phone or ""),
-                        ),
-                        chat_jid=self._optional_text(row.get("chat_jid")),
-                        contact_phone=contact_phone,
-                        message_text=message_text,
-                        timestamp=self._parse_datetime(row.get("timestamp")) or datetime.now(UTC),
-                        source=str(row.get("source") or "unknown"),
-                        analysis_status=self._optional_text(row.get("analysis_status")) or "pending",
-                        analysis_job_id=self._optional_text(row.get("analysis_job_id")),
-                        analysis_started_at=self._parse_datetime(row.get("analysis_started_at")),
-                        analyzed_at=self._parse_datetime(row.get("analyzed_at")),
-                    )
+                parsed = self._build_stored_message_from_row(
+                    row,
+                    fallback_user_id=user_id,
+                    known_contact_names=known_contact_names,
                 )
+                if parsed is None or parsed.message_id in seen_ids:
+                    continue
+                if not self._message_is_selected_for_analysis(
+                    parsed,
+                    include_groups=include_groups,
+                    enabled_group_jids=enabled_group_jids,
+                ):
+                    continue
+                seen_ids.add(parsed.message_id)
+                messages.append(parsed)
                 if len(messages) >= resolved_limit:
                     break
 
@@ -1021,6 +1252,12 @@ class SupabaseStore:
                     StoredMessageRecord(
                         message_id=message_id,
                         user_id=self._parse_uuid(row.get("user_id")) or user_id,
+                        chat_type="direct",
+                        chat_name=self._resolve_contact_name(
+                            incoming_name=self._optional_text(row.get("contact_name")),
+                            contact_phone=contact_phone,
+                            known_name=known_contact_names.get(contact_phone or ""),
+                        ),
                         direction=str(row.get("direction") or "inbound"),
                         contact_name=self._resolve_contact_name(
                             incoming_name=self._optional_text(row.get("contact_name")),
@@ -1112,6 +1349,7 @@ class SupabaseStore:
             user_id=user_id,
             cutoff_at=cutoff_at,
             analysis_status="pending",
+            chat_type="direct",
         )
         candidate_ids = [message_id for message_id in stale_ids if message_id not in exclude_ids]
         return self._update_message_analysis_state(
@@ -1129,6 +1367,7 @@ class SupabaseStore:
         user_id: UUID,
         cutoff_at: datetime,
         analysis_status: str | None = None,
+        chat_type: str | None = None,
     ) -> list[str]:
         chunk_size = 500
         offset = 0
@@ -1138,7 +1377,7 @@ class SupabaseStore:
             try:
                 query = (
                     self.client.table("mensagens")
-                    .select("id")
+                    .select("id,chat_type")
                     .eq("user_id", str(user_id))
                     .lt("timestamp", cutoff_at.isoformat())
                     .order("timestamp", desc=False)
@@ -1146,6 +1385,8 @@ class SupabaseStore:
                 )
                 if analysis_status is not None:
                     query = query.eq("analysis_status", analysis_status)
+                if chat_type is not None:
+                    query = query.eq("chat_type", chat_type)
                 response = query.execute()
             except Exception as exc:
                 if analysis_status is not None and self._is_missing_column_error(
@@ -1154,17 +1395,38 @@ class SupabaseStore:
                     table_name="mensagens",
                 ):
                     return []
-                if not self._is_missing_table_error(exc, "mensagens"):
-                    raise
-                return []
+                if chat_type is not None and self._is_missing_column_error(
+                    exc,
+                    column_name="chat_type",
+                    table_name="mensagens",
+                ):
+                    if chat_type == "group":
+                        return []
+                    response = (
+                        self.client.table("mensagens")
+                        .select("id")
+                        .eq("user_id", str(user_id))
+                        .lt("timestamp", cutoff_at.isoformat())
+                        .order("timestamp", desc=False)
+                        .range(offset, range_end)
+                        .execute()
+                    )
+                else:
+                    if not self._is_missing_table_error(exc, "mensagens"):
+                        raise
+                    return []
             rows = response.data or []
             if not rows:
                 break
-            message_ids.extend(
-                str(row.get("id") or "").strip()
-                for row in rows
-                if isinstance(row, dict) and str(row.get("id") or "").strip()
-            )
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                message_id = str(row.get("id") or "").strip()
+                if not message_id:
+                    continue
+                if chat_type == "group" and self._normalize_chat_type(row.get("chat_type")) != "group":
+                    continue
+                message_ids.append(message_id)
             if len(rows) < chunk_size:
                 break
             offset += chunk_size
@@ -1209,7 +1471,7 @@ class SupabaseStore:
         while True:
             response = (
                 self.client.table("mensagens")
-                .select("id,contact_phone")
+                .select("id,chat_type,chat_jid,contact_phone")
                 .eq("user_id", str(user_id))
                 .limit(5000)
                 .execute()
@@ -1221,8 +1483,16 @@ class SupabaseStore:
                 if not isinstance(row, dict):
                     continue
                 message_id = str(row.get("id") or "").strip()
+                chat_type = self._normalize_chat_type(row.get("chat_type"))
+                chat_jid = self._optional_text(row.get("chat_jid"))
                 contact_phone = self._optional_text(row.get("contact_phone"))
-                if message_id and not self.is_normal_contact_phone(contact_phone):
+                if not message_id:
+                    continue
+                if chat_type == "group":
+                    if not self.is_group_chat_jid(chat_jid):
+                        delete_ids.append(message_id)
+                    continue
+                if not self.is_normal_contact_phone(contact_phone):
                     delete_ids.append(message_id)
 
             if not delete_ids:
@@ -1233,23 +1503,46 @@ class SupabaseStore:
         return deleted_total
 
     def prune_old_messages(self, user_id: UUID) -> int:
-        offset = self.first_analysis_queue_limit
+        return (
+            self._prune_messages_for_chat_type(user_id=user_id, chat_type="direct", keep_limit=self.first_analysis_queue_limit)
+            + self._prune_messages_for_chat_type(user_id=user_id, chat_type="group", keep_limit=self.message_retention_max_rows)
+        )
+
+    def _prune_messages_for_chat_type(self, *, user_id: UUID, chat_type: str, keep_limit: int) -> int:
         deleted_total = 0
+        offset = keep_limit
         while True:
-            response = (
-                self.client.table("mensagens")
-                .select("id")
-                .eq("user_id", str(user_id))
-                .order("timestamp", desc=True)
-                .range(offset, offset + 999)
-                .execute()
-            )
+            try:
+                response = (
+                    self.client.table("mensagens")
+                    .select("id")
+                    .eq("user_id", str(user_id))
+                    .eq("chat_type", chat_type)
+                    .order("timestamp", desc=True)
+                    .range(offset, offset + 999)
+                    .execute()
+                )
+            except Exception as exc:
+                if self._is_missing_column_error(exc, column_name="chat_type", table_name="mensagens"):
+                    if chat_type == "group":
+                        return 0
+                    response = (
+                        self.client.table("mensagens")
+                        .select("id")
+                        .eq("user_id", str(user_id))
+                        .order("timestamp", desc=True)
+                        .range(offset, offset + 999)
+                        .execute()
+                    )
+                elif not self._is_missing_table_error(exc, "mensagens"):
+                    raise
+                else:
+                    return deleted_total
 
             rows = response.data or []
             delete_ids = [str(row.get("id") or "").strip() for row in rows if isinstance(row, dict) and str(row.get("id") or "").strip()]
             if not delete_ids:
                 break
-
             self.client.table("mensagens").delete().in_("id", delete_ids).execute()
             deleted_total += len(delete_ids)
         return deleted_total
@@ -3148,52 +3441,24 @@ class SupabaseStore:
                 messages.append(parsed)
         return messages
 
-    def count_messages(self, user_id: UUID) -> int:
-        response = (
-            self.client.table("mensagens")
-            .select("id")
-            .eq("user_id", str(user_id))
-            .limit(self.first_analysis_queue_limit)
-            .execute()
+    def count_messages(self, user_id: UUID, *, include_groups: bool = False) -> int:
+        return len(
+            self._list_messages_for_selection(
+                user_id=user_id,
+                include_groups=include_groups,
+                pending_only=None,
+            )
         )
-        rows = response.data or []
-        return sum(1 for row in rows if isinstance(row, dict))
 
-    def count_pending_messages(self, user_id: UUID) -> int:
+    def count_pending_messages(self, user_id: UUID, *, include_groups: bool = False) -> int:
         self.reconcile_observer_backlog(user_id=user_id)
-        count = 0
-        chunk_size = 1000
-        offset = 0
-        while True:
-            range_end = offset + chunk_size - 1
-            try:
-                response = (
-                    self.client.table("mensagens")
-                    .select("id")
-                    .eq("user_id", str(user_id))
-                    .eq("analysis_status", "pending")
-                    .range(offset, range_end)
-                    .execute()
-                )
-            except Exception as exc:
-                if self._is_missing_column_error(exc, column_name="analysis_status", table_name="mensagens"):
-                    return len(
-                        self._list_pending_messages_legacy(
-                            user_id=user_id,
-                            limit=self.message_retention_max_rows,
-                            newest_first=False,
-                        )
-                    )
-                if not self._is_missing_table_error(exc, "mensagens"):
-                    raise
-                return 0
-            rows = response.data or []
-            row_count = sum(1 for row in rows if isinstance(row, dict))
-            count += row_count
-            if row_count < chunk_size:
-                break
-            offset += chunk_size
-        return min(count, self.first_analysis_queue_limit)
+        return len(
+            self._list_messages_for_selection(
+                user_id=user_id,
+                include_groups=include_groups,
+                pending_only=True,
+            )
+        )
 
     def count_messages_in_window(self, *, user_id: UUID, window_start: datetime, window_end: datetime) -> int:
         response = (
@@ -3209,18 +3474,14 @@ class SupabaseStore:
         return sum(1 for row in rows if isinstance(row, dict))
 
     def get_latest_message_timestamp(self, user_id: UUID) -> datetime | None:
-        response = (
-            self.client.table("mensagens")
-            .select("timestamp")
-            .eq("user_id", str(user_id))
-            .order("timestamp", desc=True)
-            .limit(1)
-            .execute()
+        messages = self._list_messages_for_selection(
+            user_id=user_id,
+            include_groups=False,
+            pending_only=None,
         )
-        rows = response.data or []
-        if not rows or not isinstance(rows[0], dict):
+        if not messages:
             return None
-        return self._parse_datetime(rows[0].get("timestamp"))
+        return max(message.timestamp for message in messages)
 
     def get_message_retention_state(self, user_id: UUID) -> MessageRetentionStateRecord:
         try:
@@ -3384,15 +3645,27 @@ class SupabaseStore:
                         self.client.table("mensagens")
                         .select("id")
                         .eq("user_id", str(user_id))
+                        .eq("chat_type", "direct")
                         .lt("timestamp", cutoff_at.isoformat())
                         .order("timestamp", desc=False)
                         .limit(500)
                         .execute()
                     )
                 except Exception as nested_exc:
-                    if not self._is_missing_table_error(nested_exc, "mensagens"):
+                    if self._is_missing_column_error(nested_exc, column_name="chat_type", table_name="mensagens"):
+                        response = (
+                            self.client.table("mensagens")
+                            .select("id")
+                            .eq("user_id", str(user_id))
+                            .lt("timestamp", cutoff_at.isoformat())
+                            .order("timestamp", desc=False)
+                            .limit(500)
+                            .execute()
+                        )
+                    elif not self._is_missing_table_error(nested_exc, "mensagens"):
                         raise
-                    return deleted_total
+                    else:
+                        return deleted_total
 
                 rows = response.data or []
                 stale_ids = [
@@ -3428,16 +3701,23 @@ class SupabaseStore:
         trimmed_total = self._trim_pending_queue_to_limit(user_id=user_id)
         return skipped_total + trimmed_total
 
-    def _list_pending_message_refs(self, *, user_id: UUID) -> list[tuple[str, datetime]]:
+    def _list_pending_message_refs(
+        self,
+        *,
+        user_id: UUID,
+        chat_type: str | None = None,
+    ) -> list[tuple[str, datetime]]:
+        requested_chat_type = self._normalize_chat_type(chat_type) if chat_type else None
         refs: list[tuple[str, datetime]] = []
         chunk_size = 500
+        max_scan = max(500, self.message_retention_max_rows * 2)
         offset = 0
-        while True:
-            range_end = offset + chunk_size - 1
+        while offset < max_scan:
+            range_end = min(offset + chunk_size - 1, max_scan - 1)
             try:
                 response = (
                     self.client.table("mensagens")
-                    .select("id,timestamp")
+                    .select("id,timestamp,chat_type")
                     .eq("user_id", str(user_id))
                     .eq("analysis_status", "pending")
                     .order("timestamp", desc=True)
@@ -3446,14 +3726,37 @@ class SupabaseStore:
                 )
             except Exception as exc:
                 if self._is_missing_column_error(exc, column_name="analysis_status", table_name="mensagens"):
-                    return []
-                if not self._is_missing_table_error(exc, "mensagens"):
+                    if requested_chat_type == "group":
+                        return []
+                    legacy_messages = self._list_pending_messages_legacy(
+                        user_id=user_id,
+                        limit=self.first_analysis_queue_limit,
+                        newest_first=True,
+                    )
+                    return [(message.message_id, message.timestamp) for message in legacy_messages]
+                if self._is_missing_column_error(exc, column_name="chat_type", table_name="mensagens"):
+                    if requested_chat_type == "group":
+                        return []
+                    response = (
+                        self.client.table("mensagens")
+                        .select("id,timestamp")
+                        .eq("user_id", str(user_id))
+                        .eq("analysis_status", "pending")
+                        .order("timestamp", desc=True)
+                        .range(offset, range_end)
+                        .execute()
+                    )
+                elif not self._is_missing_table_error(exc, "mensagens"):
                     raise
-                return []
+                else:
+                    return []
 
             rows = response.data or []
             for row in rows:
                 if not isinstance(row, dict):
+                    continue
+                normalized_row_chat_type = self._normalize_chat_type(row.get("chat_type"))
+                if requested_chat_type and normalized_row_chat_type != requested_chat_type:
                     continue
                 message_id = str(row.get("id") or "").strip()
                 timestamp = self._parse_datetime(row.get("timestamp"))
@@ -3465,7 +3768,9 @@ class SupabaseStore:
         return refs
 
     def _trim_pending_queue_to_limit(self, *, user_id: UUID) -> int:
-        pending_refs = self._list_pending_message_refs(user_id=user_id)
+        if self._has_initial_memory_analysis():
+            return 0
+        pending_refs = self._list_pending_message_refs(user_id=user_id, chat_type="direct")
         if len(pending_refs) <= self.first_analysis_queue_limit:
             return 0
         trimmed_ids = [
@@ -3473,6 +3778,93 @@ class SupabaseStore:
             for message_id, _timestamp in pending_refs[self.first_analysis_queue_limit:]
         ]
         return self.delete_messages_by_ids(message_ids=trimmed_ids)
+
+    def _list_messages_for_selection(
+        self,
+        *,
+        user_id: UUID,
+        include_groups: bool,
+        pending_only: bool | None,
+    ) -> list[StoredMessageRecord]:
+        enabled_group_jids = self._list_enabled_group_chat_jids(user_id=user_id) if include_groups else set()
+        max_scan = max(200, self.message_retention_max_rows * (2 if include_groups else 1))
+        chunk_size = min(500, max_scan)
+        offset = 0
+        seen_ids: set[str] = set()
+        messages: list[StoredMessageRecord] = []
+
+        while offset < max_scan:
+            range_end = min(offset + chunk_size - 1, max_scan - 1)
+            try:
+                query = (
+                    self.client.table("mensagens")
+                    .select(self._stored_message_select_clause())
+                    .eq("user_id", str(user_id))
+                )
+                if pending_only is True:
+                    query = query.eq("analysis_status", "pending")
+                response = query.order("timestamp", desc=False).range(offset, range_end).execute()
+            except Exception as exc:
+                if self._is_missing_column_error(exc, column_name="analysis_status", table_name="mensagens") and pending_only is True:
+                    legacy_messages = self._list_pending_messages_legacy(
+                        user_id=user_id,
+                        limit=max_scan,
+                        newest_first=False,
+                    )
+                    return [
+                        message
+                        for message in legacy_messages
+                        if self._message_is_selected_for_analysis(
+                            message,
+                            include_groups=include_groups,
+                            enabled_group_jids=enabled_group_jids,
+                        )
+                    ]
+                if not (
+                    self._is_missing_column_error(exc, column_name="chat_type", table_name="mensagens")
+                    or self._is_missing_column_error(exc, column_name="chat_name", table_name="mensagens")
+                    or self._is_missing_column_error(exc, column_name="participant_name", table_name="mensagens")
+                    or self._is_missing_column_error(exc, column_name="participant_phone", table_name="mensagens")
+                    or self._is_missing_column_error(exc, column_name="participant_jid", table_name="mensagens")
+                    or self._is_missing_column_error(exc, column_name="analysis_status", table_name="mensagens")
+                    or self._is_missing_column_error(exc, column_name="chat_jid", table_name="mensagens")
+                ):
+                    if not self._is_missing_table_error(exc, "mensagens"):
+                        raise
+                    return []
+                query = (
+                    self.client.table("mensagens")
+                    .select(self._stored_message_select_clause_legacy())
+                    .eq("user_id", str(user_id))
+                )
+                response = query.order("timestamp", desc=False).range(offset, range_end).execute()
+
+            rows = [row for row in (response.data or []) if isinstance(row, dict)]
+            if not rows:
+                break
+            known_contact_names = self._load_known_contact_names(self._extract_known_contact_name_phones(rows))
+            for row in rows:
+                parsed = self._build_stored_message_from_row(
+                    row,
+                    fallback_user_id=user_id,
+                    known_contact_names=known_contact_names,
+                )
+                if parsed is None or parsed.message_id in seen_ids:
+                    continue
+                if pending_only is False and parsed.analysis_status == "pending":
+                    continue
+                if not self._message_is_selected_for_analysis(
+                    parsed,
+                    include_groups=include_groups,
+                    enabled_group_jids=enabled_group_jids,
+                ):
+                    continue
+                seen_ids.add(parsed.message_id)
+                messages.append(parsed)
+            if len(rows) < chunk_size:
+                break
+            offset += chunk_size
+        return messages
 
     def get_known_contact_by_phone(
         self,
@@ -3581,6 +3973,198 @@ class SupabaseStore:
                 resolved_name_source,
             )
         return self.get_known_contact_by_phone(user_id=user_id, contact_phone=normalized_phone)
+
+    def get_known_group_by_chat_jid(
+        self,
+        *,
+        user_id: UUID,
+        chat_jid: str | None,
+    ) -> KnownGroupRecord | None:
+        normalized_jid = self._optional_text(chat_jid)
+        if not normalized_jid:
+            return None
+        try:
+            response = (
+                self.client.table("whatsapp_known_groups")
+                .select("id,user_id,chat_jid,chat_name,enabled_for_analysis,last_seen_at,updated_at")
+                .eq("user_id", str(user_id))
+                .eq("chat_jid", normalized_jid)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "whatsapp_known_groups"):
+                raise
+            return None
+        rows = response.data or []
+        if not rows:
+            return None
+        return self._parse_known_group(rows[0], fallback_user_id=user_id)
+
+    def upsert_known_group(
+        self,
+        *,
+        user_id: UUID,
+        chat_jid: str | None,
+        chat_name: str | None,
+        seen_at: datetime | None,
+    ) -> KnownGroupRecord | None:
+        normalized_jid = self._optional_text(chat_jid)
+        if not normalized_jid or not self.is_group_chat_jid(normalized_jid):
+            return None
+        known = self.get_known_group_by_chat_jid(user_id=user_id, chat_jid=normalized_jid)
+        updated_at = datetime.now(UTC)
+        resolved_name = self._optional_text(chat_name) or (known.chat_name if known is not None else None) or normalized_jid
+        resolved_seen_at = self._latest_datetime(known.last_seen_at if known is not None else None, seen_at)
+        payload = {
+            "id": known.id if known is not None else str(uuid4()),
+            "user_id": str(user_id),
+            "chat_jid": normalized_jid,
+            "chat_name": resolved_name,
+            "enabled_for_analysis": known.enabled_for_analysis if known is not None else False,
+            "last_seen_at": resolved_seen_at.isoformat() if resolved_seen_at else None,
+            "updated_at": updated_at.isoformat(),
+        }
+        try:
+            self.client.table("whatsapp_known_groups").upsert(payload, on_conflict="user_id,chat_jid").execute()
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "whatsapp_known_groups"):
+                raise
+            return None
+        return self.get_known_group_by_chat_jid(user_id=user_id, chat_jid=normalized_jid)
+
+    def list_known_groups(self, *, user_id: UUID) -> list[KnownGroupRecord]:
+        try:
+            response = (
+                self.client.table("whatsapp_known_groups")
+                .select("id,user_id,chat_jid,chat_name,enabled_for_analysis,last_seen_at,updated_at")
+                .eq("user_id", str(user_id))
+                .order("last_seen_at", desc=True)
+                .limit(self.message_retention_max_rows)
+                .execute()
+            )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "whatsapp_known_groups"):
+                raise
+            return []
+        groups: list[KnownGroupRecord] = []
+        for row in response.data or []:
+            parsed = self._parse_known_group(row, fallback_user_id=user_id)
+            if parsed is not None:
+                groups.append(parsed)
+        return groups
+
+    def update_known_group_selection(
+        self,
+        *,
+        user_id: UUID,
+        chat_jid: str,
+        enabled_for_analysis: bool,
+    ) -> KnownGroupRecord | None:
+        current = self.get_known_group_by_chat_jid(user_id=user_id, chat_jid=chat_jid)
+        if current is None:
+            created = self.upsert_known_group(
+                user_id=user_id,
+                chat_jid=chat_jid,
+                chat_name=chat_jid,
+                seen_at=None,
+            )
+            current = created
+        if current is None:
+            return None
+        payload = {
+            "id": current.id,
+            "user_id": str(user_id),
+            "chat_jid": current.chat_jid,
+            "chat_name": current.chat_name,
+            "enabled_for_analysis": bool(enabled_for_analysis),
+            "last_seen_at": current.last_seen_at.isoformat() if current.last_seen_at else None,
+            "updated_at": datetime.now(UTC).isoformat(),
+        }
+        self.client.table("whatsapp_known_groups").upsert(payload, on_conflict="user_id,chat_jid").execute()
+        return self.get_known_group_by_chat_jid(user_id=user_id, chat_jid=chat_jid)
+
+    def _list_enabled_group_chat_jids(self, *, user_id: UUID) -> set[str]:
+        try:
+            response = (
+                self.client.table("whatsapp_known_groups")
+                .select("chat_jid")
+                .eq("user_id", str(user_id))
+                .eq("enabled_for_analysis", True)
+                .limit(self.message_retention_max_rows)
+                .execute()
+            )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "whatsapp_known_groups"):
+                raise
+            return set()
+        return {
+            str(row.get("chat_jid") or "").strip()
+            for row in (response.data or [])
+            if isinstance(row, dict) and str(row.get("chat_jid") or "").strip()
+        }
+
+    def get_known_group_message_stats(
+        self,
+        *,
+        user_id: UUID,
+        chat_jid: str,
+    ) -> tuple[datetime | None, int, int]:
+        normalized_jid = self._optional_text(chat_jid)
+        if not normalized_jid:
+            return None, 0, 0
+        chunk_size = 500
+        max_scan = max(500, self.message_retention_max_rows)
+        offset = 0
+        last_message_at: datetime | None = None
+        message_count = 0
+        pending_message_count = 0
+
+        while offset < max_scan:
+            range_end = min(offset + chunk_size - 1, max_scan - 1)
+            try:
+                response = (
+                    self.client.table("mensagens")
+                    .select("timestamp,analysis_status")
+                    .eq("user_id", str(user_id))
+                    .eq("chat_type", "group")
+                    .eq("chat_jid", normalized_jid)
+                    .order("timestamp", desc=True)
+                    .range(offset, range_end)
+                    .execute()
+                )
+            except Exception as exc:
+                if self._is_missing_column_error(exc, column_name="chat_type", table_name="mensagens"):
+                    return None, 0, 0
+                if self._is_missing_column_error(exc, column_name="analysis_status", table_name="mensagens"):
+                    response = (
+                        self.client.table("mensagens")
+                        .select("timestamp")
+                        .eq("user_id", str(user_id))
+                        .eq("chat_jid", normalized_jid)
+                        .order("timestamp", desc=True)
+                        .range(offset, range_end)
+                        .execute()
+                    )
+                elif not self._is_missing_table_error(exc, "mensagens"):
+                    raise
+                else:
+                    return None, 0, 0
+
+            rows = [row for row in (response.data or []) if isinstance(row, dict)]
+            if not rows:
+                break
+            for row in rows:
+                timestamp = self._parse_datetime(row.get("timestamp"))
+                if timestamp is not None and last_message_at is None:
+                    last_message_at = timestamp
+                message_count += 1
+                if str(row.get("analysis_status") or "pending").strip().lower() == "pending":
+                    pending_message_count += 1
+            if len(rows) < chunk_size:
+                break
+            offset += chunk_size
+        return last_message_at, message_count, pending_message_count
 
     def get_automation_settings(self, user_id: UUID) -> AutomationSettingsRecord:
         try:
@@ -4785,6 +5369,7 @@ class SupabaseStore:
             DELETE FROM memory_snapshots;
             DELETE FROM persona;
             DELETE FROM whatsapp_known_contacts;
+            DELETE FROM whatsapp_known_groups;
             DELETE FROM message_retention_state;
             DELETE FROM processed_message_ids;
             DELETE FROM mensagens;
@@ -5028,6 +5613,27 @@ class SupabaseStore:
         if not left_variants or not right_variants:
             return False
         return bool(left_variants.intersection(right_variants))
+
+    def _normalize_chat_type(self, value: Any) -> str:
+        text = str(value or "").strip().lower()
+        return "group" if text == "group" else "direct"
+
+    def is_group_chat_jid(self, value: str | None) -> bool:
+        return self._is_group_chat_jid(value)
+
+    def _is_group_chat_jid(self, value: str | None) -> bool:
+        if value is None:
+            return False
+        normalized = value.strip().lower()
+        return bool(normalized and normalized.endswith("@g.us"))
+
+    def _is_valid_ingest_message(self, message: IngestedMessageRecord) -> bool:
+        if not message.message_id.strip() or not message.message_text.strip():
+            return False
+        chat_type = self._normalize_chat_type(message.chat_type)
+        if chat_type == "group":
+            return self.is_group_chat_jid(message.chat_jid)
+        return self.is_direct_chat_jid(message.chat_jid) and self.is_normal_contact_phone(message.contact_phone)
 
     def _parse_string_list(self, value: Any) -> list[str]:
         if isinstance(value, str):
@@ -5308,6 +5914,22 @@ class SupabaseStore:
                 known_name=self._optional_text(value.get("contact_name")),
             ),
             name_source=self._optional_text(value.get("name_source")) or "unknown",
+            last_seen_at=self._parse_datetime(value.get("last_seen_at")),
+            updated_at=self._parse_datetime(value.get("updated_at")) or datetime.now(UTC),
+        )
+
+    def _parse_known_group(self, value: Any, *, fallback_user_id: UUID) -> KnownGroupRecord | None:
+        if not isinstance(value, dict):
+            return None
+        chat_jid = self._optional_text(value.get("chat_jid"))
+        if not chat_jid:
+            return None
+        return KnownGroupRecord(
+            id=str(value.get("id") or ""),
+            user_id=self._parse_uuid(value.get("user_id")) or fallback_user_id,
+            chat_jid=chat_jid,
+            chat_name=self._optional_text(value.get("chat_name")) or chat_jid,
+            enabled_for_analysis=bool(self._parse_bool(value.get("enabled_for_analysis"))),
             last_seen_at=self._parse_datetime(value.get("last_seen_at")),
             updated_at=self._parse_datetime(value.get("updated_at")) or datetime.now(UTC),
         )

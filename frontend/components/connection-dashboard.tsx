@@ -32,6 +32,7 @@ import {
   Terminal,
   Trash2,
   User,
+  Users,
   XCircle,
   Zap,
 } from "lucide-react";
@@ -47,6 +48,7 @@ import {
   getChatWorkspace,
   getCurrentMemory,
   getMemoryActivity,
+  getMemoryGroups,
   getMemoryProjects,
   getImportantMessages,
   getMemoryStatus,
@@ -58,6 +60,7 @@ import {
   sendChatMessageStream,
   updateAgentSettings,
   updateAutomationSettings,
+  updateMemoryGroupSelection,
   runAutomationTick,
   type AnalysisJob,
   type AutomationStatus,
@@ -80,6 +83,7 @@ import {
   type WhatsAppAgentThread,
   type WhatsAppAgentWorkspace,
   type ProjectMemory,
+  type WhatsAppGroupSelection,
   type WhatsAppSyncRun,
 } from "@/lib/api";
 
@@ -90,6 +94,7 @@ type TabId =
   | "overview"
   | "observer"
   | "agent"
+  | "groups"
   | "memory"
   | "important"
   | "projects"
@@ -159,6 +164,7 @@ const LIVE_REFRESH_INTERVALS: Record<TabId, number> = {
   overview: 9000,
   observer: 5000,
   agent: 6000,
+  groups: 10000,
   memory: 10000,
   important: 12000,
   projects: 12000,
@@ -179,6 +185,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { id: "observer", label: "Observador", icon: Eye },
       { id: "agent", label: "WhatsApp Agente", icon: Bot },
+      { id: "groups", label: "Grupos", icon: Users },
       { id: "memory", label: "Memória", icon: Database },
       { id: "important", label: "Importantes", icon: Archive },
     ],
@@ -210,7 +217,7 @@ const ANALYZE_STEPS: AgentStep[] = [
   {
     threshold: 8,
     label: "Coletando sinais recentes",
-    detail: "Lendo somente conversas diretas úteis e ignorando grupos, broadcast e lixo sem texto.",
+    detail: "Lendo conversas úteis, priorizando diretas no bootstrap e respeitando grupos opt-in nas leituras futuras.",
   },
   {
     threshold: 22,
@@ -419,7 +426,7 @@ function buildActivityThinking(args: {
     );
   } else if (resolvedIntent === "improve_memory") {
     lines.push(
-      "Esta rota compara mensagens diretas recentes com a memoria ja consolidada para reforcar o que mudou sem perder continuidade do perfil.",
+      "Esta rota compara mensagens recentes elegiveis com a memoria ja consolidada para reforcar o que mudou sem perder continuidade do perfil.",
     );
   } else {
     lines.push(
@@ -541,7 +548,7 @@ function buildActivityTrace(args: {
     items.push({
       id: `trace-sync-${latestSyncRun.id}`,
       title: "Leitura operacional",
-      detail: `${latestSyncRun.messages_saved_count} mensagens diretas salvas, ${latestSyncRun.messages_ignored_count} ignoradas e ${latestSyncRun.messages_pruned_count} podadas na janela mais recente.`,
+      detail: `${latestSyncRun.messages_saved_count} mensagens uteis salvas, ${latestSyncRun.messages_ignored_count} ignoradas e ${latestSyncRun.messages_pruned_count} podadas na janela mais recente.`,
       timestamp: latestSyncRun.finished_at ?? latestSyncRun.last_activity_at ?? latestSyncRun.started_at,
       tone: latestSyncRun.status === "failed" ? "error" : "success",
       meta: latestSyncRun.status,
@@ -1062,6 +1069,7 @@ export function ConnectionDashboard() {
   const [activeAgentThreadId, setActiveAgentThreadId] = useState<string | null>(null);
   const [memory, setMemory] = useState<MemoryCurrent | null>(null);
   const [memoryStatus, setMemoryStatus] = useState<MemoryStatus | null>(null);
+  const [memoryGroups, setMemoryGroups] = useState<WhatsAppGroupSelection[]>([]);
   const [projects, setProjects] = useState<ProjectMemory[]>([]);
   const [snapshots, setSnapshots] = useState<MemorySnapshot[]>([]);
   const [importantMessages, setImportantMessages] = useState<ImportantMessage[]>([]);
@@ -1076,6 +1084,7 @@ export function ConnectionDashboard() {
   const [agentConnectionError, setAgentConnectionError] = useState<string | null>(null);
   const [agentMessagesError, setAgentMessagesError] = useState<string | null>(null);
   const [memoryError, setMemoryError] = useState<string | null>(null);
+  const [memoryGroupsError, setMemoryGroupsError] = useState<string | null>(null);
   const [importantMessagesError, setImportantMessagesError] = useState<string | null>(null);
   const [chatError, setChatError] = useState<string | null>(null);
   const [messageRefreshError, setMessageRefreshError] = useState<string | null>(null);
@@ -1093,6 +1102,7 @@ export function ConnectionDashboard() {
   const [isLoadingChatThread, setIsLoadingChatThread] = useState(false);
   const [isCreatingChatThread, setIsCreatingChatThread] = useState(false);
   const [isClearingDatabase, setIsClearingDatabase] = useState(false);
+  const [savingGroupJids, setSavingGroupJids] = useState<string[]>([]);
   const [pollingEnabled, setPollingEnabled] = useState(false);
   const [agentPollingEnabled, setAgentPollingEnabled] = useState(false);
   const [agentState, setAgentState] = useState<AgentState>({
@@ -1182,7 +1192,7 @@ export function ConnectionDashboard() {
   );
 
   async function refreshMemoryArtifactsAfterJob(): Promise<void> {
-    const [memoryResult, projectsResult, memoryStatusResult, snapshotsResult, importantMessagesResult, memoryActivityResult] =
+    const [memoryResult, projectsResult, memoryStatusResult, snapshotsResult, importantMessagesResult, memoryActivityResult, groupsResult] =
       await Promise.allSettled([
         getCurrentMemory(),
         getMemoryProjects(),
@@ -1190,6 +1200,7 @@ export function ConnectionDashboard() {
         getMemorySnapshots(6),
         getImportantMessages(80),
         getMemoryActivity(),
+        getMemoryGroups(),
       ]);
 
     startTransition(() => {
@@ -1212,7 +1223,34 @@ export function ConnectionDashboard() {
         setMemoryActivity(memoryActivityResult.value);
         setMemoryActivityError(null);
       }
+      if (groupsResult.status === "fulfilled") {
+        setMemoryGroups(groupsResult.value);
+        setMemoryGroupsError(null);
+      }
     });
+  }
+
+  async function toggleGroupSelection(chatJid: string, enabledForAnalysis: boolean): Promise<void> {
+    setSavingGroupJids((current) => (current.includes(chatJid) ? current : [...current, chatJid]));
+    setMemoryGroups((current) =>
+      current.map((group) => (
+        group.chat_jid === chatJid ? { ...group, enabled_for_analysis: enabledForAnalysis } : group
+      )),
+    );
+    setMemoryGroupsError(null);
+    try {
+      const updated = await updateMemoryGroupSelection(chatJid, enabledForAnalysis);
+      setMemoryGroups((current) => current.map((group) => (group.chat_jid === chatJid ? updated : group)));
+    } catch (error) {
+      setMemoryGroups((current) =>
+        current.map((group) => (
+          group.chat_jid === chatJid ? { ...group, enabled_for_analysis: !enabledForAnalysis } : group
+        )),
+      );
+      setMemoryGroupsError(getErrorMessage(error));
+    } finally {
+      setSavingGroupJids((current) => current.filter((value) => value !== chatJid));
+    }
   }
 
   function syncQueuedJobFromAutomationSnapshot(snapshot: MemoryActivity): void {
@@ -1279,7 +1317,7 @@ export function ConnectionDashboard() {
     });
 
     if (announceTransition && nextStatus.connected && !wasConnected) {
-      pushAgentLog("success", "Observador conectado. As mensagens diretas ja podem alimentar a memoria.");
+      pushAgentLog("success", "Observador conectado. Diretas ja entram na memoria; grupos ficam opt-in na aba Grupos.");
     }
   }
 
@@ -1377,6 +1415,7 @@ export function ConnectionDashboard() {
       activeTab === "manual" ||
       activeTab === "memory"
     );
+    const shouldRefreshMemoryGroups = activeTab === "manual" || activeTab === "groups";
     const shouldRefreshProjects = (
       activeTab === "overview" ||
       activeTab === "manual" ||
@@ -1406,6 +1445,7 @@ export function ConnectionDashboard() {
         agentWorkspaceResult,
         chatWorkspaceResult,
         memoryResult,
+        memoryGroupsResult,
         projectsResult,
         memoryStatusResult,
         snapshotsResult,
@@ -1415,6 +1455,7 @@ export function ConnectionDashboard() {
         shouldRefreshAgentWorkspace ? getAgentWorkspace(activeAgentThreadId ?? undefined) : Promise.resolve(null),
         shouldRefreshChatWorkspace ? getChatWorkspace(activeChatThreadId ?? undefined) : Promise.resolve(null),
         shouldRefreshMemoryCurrent ? getCurrentMemory() : Promise.resolve(null),
+        shouldRefreshMemoryGroups ? getMemoryGroups() : Promise.resolve(null),
         shouldRefreshProjects ? getMemoryProjects() : Promise.resolve(null),
         shouldRefreshMemoryStatus ? getMemoryStatus() : Promise.resolve(null),
         shouldRefreshSnapshots ? getMemorySnapshots(activeTab === "overview" ? 1 : 6) : Promise.resolve(null),
@@ -1446,6 +1487,16 @@ export function ConnectionDashboard() {
           setMemory(nextMemory);
           setMemoryError(null);
         });
+      }
+
+      if (memoryGroupsResult.status === "fulfilled" && Array.isArray(memoryGroupsResult.value)) {
+        const nextGroups = memoryGroupsResult.value;
+        startTransition(() => {
+          setMemoryGroups(nextGroups);
+          setMemoryGroupsError(null);
+        });
+      } else if (memoryGroupsResult.status === "rejected" && shouldRefreshMemoryGroups) {
+        setMemoryGroupsError(getErrorMessage(memoryGroupsResult.reason));
       }
 
       if (projectsResult.status === "fulfilled" && Array.isArray(projectsResult.value)) {
@@ -1693,6 +1744,7 @@ export function ConnectionDashboard() {
 
     const shouldLoadAgentWorkspace = activeTab === "agent" || activeTab === "manual";
     const shouldLoadChatWorkspace = activeTab === "chat" || activeTab === "manual";
+    const shouldLoadGroups = activeTab === "groups" || activeTab === "manual";
     const shouldLoadSnapshots = activeTab === "overview" || activeTab === "memory" || activeTab === "manual";
     const shouldLoadImportantMessages = activeTab === "important" || activeTab === "manual";
     const shouldLoadAutomation = activeTab === "memory" || activeTab === "activity" || activeTab === "automation" || activeTab === "manual" || queuedJobId !== null;
@@ -1703,6 +1755,7 @@ export function ConnectionDashboard() {
       agentWorkspaceResult,
       chatResult,
       memoryResult,
+      groupsResult,
       projectsResult,
       memoryStatusResult,
       snapshotsResult,
@@ -1714,6 +1767,7 @@ export function ConnectionDashboard() {
       shouldLoadAgentWorkspace ? getAgentWorkspace(activeAgentThreadId ?? undefined) : Promise.resolve(null),
       shouldLoadChatWorkspace ? getChatWorkspace(activeChatThreadId ?? undefined) : Promise.resolve(null),
       getCurrentMemory(),
+      shouldLoadGroups ? getMemoryGroups() : Promise.resolve([]),
       getMemoryProjects(),
       getMemoryStatus(),
       shouldLoadSnapshots ? getMemorySnapshots(activeTab === "overview" ? 1 : 6) : Promise.resolve([]),
@@ -1761,6 +1815,13 @@ export function ConnectionDashboard() {
       setMemoryError(null);
     } else if (!shouldLoadChatWorkspace) {
       setMemoryError(getErrorMessage(memoryResult.reason));
+    }
+
+    if (groupsResult.status === "fulfilled" && Array.isArray(groupsResult.value)) {
+      setMemoryGroups(groupsResult.value);
+      setMemoryGroupsError(null);
+    } else if (groupsResult.status === "rejected") {
+      setMemoryGroupsError(getErrorMessage(groupsResult.reason));
     }
 
     if (projectsResult.status === "fulfilled" && Array.isArray(projectsResult.value)) {
@@ -2067,7 +2128,7 @@ export function ConnectionDashboard() {
       if (nextStatus.connected) {
         setPollingEnabled(false);
         setViewState("connected");
-        pushAgentLog("success", "Observador conectado. As mensagens diretas já podem alimentar a memória.");
+        pushAgentLog("success", "Observador conectado. Diretas já entram na memória; grupos ficam opt-in na aba Grupos.");
         return;
       }
 
@@ -2500,6 +2561,16 @@ export function ConnectionDashboard() {
                   onToggleAutoReply={(value) => void toggleAgentAutoReply(value)}
                   onSelectThread={(threadId) => void openAgentThread(threadId)}
                   onRefresh={() => void refreshAgentWorkspace(activeAgentThreadId ?? undefined)}
+                />
+              ) : null}
+
+              {activeTab === "groups" ? (
+                <GroupsTab
+                  groups={memoryGroups}
+                  error={memoryGroupsError}
+                  isSavingJids={savingGroupJids}
+                  onToggleGroup={(chatJid, enabledForAnalysis) => void toggleGroupSelection(chatJid, enabledForAnalysis)}
+                  onRefresh={() => void hydrateDashboard("manual")}
                 />
               ) : null}
 
@@ -3597,6 +3668,135 @@ function AgentTab({
 
       {connectionError ? <InlineError title={`Falha do agente (${statusLabel})`} message={connectionError} /> : null}
       {messagesError ? <InlineError title="Falha nas mensagens do agente" message={messagesError} /> : null}
+    </div>
+  );
+}
+
+function GroupsTab({
+  groups,
+  error,
+  isSavingJids,
+  onToggleGroup,
+  onRefresh,
+}: {
+  groups: WhatsAppGroupSelection[];
+  error: string | null;
+  isSavingJids: string[];
+  onToggleGroup: (chatJid: string, enabledForAnalysis: boolean) => void;
+  onRefresh: () => void;
+}) {
+  const [search, setSearch] = useState("");
+  const filteredGroups = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    if (!query) {
+      return groups;
+    }
+    return groups.filter((group) => (
+      group.chat_name.toLowerCase().includes(query) ||
+      group.chat_jid.toLowerCase().includes(query)
+    ));
+  }, [groups, search]);
+  const enabledCount = groups.filter((group) => group.enabled_for_analysis).length;
+
+  return (
+    <div className="page-stack">
+      <Card>
+        <SectionTitle title="Grupos para Analise" icon={Users} />
+        <p className="support-copy">
+          Os grupos abaixo aparecem sempre desativados por padrão. Ative apenas os que realmente devem entrar
+          nas leituras futuras de memória.
+        </p>
+        <div className="groups-banner">
+          <strong>Regra fixa:</strong>
+          <span>A primeira analise nunca usa grupos. Esta seleção só vale para atualizações futuras da memória.</span>
+        </div>
+        <div className="memory-breakdown-grid">
+          <MemorySignalCard
+            label="Grupos observados"
+            value={formatTokenCount(groups.length)}
+            meta="Lista montada a partir do histórico já sincronizado pelo observador."
+            tone="indigo"
+          />
+          <MemorySignalCard
+            label="Grupos ativos"
+            value={formatTokenCount(enabledCount)}
+            meta="Somente estes grupos podem entrar nas leituras incrementais."
+            tone="emerald"
+          />
+          <MemorySignalCard
+            label="Pendências em grupos ativos"
+            value={formatTokenCount(groups.filter((group) => group.enabled_for_analysis).reduce((sum, group) => sum + group.pending_message_count, 0))}
+            meta="Mensagens de grupo elegíveis que ainda não passaram por análise."
+            tone="amber"
+          />
+        </div>
+      </Card>
+
+      <Card>
+        <div className="groups-toolbar">
+          <div>
+            <SectionTitle title="Selecao de Grupos" icon={Database} />
+            <p className="support-copy">
+              O DeepSeek passa a enxergar corretamente grupo e participante no contexto incremental, sem contaminar o bootstrap inicial.
+            </p>
+          </div>
+          <button className="ac-secondary-button" onClick={onRefresh} type="button">
+            <RefreshCw size={15} />
+            Atualizar lista
+          </button>
+        </div>
+
+        <input
+          className="ac-input groups-search-input"
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="Buscar por nome do grupo ou JID..."
+          type="text"
+          value={search}
+        />
+
+        {filteredGroups.length === 0 ? (
+          <div className="empty-hint">
+            <Users size={18} />
+            <p>
+              {groups.length === 0
+                ? "Nenhum grupo apareceu no histórico sincronizado ainda."
+                : "Nenhum grupo bateu com a busca atual."}
+            </p>
+          </div>
+        ) : (
+          <div className="groups-list">
+            {filteredGroups.map((group) => {
+              const isSaving = isSavingJids.includes(group.chat_jid);
+              return (
+                <div key={group.chat_jid} className={`group-row${group.enabled_for_analysis ? " group-row-enabled" : ""}`}>
+                  <div className="group-row-main">
+                    <div className="group-row-top">
+                      <strong>{group.chat_name}</strong>
+                      <span>{group.enabled_for_analysis ? "ativo para analise" : "desativado"}</span>
+                    </div>
+                    <p>{group.chat_jid}</p>
+                    <div className="group-row-meta">
+                      <span>{formatTokenCount(group.message_count)} mensagens salvas</span>
+                      <span>{formatTokenCount(group.pending_message_count)} pendentes</span>
+                      <span>{group.last_message_at ? `Ultima mensagem ${formatDateTime(group.last_message_at)}` : "Sem mensagem recente"}</span>
+                    </div>
+                  </div>
+                  <button
+                    className={`group-toggle${group.enabled_for_analysis ? " group-toggle-enabled" : ""}`}
+                    disabled={isSaving}
+                    onClick={() => onToggleGroup(group.chat_jid, !group.enabled_for_analysis)}
+                    type="button"
+                  >
+                    <span>{isSaving ? "Salvando..." : group.enabled_for_analysis ? "Ativado" : "Ativar"}</span>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Card>
+
+      {error ? <InlineError title="Falha ao carregar grupos" message={error} /> : null}
     </div>
   );
 }
@@ -5218,16 +5418,16 @@ function ManualTab({
           </div>
           <h3>O AuraCore e um operador de contexto pessoal em cima do WhatsApp.</h3>
           <p>
-            Ele conecta o observador, filtra somente conversas diretas uteis, consolida memoria do dono, salva memoria por
+            Ele conecta o observador, filtra conversas uteis, consolida memoria do dono, salva memoria por
             pessoa, identifica mensagens importantes, organiza projetos e ainda oferece um chat pessoal que responde usando
-            esse contexto inteiro.
+            esse contexto inteiro. Grupos so entram depois da base inicial e apenas quando voce ativa na aba Grupos.
           </p>
         </div>
         <div className="manual-hero-stats">
           <ModernStatCard
             label="Observador"
             value={status?.connected ? "Online" : "Pendente"}
-            meta={status?.connected ? "Capturando conversas diretas" : "Conecte o WhatsApp primeiro"}
+            meta={status?.connected ? "Capturando diretas e grupos observados" : "Conecte o WhatsApp primeiro"}
             icon={Eye}
             tone="emerald"
           />
@@ -5293,6 +5493,7 @@ function ManualTab({
             <div className="manual-grid">
               <ManualInfoCard title="Visao Geral" text="Painel-resumo do estado atual: conexao, memoria, projetos, sinais e atalhos para o fluxo principal." />
               <ManualInfoCard title="Observador" text="Ponto de entrada do WhatsApp. Mostra QR, estado da instancia, sessao e a saude da captura." />
+              <ManualInfoCard title="Grupos" text="Lista os grupos vistos no historico sincronizado. Todos nascem desativados e so entram na memoria incremental quando voce ativa." />
               <ManualInfoCard title="Memoria" text="Aqui nasce e evolui a memoria central. Primeira analise, lotes economicos de mensagens novas, estado da fila e resumo do dono." />
               <ManualInfoCard title="Importantes" text="Cofre de fatos duraveis: acessos, valores, clientes, prazos, riscos e sinais operacionais reaproveitaveis." />
               <ManualInfoCard title="Projetos" text="Organiza frentes reais detectadas nas conversas, com resumo, status, evidencias e proximos passos." />
@@ -5319,10 +5520,10 @@ function ManualTab({
             <SectionTitle title="Fluxo Real Do Site" icon={Terminal} />
             <div className="manual-sequence">
               <ManualStep title="1. Conectar o observador" text="Voce gera o QR, conecta o WhatsApp e libera a captura. A partir daqui o sistema passa a receber somente o que interessa para memoria." />
-              <ManualStep title="2. Filtrar a entrada" text="Nem tudo entra. A ingestao prioriza chats diretos uteis e evita grupo, broadcast, newsletter, status e lixo operacional sem texto relevante." />
-              <ManualStep title="3. Criar a memoria base" text="A primeira analise e manual e usa uma selecao balanceada das mensagens diretas mais relevantes e recentes. Ela cria o primeiro retrato consolidado do dono." />
-              <ManualStep title="4. Atualizar por contato" text="Durante as analises, o sistema tenta entender com quem e cada conversa e atualiza memorias separadas por pessoa de forma cumulativa." />
-              <ManualStep title="5. Processar lotes incrementais" text="Depois da base inicial, o backend passa a trabalhar em lotes economicos de mensagens novas, contando apenas o que chegou desde a ultima consolidacao." />
+              <ManualStep title="2. Filtrar a entrada" text="Nem tudo entra. A ingestao evita status, broadcast, newsletter e lixo sem texto relevante. Conversas diretas entram por padrao; grupos ficam opt-in para leituras futuras." />
+              <ManualStep title="3. Criar a memoria base" text="A primeira analise e manual e usa uma selecao balanceada das mensagens diretas mais relevantes e recentes. Grupos nunca entram nessa etapa inicial." />
+              <ManualStep title="4. Atualizar por contato" text="Durante as analises, o sistema tenta entender com quem e cada conversa e atualiza memorias separadas por pessoa ou participante de grupo de forma cumulativa." />
+              <ManualStep title="5. Processar lotes incrementais" text="Depois da base inicial, o backend passa a trabalhar em lotes economicos de mensagens novas, incluindo grupos ativados quando fizer sentido." />
               <ManualStep title="6. Salvar o que dura" text="O processamento atualiza resumo do dono, snapshots, projetos, memorias por pessoa e o cofre de mensagens importantes." />
               <ManualStep title="7. Reutilizar no chat" text="O chat pessoal consome a memoria consolidada, projetos, contexto da thread atual e sinais importantes para responder melhor." />
             </div>
@@ -5331,7 +5532,7 @@ function ManualTab({
           <Card>
             <SectionTitle title="Botoes Principais" icon={Zap} />
             <div className="manual-grid">
-              <ManualInfoCard title="Puxar Novas Mensagens do WhatsApp" text="Forca uma releitura das conversas diretas recentes e atualiza a fila operacional no banco." />
+              <ManualInfoCard title="Puxar Novas Mensagens do WhatsApp" text="Forca uma releitura das conversas recentes e atualiza a fila operacional no banco." />
               <ManualInfoCard title="Fazer Primeira Analise" text="Cria a base inicial da memoria quando o sistema ainda nao conhece bem o dono." />
               <ManualInfoCard title="Executar Analise" text="Usa as mensagens pendentes mais a memoria ja salva para atualizar resumo, importantes e projetos de forma incremental." />
               <ManualInfoCard title="Nova Conversa" text="Abre uma thread nova no chat sem perder a memoria central nem o restante do historico salvo." />
@@ -5356,7 +5557,7 @@ function ManualTab({
           <Card>
             <SectionTitle title="Como Cada Parte Se Conversa" icon={GitBranch} />
             <div className="manual-list">
-              <p>Observador envia mensagens para o backend. O backend decide o que entra em `mensagens` e atualiza a fila operacional.</p>
+              <p>Observador envia mensagens para o backend. O backend decide o que entra em `mensagens`, separa diretas de grupos e atualiza a fila operacional.</p>
               <p>A Memoria seleciona uma janela ou um lote, monta o prompt com contexto consolidado e grava de volta os resultados mais importantes.</p>
               <p>O Chat nao le o WhatsApp cru. Ele conversa em cima da memoria consolidada, do historico da thread atual, dos projetos e dos sinais duraveis.</p>
               <p>A Automacao observa se existe memoria base, conta mensagens novas e enfileira no maximo um lote automatico por ciclo quando faz sentido.</p>
@@ -5370,9 +5571,9 @@ function ManualTab({
           <Card>
             <SectionTitle title="O Que Vai Para O Banco Local" icon={Database} />
             <div className="manual-grid">
-              <ManualInfoCard title="mensagens" text="Fila operacional de conversas diretas aproveitaveis que ainda podem alimentar analise e memoria." />
+              <ManualInfoCard title="mensagens" text="Fila operacional de mensagens aproveitaveis que ainda podem alimentar analise e memoria. No bootstrap entram so diretas; depois podem entrar grupos ativados." />
               <ManualInfoCard title="persona e memory_snapshots" text="Resumo principal do dono e historico de janelas consolidadas ao longo do tempo." />
-              <ManualInfoCard title="person_memories" text="Memoria separada por contato, atualizada progressivamente para cada pessoa relevante nas conversas." />
+              <ManualInfoCard title="person_memories" text="Memoria separada por contato ou participante, atualizada progressivamente para cada pessoa relevante nas conversas." />
               <ManualInfoCard title="project_memories" text="Projetos, frentes, entregas, clientes e proximos passos com base nas conversas consolidadas." />
               <ManualInfoCard title="important_messages" text="Cofre de itens duraveis como acesso, dinheiro, prazo, risco e fatos operacionais." />
               <ManualInfoCard title="chat_threads e chat_messages" text="Threads do chat pessoal usadas para separar contextos sem perder a memoria central." />
