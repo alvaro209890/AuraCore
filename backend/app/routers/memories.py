@@ -27,6 +27,7 @@ from app.schemas import (
     ModelRunResponse,
     ProjectMemoryResponse,
     SimpleOkResponse,
+    UpdateProjectMemoryRequest,
     UpdateWhatsAppGroupSelectionRequest,
     WhatsAppSyncRunResponse,
     WhatsAppGroupSelectionResponse,
@@ -205,6 +206,23 @@ async def get_memory_projects(
     return [_to_project_response(project) for project in memory_service.list_projects()]
 
 
+@router.put("/projects/{project_key}", response_model=ProjectMemoryResponse)
+async def update_memory_project(
+    project_key: str,
+    request: UpdateProjectMemoryRequest,
+    memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
+) -> ProjectMemoryResponse:
+    updated = await run_in_threadpool(
+        memory_service.update_project_completion,
+        project_key=project_key,
+        completed=request.completed,
+        completion_notes=request.completion_notes,
+    )
+    if updated is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Projeto nao encontrado.")
+    return _to_project_response(updated)
+
+
 @router.get("/groups", response_model=WhatsAppGroupSelectionsListResponse)
 async def get_memory_groups(
     store: SupabaseStore = Depends(get_supabase_store),
@@ -363,6 +381,9 @@ def _to_project_response(project: ProjectMemoryRecord) -> ProjectMemoryResponse:
         evidence=project.evidence,
         source_snapshot_id=project.source_snapshot_id,
         last_seen_at=project.last_seen_at,
+        completion_source=project.completion_source,
+        manual_completed_at=project.manual_completed_at,
+        manual_completion_notes=project.manual_completion_notes,
         updated_at=project.updated_at,
     )
 

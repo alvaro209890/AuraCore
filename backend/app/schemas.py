@@ -348,6 +348,11 @@ class UpdateWhatsAppGroupSelectionRequest(BaseModel):
     enabled_for_analysis: bool
 
 
+class UpdateProjectMemoryRequest(BaseModel):
+    completed: bool
+    completion_notes: str = Field(default="", max_length=400)
+
+
 class MemorySnapshotResponse(BaseModel):
     id: str
     window_hours: int = Field(ge=1)
@@ -379,6 +384,9 @@ class ProjectMemoryResponse(BaseModel):
     evidence: list[str] = Field(default_factory=list)
     source_snapshot_id: str | None = None
     last_seen_at: datetime | None = None
+    completion_source: str = ""
+    manual_completed_at: datetime | None = None
+    manual_completion_notes: str = ""
     updated_at: datetime
 
 

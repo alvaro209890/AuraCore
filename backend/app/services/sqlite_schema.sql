@@ -164,6 +164,9 @@ CREATE TABLE IF NOT EXISTS project_memories (
   evidence TEXT NOT NULL DEFAULT '[]',
   source_snapshot_id TEXT,
   last_seen_at TEXT,
+  completion_source TEXT NOT NULL DEFAULT '',
+  manual_completed_at TEXT,
+  manual_completion_notes TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL,
   UNIQUE (user_id, project_key)
 );

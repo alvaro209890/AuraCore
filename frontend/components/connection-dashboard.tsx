@@ -24,6 +24,7 @@ import {
   Play,
   Plus,
   RefreshCw,
+  Search,
   Send,
   Server,
   Settings,
@@ -61,6 +62,7 @@ import {
   updateAgentSettings,
   updateAutomationSettings,
   updateMemoryGroupSelection,
+  updateMemoryProjectCompletion,
   runAutomationTick,
   type AnalysisJob,
   type AutomationStatus,
@@ -825,6 +827,41 @@ function getProjectStrength(project: ProjectMemory): number {
   return Math.max(24, Math.min(100, raw));
 }
 
+function isProjectManuallyCompleted(project: ProjectMemory): boolean {
+  return project.completion_source === "manual" && Boolean(project.manual_completed_at);
+}
+
+function getProjectStatusLabel(project: ProjectMemory): string {
+  if (isProjectManuallyCompleted(project)) {
+    return "Concluido manualmente";
+  }
+  return project.status || "Em progresso";
+}
+
+function getProjectStatusTone(project: ProjectMemory): "emerald" | "amber" | "indigo" | "zinc" {
+  if (isProjectManuallyCompleted(project)) {
+    return "indigo";
+  }
+  const normalizedStatus = project.status.toLowerCase();
+  if (normalizedStatus.includes("trav") || normalizedStatus.includes("risco") || normalizedStatus.includes("bloq")) {
+    return "amber";
+  }
+  if (normalizedStatus.includes("concl")) {
+    return "indigo";
+  }
+  if (normalizedStatus.includes("ativo") || normalizedStatus.includes("andamento") || normalizedStatus.includes("progres")) {
+    return "emerald";
+  }
+  return "zinc";
+}
+
+function normalizeProjectSearchText(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
 function getAudienceLabel(project: ProjectMemory): string {
   if (project.built_for.trim()) {
     return project.built_for;
@@ -1117,6 +1154,8 @@ export function ConnectionDashboard() {
   const [isCreatingChatThread, setIsCreatingChatThread] = useState(false);
   const [isClearingDatabase, setIsClearingDatabase] = useState(false);
   const [savingGroupJids, setSavingGroupJids] = useState<string[]>([]);
+  const [savingProjectKeys, setSavingProjectKeys] = useState<string[]>([]);
+  const [projectActionError, setProjectActionError] = useState<string | null>(null);
   const [pollingEnabled, setPollingEnabled] = useState(false);
   const [agentPollingEnabled, setAgentPollingEnabled] = useState(false);
   const [agentState, setAgentState] = useState<AgentState>({
@@ -1288,6 +1327,58 @@ export function ConnectionDashboard() {
       setMemoryGroupsError(getErrorMessage(error));
     } finally {
       setSavingGroupJids((current) => current.filter((value) => value !== chatJid));
+    }
+  }
+
+  async function toggleProjectCompletion(project: ProjectMemory, completed: boolean): Promise<void> {
+    const projectKey = project.project_key;
+    setSavingProjectKeys((current) => (current.includes(projectKey) ? current : [...current, projectKey]));
+    setProjectActionError(null);
+
+    const optimisticProject: ProjectMemory = completed
+      ? {
+          ...project,
+          status: "Concluido",
+          completion_source: "manual",
+          manual_completed_at: new Date().toISOString(),
+          manual_completion_notes: project.manual_completion_notes,
+          next_steps: [],
+          updated_at: new Date().toISOString(),
+        }
+      : {
+          ...project,
+          status: "Em andamento",
+          completion_source: "",
+          manual_completed_at: null,
+          manual_completion_notes: "",
+          updated_at: new Date().toISOString(),
+        };
+
+    startTransition(() => {
+      setProjects((current) => current.map((item) => (item.project_key === projectKey ? optimisticProject : item)));
+    });
+
+    try {
+      const updated = await updateMemoryProjectCompletion(projectKey, { completed });
+      startTransition(() => {
+        setProjects((current) => current.map((item) => (item.project_key === projectKey ? updated : item)));
+      });
+      markHeavyResourceRefreshed("projects");
+      pushAgentLog(
+        "success",
+        completed
+          ? `Projeto ${updated.project_name} marcado como concluido manualmente. Esse sinal entra nas proximas atualizacoes de memoria.`
+          : `Projeto ${updated.project_name} reaberto manualmente. O painel voltou a trata-lo como frente ativa.`,
+      );
+    } catch (error) {
+      startTransition(() => {
+        setProjects((current) => current.map((item) => (item.project_key === projectKey ? project : item)));
+      });
+      const message = getErrorMessage(error);
+      setProjectActionError(message);
+      pushAgentLog("error", `Falha ao atualizar o projeto ${project.project_name}: ${message}`);
+    } finally {
+      setSavingProjectKeys((current) => current.filter((value) => value !== projectKey));
     }
   }
 
@@ -2654,7 +2745,14 @@ export function ConnectionDashboard() {
                 />
               ) : null}
 
-              {activeTab === "projects" ? <ProjectsTab projects={projects} /> : null}
+              {activeTab === "projects" ? (
+                <ProjectsTab
+                  projects={projects}
+                  onToggleCompletion={toggleProjectCompletion}
+                  savingProjectKeys={savingProjectKeys}
+                  actionError={projectActionError}
+                />
+              ) : null}
 
               {activeTab === "chat" ? (
                 <ChatTab
@@ -4200,16 +4298,114 @@ function MemoryTab({
   );
 }
 
-function ProjectsTab({ projects }: { projects: ProjectMemory[] }) {
+function ProjectsTab({
+  projects,
+  onToggleCompletion,
+  savingProjectKeys,
+  actionError,
+}: {
+  projects: ProjectMemory[];
+  onToggleCompletion: (project: ProjectMemory, completed: boolean) => Promise<void>;
+  savingProjectKeys: string[];
+  actionError: string | null;
+}) {
   const [subTab, setSubTab] = useState<"overview" | "details" | "roadmap">("overview");
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<"all" | "active" | "completed" | "no_steps">("all");
 
-  const totalSteps = projects.reduce((sum, p) => sum + p.next_steps.length, 0);
-  const totalEvidence = projects.reduce((sum, p) => sum + p.evidence.length, 0);
-  const avgStrength = projects.length > 0 ? Math.round(projects.reduce((sum, p) => sum + getProjectStrength(p), 0) / projects.length) : 0;
-  const latestUpdated = projects.length > 0
-    ? projects.reduce((latest, p) => (p.updated_at > latest ? p.updated_at : latest), projects[0].updated_at)
-    : null;
+  const sortedProjects = useMemo(
+    () =>
+      [...projects].sort((left, right) => {
+        const leftCompleted = isProjectManuallyCompleted(left);
+        const rightCompleted = isProjectManuallyCompleted(right);
+        if (leftCompleted !== rightCompleted) {
+          return Number(leftCompleted) - Number(rightCompleted);
+        }
+
+        if (leftCompleted && rightCompleted) {
+          const leftTime = new Date(left.manual_completed_at ?? left.updated_at).getTime();
+          const rightTime = new Date(right.manual_completed_at ?? right.updated_at).getTime();
+          return rightTime - leftTime;
+        }
+
+        const strengthDelta = getProjectStrength(right) - getProjectStrength(left);
+        if (strengthDelta !== 0) {
+          return strengthDelta;
+        }
+
+        return new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime();
+      }),
+    [projects],
+  );
+
+  const activeProjects = useMemo(
+    () => sortedProjects.filter((project) => !isProjectManuallyCompleted(project)),
+    [sortedProjects],
+  );
+  const completedProjects = useMemo(
+    () => sortedProjects.filter((project) => isProjectManuallyCompleted(project)),
+    [sortedProjects],
+  );
+  const normalizedSearch = normalizeProjectSearchText(search.trim());
+
+  const filteredProjects = useMemo(
+    () =>
+      sortedProjects.filter((project) => {
+        const completed = isProjectManuallyCompleted(project);
+        const matchesFilter =
+          filter === "all"
+            ? true
+            : filter === "active"
+              ? !completed
+              : filter === "completed"
+                ? completed
+                : project.next_steps.length === 0;
+        if (!matchesFilter) {
+          return false;
+        }
+        if (!normalizedSearch) {
+          return true;
+        }
+        const haystack = normalizeProjectSearchText(
+          [
+            project.project_name,
+            project.summary,
+            project.status,
+            project.what_is_being_built,
+            project.built_for,
+            project.manual_completion_notes,
+            project.next_steps.join(" "),
+            project.evidence.join(" "),
+          ].join(" "),
+        );
+        return haystack.includes(normalizedSearch);
+      }),
+    [filter, normalizedSearch, sortedProjects],
+  );
+
+  const filteredActiveProjects = useMemo(
+    () => filteredProjects.filter((project) => !isProjectManuallyCompleted(project)),
+    [filteredProjects],
+  );
+  const filteredCompletedProjects = useMemo(
+    () => filteredProjects.filter((project) => isProjectManuallyCompleted(project)),
+    [filteredProjects],
+  );
+
+  const totalEvidence = projects.reduce((sum, project) => sum + project.evidence.length, 0);
+  const openSteps = activeProjects.reduce((sum, project) => sum + project.next_steps.length, 0);
+  const noStepProjects = activeProjects.filter((project) => project.next_steps.length === 0).length;
+  const completionRate = projects.length > 0 ? Math.round((completedProjects.length / projects.length) * 100) : 0;
+  const avgStrength =
+    activeProjects.length > 0 ? Math.round(activeProjects.reduce((sum, project) => sum + getProjectStrength(project), 0) / activeProjects.length) : 0;
+  const latestUpdated =
+    sortedProjects.length > 0
+      ? sortedProjects.reduce((latest, project) => (
+          new Date(project.updated_at).getTime() > new Date(latest).getTime() ? project.updated_at : latest
+        ), sortedProjects[0].updated_at)
+      : null;
+  const latestCompletedProject = completedProjects[0] ?? null;
 
   if (projects.length === 0) {
     return (
@@ -4219,144 +4415,272 @@ function ProjectsTab({ projects }: { projects: ProjectMemory[] }) {
             <FolderGit2 size={40} />
           </div>
           <h3>Nenhum projeto consolidado</h3>
-          <p>Assim que a memória tiver sinal suficiente, as frentes de trabalho reais aparecem aqui com detalhes completos, próximos passos e evidências.</p>
+          <p>Assim que a memória tiver sinal suficiente, as frentes reais aparecem aqui com status, próximos passos e fechamento manual quando você quiser encerrar uma delas.</p>
         </Card>
       </div>
     );
   }
 
+  const filterOptions = [
+    { id: "all" as const, label: "Todos", count: projects.length },
+    { id: "active" as const, label: "Ativos", count: activeProjects.length },
+    { id: "completed" as const, label: "Concluídos", count: completedProjects.length },
+    { id: "no_steps" as const, label: "Sem passos", count: noStepProjects },
+  ];
+
+  const emptyLabel =
+    normalizedSearch.length > 0
+      ? "Nenhum projeto bateu com a busca atual."
+      : filter === "completed"
+        ? "Ainda não existe nenhum projeto concluído manualmente."
+        : filter === "no_steps"
+          ? "Todos os projetos ativos já têm próximos passos."
+          : "Nada para mostrar com o filtro atual.";
+
+  function renderProjectAction(project: ProjectMemory) {
+    const completed = isProjectManuallyCompleted(project);
+    const saving = savingProjectKeys.includes(project.project_key);
+    return (
+      <button
+        className={completed ? "ac-secondary-button project-action-button" : "ac-success-button project-action-button"}
+        disabled={saving}
+        onClick={() => void onToggleCompletion(project, !completed)}
+        type="button"
+      >
+        {saving ? <RefreshCw size={14} className="spin" /> : completed ? <XCircle size={14} /> : <CheckCircle2 size={14} />}
+        {saving ? "Salvando..." : completed ? "Reabrir projeto" : "Marcar concluído"}
+      </button>
+    );
+  }
+
   return (
     <div className="page-stack">
-      {/* ── Hero Stats Row ── */}
-      <div className="proj-stats-row">
-        <ModernStatCard label="Projetos Ativos" value={String(projects.length)} meta="Frentes consolidadas" icon={FolderGit2} tone="indigo" />
-        <ModernStatCard label="Próximos Passos" value={String(totalSteps)} meta="Ações pendentes totais" icon={ChevronRight} tone="amber" />
-        <ModernStatCard label="Evidências" value={String(totalEvidence)} meta="Sinais de progresso" icon={CheckCircle2} tone="emerald" />
-        <ModernStatCard label="Sinal Médio" value={`${avgStrength}%`} meta={latestUpdated ? `Últ. atualização ${formatRelativeTime(latestUpdated)}` : "Sem data"} icon={BarChart3} />
-      </div>
+      <Card className="projects-hero-card">
+        <div className="projects-hero-copy">
+          <div className="hero-kicker">
+            <Sparkles size={14} />
+            Portfólio vivo do dono
+          </div>
+          <h3>Projetos rastreados pela memória</h3>
+          <p>
+            {completedProjects.length > 0
+              ? `${completedProjects.length} projeto(s) já foram concluídos manualmente e seguem entrando como contexto nas próximas atualizações de memória.`
+              : "Use esta aba para revisar frentes ativas, limpar o que já terminou e manter o retrato operacional coerente com a realidade."}
+          </p>
+        </div>
+        <div className="projects-hero-metrics">
+          <div className="projects-hero-metric">
+            <span>Frentes ativas</span>
+            <strong>{activeProjects.length}</strong>
+            <small>{openSteps} próximos passos em aberto</small>
+          </div>
+          <div className="projects-hero-metric">
+            <span>Fechamento manual</span>
+            <strong>{completionRate}%</strong>
+            <small>{completedProjects.length} concluído(s)</small>
+          </div>
+          <div className="projects-hero-metric">
+            <span>Sinal médio</span>
+            <strong>{avgStrength}%</strong>
+            <small>{totalEvidence} evidências mapeadas</small>
+          </div>
+          <div className="projects-hero-metric">
+            <span>Última revisão</span>
+            <strong>{latestUpdated ? formatRelativeTime(latestUpdated) : "Agora"}</strong>
+            <small>{latestCompletedProject ? `${latestCompletedProject.project_name} foi fechado manualmente por último` : "Sem encerramentos manuais ainda"}</small>
+          </div>
+        </div>
+      </Card>
 
-      {/* ── Sub-tab Selector ── */}
       <div style={{ padding: "0 4px" }}>
         <SegmentedControl
           options={["Visão Geral", "Detalhes Completos", "Roadmap"]}
           selected={subTab === "overview" ? "Visão Geral" : subTab === "details" ? "Detalhes Completos" : "Roadmap"}
-          onChange={(val) => {
-            if (val === "Visão Geral") setSubTab("overview");
-            if (val === "Detalhes Completos") setSubTab("details");
-            if (val === "Roadmap") setSubTab("roadmap");
+          onChange={(value) => {
+            if (value === "Visão Geral") setSubTab("overview");
+            if (value === "Detalhes Completos") setSubTab("details");
+            if (value === "Roadmap") setSubTab("roadmap");
           }}
         />
       </div>
 
-      {/* ═══ SUB-TAB: Visão Geral ═══ */}
-      {subTab === "overview" ? (
-        <>
-          {/* Focus Cards */}
-          <div className="project-focus-row">
-            {projects.slice(0, 2).map((project, index) => (
-              <Card key={`${project.id}-focus`} className={`project-focus-card${index === 0 ? " project-focus-card-primary" : ""}`}>
-                <div className="project-focus-head">
-                  <div>
-                    <span>{index === 0 ? "Foco Principal" : "Foco Secundário"}</span>
-                    <h3>{project.project_name}</h3>
-                  </div>
-                  <div className={`micro-status micro-status-${index === 0 ? "emerald" : "amber"}`}>{project.status || "Em progresso"}</div>
-                </div>
-                <ProgressBar value={getProjectStrength(project)} tone={index === 0 ? "indigo" : "amber"} label="Densidade de sinal" />
-                <p>{project.summary}</p>
-                <div className="proj-focus-footer">
-                  <div className="proj-focus-meta">
-                    <Clock size={12} />
-                    <span>{project.last_seen_at ? formatRelativeTime(project.last_seen_at) : "Sem data"}</span>
-                  </div>
-                  <div className="proj-focus-meta">
-                    <User size={12} />
-                    <span>{getAudienceLabel(project)}</span>
-                  </div>
-                </div>
-              </Card>
+      <Card className="projects-toolbar-card">
+        <div className="projects-toolbar">
+          <label className="project-search-shell">
+            <Search size={16} />
+            <input
+              className="ac-input project-search-input"
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Buscar por projeto, resumo, público, evidência..."
+              type="text"
+              value={search}
+            />
+          </label>
+          <div className="project-filter-row">
+            {filterOptions.map((option) => (
+              <button
+                key={option.id}
+                className={`project-filter-chip${filter === option.id ? " project-filter-chip-active" : ""}`}
+                onClick={() => setFilter(option.id)}
+                type="button"
+              >
+                <span>{option.label}</span>
+                <strong>{option.count}</strong>
+              </button>
             ))}
           </div>
+        </div>
+        {actionError ? <InlineError title="Falha ao salvar projeto" message={actionError} /> : null}
+      </Card>
 
-          {/* Quick Summary Grid for remaining projects */}
-          {projects.length > 2 ? (
-            <>
-              <SectionTitle title={`Outros Projetos (${projects.length - 2})`} icon={GitBranch} />
-              <div className="proj-summary-grid">
-                {projects.slice(2).map((project) => (
-                  <Card key={`${project.id}-summary`} className="proj-summary-card">
-                    <div className="proj-summary-head">
-                      <div className="proj-summary-name">
-                        <GitBranch size={14} />
-                        <h4>{project.project_name}</h4>
+      {filteredProjects.length === 0 ? (
+        <Card>
+          <div className="empty-hint">
+            <FolderGit2 size={18} />
+            <p>{emptyLabel}</p>
+          </div>
+        </Card>
+      ) : null}
+
+      {subTab === "overview" && filteredProjects.length > 0 ? (
+        <>
+          <div className="proj-stats-row">
+            <ModernStatCard label="Projetos visíveis" value={String(filteredProjects.length)} meta="Resultado do filtro atual" icon={FolderGit2} tone="indigo" />
+            <ModernStatCard label="Passos em aberto" value={String(filteredActiveProjects.reduce((sum, project) => sum + project.next_steps.length, 0))} meta="Somente frentes ainda ativas" icon={ChevronRight} tone="amber" />
+            <ModernStatCard label="Concluídos manualmente" value={String(filteredCompletedProjects.length)} meta="Fechados por ação do usuário" icon={CheckCircle2} tone="emerald" />
+            <ModernStatCard label="Sem passos" value={String(filteredActiveProjects.filter((project) => project.next_steps.length === 0).length)} meta="Precisam de mais sinal ou revisão" icon={AlertCircle} />
+          </div>
+
+          <div className="project-modern-grid">
+            {filteredProjects.map((project) => {
+              const completed = isProjectManuallyCompleted(project);
+              const statusTone = getProjectStatusTone(project);
+              const previewSteps = completed ? [] : project.next_steps.slice(0, 3);
+              return (
+                <Card key={`project-overview-${project.id}`} className={`project-modern-card${completed ? " project-modern-card-completed" : ""}`}>
+                  <div className="project-modern-head">
+                    <div className="project-modern-title">
+                      <div className={`project-modern-icon project-modern-icon-${statusTone}`}>
+                        <FolderGit2 size={18} />
                       </div>
-                      <div className={`micro-status micro-status-${project.status?.toLowerCase().includes("ativo") || project.status?.toLowerCase().includes("andamento") ? "emerald" : "amber"}`}>
-                        {project.status || "Em progresso"}
+                      <div>
+                        <h3>{project.project_name}</h3>
+                        <p>{truncateText(project.summary, 160)}</p>
                       </div>
                     </div>
-                    <p className="proj-summary-text">{truncateText(project.summary, 120)}</p>
-                    <div className="proj-summary-footer">
-                      <ProgressBar value={getProjectStrength(project)} tone="zinc" />
-                      <div className="proj-summary-meta">
-                        <span>{project.next_steps.length} passos</span>
-                        <span>•</span>
-                        <span>{project.evidence.length} evidências</span>
+                    <div className="project-modern-actions">
+                      <div className={`micro-status micro-status-${statusTone}`}>{getProjectStatusLabel(project)}</div>
+                      {renderProjectAction(project)}
+                    </div>
+                  </div>
+
+                  {completed ? (
+                    <div className="project-completion-banner">
+                      <CheckCircle2 size={16} />
+                      <div>
+                        <strong>Conclusão manual salva</strong>
+                        <p>
+                          {project.manual_completed_at ? `Marcado em ${formatShortDateTime(project.manual_completed_at)}.` : "Marcado manualmente."} Esse fechamento entra nas próximas atualizações de memória.
+                        </p>
+                        {project.manual_completion_notes ? <small>{project.manual_completion_notes}</small> : null}
                       </div>
                     </div>
-                  </Card>
-                ))}
-              </div>
-            </>
-          ) : null}
+                  ) : null}
+
+                  <ProgressBar
+                    value={completed ? 100 : getProjectStrength(project)}
+                    tone={completed ? "emerald" : statusTone === "amber" ? "amber" : "indigo"}
+                    label={completed ? "Encerrado pelo usuário" : "Força do contexto atual"}
+                  />
+
+                  <div className="project-modern-meta">
+                    <ProjectInfoBlock label="Público" value={getAudienceLabel(project)} />
+                    <ProjectInfoBlock label="Construindo" value={project.what_is_being_built || "Ainda não consolidado"} />
+                    <ProjectInfoBlock label="Último sinal" value={project.last_seen_at ? formatRelativeTime(project.last_seen_at) : "Sem data"} />
+                    <ProjectInfoBlock label="Atualizado" value={formatRelativeTime(project.updated_at)} />
+                  </div>
+
+                  <div className="project-modern-panels">
+                    <div className="project-modern-panel">
+                      <span>Próximos passos</span>
+                      {previewSteps.length > 0 ? (
+                        <ul>
+                          {previewSteps.map((step, index) => (
+                            <li key={`${project.id}-step-preview-${index}`}>{step}</li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p>{completed ? "Projeto encerrado pelo usuário, sem pendências abertas." : "Nenhum próximo passo consolidado ainda."}</p>
+                      )}
+                    </div>
+                    <div className="project-modern-panel">
+                      <span>Evidências</span>
+                      {project.evidence.length > 0 ? (
+                        <ul>
+                          {project.evidence.slice(0, 3).map((evidence, index) => (
+                            <li key={`${project.id}-evidence-preview-${index}`}>{evidence}</li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p>Sem evidências recentes registradas.</p>
+                      )}
+                    </div>
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
         </>
       ) : null}
 
-      {/* ═══ SUB-TAB: Detalhes Completos ═══ */}
-      {subTab === "details" ? (
+      {subTab === "details" && filteredProjects.length > 0 ? (
         <div className="proj-details-stack">
-          {projects.map((project) => {
+          {filteredProjects.map((project) => {
             const isExpanded = expandedId === project.id;
-            const strength = getProjectStrength(project);
+            const completed = isProjectManuallyCompleted(project);
+            const statusTone = getProjectStatusTone(project);
             return (
-              <Card key={project.id} className={`proj-detail-card${isExpanded ? " proj-detail-card-expanded" : ""}`}>
-                {/* Card Header - always visible */}
-                <button className="proj-detail-header" onClick={() => setExpandedId(isExpanded ? null : project.id)} type="button">
-                  <div className="proj-detail-header-left">
-                    <div className="proj-detail-icon-wrap">
+              <Card key={`project-detail-${project.id}`} className={`project-detail-modern-card${completed ? " project-detail-modern-card-completed" : ""}`}>
+                <div className="project-detail-modern-head">
+                  <div className="project-detail-modern-copy">
+                    <div className="project-detail-modern-title">
                       <FolderGit2 size={18} />
+                      <div>
+                        <h3>{project.project_name}</h3>
+                        <span>{project.project_key}</span>
+                      </div>
                     </div>
+                    <p>{truncateText(project.summary, isExpanded ? 320 : 170)}</p>
+                  </div>
+                  <div className="project-detail-modern-actions">
+                    <div className={`micro-status micro-status-${statusTone}`}>{getProjectStatusLabel(project)}</div>
+                    {renderProjectAction(project)}
+                    <button
+                      className="ac-secondary-button project-detail-toggle"
+                      onClick={() => setExpandedId(isExpanded ? null : project.id)}
+                      type="button"
+                    >
+                      {isExpanded ? "Ocultar detalhes" : "Abrir detalhes"}
+                      <ChevronRight size={15} className={isExpanded ? "proj-expand-chevron proj-expand-chevron-open" : "proj-expand-chevron"} />
+                    </button>
+                  </div>
+                </div>
+
+                {completed ? (
+                  <div className="project-completion-banner">
+                    <CheckCircle2 size={16} />
                     <div>
-                      <h3>{project.project_name}</h3>
-                      <span className="proj-detail-key">{project.project_key}</span>
+                      <strong>Fechado manualmente</strong>
+                      <p>
+                        {project.manual_completed_at ? `O usuário marcou este projeto como concluído em ${formatShortDateTime(project.manual_completed_at)}.` : "O usuário marcou este projeto como concluído."}
+                      </p>
+                      {project.manual_completion_notes ? <small>{project.manual_completion_notes}</small> : null}
                     </div>
                   </div>
-                  <div className="proj-detail-header-right">
-                    <div className={`micro-status micro-status-${strength >= 60 ? "emerald" : strength >= 40 ? "amber" : "zinc"}`}>
-                      {project.status || "Em progresso"}
-                    </div>
-                    <div className="proj-detail-strength">
-                      <span>{strength}%</span>
-                      <div className="proj-detail-strength-bar">
-                        <div style={{ width: `${strength}%` }} />
-                      </div>
-                    </div>
-                    <ChevronRight size={16} className={`proj-expand-chevron${isExpanded ? " proj-expand-chevron-open" : ""}`} />
-                  </div>
-                </button>
+                ) : null}
 
-                {/* Expanded Content */}
                 {isExpanded ? (
-                  <div className="proj-detail-body">
-                    {/* Summary Section */}
-                    <div className="proj-detail-section">
-                      <div className="proj-detail-section-title">
-                        <FileText size={14} />
-                        <span>Resumo</span>
-                      </div>
-                      <p>{project.summary}</p>
-                    </div>
-
-                    {/* Two-column info */}
+                  <div className="project-detail-modern-body">
                     <div className="proj-detail-two-col">
                       <div className="proj-detail-section">
                         <div className="proj-detail-section-title">
@@ -4374,27 +4698,25 @@ function ProjectsTab({ projects }: { projects: ProjectMemory[] }) {
                       </div>
                     </div>
 
-                    {/* Next Steps */}
                     <div className="proj-detail-section">
                       <div className="proj-detail-section-title">
                         <ChevronRight size={14} />
-                        <span>Próximos Passos ({project.next_steps.length})</span>
+                        <span>Próximos passos ({project.next_steps.length})</span>
                       </div>
                       {project.next_steps.length > 0 ? (
                         <ul className="proj-step-list">
-                          {project.next_steps.map((step, i) => (
-                            <li key={`step-${i}`}>
-                              <span className="proj-step-number">{i + 1}</span>
+                          {project.next_steps.map((step, index) => (
+                            <li key={`${project.id}-detail-step-${index}`}>
+                              <span className="proj-step-number">{index + 1}</span>
                               <span>{step}</span>
                             </li>
                           ))}
                         </ul>
                       ) : (
-                        <p className="proj-detail-empty">Nenhum próximo passo consolidado para este projeto.</p>
+                        <p className="proj-detail-empty">{completed ? "Projeto concluído manualmente, sem passos restantes." : "Nenhum próximo passo consolidado para este projeto."}</p>
                       )}
                     </div>
 
-                    {/* Evidence */}
                     <div className="proj-detail-section">
                       <div className="proj-detail-section-title">
                         <CheckCircle2 size={14} />
@@ -4402,10 +4724,10 @@ function ProjectsTab({ projects }: { projects: ProjectMemory[] }) {
                       </div>
                       {project.evidence.length > 0 ? (
                         <ul className="proj-evidence-list">
-                          {project.evidence.map((ev, i) => (
-                            <li key={`ev-${i}`}>
+                          {project.evidence.map((evidence, index) => (
+                            <li key={`${project.id}-detail-evidence-${index}`}>
                               <CheckCircle2 size={12} />
-                              <span>{ev}</span>
+                              <span>{evidence}</span>
                             </li>
                           ))}
                         </ul>
@@ -4414,7 +4736,6 @@ function ProjectsTab({ projects }: { projects: ProjectMemory[] }) {
                       )}
                     </div>
 
-                    {/* Footer Metadata */}
                     <div className="proj-detail-footer-meta">
                       <div>
                         <Clock size={12} />
@@ -4433,20 +4754,18 @@ function ProjectsTab({ projects }: { projects: ProjectMemory[] }) {
         </div>
       ) : null}
 
-      {/* ═══ SUB-TAB: Roadmap ═════ */}
-      {subTab === "roadmap" ? (
+      {subTab === "roadmap" && filteredProjects.length > 0 ? (
         <div className="proj-roadmap-container">
           <Card>
-            <SectionTitle title="Roadmap de Próximos Passos" icon={Zap} />
+            <SectionTitle title="Roadmap de próximos passos" icon={Zap} />
             <p className="support-copy">
-              Visão consolidada de todos os próximos passos pendentes em cada projeto, organizados por prioridade de sinal.
+              A trilha abaixo destaca apenas frentes ainda abertas. Projetos concluídos manualmente ficam separados para que o histórico continue claro sem contaminar a fila operacional.
             </p>
           </Card>
 
           <div className="proj-roadmap-timeline">
-            {projects
-              .filter((p) => p.next_steps.length > 0)
-              .sort((a, b) => getProjectStrength(b) - getProjectStrength(a))
+            {filteredActiveProjects
+              .filter((project) => project.next_steps.length > 0)
               .map((project) => (
                 <div key={`roadmap-${project.id}`} className="proj-roadmap-project">
                   <div className="proj-roadmap-project-head">
@@ -4454,17 +4773,16 @@ function ProjectsTab({ projects }: { projects: ProjectMemory[] }) {
                     <div className="proj-roadmap-project-info">
                       <h4>{project.project_name}</h4>
                       <div className="proj-roadmap-meta-row">
-                        <div className={`micro-status micro-status-${getProjectStrength(project) >= 60 ? "emerald" : "amber"}`}>
-                          {project.status || "Em progresso"}
-                        </div>
+                        <div className={`micro-status micro-status-${getProjectStatusTone(project)}`}>{getProjectStatusLabel(project)}</div>
                         <span className="proj-roadmap-strength">{getProjectStrength(project)}% sinal</span>
                       </div>
                     </div>
+                    {renderProjectAction(project)}
                   </div>
                   <div className="proj-roadmap-steps">
-                    {project.next_steps.map((step, i) => (
-                      <div key={`roadmap-step-${i}`} className="proj-roadmap-step">
-                        <div className="proj-roadmap-step-idx">{i + 1}</div>
+                    {project.next_steps.map((step, index) => (
+                      <div key={`${project.id}-roadmap-step-${index}`} className="proj-roadmap-step">
+                        <div className="proj-roadmap-step-idx">{index + 1}</div>
                         <span>{step}</span>
                       </div>
                     ))}
@@ -4475,31 +4793,48 @@ function ProjectsTab({ projects }: { projects: ProjectMemory[] }) {
                         <CheckCircle2 size={12} />
                         Evidências que sustentam
                       </span>
-                      {project.evidence.slice(0, 2).map((ev, i) => (
-                        <p key={`roadmap-ev-${i}`} className="proj-roadmap-evidence-text">{ev}</p>
+                      {project.evidence.slice(0, 2).map((evidence, index) => (
+                        <p key={`${project.id}-roadmap-evidence-${index}`} className="proj-roadmap-evidence-text">{evidence}</p>
                       ))}
                     </div>
                   ) : null}
                 </div>
               ))}
 
-            {projects.filter((p) => p.next_steps.length > 0).length === 0 ? (
+            {filteredActiveProjects.filter((project) => project.next_steps.length > 0).length === 0 ? (
               <Card>
                 <div className="empty-hint">
                   <Zap size={18} />
-                  <p>Nenhum projeto possui próximos passos definidos. Os passos aparecem conforme a memória consolida mais sinais.</p>
+                  <p>Nenhum projeto ativo possui próximos passos definidos no filtro atual.</p>
                 </div>
               </Card>
             ) : null}
           </div>
 
-          {/* Projects without next steps */}
-          {projects.filter((p) => p.next_steps.length === 0).length > 0 ? (
+          {filteredCompletedProjects.length > 0 ? (
             <Card>
-              <SectionTitle title="Projetos sem Próximos Passos" icon={AlertCircle} />
+              <SectionTitle title="Concluídos manualmente" icon={CheckCircle2} />
+              <div className="project-completed-grid">
+                {filteredCompletedProjects.map((project) => (
+                  <div key={`completed-${project.id}`} className="project-completed-card">
+                    <div className="project-completed-head">
+                      <strong>{project.project_name}</strong>
+                      <span>{project.manual_completed_at ? formatShortDateTime(project.manual_completed_at) : "Fechado manualmente"}</span>
+                    </div>
+                    <p>{truncateText(project.summary, 150)}</p>
+                    <small>{project.manual_completion_notes || "Esse encerramento continua entrando como contexto nas próximas leituras de memória."}</small>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          ) : null}
+
+          {filteredActiveProjects.filter((project) => project.next_steps.length === 0).length > 0 ? (
+            <Card>
+              <SectionTitle title="Projetos ativos sem próximos passos" icon={AlertCircle} />
               <div className="proj-roadmap-no-steps">
-                {projects
-                  .filter((p) => p.next_steps.length === 0)
+                {filteredActiveProjects
+                  .filter((project) => project.next_steps.length === 0)
                   .map((project) => (
                     <div key={`no-steps-${project.id}`} className="proj-roadmap-no-step-item">
                       <GitBranch size={14} />

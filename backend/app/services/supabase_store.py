@@ -42,6 +42,9 @@ SQLITE_LEGACY_COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
     "project_memories": {
         "what_is_being_built": "TEXT DEFAULT ''",
         "built_for": "TEXT DEFAULT ''",
+        "completion_source": "TEXT DEFAULT ''",
+        "manual_completed_at": "TEXT",
+        "manual_completion_notes": "TEXT DEFAULT ''",
     },
     "message_retention_state": {
         "observer_history_cutoff_at": "TEXT",
@@ -227,6 +230,9 @@ class ProjectMemoryRecord:
     evidence: list[str]
     source_snapshot_id: str | None
     last_seen_at: datetime | None
+    completion_source: str
+    manual_completed_at: datetime | None
+    manual_completion_notes: str
     updated_at: datetime
 
 
@@ -775,6 +781,14 @@ class SupabaseStore:
         self.client.execute(
             "UPDATE project_memories SET built_for = '' "
             "WHERE built_for IS NULL"
+        )
+        self.client.execute(
+            "UPDATE project_memories SET completion_source = '' "
+            "WHERE completion_source IS NULL"
+        )
+        self.client.execute(
+            "UPDATE project_memories SET manual_completion_notes = '' "
+            "WHERE manual_completion_notes IS NULL"
         )
         self.client.execute(
             "UPDATE memory_snapshots SET distinct_contact_count = 0 "
@@ -2037,6 +2051,10 @@ class SupabaseStore:
     ) -> list[ProjectMemoryRecord]:
         records: list[dict[str, Any]] = []
         seen_keys: set[str] = set()
+        existing_by_key = {
+            project.project_key: project
+            for project in self.list_project_memories(user_id, limit=max(64, len(projects) * 4))
+        }
 
         for project in projects:
             project_name = project.project_name.strip()
@@ -2049,6 +2067,12 @@ class SupabaseStore:
                 continue
 
             seen_keys.add(project_key)
+            existing_project = existing_by_key.get(project_key)
+            manual_completion_locked = bool(
+                existing_project
+                and existing_project.completion_source == "manual"
+                and existing_project.manual_completed_at is not None
+            )
             records.append(
                 {
                     "id": str(uuid4()),
@@ -2056,10 +2080,10 @@ class SupabaseStore:
                     "project_key": project_key,
                     "project_name": project_name,
                     "summary": summary,
-                    "status": project.status.strip(),
+                    "status": "Concluido" if manual_completion_locked else project.status.strip(),
                     "what_is_being_built": project.what_is_being_built.strip(),
                     "built_for": project.built_for.strip(),
-                    "next_steps": self._clean_string_list(project.next_steps),
+                    "next_steps": [] if manual_completion_locked else self._clean_string_list(project.next_steps),
                     "evidence": self._clean_string_list(project.evidence),
                     "source_snapshot_id": source_snapshot_id,
                     "last_seen_at": observed_at.isoformat(),
@@ -2093,7 +2117,7 @@ class SupabaseStore:
                 self.client.table("project_memories")
                 .select(
                     "id,user_id,project_key,project_name,summary,status,what_is_being_built,built_for,next_steps,evidence,"
-                    "source_snapshot_id,last_seen_at,updated_at"
+                    "source_snapshot_id,last_seen_at,completion_source,manual_completed_at,manual_completion_notes,updated_at"
                 )
                 .eq("user_id", str(user_id))
                 .order("last_seen_at", desc=True)
@@ -2104,6 +2128,9 @@ class SupabaseStore:
             if not (
                 self._is_missing_column_error(exc, column_name="what_is_being_built", table_name="project_memories")
                 or self._is_missing_column_error(exc, column_name="built_for", table_name="project_memories")
+                or self._is_missing_column_error(exc, column_name="completion_source", table_name="project_memories")
+                or self._is_missing_column_error(exc, column_name="manual_completed_at", table_name="project_memories")
+                or self._is_missing_column_error(exc, column_name="manual_completion_notes", table_name="project_memories")
             ):
                 raise
             response = (
@@ -2137,10 +2164,56 @@ class SupabaseStore:
                     evidence=self._parse_string_list(row.get("evidence")),
                     source_snapshot_id=self._optional_text(row.get("source_snapshot_id")),
                     last_seen_at=self._parse_datetime(row.get("last_seen_at")),
+                    completion_source=str(row.get("completion_source") or ""),
+                    manual_completed_at=self._parse_datetime(row.get("manual_completed_at")),
+                    manual_completion_notes=str(row.get("manual_completion_notes") or ""),
                     updated_at=self._parse_datetime(row.get("updated_at")) or datetime.now(UTC),
                 )
             )
         return projects
+
+    def update_project_manual_completion(
+        self,
+        *,
+        user_id: UUID,
+        project_key: str,
+        completed: bool,
+        completion_notes: str,
+        changed_at: datetime,
+    ) -> ProjectMemoryRecord | None:
+        normalized_key = self._normalize_project_key(project_key)
+        if not normalized_key:
+            return None
+
+        existing = next(
+            (
+                project
+                for project in self.list_project_memories(user_id, limit=128)
+                if project.project_key == normalized_key
+            ),
+            None,
+        )
+        if existing is None:
+            return None
+
+        payload: dict[str, Any] = {
+            "status": "Concluido" if completed else "Em andamento",
+            "completion_source": "manual" if completed else "",
+            "manual_completed_at": changed_at.isoformat() if completed else None,
+            "manual_completion_notes": completion_notes.strip() if completed else "",
+            "next_steps": [] if completed else existing.next_steps,
+            "updated_at": changed_at.isoformat(),
+        }
+
+        self.client.table("project_memories").update(payload).eq("user_id", str(user_id)).eq("project_key", normalized_key).execute()
+        return next(
+            (
+                project
+                for project in self.list_project_memories(user_id, limit=128)
+                if project.project_key == normalized_key
+            ),
+            None,
+        )
 
     def upsert_important_messages(
         self,

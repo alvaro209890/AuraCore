@@ -188,6 +188,9 @@ export type ProjectMemory = {
   evidence: string[];
   source_snapshot_id: string | null;
   last_seen_at: string | null;
+  completion_source: string;
+  manual_completed_at: string | null;
+  manual_completion_notes: string;
   updated_at: string;
 };
 
@@ -633,6 +636,19 @@ export async function getImportantMessages(limit = 80): Promise<ImportantMessage
 
 export async function getMemoryProjects(): Promise<ProjectMemory[]> {
   return request<ProjectMemory[]>("/api/memories/projects");
+}
+
+export async function updateMemoryProjectCompletion(
+  projectKey: string,
+  input: { completed: boolean; completion_notes?: string },
+): Promise<ProjectMemory> {
+  return request<ProjectMemory>(`/api/memories/projects/${encodeURIComponent(projectKey)}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      completed: input.completed,
+      completion_notes: input.completion_notes ?? "",
+    }),
+  });
 }
 
 export async function getMemoryGroups(): Promise<WhatsAppGroupSelection[]> {

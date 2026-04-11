@@ -2173,6 +2173,21 @@ class MemoryAnalysisService:
     def list_projects(self, *, limit: int = 8) -> list[ProjectMemoryRecord]:
         return self.store.list_project_memories(self.settings.default_user_id, limit=limit)
 
+    def update_project_completion(
+        self,
+        *,
+        project_key: str,
+        completed: bool,
+        completion_notes: str = "",
+    ) -> ProjectMemoryRecord | None:
+        return self.store.update_project_manual_completion(
+            user_id=self.settings.default_user_id,
+            project_key=project_key,
+            completed=completed,
+            completion_notes=completion_notes,
+            changed_at=datetime.now(UTC),
+        )
+
     def list_important_messages(self, *, limit: int = 80) -> list[ImportantMessageRecord]:
         return self.store.list_important_messages(self.settings.default_user_id, limit=limit)
 
@@ -2486,6 +2501,12 @@ class MemoryAnalysisService:
                 lines.append(f"  Proximos passos: {'; '.join(project.next_steps[:4])}")
             if project.evidence:
                 lines.append(f"  Evidencias: {'; '.join(project.evidence[:4])}")
+            if project.completion_source == "manual" and project.manual_completed_at is not None:
+                lines.append(
+                    f"  Atualizacao manual do usuario: marcado como concluido em {project.manual_completed_at.isoformat()}"
+                )
+                if project.manual_completion_notes.strip():
+                    lines.append(f"  Observacao manual: {project.manual_completion_notes.strip()}")
 
             section = "\n".join(lines)
             projected_size = current_size + len(section) + 2
