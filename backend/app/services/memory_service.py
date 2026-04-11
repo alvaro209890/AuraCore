@@ -559,15 +559,27 @@ class MemoryAnalysisService:
         open_questions_context = self._build_open_questions_context(current_persona)
         conversation_context = self._build_conversation_context(included_messages)
         people_memory_context = self._build_people_memory_context(included_messages)
+        prompt_context = self._build_default_analysis_prompt_context(
+            AnalyzeMemoryPromptContext(
+                transcript=transcript,
+                conversation_context=conversation_context,
+                people_memory_context=people_memory_context,
+                current_life_summary=self._build_persona_context(current_persona),
+                prior_analyses_context=prior_analyses_context,
+                project_context=project_context,
+                chat_context=chat_context,
+                open_questions_context=open_questions_context,
+            )
+        )
         prompt_preview = self.deepseek_service.build_analysis_prompt_preview(
-            transcript=transcript,
-            conversation_context=conversation_context,
-            people_memory_context=people_memory_context,
-            current_life_summary=self._build_persona_context(current_persona),
-            prior_analyses_context=prior_analyses_context,
-            project_context=project_context,
-            chat_context=chat_context,
-            open_questions_context=open_questions_context,
+            transcript=prompt_context.transcript,
+            conversation_context=prompt_context.conversation_context,
+            people_memory_context=prompt_context.people_memory_context,
+            current_life_summary=prompt_context.current_life_summary,
+            prior_analyses_context=prompt_context.prior_analyses_context,
+            project_context=prompt_context.project_context,
+            chat_context=prompt_context.chat_context,
+            open_questions_context=prompt_context.open_questions_context,
             intent="improve_memory" if current_persona.last_analyzed_at else "first_analysis",
             window_hours=max_lookback_hours,
             window_start=window_start,
@@ -969,15 +981,27 @@ class MemoryAnalysisService:
     def _build_persona_context(self, persona: PersonaRecord) -> str:
         sections: list[str] = []
         if persona.life_summary.strip():
-            sections.append(persona.life_summary.strip())
+            sections.append(self._summarize_message_text(persona.life_summary.strip(), 720))
         if persona.structural_strengths:
-            sections.append("Forcas recorrentes:\n- " + "\n- ".join(persona.structural_strengths[:6]))
+            sections.append(
+                "Forcas recorrentes:\n- "
+                + "\n- ".join(self._summarize_list_items(persona.structural_strengths, item_limit=5, item_chars=120))
+            )
         if persona.structural_routines:
-            sections.append("Rotina recorrente:\n- " + "\n- ".join(persona.structural_routines[:6]))
+            sections.append(
+                "Rotina recorrente:\n- "
+                + "\n- ".join(self._summarize_list_items(persona.structural_routines, item_limit=5, item_chars=120))
+            )
         if persona.structural_preferences:
-            sections.append("Preferencias operacionais:\n- " + "\n- ".join(persona.structural_preferences[:6]))
+            sections.append(
+                "Preferencias operacionais:\n- "
+                + "\n- ".join(self._summarize_list_items(persona.structural_preferences, item_limit=5, item_chars=120))
+            )
         if persona.structural_open_questions:
-            sections.append("Lacunas ainda abertas:\n- " + "\n- ".join(persona.structural_open_questions[:5]))
+            sections.append(
+                "Lacunas ainda abertas:\n- "
+                + "\n- ".join(self._summarize_list_items(persona.structural_open_questions, item_limit=4, item_chars=120))
+            )
         return "\n\n".join(section for section in sections if section).strip()
 
     def _resolve_effective_life_summary(self, raw_summary: str, *, fallback_summary: str) -> str:
@@ -1205,15 +1229,27 @@ class MemoryAnalysisService:
         )
         chat_context = self._build_chat_context()
         open_questions_context = self._build_open_questions_context(current_persona)
+        prompt_context = self._build_default_analysis_prompt_context(
+            AnalyzeMemoryPromptContext(
+                transcript=transcript,
+                conversation_context=conversation_context,
+                people_memory_context=people_memory_context,
+                current_life_summary=self._build_persona_context(current_persona),
+                prior_analyses_context=prior_analyses_context,
+                project_context=project_context,
+                chat_context=chat_context,
+                open_questions_context=open_questions_context,
+            )
+        )
         prompt_preview = self.deepseek_service.build_analysis_prompt_preview(
-            transcript=transcript,
-            conversation_context=conversation_context,
-            people_memory_context=people_memory_context,
-            current_life_summary=self._build_persona_context(current_persona),
-            prior_analyses_context=prior_analyses_context,
-            project_context=project_context,
-            chat_context=chat_context,
-            open_questions_context=open_questions_context,
+            transcript=prompt_context.transcript,
+            conversation_context=prompt_context.conversation_context,
+            people_memory_context=prompt_context.people_memory_context,
+            current_life_summary=prompt_context.current_life_summary,
+            prior_analyses_context=prompt_context.prior_analyses_context,
+            project_context=prompt_context.project_context,
+            chat_context=prompt_context.chat_context,
+            open_questions_context=prompt_context.open_questions_context,
             intent=intent,
             window_hours=window_hours,
             window_start=window_start,
@@ -1284,6 +1320,7 @@ class MemoryAnalysisService:
             chat_context=self._build_chat_context(),
             open_questions_context=self._build_open_questions_context(current_persona),
         )
+        prompt_context = self._build_default_analysis_prompt_context(prompt_context)
         self._log_analysis_prompt_context_sizes(plan=plan, context=prompt_context, stage="primary")
         current_life_summary = prompt_context.current_life_summary
         if self._should_chunk_first_analysis(plan):
@@ -1536,13 +1573,13 @@ class MemoryAnalysisService:
     ) -> AnalyzeMemoryPromptContext:
         return AnalyzeMemoryPromptContext(
             transcript=context.transcript,
-            conversation_context=self._truncate_context_block(context.conversation_context, char_budget=1200),
-            people_memory_context=self._truncate_context_block(context.people_memory_context, char_budget=1000),
-            current_life_summary=self._truncate_context_block(context.current_life_summary, char_budget=1100),
-            prior_analyses_context=self._truncate_context_block(context.prior_analyses_context, char_budget=1500),
-            project_context=self._truncate_context_block(context.project_context, char_budget=1200),
-            chat_context=self._truncate_context_block(context.chat_context, char_budget=900),
-            open_questions_context=self._truncate_context_block(context.open_questions_context, char_budget=500),
+            conversation_context=self._compact_context_block(context.conversation_context, char_budget=1200, max_lines=12),
+            people_memory_context=self._compact_context_block(context.people_memory_context, char_budget=1000, max_lines=12),
+            current_life_summary=self._compact_context_block(context.current_life_summary, char_budget=1100, max_lines=12),
+            prior_analyses_context=self._compact_context_block(context.prior_analyses_context, char_budget=1500, max_lines=16),
+            project_context=self._compact_context_block(context.project_context, char_budget=1200, max_lines=14),
+            chat_context=self._compact_context_block(context.chat_context, char_budget=900, max_lines=10),
+            open_questions_context=self._compact_context_block(context.open_questions_context, char_budget=500, max_lines=8),
         )
 
     def _build_minimal_analysis_prompt_context(
@@ -1551,14 +1588,57 @@ class MemoryAnalysisService:
     ) -> AnalyzeMemoryPromptContext:
         return AnalyzeMemoryPromptContext(
             transcript=context.transcript,
-            conversation_context=self._truncate_context_block(context.conversation_context, char_budget=320),
-            people_memory_context=self._truncate_context_block(context.people_memory_context, char_budget=260),
-            current_life_summary=self._truncate_context_block(context.current_life_summary, char_budget=560),
-            prior_analyses_context=self._truncate_context_block(context.prior_analyses_context, char_budget=420),
-            project_context=self._truncate_context_block(context.project_context, char_budget=360),
-            chat_context=self._truncate_context_block(context.chat_context, char_budget=160),
-            open_questions_context=self._truncate_context_block(context.open_questions_context, char_budget=160),
+            conversation_context=self._compact_context_block(context.conversation_context, char_budget=320, max_lines=5),
+            people_memory_context=self._compact_context_block(context.people_memory_context, char_budget=260, max_lines=4),
+            current_life_summary=self._compact_context_block(context.current_life_summary, char_budget=560, max_lines=6),
+            prior_analyses_context=self._compact_context_block(context.prior_analyses_context, char_budget=420, max_lines=5),
+            project_context=self._compact_context_block(context.project_context, char_budget=360, max_lines=5),
+            chat_context=self._compact_context_block(context.chat_context, char_budget=160, max_lines=3),
+            open_questions_context=self._compact_context_block(context.open_questions_context, char_budget=160, max_lines=4),
         )
+
+    def _build_default_analysis_prompt_context(
+        self,
+        context: AnalyzeMemoryPromptContext,
+    ) -> AnalyzeMemoryPromptContext:
+        return AnalyzeMemoryPromptContext(
+            transcript=context.transcript,
+            conversation_context=self._compact_context_block(context.conversation_context, char_budget=2200, max_lines=22),
+            people_memory_context=self._compact_context_block(context.people_memory_context, char_budget=1800, max_lines=22),
+            current_life_summary=self._compact_context_block(context.current_life_summary, char_budget=1500, max_lines=16),
+            prior_analyses_context=self._compact_context_block(context.prior_analyses_context, char_budget=2000, max_lines=22),
+            project_context=self._compact_context_block(context.project_context, char_budget=1800, max_lines=20),
+            chat_context=self._compact_context_block(context.chat_context, char_budget=900, max_lines=10),
+            open_questions_context=self._compact_context_block(context.open_questions_context, char_budget=480, max_lines=8),
+        )
+
+    def _compact_context_block(
+        self,
+        text: str,
+        *,
+        char_budget: int,
+        max_lines: int,
+    ) -> str:
+        normalized = str(text or "").strip()
+        if not normalized:
+            return ""
+
+        compacted_lines: list[str] = []
+        previous_key: str | None = None
+        for raw_line in normalized.splitlines():
+            candidate = " ".join(raw_line.split()).strip()
+            if not candidate:
+                continue
+            candidate_key = candidate.casefold()
+            if candidate_key == previous_key:
+                continue
+            compacted_lines.append(candidate)
+            previous_key = candidate_key
+            if len(compacted_lines) >= max(1, max_lines):
+                break
+
+        compacted = "\n".join(compacted_lines) if compacted_lines else normalized
+        return self._truncate_context_block(compacted, char_budget=char_budget)
 
     def _truncate_context_block(self, text: str, *, char_budget: int) -> str:
         normalized = str(text or "").strip()
@@ -1646,15 +1726,27 @@ class MemoryAnalysisService:
                 window_end=plan.window_end,
                 selected_transcript_chars=plan.selected_transcript_chars,
             )
+            single_chunk_context = self._build_default_analysis_prompt_context(
+                AnalyzeMemoryPromptContext(
+                    transcript=single_chunk.transcript,
+                    conversation_context=single_chunk.conversation_context,
+                    people_memory_context=single_chunk.people_memory_context,
+                    current_life_summary=current_life_summary,
+                    prior_analyses_context=prior_analyses_context,
+                    project_context=project_context,
+                    chat_context=chat_context,
+                    open_questions_context=open_questions_context,
+                )
+            )
             return await self.deepseek_service.analyze_memory(
-                transcript=single_chunk.transcript,
-                conversation_context=single_chunk.conversation_context,
-                people_memory_context=single_chunk.people_memory_context,
-                current_life_summary=current_life_summary,
-                prior_analyses_context=prior_analyses_context,
-                project_context=project_context,
-                chat_context=chat_context,
-                open_questions_context=open_questions_context,
+                transcript=single_chunk_context.transcript,
+                conversation_context=single_chunk_context.conversation_context,
+                people_memory_context=single_chunk_context.people_memory_context,
+                current_life_summary=single_chunk_context.current_life_summary,
+                prior_analyses_context=single_chunk_context.prior_analyses_context,
+                project_context=single_chunk_context.project_context,
+                chat_context=single_chunk_context.chat_context,
+                open_questions_context=single_chunk_context.open_questions_context,
                 intent="first_analysis",
                 window_hours=max(1, ceil((single_chunk.window_end - single_chunk.window_start).total_seconds() / 3600)),
                 window_start=single_chunk.window_start,
@@ -1674,6 +1766,18 @@ class MemoryAnalysisService:
 
         partial_nodes: list[FirstAnalysisSynthesisNode] = []
         for index, chunk in enumerate(chunks, start=1):
+            chunk_context = self._build_default_analysis_prompt_context(
+                AnalyzeMemoryPromptContext(
+                    transcript=chunk.transcript,
+                    conversation_context=chunk.conversation_context,
+                    people_memory_context=chunk.people_memory_context,
+                    current_life_summary=current_life_summary,
+                    prior_analyses_context=prior_analyses_context,
+                    project_context=project_context,
+                    chat_context=chat_context,
+                    open_questions_context=open_questions_context,
+                )
+            )
             logger.info(
                 "first_analysis_chunk_start chunk=%s/%s messages=%s chars=%s window_start=%s window_end=%s",
                 index,
@@ -1684,14 +1788,14 @@ class MemoryAnalysisService:
                 chunk.window_end.isoformat(),
             )
             partial = await self.deepseek_service.analyze_memory(
-                transcript=chunk.transcript,
-                conversation_context=chunk.conversation_context,
-                people_memory_context=chunk.people_memory_context,
-                current_life_summary=current_life_summary,
-                prior_analyses_context=prior_analyses_context,
-                project_context=project_context,
-                chat_context=chat_context,
-                open_questions_context=open_questions_context,
+                transcript=chunk_context.transcript,
+                conversation_context=chunk_context.conversation_context,
+                people_memory_context=chunk_context.people_memory_context,
+                current_life_summary=chunk_context.current_life_summary,
+                prior_analyses_context=chunk_context.prior_analyses_context,
+                project_context=chunk_context.project_context,
+                chat_context=chunk_context.chat_context,
+                open_questions_context=chunk_context.open_questions_context,
                 intent="first_analysis",
                 window_hours=max(1, ceil((chunk.window_end - chunk.window_start).total_seconds() / 3600)),
                 window_start=chunk.window_start,
@@ -1822,6 +1926,18 @@ class MemoryAnalysisService:
                 group_window_end = max(node.window_end for node in group)
                 group_conversation_context = self._build_conversation_context(merged_messages)
                 partial_analyses_block = self._build_partial_analyses_block(group)
+                synthesis_context = self._build_default_analysis_prompt_context(
+                    AnalyzeMemoryPromptContext(
+                        transcript="",
+                        conversation_context=group_conversation_context,
+                        people_memory_context="",
+                        current_life_summary=current_life_summary,
+                        prior_analyses_context=prior_analyses_context,
+                        project_context=project_context,
+                        chat_context=chat_context,
+                        open_questions_context=open_questions_context,
+                    )
+                )
                 logger.info(
                     "first_analysis_synthesis_group_start level=%s group=%s/%s node_count=%s messages=%s window_start=%s window_end=%s",
                     level,
@@ -1834,12 +1950,12 @@ class MemoryAnalysisService:
                 )
                 synthesized = await self.deepseek_service.synthesize_memory_analyses(
                     partial_analyses_block=partial_analyses_block,
-                    conversation_context=group_conversation_context,
-                    current_life_summary=current_life_summary,
-                    prior_analyses_context=prior_analyses_context,
-                    project_context=project_context,
-                    chat_context=chat_context,
-                    open_questions_context=open_questions_context,
+                    conversation_context=synthesis_context.conversation_context,
+                    current_life_summary=synthesis_context.current_life_summary,
+                    prior_analyses_context=synthesis_context.prior_analyses_context,
+                    project_context=synthesis_context.project_context,
+                    chat_context=synthesis_context.chat_context,
+                    open_questions_context=synthesis_context.open_questions_context,
                     intent="first_analysis",
                     window_hours=max(1, ceil((group_window_end - group_window_start).total_seconds() / 3600)),
                     window_start=group_window_start,
@@ -1888,25 +2004,30 @@ class MemoryAnalysisService:
         nodes: list[FirstAnalysisSynthesisNode],
     ) -> str:
         sections: list[str] = []
+        current_size = 0
+        char_budget = min(max(2400, self.settings.memory_analysis_max_chars // 3), 7000)
         for index, node in enumerate(nodes, start=1):
             result = node.result
             project_lines = [
                 (
                     f"  - nome={project.name}; status={project.status or 'indefinido'}; "
-                    f"resumo={project.summary}; construindo={project.what_is_being_built}; para={project.built_for}; "
-                    f"proximos={'; '.join(project.next_steps[:4]) or 'nenhum'}"
+                    f"resumo={self._summarize_message_text(project.summary, 120)}; "
+                    f"construindo={self._summarize_message_text(project.what_is_being_built, 90)}; "
+                    f"para={self._summarize_message_text(project.built_for, 80)}; "
+                    f"proximos={'; '.join(self._summarize_list_items(project.next_steps, item_limit=3, item_chars=70)) or 'nenhum'}"
                 )
-                for project in result.active_projects[:6]
+                for project in result.active_projects[:4]
             ]
             contact_lines = [
                 (
                     f"  - person_key={person.person_key}; contato={person.contact_name}; "
-                    f"perfil={person.profile_summary}; relacao={person.relationship_summary}; "
-                    f"fatos={'; '.join(person.salient_facts[:4]) or 'nenhum'}; "
-                    f"pendencias={'; '.join(person.open_loops[:4]) or 'nenhuma'}; "
-                    f"topicos={'; '.join(person.recent_topics[:4]) or 'nenhum'}"
+                    f"perfil={self._summarize_message_text(person.profile_summary, 90)}; "
+                    f"relacao={self._summarize_message_text(person.relationship_summary, 90)}; "
+                    f"fatos={'; '.join(self._summarize_list_items(person.salient_facts, item_limit=3, item_chars=70)) or 'nenhum'}; "
+                    f"pendencias={'; '.join(self._summarize_list_items(person.open_loops, item_limit=3, item_chars=70)) or 'nenhuma'}; "
+                    f"topicos={'; '.join(self._summarize_list_items(person.recent_topics, item_limit=3, item_chars=70)) or 'nenhum'}"
                 )
-                for person in result.contact_memories[:8]
+                for person in result.contact_memories[:5]
             ]
             section_lines = [
                 f"### Parcial {index} ({node.label})",
@@ -1916,19 +2037,24 @@ class MemoryAnalysisService:
                     f"{node.window_end.astimezone(UTC).strftime('%Y-%m-%d %H:%M UTC')}"
                 ),
                 f"Mensagens: {len(node.source_messages)}",
-                f"Resumo consolidado parcial: {result.updated_life_summary}",
-                f"Resumo da janela parcial: {result.window_summary}",
-                f"Aprendizados: {'; '.join(result.key_learnings[:8]) or 'nenhum'}",
-                f"Pessoas e relacoes: {'; '.join(result.people_and_relationships[:8]) or 'nenhum'}",
-                f"Rotina: {'; '.join(result.routine_signals[:8]) or 'nenhum'}",
-                f"Preferencias: {'; '.join(result.preferences[:8]) or 'nenhuma'}",
-                f"Lacunas: {'; '.join(result.open_questions[:8]) or 'nenhuma'}",
+                f"Resumo consolidado parcial: {self._summarize_message_text(result.updated_life_summary, 180)}",
+                f"Resumo da janela parcial: {self._summarize_message_text(result.window_summary, 160)}",
+                f"Aprendizados: {'; '.join(self._summarize_list_items(result.key_learnings, item_limit=4, item_chars=90)) or 'nenhum'}",
+                f"Pessoas e relacoes: {'; '.join(self._summarize_list_items(result.people_and_relationships, item_limit=4, item_chars=90)) or 'nenhum'}",
+                f"Rotina: {'; '.join(self._summarize_list_items(result.routine_signals, item_limit=4, item_chars=90)) or 'nenhum'}",
+                f"Preferencias: {'; '.join(self._summarize_list_items(result.preferences, item_limit=4, item_chars=90)) or 'nenhuma'}",
+                f"Lacunas: {'; '.join(self._summarize_list_items(result.open_questions, item_limit=4, item_chars=90)) or 'nenhuma'}",
                 "Projetos detectados:",
                 *(project_lines or ["  - nenhum"]),
                 "Contatos detectados:",
                 *(contact_lines or ["  - nenhum"]),
             ]
-            sections.append("\n".join(section_lines))
+            section = "\n".join(section_lines)
+            projected_size = current_size + len(section) + 2
+            if sections and projected_size > char_budget:
+                break
+            sections.append(section)
+            current_size = projected_size
         return "\n\n".join(sections)
 
     def _get_observer_owner_phone(self) -> str | None:
@@ -2499,11 +2625,23 @@ class MemoryAnalysisService:
             )
 
         # Passo 1: Refinamento da Persona e Projetos
+        refinement_context = self._build_default_analysis_prompt_context(
+            AnalyzeMemoryPromptContext(
+                transcript="",
+                conversation_context="",
+                people_memory_context="",
+                current_life_summary=self._build_persona_context(current_persona),
+                prior_analyses_context=self._build_prior_analyses_context_from_snapshots(snapshots),
+                project_context=self._build_project_context(projects),
+                chat_context=self._build_chat_context(),
+                open_questions_context="",
+            )
+        )
         refined = await self.deepseek_service.refine_saved_memory(
-            current_life_summary=self._build_persona_context(current_persona),
-            prior_analyses_context=self._build_prior_analyses_context_from_snapshots(snapshots),
-            project_context=self._build_project_context(projects),
-            chat_context=self._build_chat_context(),
+            current_life_summary=refinement_context.current_life_summary,
+            prior_analyses_context=refinement_context.prior_analyses_context,
+            project_context=refinement_context.project_context,
+            chat_context=refinement_context.chat_context,
         )
 
         refined_at = datetime.now(UTC)
@@ -2628,23 +2766,38 @@ class MemoryAnalysisService:
 
         sections: list[str] = []
         current_size = 0
-        char_budget = max(1000, self.settings.memory_analysis_snapshot_context_chars)
+        char_budget = min(max(1200, self.settings.memory_analysis_snapshot_context_chars // 3), 2600)
 
         for snapshot in reversed(snapshots):
             lines = [
                 f"- Analise de {snapshot.window_hours}h em {snapshot.created_at.astimezone(UTC).strftime('%Y-%m-%d %H:%M UTC')}",
-                f"  Resumo da janela: {snapshot.window_summary}",
+                f"  Resumo da janela: {self._summarize_message_text(snapshot.window_summary, 220)}",
             ]
             if snapshot.key_learnings:
-                lines.append(f"  Aprendizados: {'; '.join(snapshot.key_learnings[:4])}")
+                lines.append(
+                    "  Aprendizados: "
+                    + "; ".join(self._summarize_list_items(snapshot.key_learnings, item_limit=3, item_chars=100))
+                )
             if snapshot.people_and_relationships:
-                lines.append(f"  Pessoas e relacoes: {'; '.join(snapshot.people_and_relationships[:4])}")
+                lines.append(
+                    "  Pessoas e relacoes: "
+                    + "; ".join(self._summarize_list_items(snapshot.people_and_relationships, item_limit=3, item_chars=100))
+                )
             if snapshot.routine_signals:
-                lines.append(f"  Rotina: {'; '.join(snapshot.routine_signals[:4])}")
+                lines.append(
+                    "  Rotina: "
+                    + "; ".join(self._summarize_list_items(snapshot.routine_signals, item_limit=3, item_chars=100))
+                )
             if snapshot.preferences:
-                lines.append(f"  Preferencias: {'; '.join(snapshot.preferences[:4])}")
+                lines.append(
+                    "  Preferencias: "
+                    + "; ".join(self._summarize_list_items(snapshot.preferences, item_limit=3, item_chars=100))
+                )
             if snapshot.open_questions:
-                lines.append(f"  Lacunas abertas: {'; '.join(snapshot.open_questions[:4])}")
+                lines.append(
+                    "  Lacunas abertas: "
+                    + "; ".join(self._summarize_list_items(snapshot.open_questions, item_limit=3, item_chars=100))
+                )
 
             section = "\n".join(lines)
             projected_size = current_size + len(section) + 2
@@ -2661,29 +2814,39 @@ class MemoryAnalysisService:
 
         sections: list[str] = []
         current_size = 0
-        char_budget = max(1000, self.settings.memory_analysis_snapshot_context_chars)
+        char_budget = min(max(1400, self.settings.memory_analysis_snapshot_context_chars // 3), 2600)
 
         for project in projects:
             lines = [
                 f"- Projeto: {project.project_name}",
-                f"  Resumo: {project.summary}",
+                f"  Resumo: {self._summarize_message_text(project.summary, 220)}",
             ]
             if project.status:
-                lines.append(f"  Status: {project.status}")
+                lines.append(f"  Status: {self._summarize_message_text(project.status, 80)}")
             if project.what_is_being_built:
-                lines.append(f"  O que esta sendo desenvolvido: {project.what_is_being_built}")
+                lines.append(
+                    f"  O que esta sendo desenvolvido: {self._summarize_message_text(project.what_is_being_built, 160)}"
+                )
             if project.built_for:
-                lines.append(f"  Para quem: {project.built_for}")
+                lines.append(f"  Para quem: {self._summarize_message_text(project.built_for, 120)}")
             if project.next_steps:
-                lines.append(f"  Proximos passos: {'; '.join(project.next_steps[:4])}")
+                lines.append(
+                    "  Proximos passos: "
+                    + "; ".join(self._summarize_list_items(project.next_steps, item_limit=3, item_chars=90))
+                )
             if project.evidence:
-                lines.append(f"  Evidencias: {'; '.join(project.evidence[:4])}")
+                lines.append(
+                    "  Evidencias: "
+                    + "; ".join(self._summarize_list_items(project.evidence, item_limit=3, item_chars=90))
+                )
             if project.completion_source == "manual" and project.manual_completed_at is not None:
                 lines.append(
                     f"  Atualizacao manual do usuario: marcado como concluido em {project.manual_completed_at.isoformat()}"
                 )
                 if project.manual_completion_notes.strip():
-                    lines.append(f"  Observacao manual: {project.manual_completion_notes.strip()}")
+                    lines.append(
+                        f"  Observacao manual: {self._summarize_message_text(project.manual_completion_notes.strip(), 140)}"
+                    )
 
             section = "\n".join(lines)
             projected_size = current_size + len(section) + 2
@@ -2701,7 +2864,7 @@ class MemoryAnalysisService:
 
         sections: list[str] = []
         current_size = 0
-        char_budget = max(1000, self.settings.memory_analysis_snapshot_context_chars)
+        char_budget = min(max(1000, self.settings.memory_analysis_snapshot_context_chars // 4), 1600)
         per_thread_limit = max(1, min(self.settings.chat_max_history_messages, 6))
 
         owner_phone = self.store.get_whatsapp_session_owner_phone(session_id="observer")
@@ -2738,11 +2901,11 @@ class MemoryAnalysisService:
 
         sections: list[str] = []
         current_size = 0
-        char_budget = max(1000, self.settings.memory_analysis_snapshot_context_chars)
+        char_budget = min(max(900, self.settings.memory_analysis_snapshot_context_chars // 4), 1600)
 
         for message in messages:
             role = "Dono" if message.role == "user" else "AuraCore"
-            line = f"- {role}: {message.content}"
+            line = f"- {role}: {self._summarize_message_text(message.content, 220)}"
             projected_size = current_size + len(line) + 1
             if sections and projected_size > char_budget:
                 break
@@ -2757,14 +2920,14 @@ class MemoryAnalysisService:
 
         sections: list[str] = []
         current_size = 0
-        char_budget = max(1000, self.settings.memory_analysis_snapshot_context_chars)
+        char_budget = min(max(900, self.settings.memory_analysis_snapshot_context_chars // 4), 1600)
 
         for message in messages:
             content = " ".join(message.content.split()).strip()
             if not content:
                 continue
             role = "Dono" if message.role == "user" or message.direction == "inbound" else "Orion"
-            line = f"- {role} (WhatsApp): {content}"
+            line = f"- {role} (WhatsApp): {self._summarize_message_text(content, 220)}"
             projected_size = current_size + len(line) + 1
             if sections and projected_size > char_budget:
                 break
@@ -2864,7 +3027,7 @@ class MemoryAnalysisService:
         memory_by_key = {memory.person_key: memory for memory in memories}
         sections: list[str] = []
         current_size = 0
-        char_budget = max(1200, min(5000, self.settings.memory_analysis_snapshot_context_chars))
+        char_budget = min(max(1400, self.settings.memory_analysis_snapshot_context_chars // 2), 2800)
 
         for person_key, grouped in grouped_messages.items():
             memory = memory_by_key.get(person_key)
@@ -2884,15 +3047,24 @@ class MemoryAnalysisService:
             if memory.relationship_type:
                 lines.append(f"  Tipo de relacao: {memory.relationship_type}")
             if memory.profile_summary:
-                lines.append(f"  Quem e: {memory.profile_summary}")
+                lines.append(f"  Quem e: {self._summarize_message_text(memory.profile_summary, 180)}")
             if memory.relationship_summary:
-                lines.append(f"  Relacao com o dono: {memory.relationship_summary}")
+                lines.append(f"  Relacao com o dono: {self._summarize_message_text(memory.relationship_summary, 180)}")
             if memory.salient_facts:
-                lines.append(f"  Fatos marcantes: {'; '.join(memory.salient_facts[:6])}")
+                lines.append(
+                    "  Fatos marcantes: "
+                    + "; ".join(self._summarize_list_items(memory.salient_facts, item_limit=4, item_chars=90))
+                )
             if memory.open_loops:
-                lines.append(f"  Pendencias abertas: {'; '.join(memory.open_loops[:5])}")
+                lines.append(
+                    "  Pendencias abertas: "
+                    + "; ".join(self._summarize_list_items(memory.open_loops, item_limit=4, item_chars=90))
+                )
             if memory.recent_topics:
-                lines.append(f"  Topicos recentes: {'; '.join(memory.recent_topics[:5])}")
+                lines.append(
+                    "  Topicos recentes: "
+                    + "; ".join(self._summarize_list_items(memory.recent_topics, item_limit=4, item_chars=90))
+                )
 
             section = "\n".join(lines)
             projected_size = current_size + len(section) + 2
@@ -2956,7 +3128,7 @@ class MemoryAnalysisService:
 
         sections: list[str] = []
         current_size = 0
-        char_budget = max(1200, min(5000, self.settings.memory_analysis_snapshot_context_chars))
+        char_budget = min(max(1500, self.settings.memory_analysis_snapshot_context_chars // 2), 3000)
 
         for group in ordered_groups[:12]:
             total_messages = int(group["inbound_count"]) + int(group["outbound_count"])
@@ -3138,6 +3310,28 @@ class MemoryAnalysisService:
         if len(normalized) <= max_length:
             return normalized
         return f"{normalized[: max(0, max_length - 3)].rstrip()}..."
+
+    def _summarize_list_items(
+        self,
+        items: list[str] | tuple[str, ...],
+        *,
+        item_limit: int,
+        item_chars: int,
+    ) -> list[str]:
+        summarized: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            normalized = " ".join(str(item or "").split()).strip()
+            if not normalized:
+                continue
+            key = normalized.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            summarized.append(self._summarize_message_text(normalized, item_chars))
+            if len(summarized) >= max(1, item_limit):
+                break
+        return summarized
 
     def _build_important_messages_block(self, messages: list[StoredMessageRecord]) -> str:
         lines: list[str] = []

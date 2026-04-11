@@ -122,6 +122,7 @@ class AssistantContextService:
             ]
             if part
         ).strip()
+        targeted_context = bool(merged_hint or effective_priority_parts)
 
         resolved_rules = [
             "Seu nome e Orion. Voce e uma IA pessoal feita para ajudar o dono desta conta.",
@@ -149,10 +150,42 @@ class AssistantContextService:
         )
 
         return AssistantContextPackage(
-            current_life_summary="" if light_touch else self._build_persona_context(persona),
-            recent_snapshots_context="" if light_touch else self._render_snapshot_context(snapshots),
-            recent_projects_context="" if light_touch else self._build_project_context(projects),
-            recent_chat_context="" if light_touch else self._build_chat_context(recent_messages),
+            current_life_summary=(
+                ""
+                if light_touch
+                else self._compact_context_block(
+                    self._build_persona_context(persona),
+                    char_budget=1100 if targeted_context else 1600,
+                    max_lines=14,
+                )
+            ),
+            recent_snapshots_context=(
+                ""
+                if light_touch
+                else self._compact_context_block(
+                    self._render_snapshot_context(snapshots),
+                    char_budget=900 if targeted_context else 1300,
+                    max_lines=12,
+                )
+            ),
+            recent_projects_context=(
+                ""
+                if light_touch
+                else self._compact_context_block(
+                    self._build_project_context(projects),
+                    char_budget=1400 if targeted_context else 2200,
+                    max_lines=18,
+                )
+            ),
+            recent_chat_context=(
+                ""
+                if light_touch
+                else self._compact_context_block(
+                    self._build_chat_context(recent_messages),
+                    char_budget=900 if targeted_context else 1400,
+                    max_lines=12,
+                )
+            ),
             interaction_mode=interaction_mode,
             context_hint=merged_hint,
             priority_context="\n\n".join(effective_priority_parts).strip(),
@@ -501,15 +534,27 @@ class AssistantContextService:
     def _build_persona_context(self, persona: PersonaRecord) -> str:
         sections: list[str] = []
         if persona.life_summary.strip():
-            sections.append(persona.life_summary.strip())
+            sections.append(self._summarize_text(persona.life_summary.strip(), 720))
         if persona.structural_strengths:
-            sections.append("Forcas recorrentes:\n- " + "\n- ".join(persona.structural_strengths[:5]))
+            sections.append(
+                "Forcas recorrentes:\n- "
+                + "\n- ".join(self._summarize_items(persona.structural_strengths, item_limit=4, item_chars=120))
+            )
         if persona.structural_routines:
-            sections.append("Rotina recorrente:\n- " + "\n- ".join(persona.structural_routines[:5]))
+            sections.append(
+                "Rotina recorrente:\n- "
+                + "\n- ".join(self._summarize_items(persona.structural_routines, item_limit=4, item_chars=120))
+            )
         if persona.structural_preferences:
-            sections.append("Preferencias operacionais:\n- " + "\n- ".join(persona.structural_preferences[:5]))
+            sections.append(
+                "Preferencias operacionais:\n- "
+                + "\n- ".join(self._summarize_items(persona.structural_preferences, item_limit=4, item_chars=120))
+            )
         if persona.structural_open_questions:
-            sections.append("Lacunas ainda abertas:\n- " + "\n- ".join(persona.structural_open_questions[:4]))
+            sections.append(
+                "Lacunas ainda abertas:\n- "
+                + "\n- ".join(self._summarize_items(persona.structural_open_questions, item_limit=4, item_chars=120))
+            )
         return "\n\n".join(section for section in sections if section).strip()
 
     def _render_snapshot_context(self, snapshots: list[MemorySnapshotRecord]) -> str:
@@ -518,15 +563,18 @@ class AssistantContextService:
 
         parts: list[str] = []
         current_size = 0
-        char_budget = max(1000, self.settings.chat_context_chars // 2)
+        char_budget = min(max(900, self.settings.chat_context_chars // 4), 1600)
 
         for snapshot in snapshots:
             lines = [
                 f"- Snapshot de {snapshot.window_hours}h em {snapshot.created_at.astimezone(UTC).strftime('%d/%m %H:%M UTC')}",
-                f"  Resumo: {snapshot.window_summary}",
+                f"  Resumo: {self._summarize_text(snapshot.window_summary, 220)}",
             ]
             if snapshot.key_learnings:
-                lines.append(f"  Aprendizados: {'; '.join(snapshot.key_learnings[:4])}")
+                lines.append(
+                    "  Aprendizados: "
+                    + "; ".join(self._summarize_items(snapshot.key_learnings, item_limit=3, item_chars=90))
+                )
             section = "\n".join(lines)
             projected = current_size + len(section) + 2
             if parts and projected > char_budget:
@@ -542,23 +590,31 @@ class AssistantContextService:
 
         parts: list[str] = []
         current_size = 0
-        char_budget = max(1000, self.settings.chat_context_chars)
+        char_budget = min(max(1200, self.settings.chat_context_chars // 3), 2600)
 
         for project in projects:
             lines = [
                 f"- {project.project_name}",
-                f"  Resumo: {project.summary}",
+                f"  Resumo: {self._summarize_text(project.summary, 220)}",
             ]
             if project.status:
-                lines.append(f"  Status: {project.status}")
+                lines.append(f"  Status: {self._summarize_text(project.status, 80)}")
             if project.what_is_being_built:
-                lines.append(f"  O que esta sendo desenvolvido: {project.what_is_being_built}")
+                lines.append(
+                    f"  O que esta sendo desenvolvido: {self._summarize_text(project.what_is_being_built, 160)}"
+                )
             if project.built_for:
-                lines.append(f"  Para quem: {project.built_for}")
+                lines.append(f"  Para quem: {self._summarize_text(project.built_for, 120)}")
             if project.next_steps:
-                lines.append(f"  Proximos passos: {'; '.join(project.next_steps[:4])}")
+                lines.append(
+                    "  Proximos passos: "
+                    + "; ".join(self._summarize_items(project.next_steps, item_limit=3, item_chars=90))
+                )
             if project.evidence:
-                lines.append(f"  Evidencias: {'; '.join(project.evidence[:3])}")
+                lines.append(
+                    "  Evidencias: "
+                    + "; ".join(self._summarize_items(project.evidence, item_limit=2, item_chars=90))
+                )
             section = "\n".join(lines)
             projected = current_size + len(section) + 2
             if parts and projected > char_budget:
@@ -574,11 +630,14 @@ class AssistantContextService:
 
         parts: list[str] = []
         current_size = 0
-        char_budget = max(1000, self.settings.chat_context_chars // 2)
+        char_budget = min(max(900, self.settings.chat_context_chars // 4), 1600)
 
         for message in reversed(messages):
             role_label = "Dono" if message.role == "user" else "Orion"
-            line = f"[{message.created_at.astimezone(UTC).strftime('%Y-%m-%d %H:%M UTC')}] {role_label}: {message.content}"
+            line = (
+                f"[{message.created_at.astimezone(UTC).strftime('%Y-%m-%d %H:%M UTC')}] "
+                f"{role_label}: {self._summarize_text(message.content, 240)}"
+            )
             projected = current_size + len(line) + 1
             if parts and projected > char_budget:
                 break
@@ -586,6 +645,58 @@ class AssistantContextService:
             current_size = projected
 
         return "\n".join(reversed(parts))
+
+    def _compact_context_block(self, text: str, *, char_budget: int, max_lines: int) -> str:
+        normalized = str(text or "").strip()
+        if not normalized:
+            return ""
+
+        lines: list[str] = []
+        previous_key: str | None = None
+        for raw_line in normalized.splitlines():
+            candidate = " ".join(raw_line.split()).strip()
+            if not candidate:
+                continue
+            candidate_key = candidate.casefold()
+            if candidate_key == previous_key:
+                continue
+            lines.append(candidate)
+            previous_key = candidate_key
+            if len(lines) >= max(1, max_lines):
+                break
+
+        compacted = "\n".join(lines) if lines else normalized
+        if len(compacted) <= char_budget:
+            return compacted
+        return compacted[: max(0, char_budget - 16)].rstrip() + " [cortado]"
+
+    def _summarize_text(self, text: str, max_chars: int) -> str:
+        normalized = " ".join(str(text or "").split()).strip()
+        if len(normalized) <= max_chars:
+            return normalized
+        return f"{normalized[: max(0, max_chars - 3)].rstrip()}..."
+
+    def _summarize_items(
+        self,
+        items: Sequence[str],
+        *,
+        item_limit: int,
+        item_chars: int,
+    ) -> list[str]:
+        summarized: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            normalized = " ".join(str(item or "").split()).strip()
+            if not normalized:
+                continue
+            key = normalized.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            summarized.append(self._summarize_text(normalized, item_chars))
+            if len(summarized) >= max(1, item_limit):
+                break
+        return summarized
 
     def _format_search_people(self, people: Sequence[PersonMemoryRecord]) -> str:
         blocks: list[str] = []
