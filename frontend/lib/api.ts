@@ -194,6 +194,25 @@ export type ProjectMemory = {
   updated_at: string;
 };
 
+export type PersonRelation = {
+  id: string;
+  person_key: string;
+  contact_name: string;
+  contact_phone: string | null;
+  chat_jid: string | null;
+  profile_summary: string;
+  relationship_type: string;
+  relationship_summary: string;
+  salient_facts: string[];
+  open_loops: string[];
+  recent_topics: string[];
+  source_snapshot_id: string | null;
+  source_message_count: number;
+  last_message_at: string | null;
+  last_analyzed_at: string | null;
+  updated_at: string;
+};
+
 export type ImportantMessage = {
   id: string;
   source_message_id: string;
@@ -636,6 +655,10 @@ export async function getImportantMessages(limit = 80): Promise<ImportantMessage
 
 export async function getMemoryProjects(): Promise<ProjectMemory[]> {
   return request<ProjectMemory[]>("/api/memories/projects");
+}
+
+export async function getMemoryRelations(): Promise<PersonRelation[]> {
+  return request<PersonRelation[]>("/api/memories/relations");
 }
 
 export async function updateMemoryProjectCompletion(

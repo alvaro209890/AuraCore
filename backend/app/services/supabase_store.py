@@ -46,6 +46,12 @@ SQLITE_LEGACY_COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
         "manual_completed_at": "TEXT",
         "manual_completion_notes": "TEXT DEFAULT ''",
     },
+    "person_memories": {
+        "relationship_type": "TEXT DEFAULT ''",
+    },
+    "person_memory_snapshots": {
+        "relationship_type": "TEXT DEFAULT ''",
+    },
     "message_retention_state": {
         "observer_history_cutoff_at": "TEXT",
     },
@@ -155,6 +161,7 @@ class PersonMemorySeed:
     contact_phone: str | None
     chat_jid: str | None
     profile_summary: str
+    relationship_type: str
     relationship_summary: str
     salient_facts: list[str]
     open_loops: list[str]
@@ -173,6 +180,7 @@ class PersonMemoryRecord:
     contact_phone: str | None
     chat_jid: str | None
     profile_summary: str
+    relationship_type: str
     relationship_summary: str
     salient_facts: list[str]
     open_loops: list[str]
@@ -195,6 +203,7 @@ class PersonMemorySnapshotRecord:
     chat_jid: str | None
     source_snapshot_id: str | None
     profile_summary: str
+    relationship_type: str
     relationship_summary: str
     salient_facts: list[str]
     open_loops: list[str]
@@ -789,6 +798,14 @@ class SupabaseStore:
         self.client.execute(
             "UPDATE project_memories SET manual_completion_notes = '' "
             "WHERE manual_completion_notes IS NULL"
+        )
+        self.client.execute(
+            "UPDATE person_memories SET relationship_type = '' "
+            "WHERE relationship_type IS NULL"
+        )
+        self.client.execute(
+            "UPDATE person_memory_snapshots SET relationship_type = '' "
+            "WHERE relationship_type IS NULL"
         )
         self.client.execute(
             "UPDATE memory_snapshots SET distinct_contact_count = 0 "
@@ -1820,7 +1837,7 @@ class SupabaseStore:
                 self.client.table("person_memories")
                 .select(
                     "id,user_id,person_key,contact_name,contact_phone,chat_jid,profile_summary,"
-                    "relationship_summary,salient_facts,open_loops,recent_topics,source_snapshot_id,"
+                    "relationship_type,relationship_summary,salient_facts,open_loops,recent_topics,source_snapshot_id,"
                     "source_message_count,last_message_at,last_analyzed_at,updated_at"
                 )
                 .eq("user_id", str(user_id))
@@ -1855,7 +1872,7 @@ class SupabaseStore:
                 self.client.table("person_memories")
                 .select(
                     "id,user_id,person_key,contact_name,contact_phone,chat_jid,profile_summary,"
-                    "relationship_summary,salient_facts,open_loops,recent_topics,source_snapshot_id,"
+                    "relationship_type,relationship_summary,salient_facts,open_loops,recent_topics,source_snapshot_id,"
                     "source_message_count,last_message_at,last_analyzed_at,updated_at"
                 )
                 .eq("user_id", str(user_id))
@@ -1883,7 +1900,7 @@ class SupabaseStore:
                 self.client.table("person_memories")
                 .select(
                     "id,user_id,person_key,contact_name,contact_phone,chat_jid,profile_summary,"
-                    "relationship_summary,salient_facts,open_loops,recent_topics,source_snapshot_id,"
+                    "relationship_type,relationship_summary,salient_facts,open_loops,recent_topics,source_snapshot_id,"
                     "source_message_count,last_message_at,last_analyzed_at,updated_at"
                 )
                 .eq("user_id", str(user_id))
@@ -1937,6 +1954,12 @@ class SupabaseStore:
                     contact_phone=self._optional_text(person.contact_phone),
                     chat_jid=self._optional_text(person.chat_jid),
                     profile_summary=profile_summary,
+                    relationship_type=self._normalize_relationship_type(
+                        person.relationship_type,
+                        profile_summary=profile_summary,
+                        relationship_summary=relationship_summary,
+                        contact_name=person.contact_name,
+                    ),
                     relationship_summary=relationship_summary,
                     salient_facts=self._clean_and_unique_string_list(person.salient_facts),
                     open_loops=self._clean_and_unique_string_list(person.open_loops),
@@ -1969,6 +1992,12 @@ class SupabaseStore:
                 known_name=existing.contact_name if existing is not None else None,
             )
             merged_profile_summary = person.profile_summary or (existing.profile_summary if existing is not None else "")
+            merged_relationship_type = self._normalize_relationship_type(
+                person.relationship_type or (existing.relationship_type if existing is not None else ""),
+                profile_summary=merged_profile_summary,
+                relationship_summary=person.relationship_summary or (existing.relationship_summary if existing is not None else ""),
+                contact_name=merged_contact_name,
+            )
             merged_relationship_summary = (
                 person.relationship_summary or (existing.relationship_summary if existing is not None else "")
             )
@@ -2001,6 +2030,7 @@ class SupabaseStore:
                     "contact_phone": person.contact_phone or (existing.contact_phone if existing is not None else None),
                     "chat_jid": person.chat_jid or (existing.chat_jid if existing is not None else None),
                     "profile_summary": merged_profile_summary,
+                    "relationship_type": merged_relationship_type,
                     "relationship_summary": merged_relationship_summary,
                     "salient_facts": merged_salient_facts,
                     "open_loops": merged_open_loops,
@@ -2023,6 +2053,7 @@ class SupabaseStore:
                     "chat_jid": person.chat_jid or (existing.chat_jid if existing is not None else None),
                     "source_snapshot_id": source_snapshot_id,
                     "profile_summary": merged_profile_summary,
+                    "relationship_type": merged_relationship_type,
                     "relationship_summary": merged_relationship_summary,
                     "salient_facts": merged_salient_facts,
                     "open_loops": merged_open_loops,
@@ -6353,6 +6384,12 @@ class SupabaseStore:
             contact_phone=self._optional_text(value.get("contact_phone")),
             chat_jid=self._optional_text(value.get("chat_jid")),
             profile_summary=str(value.get("profile_summary") or ""),
+            relationship_type=self._normalize_relationship_type(
+                self._optional_text(value.get("relationship_type")) or "",
+                profile_summary=str(value.get("profile_summary") or ""),
+                relationship_summary=str(value.get("relationship_summary") or ""),
+                contact_name=str(value.get("contact_name") or value.get("contact_phone") or "Contato"),
+            ),
             relationship_summary=str(value.get("relationship_summary") or ""),
             salient_facts=self._parse_string_list(value.get("salient_facts")),
             open_loops=self._parse_string_list(value.get("open_loops")),
@@ -6363,6 +6400,65 @@ class SupabaseStore:
             last_analyzed_at=self._parse_datetime(value.get("last_analyzed_at")),
             updated_at=self._parse_datetime(value.get("updated_at")) or datetime.now(UTC),
         )
+
+    def _normalize_relationship_type(
+        self,
+        value: str,
+        *,
+        profile_summary: str = "",
+        relationship_summary: str = "",
+        contact_name: str = "",
+    ) -> str:
+        normalized = (value or "").strip().lower().replace("-", "_").replace(" ", "_")
+        aliases = {
+            "partner": "partner",
+            "romantic_partner": "partner",
+            "boyfriend": "partner",
+            "girlfriend": "partner",
+            "spouse": "partner",
+            "wife": "partner",
+            "husband": "partner",
+            "family": "family",
+            "relative": "family",
+            "parent": "family",
+            "sibling": "family",
+            "friend": "friend",
+            "best_friend": "friend",
+            "work": "work",
+            "coworker": "work",
+            "colleague": "work",
+            "manager": "work",
+            "employee": "work",
+            "boss": "work",
+            "client": "client",
+            "customer": "client",
+            "service": "service",
+            "vendor": "service",
+            "supplier": "service",
+            "assistant": "service",
+            "acquaintance": "acquaintance",
+            "known_person": "acquaintance",
+            "other": "other",
+            "unknown": "unknown",
+        }
+        resolved = aliases.get(normalized)
+        if resolved:
+            return resolved
+
+        inferred_text = " ".join([profile_summary, relationship_summary, contact_name]).lower()
+        if any(token in inferred_text for token in ("namorada", "namorado", "esposa", "esposo", "marido", "mulher", "companheira", "companheiro")):
+            return "partner"
+        if any(token in inferred_text for token in ("mãe", "mae", "pai", "irmã", "irma", "irmão", "irmao", "filho", "filha", "tio", "tia", "prima", "primo", "família", "familia")):
+            return "family"
+        if any(token in inferred_text for token in ("amigo", "amiga", "amizade")):
+            return "friend"
+        if any(token in inferred_text for token in ("cliente", "contratante")):
+            return "client"
+        if any(token in inferred_text for token in ("suporte", "assistente", "fornecedor", "prestador", "atendente", "empresa")):
+            return "service"
+        if any(token in inferred_text for token in ("trabalho", "colega", "equipe", "empresa", "chefe", "gestor", "parceiro profissional")):
+            return "work"
+        return "unknown"
 
     def _normalize_detail_mode(self, value: str) -> str:
         normalized = value.strip().lower()

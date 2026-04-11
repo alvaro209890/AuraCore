@@ -1949,6 +1949,7 @@ class MemoryAnalysisService:
                     contact_phone=self._message_person_phone(last_message),
                     chat_jid=self._message_person_jid(last_message),
                     profile_summary=person.profile_summary,
+                    relationship_type=person.relationship_type,
                     relationship_summary=person.relationship_summary,
                     salient_facts=person.salient_facts,
                     open_loops=person.open_loops,
@@ -2173,6 +2174,9 @@ class MemoryAnalysisService:
     def list_projects(self, *, limit: int = 8) -> list[ProjectMemoryRecord]:
         return self.store.list_project_memories(self.settings.default_user_id, limit=limit)
 
+    def list_relations(self, *, limit: int = 80) -> list[PersonMemoryRecord]:
+        return self.store.list_person_memories(self.settings.default_user_id, limit=limit)
+
     def update_project_completion(
         self,
         *,
@@ -2388,6 +2392,7 @@ class MemoryAnalysisService:
                                 contact_phone=c_record.contact_phone,
                                 chat_jid=c_record.chat_jid,
                                 profile_summary=c_refined.profile_summary,
+                                relationship_type=c_refined.relationship_type,
                                 relationship_summary=c_refined.relationship_summary,
                                 salient_facts=c_refined.salient_facts,
                                 open_loops=c_refined.open_loops,
@@ -2422,6 +2427,8 @@ class MemoryAnalysisService:
                 f"- person_key: {memory.person_key}",
                 f"  Contato: {memory.contact_name}",
             ]
+            if memory.relationship_type:
+                lines.append(f"  Tipo de relacao: {memory.relationship_type}")
             if memory.profile_summary:
                 lines.append(f"  Quem e: {memory.profile_summary}")
             if memory.relationship_summary:
@@ -2704,6 +2711,8 @@ class MemoryAnalysisService:
                 lines.append(
                     f"  Ultima atualizacao: {memory.last_analyzed_at.astimezone(UTC).strftime('%Y-%m-%d %H:%M UTC')}"
                 )
+            if memory.relationship_type:
+                lines.append(f"  Tipo de relacao: {memory.relationship_type}")
             if memory.profile_summary:
                 lines.append(f"  Quem e: {memory.profile_summary}")
             if memory.relationship_summary:

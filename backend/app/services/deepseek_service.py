@@ -32,6 +32,7 @@ class DeepSeekPersonMemory(BaseModel):
     person_key: str
     contact_name: str = ""
     profile_summary: str
+    relationship_type: str = ""
     relationship_summary: str = ""
     salient_facts: list[str] = Field(default_factory=list)
     open_loops: list[str] = Field(default_factory=list)
@@ -716,7 +717,7 @@ Retorne um JSON com exatamente estes campos:
 - preferences: string[]
 - open_questions: string[]
 - active_projects: {{ name: string, summary: string, status: string, what_is_being_built: string, built_for: string, next_steps: string[], evidence: string[] }}[]
-- contact_memories: {{ person_key: string, contact_name: string, profile_summary: string, relationship_summary: string, salient_facts: string[], open_loops: string[], recent_topics: string[] }}[]
+- contact_memories: {{ person_key: string, contact_name: string, profile_summary: string, relationship_type: string, relationship_summary: string, salient_facts: string[], open_loops: string[], recent_topics: string[] }}[]
 
 Formato esperado do JSON:
 {{
@@ -743,6 +744,7 @@ Formato esperado do JSON:
       "person_key": "string",
       "contact_name": "string",
       "profile_summary": "string",
+      "relationship_type": "partner|family|friend|work|client|service|acquaintance|other|unknown",
       "relationship_summary": "string",
       "salient_facts": ["string"],
       "open_loops": ["string"],
@@ -778,6 +780,7 @@ Regras:
 - Preencha contact_memories apenas com pessoas que realmente aparecem nesta janela.
 - Em cada item de contact_memories, person_key deve copiar exatamente um person_key presente no bloco de contexto por conversa.
 - Em contact_memories, profile_summary deve resumir quem e essa pessoa no contexto do dono; relationship_summary deve resumir a dinamica atual entre dono e contato.
+- Em contact_memories, relationship_type deve escolher exatamente um destes tipos canonicos: partner, family, friend, work, client, service, acquaintance, other ou unknown.
 - Em contact_memories, use as memorias anteriores por pessoa para atualizar de forma cumulativa e sem repetir o que ja existe.
 - Em contact_memories, mantenha no maximo 6 fatos, 5 pendencias e 5 topicos por pessoa.
 - Nao mencione que voce e uma IA.
@@ -924,6 +927,7 @@ Formato esperado do JSON:
       "person_key": "string",
       "contact_name": "string",
       "profile_summary": "string",
+      "relationship_type": "partner|family|friend|work|client|service|acquaintance|other|unknown",
       "relationship_summary": "string",
       "salient_facts": ["string"],
       "open_loops": ["string"],
@@ -1038,6 +1042,7 @@ Regras:
 - Retorne a lista completando TODOS os contatos recebidos.
 - Nao altere o 'person_key' ou 'contact_name' atual.
 - Analise o 'profile_summary' e o 'relationship_summary' de cada contato em relacao ao resumo da vida do dono. Ajuste o texto para ser conciso e focado em como esse contato ajuda, interfere ou se encaixa na vida do dono hoje.
+- Preencha relationship_type com exatamente um destes tipos canonicos: partner, family, friend, work, client, service, acquaintance, other ou unknown.
 - Em 'salient_facts', 'open_loops' e 'recent_topics', elimine tudo o que for muito antigo, ja finalizado, obsoleto ou irrelevante (ex: "tem consulta", "vai mandar comprovante", conversas menores).
 - Deixe apenas os tracos mais importantes de longo prazo da pessoa ou dinamica na rotina.
 - Mantenha descricoes neutras e baseadas em fatos.
@@ -1379,6 +1384,7 @@ Regras:
                 raise DeepSeekError("DeepSeek returned a contact memory without person_key.")
             if not person.profile_summary.strip():
                 raise DeepSeekError("DeepSeek returned a contact memory without profile_summary.")
+            person.relationship_type = self._normalize_relationship_type(person.relationship_type)
 
     def _validate_refinement_result(self, parsed: DeepSeekMemoryRefinementResult) -> None:
         if not parsed.updated_life_summary.strip():
@@ -1397,6 +1403,7 @@ Regras:
                 raise DeepSeekError("DeepSeek retornou um contato refinado sem person_key.")
             if not person.profile_summary.strip():
                 raise DeepSeekError("DeepSeek retornou um contato refinado sem profile_summary.")
+            person.relationship_type = self._normalize_relationship_type(person.relationship_type)
 
     def _validate_important_messages_result(
         self,
@@ -1740,6 +1747,7 @@ Regras:
                 person_key=person_key,
                 contact_name=self._as_text(item.get("contact_name")),
                 profile_summary=self._as_text(item.get("profile_summary")),
+                relationship_type=self._normalize_relationship_type(self._as_text(item.get("relationship_type"))),
                 relationship_summary=self._as_text(item.get("relationship_summary")),
                 salient_facts=self._as_string_list(item.get("salient_facts"))[:6],
                 open_loops=self._as_string_list(item.get("open_loops"))[:5],
@@ -1749,6 +1757,21 @@ Regras:
                 items.append(memory)
                 seen_keys.add(person_key)
         return items[:24]
+
+    def _normalize_relationship_type(self, value: str) -> str:
+        normalized = (value or "").strip().lower().replace("-", "_").replace(" ", "_")
+        allowed = {
+            "partner",
+            "family",
+            "friend",
+            "work",
+            "client",
+            "service",
+            "acquaintance",
+            "other",
+            "unknown",
+        }
+        return normalized if normalized in allowed else "unknown"
 
     def _as_important_messages(self, value: Any) -> list[DeepSeekImportantMessageCandidate]:
         if not isinstance(value, list):

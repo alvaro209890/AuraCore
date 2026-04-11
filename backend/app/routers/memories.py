@@ -21,6 +21,7 @@ from app.schemas import (
     MemoryActivityResponse,
     MemoryAnalysisPreviewResponse,
     MemoryCurrentResponse,
+    PersonMemoryResponse,
     MemorySnapshotResponse,
     MemorySnapshotsListResponse,
     MemoryStatusResponse,
@@ -43,6 +44,7 @@ from app.services.supabase_store import (
     MemorySnapshotRecord,
     ModelRunRecord,
     PersonaRecord,
+    PersonMemoryRecord,
     ProjectMemoryRecord,
     SupabaseStore,
     WhatsAppSyncRunRecord,
@@ -204,6 +206,13 @@ async def get_memory_projects(
     memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
 ) -> list[ProjectMemoryResponse]:
     return [_to_project_response(project) for project in memory_service.list_projects()]
+
+
+@router.get("/relations", response_model=list[PersonMemoryResponse])
+async def get_memory_relations(
+    memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
+) -> list[PersonMemoryResponse]:
+    return [_to_person_memory_response(person) for person in memory_service.list_relations()]
 
 
 @router.put("/projects/{project_key}", response_model=ProjectMemoryResponse)
@@ -385,6 +394,27 @@ def _to_project_response(project: ProjectMemoryRecord) -> ProjectMemoryResponse:
         manual_completed_at=project.manual_completed_at,
         manual_completion_notes=project.manual_completion_notes,
         updated_at=project.updated_at,
+    )
+
+
+def _to_person_memory_response(person: PersonMemoryRecord) -> PersonMemoryResponse:
+    return PersonMemoryResponse(
+        id=person.id,
+        person_key=person.person_key,
+        contact_name=person.contact_name,
+        contact_phone=person.contact_phone,
+        chat_jid=person.chat_jid,
+        profile_summary=person.profile_summary,
+        relationship_type=person.relationship_type,
+        relationship_summary=person.relationship_summary,
+        salient_facts=person.salient_facts,
+        open_loops=person.open_loops,
+        recent_topics=person.recent_topics,
+        source_snapshot_id=person.source_snapshot_id,
+        source_message_count=person.source_message_count,
+        last_message_at=person.last_message_at,
+        last_analyzed_at=person.last_analyzed_at,
+        updated_at=person.updated_at,
     )
 
 

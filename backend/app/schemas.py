@@ -390,6 +390,25 @@ class ProjectMemoryResponse(BaseModel):
     updated_at: datetime
 
 
+class PersonMemoryResponse(BaseModel):
+    id: str
+    person_key: str
+    contact_name: str
+    contact_phone: str | None = None
+    chat_jid: str | None = None
+    profile_summary: str = ""
+    relationship_type: str = ""
+    relationship_summary: str = ""
+    salient_facts: list[str] = Field(default_factory=list)
+    open_loops: list[str] = Field(default_factory=list)
+    recent_topics: list[str] = Field(default_factory=list)
+    source_snapshot_id: str | None = None
+    source_message_count: int = Field(default=0, ge=0)
+    last_message_at: datetime | None = None
+    last_analyzed_at: datetime | None = None
+    updated_at: datetime
+
+
 class ImportantMessageResponse(BaseModel):
     id: str
     source_message_id: str

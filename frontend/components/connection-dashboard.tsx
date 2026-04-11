@@ -1,6 +1,6 @@
 "use client";
 
-import { startTransition, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
   Activity,
@@ -51,6 +51,7 @@ import {
   getMemoryActivity,
   getMemoryGroups,
   getMemoryProjects,
+  getMemoryRelations,
   getImportantMessages,
   getMemoryStatus,
   getMemorySnapshots,
@@ -85,6 +86,7 @@ import {
   type WhatsAppAgentThread,
   type WhatsAppAgentWorkspace,
   type ProjectMemory,
+  type PersonRelation,
   type WhatsAppGroupSelection,
   type WhatsAppSyncRun,
 } from "@/lib/api";
@@ -99,6 +101,7 @@ type TabId =
   | "groups"
   | "memory"
   | "important"
+  | "relations"
   | "projects"
   | "chat"
   | "activity"
@@ -158,7 +161,7 @@ type NavItem = {
   icon: LucideIcon;
 };
 
-type HeavyLiveResourceKey = "groups" | "projects" | "snapshots" | "important";
+type HeavyLiveResourceKey = "groups" | "projects" | "snapshots" | "important" | "relations";
 
 const CONNECTING_STATUS_POLL_INTERVAL_MS = 3200;
 const LIVE_STATUS_POLL_INTERVAL_MS = 9000;
@@ -171,6 +174,7 @@ const LIVE_REFRESH_INTERVALS: Record<TabId, number> = {
   groups: 18000,
   memory: 16000,
   important: 20000,
+  relations: 20000,
   projects: 20000,
   chat: 10000,
   activity: 12000,
@@ -182,12 +186,14 @@ const HEAVY_RESOURCE_REFRESH_MIN_INTERVAL_MS: Record<HeavyLiveResourceKey, numbe
   projects: 22000,
   snapshots: 22000,
   important: 24000,
+  relations: 22000,
 };
 const BUSY_HEAVY_RESOURCE_REFRESH_MIN_INTERVAL_MS: Record<HeavyLiveResourceKey, number> = {
   groups: 12000,
   projects: 12000,
   snapshots: 12000,
   important: 14000,
+  relations: 12000,
 };
 const NAV_GROUPS: NavGroup[] = [
   {
@@ -204,6 +210,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "groups", label: "Grupos", icon: Users },
       { id: "memory", label: "Memória", icon: Database },
       { id: "important", label: "Importantes", icon: Archive },
+      { id: "relations", label: "Relações", icon: User },
     ],
   },
   {
@@ -869,6 +876,64 @@ function getAudienceLabel(project: ProjectMemory): string {
   return "Público ainda não consolidado";
 }
 
+function normalizeRelationType(value: string | null | undefined): string {
+  const normalized = (value ?? "").trim().toLowerCase();
+  if (!normalized) {
+    return "unknown";
+  }
+  if (["partner", "family", "friend", "work", "client", "service", "acquaintance", "other", "unknown"].includes(normalized)) {
+    return normalized;
+  }
+  return "unknown";
+}
+
+function getRelationTypeLabel(value: string | null | undefined): string {
+  const type = normalizeRelationType(value);
+  if (type === "partner") return "Par romântico";
+  if (type === "family") return "Família";
+  if (type === "friend") return "Amizade";
+  if (type === "work") return "Trabalho";
+  if (type === "client") return "Cliente";
+  if (type === "service") return "Serviço";
+  if (type === "acquaintance") return "Conhecido";
+  if (type === "other") return "Outro";
+  return "Não classificado";
+}
+
+function getRelationTone(value: string | null | undefined): "rose" | "emerald" | "amber" | "indigo" | "zinc" {
+  const type = normalizeRelationType(value);
+  if (type === "partner") return "rose";
+  if (type === "family") return "emerald";
+  if (type === "friend") return "indigo";
+  if (type === "work" || type === "client") return "amber";
+  return "zinc";
+}
+
+function getRelationStrength(relation: PersonRelation): number {
+  const raw =
+    24
+    + (relation.profile_summary ? 16 : 0)
+    + (relation.relationship_summary ? 14 : 0)
+    + (normalizeRelationType(relation.relationship_type) !== "unknown" ? 10 : 0)
+    + (relation.salient_facts.length * 7)
+    + (relation.open_loops.length * 7)
+    + (relation.recent_topics.length * 5);
+  return Math.max(20, Math.min(100, raw));
+}
+
+function getRelationSortPriority(value: string | null | undefined): number {
+  const type = normalizeRelationType(value);
+  if (type === "partner") return 1;
+  if (type === "family") return 2;
+  if (type === "friend") return 3;
+  if (type === "work") return 4;
+  if (type === "client") return 5;
+  if (type === "service") return 6;
+  if (type === "acquaintance") return 7;
+  if (type === "other") return 8;
+  return 9;
+}
+
 function getSignalColorClass(color: InsightMetric["color"]): string {
   switch (color) {
     case "emerald":
@@ -1122,6 +1187,7 @@ export function ConnectionDashboard() {
   const [memoryStatus, setMemoryStatus] = useState<MemoryStatus | null>(null);
   const [memoryGroups, setMemoryGroups] = useState<WhatsAppGroupSelection[]>([]);
   const [projects, setProjects] = useState<ProjectMemory[]>([]);
+  const [relations, setRelations] = useState<PersonRelation[]>([]);
   const [snapshots, setSnapshots] = useState<MemorySnapshot[]>([]);
   const [importantMessages, setImportantMessages] = useState<ImportantMessage[]>([]);
   const [chatThreads, setChatThreads] = useState<ChatThread[]>([]);
@@ -1137,6 +1203,7 @@ export function ConnectionDashboard() {
   const [memoryError, setMemoryError] = useState<string | null>(null);
   const [memoryGroupsError, setMemoryGroupsError] = useState<string | null>(null);
   const [importantMessagesError, setImportantMessagesError] = useState<string | null>(null);
+  const [relationsError, setRelationsError] = useState<string | null>(null);
   const [chatError, setChatError] = useState<string | null>(null);
   const [messageRefreshError, setMessageRefreshError] = useState<string | null>(null);
   const [memoryActivityError, setMemoryActivityError] = useState<string | null>(null);
@@ -1200,6 +1267,7 @@ export function ConnectionDashboard() {
     projects: 0,
     snapshots: 0,
     important: 0,
+    relations: 0,
   });
   const pollStatusRef = useRef<((announceTransition?: boolean) => Promise<void>) | null>(null);
   const pollAgentStatusRef = useRef<((announceTransition?: boolean) => Promise<void>) | null>(null);
@@ -1265,10 +1333,11 @@ export function ConnectionDashboard() {
   }
 
   async function refreshMemoryArtifactsAfterJob(): Promise<void> {
-    const [memoryResult, projectsResult, memoryStatusResult, snapshotsResult, importantMessagesResult, memoryActivityResult, groupsResult] =
+    const [memoryResult, projectsResult, relationsResult, memoryStatusResult, snapshotsResult, importantMessagesResult, memoryActivityResult, groupsResult] =
       await Promise.allSettled([
         getCurrentMemory(),
         getMemoryProjects(),
+        getMemoryRelations(),
         getMemoryStatus(),
         getMemorySnapshots(6),
         getImportantMessages(80),
@@ -1283,6 +1352,11 @@ export function ConnectionDashboard() {
       if (projectsResult.status === "fulfilled") {
         setProjects(projectsResult.value);
         markHeavyResourceRefreshed("projects");
+      }
+      if (relationsResult.status === "fulfilled") {
+        setRelations(relationsResult.value);
+        setRelationsError(null);
+        markHeavyResourceRefreshed("relations");
       }
       if (memoryStatusResult.status === "fulfilled") {
         setMemoryStatus(memoryStatusResult.value);
@@ -1549,6 +1623,10 @@ export function ConnectionDashboard() {
       activeTab === "manual" ||
       (activeTab === "overview" && analysisIsBusy)
     ) && shouldRefreshHeavyResource("projects", analysisIsBusy);
+    const shouldRefreshRelations = (
+      activeTab === "relations" ||
+      activeTab === "manual"
+    ) && shouldRefreshHeavyResource("relations", analysisIsBusy);
     const shouldRefreshMemoryStatus = (
       activeTab === "overview" ||
       activeTab === "manual" ||
@@ -1584,6 +1662,7 @@ export function ConnectionDashboard() {
         memoryResult,
         memoryGroupsResult,
         projectsResult,
+        relationsResult,
         memoryStatusResult,
         snapshotsResult,
         importantMessagesResult,
@@ -1594,6 +1673,7 @@ export function ConnectionDashboard() {
         shouldRefreshMemoryCurrent ? getCurrentMemory() : Promise.resolve(null),
         shouldRefreshMemoryGroups ? getMemoryGroups() : Promise.resolve(null),
         shouldRefreshProjects ? getMemoryProjects() : Promise.resolve(null),
+        shouldRefreshRelations ? getMemoryRelations() : Promise.resolve(null),
         shouldRefreshMemoryStatus ? getMemoryStatus() : Promise.resolve(null),
         shouldRefreshSnapshots ? getMemorySnapshots(activeTab === "overview" ? 1 : 6) : Promise.resolve(null),
         shouldRefreshImportantMessages ? getImportantMessages(80) : Promise.resolve(null),
@@ -1643,6 +1723,17 @@ export function ConnectionDashboard() {
           setProjects(nextProjects);
         });
         markHeavyResourceRefreshed("projects");
+      }
+
+      if (relationsResult.status === "fulfilled" && Array.isArray(relationsResult.value)) {
+        const nextRelations = relationsResult.value;
+        startTransition(() => {
+          setRelations(nextRelations);
+          setRelationsError(null);
+        });
+        markHeavyResourceRefreshed("relations");
+      } else if (relationsResult.status === "rejected" && shouldRefreshRelations) {
+        setRelationsError(getErrorMessage(relationsResult.reason));
       }
 
       if (memoryStatusResult.status === "fulfilled" && memoryStatusResult.value) {
@@ -1886,6 +1977,7 @@ export function ConnectionDashboard() {
     const shouldLoadAgentWorkspace = activeTab === "agent" || activeTab === "manual";
     const shouldLoadChatWorkspace = activeTab === "chat" || activeTab === "manual";
     const shouldLoadGroups = activeTab === "groups" || activeTab === "manual";
+    const shouldLoadRelations = activeTab === "relations" || activeTab === "manual";
     const shouldLoadSnapshots = activeTab === "overview" || activeTab === "memory" || activeTab === "manual";
     const shouldLoadImportantMessages = activeTab === "important" || activeTab === "manual";
     const shouldLoadAutomation = activeTab === "memory" || activeTab === "activity" || activeTab === "automation" || activeTab === "manual" || queuedJobId !== null;
@@ -1898,6 +1990,7 @@ export function ConnectionDashboard() {
       memoryResult,
       groupsResult,
       projectsResult,
+      relationsResult,
       memoryStatusResult,
       snapshotsResult,
       importantMessagesResult,
@@ -1910,6 +2003,7 @@ export function ConnectionDashboard() {
       getCurrentMemory(),
       shouldLoadGroups ? getMemoryGroups() : Promise.resolve([]),
       getMemoryProjects(),
+      shouldLoadRelations ? getMemoryRelations() : Promise.resolve(null),
       getMemoryStatus(),
       shouldLoadSnapshots ? getMemorySnapshots(activeTab === "overview" ? 1 : 6) : Promise.resolve([]),
       shouldLoadImportantMessages ? getImportantMessages(80) : Promise.resolve([]),
@@ -1969,6 +2063,14 @@ export function ConnectionDashboard() {
     if (projectsResult.status === "fulfilled" && Array.isArray(projectsResult.value)) {
       setProjects(projectsResult.value);
       markHeavyResourceRefreshed("projects");
+    }
+
+    if (relationsResult.status === "fulfilled" && Array.isArray(relationsResult.value)) {
+      setRelations(relationsResult.value);
+      setRelationsError(null);
+      markHeavyResourceRefreshed("relations");
+    } else if (relationsResult.status === "rejected" && shouldLoadRelations) {
+      setRelationsError(getErrorMessage(relationsResult.reason));
     }
 
     if (memoryStatusResult.status === "fulfilled") {
@@ -2651,7 +2753,7 @@ export function ConnectionDashboard() {
           {isHydrating ? (
             <Card className="ac-loading-card">
               <SectionTitle title="Carregando AuraCore" icon={RefreshCw} />
-              <p>Buscando status do observador, perfil atual, snapshots, projetos e histórico do chat.</p>
+              <p>Buscando status do observador, perfil atual, relações, snapshots, projetos e histórico do chat.</p>
             </Card>
           ) : (
             <>
@@ -2741,6 +2843,14 @@ export function ConnectionDashboard() {
                 <ImportantMessagesTab
                   messages={importantMessages}
                   error={importantMessagesError}
+                  onRefresh={() => void hydrateDashboard("manual")}
+                />
+              ) : null}
+
+              {activeTab === "relations" ? (
+                <RelationsTab
+                  relations={relations}
+                  error={relationsError}
                   onRefresh={() => void hydrateDashboard("manual")}
                 />
               ) : null}
@@ -4294,6 +4404,317 @@ function MemoryTab({
       </Card>
 
       {memoryError ? <InlineError title="Falha na memoria" message={memoryError} /> : null}
+    </div>
+  );
+}
+
+function RelationsTab({
+  relations,
+  error,
+  onRefresh,
+}: {
+  relations: PersonRelation[];
+  error: string | null;
+  onRefresh: () => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<
+    "all"
+    | "with_open_loops"
+    | "partner"
+    | "family"
+    | "friend"
+    | "work"
+    | "client"
+    | "service"
+    | "acquaintance"
+    | "other"
+    | "unknown"
+  >("all");
+  const deferredSearch = useDeferredValue(search.trim());
+  const normalizedSearch = useMemo(() => normalizeProjectSearchText(deferredSearch), [deferredSearch]);
+
+  const sortedRelations = useMemo(
+    () =>
+      [...relations].sort((left, right) => {
+        const priorityDelta = getRelationSortPriority(left.relationship_type) - getRelationSortPriority(right.relationship_type);
+        if (priorityDelta !== 0) {
+          return priorityDelta;
+        }
+        const leftTime = new Date(left.last_message_at ?? left.updated_at).getTime();
+        const rightTime = new Date(right.last_message_at ?? right.updated_at).getTime();
+        return rightTime - leftTime;
+      }),
+    [relations],
+  );
+
+  const filteredRelations = useMemo(
+    () =>
+      sortedRelations.filter((relation) => {
+        const matchesFilter =
+          filter === "all"
+            ? true
+            : filter === "with_open_loops"
+              ? relation.open_loops.length > 0
+              : normalizeRelationType(relation.relationship_type) === filter;
+        if (!matchesFilter) {
+          return false;
+        }
+        if (!normalizedSearch) {
+          return true;
+        }
+        const haystack = normalizeProjectSearchText(
+          [
+            relation.contact_name,
+            relation.contact_phone ?? "",
+            relation.chat_jid ?? "",
+            relation.profile_summary,
+            relation.relationship_summary,
+            relation.relationship_type,
+            relation.salient_facts.join(" "),
+            relation.open_loops.join(" "),
+            relation.recent_topics.join(" "),
+          ].join(" "),
+        );
+        return haystack.includes(normalizedSearch);
+      }),
+    [filter, normalizedSearch, sortedRelations],
+  );
+
+  const closeCircleCount = useMemo(
+    () =>
+      relations.filter((relation) => {
+        const type = normalizeRelationType(relation.relationship_type);
+        return type === "partner" || type === "family" || type === "friend";
+      }).length,
+    [relations],
+  );
+  const operatingCircleCount = useMemo(
+    () =>
+      relations.filter((relation) => {
+        const type = normalizeRelationType(relation.relationship_type);
+        return type === "work" || type === "client" || type === "service";
+      }).length,
+    [relations],
+  );
+  const withOpenLoopsCount = useMemo(
+    () => relations.filter((relation) => relation.open_loops.length > 0).length,
+    [relations],
+  );
+  const typedCount = useMemo(
+    () => relations.filter((relation) => normalizeRelationType(relation.relationship_type) !== "unknown").length,
+    [relations],
+  );
+  const latestTouchedRelation = filteredRelations[0] ?? sortedRelations[0] ?? null;
+
+  const filterOptions = useMemo(
+    () => {
+      const orderedTypes = ["partner", "family", "friend", "work", "client", "service", "acquaintance", "other", "unknown"] as const;
+      const counts = new Map<string, number>();
+      for (const relation of relations) {
+        const type = normalizeRelationType(relation.relationship_type);
+        counts.set(type, (counts.get(type) ?? 0) + 1);
+      }
+      const dynamicOptions = orderedTypes
+        .map((type) => ({ id: type, label: getRelationTypeLabel(type), count: counts.get(type) ?? 0 }))
+        .filter((option) => option.count > 0);
+      return [
+        { id: "all" as const, label: "Todos", count: relations.length },
+        { id: "with_open_loops" as const, label: "Com pendências", count: withOpenLoopsCount },
+        ...dynamicOptions,
+      ];
+    },
+    [relations, withOpenLoopsCount],
+  );
+
+  if (relations.length === 0) {
+    return (
+      <div className="page-stack">
+        <Card className="proj-empty-hero">
+          <div className="proj-empty-icon">
+            <Users size={40} />
+          </div>
+          <h3>Nenhuma relação consolidada ainda</h3>
+          <p>Depois da próxima atualização de memória, os contatos relevantes passam a aparecer aqui com tipo de vínculo, dinâmica atual, fatos duráveis e pendências abertas.</p>
+        </Card>
+      </div>
+    );
+  }
+
+  return (
+    <div className="page-stack">
+      <Card className="relations-hero-card">
+        <div className="relations-hero-copy">
+          <div className="hero-kicker">
+            <Sparkles size={14} />
+            Mapa social do dono
+          </div>
+          <h3>Relações que a memória está consolidando</h3>
+          <p>
+            A cada atualização de memória, o backend refina quem é cada pessoa, qual é o tipo de vínculo e o estado atual da relação. Esta aba mostra esse retrato vivo sem depender de passos inventados.
+          </p>
+        </div>
+        <div className="relations-hero-metrics">
+          <div className="relations-hero-metric">
+            <span>Pessoas mapeadas</span>
+            <strong>{relations.length}</strong>
+            <small>{typedCount} já têm tipo de relação claro</small>
+          </div>
+          <div className="relations-hero-metric">
+            <span>Círculo pessoal</span>
+            <strong>{closeCircleCount}</strong>
+            <small>par, família e amizades</small>
+          </div>
+          <div className="relations-hero-metric">
+            <span>Frente operacional</span>
+            <strong>{operatingCircleCount}</strong>
+            <small>trabalho, clientes e serviços</small>
+          </div>
+          <div className="relations-hero-metric">
+            <span>Pendências abertas</span>
+            <strong>{withOpenLoopsCount}</strong>
+            <small>{latestTouchedRelation ? `último contato forte: ${latestTouchedRelation.contact_name}` : "sem destaques recentes"}</small>
+          </div>
+        </div>
+      </Card>
+
+      <Card className="relations-toolbar-card">
+        <div className="relations-toolbar">
+          <label className="relation-search-shell">
+            <Search size={16} />
+            <input
+              className="ac-input relation-search-input"
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Buscar por nome, resumo, fatos, pendências ou tópicos..."
+              type="text"
+              value={search}
+            />
+          </label>
+
+          <div className="relation-filter-row">
+            {filterOptions.map((option) => (
+              <button
+                key={option.id}
+                className={`relation-filter-chip${filter === option.id ? " relation-filter-chip-active" : ""}`}
+                onClick={() => setFilter(option.id)}
+                type="button"
+              >
+                <span>{option.label}</span>
+                <strong>{option.count}</strong>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {error ? <InlineError title="Falha ao carregar relações" message={error} /> : null}
+      </Card>
+
+      <div className="proj-stats-row">
+        <ModernStatCard label="Visíveis agora" value={String(filteredRelations.length)} meta="Resultado do filtro atual" icon={Users} tone="indigo" />
+        <ModernStatCard label="Com pendências" value={String(filteredRelations.filter((relation) => relation.open_loops.length > 0).length)} meta="Laços que exigem acompanhamento" icon={AlertCircle} tone="amber" />
+        <ModernStatCard label="Categorizadas" value={String(filteredRelations.filter((relation) => normalizeRelationType(relation.relationship_type) !== "unknown").length)} meta="Tipo de relação já inferido" icon={Fingerprint} tone="emerald" />
+        <ModernStatCard label="Atualização recente" value={latestTouchedRelation?.last_analyzed_at ? formatRelativeTime(latestTouchedRelation.last_analyzed_at) : "Pendente"} meta={latestTouchedRelation ? latestTouchedRelation.contact_name : "Sem relação recente"} icon={RefreshCw} />
+      </div>
+
+      {filteredRelations.length === 0 ? (
+        <Card>
+          <div className="empty-hint">
+            <Users size={18} />
+            <p>{normalizedSearch ? "Nenhuma relação bateu com a busca atual." : "Nenhuma relação se encaixa no filtro atual."}</p>
+          </div>
+        </Card>
+      ) : (
+        <div className="relation-grid">
+          {filteredRelations.map((relation) => {
+            const relationType = normalizeRelationType(relation.relationship_type);
+            const tone = getRelationTone(relationType);
+            const signalStrength = getRelationStrength(relation);
+            const identifier = relation.contact_phone ?? relation.chat_jid ?? relation.person_key;
+            return (
+              <Card key={relation.id} className="relation-card">
+                <div className="relation-card-head">
+                  <div className={`project-modern-icon project-modern-icon-${tone === "rose" ? "indigo" : tone === "zinc" ? "amber" : tone}`}>
+                    <User size={18} />
+                  </div>
+                  <div className="relation-card-copy">
+                    <h3>{relation.contact_name}</h3>
+                    <div className="relation-card-meta">
+                      <span className={`relation-badge relation-badge-${relationType}`}>{getRelationTypeLabel(relationType)}</span>
+                      <span>{identifier}</span>
+                      <span>{relation.last_message_at ? formatRelativeTime(relation.last_message_at) : "sem mensagem recente"}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <ProgressBar value={signalStrength} tone={tone} label="Força da memória desta relação" />
+
+                <div className="relation-panels">
+                  <div className="relation-panel">
+                    <span>Quem é</span>
+                    <p>{relation.profile_summary || "Ainda sem resumo consolidado."}</p>
+                  </div>
+                  <div className="relation-panel">
+                    <span>Dinâmica atual</span>
+                    <p>{relation.relationship_summary || "A dinâmica entre dono e contato ainda está sendo refinada."}</p>
+                  </div>
+                </div>
+
+                <div className="relation-panels">
+                  <div className="relation-panel">
+                    <span>Fatos duráveis</span>
+                    {relation.salient_facts.length > 0 ? (
+                      <ul>
+                        {relation.salient_facts.slice(0, 4).map((fact, index) => (
+                          <li key={`${relation.id}-fact-${index}`}>{fact}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p>Nenhum fato durável consolidado ainda.</p>
+                    )}
+                  </div>
+                  <div className="relation-panel">
+                    <span>Pendências abertas</span>
+                    {relation.open_loops.length > 0 ? (
+                      <ul>
+                        {relation.open_loops.slice(0, 4).map((loop, index) => (
+                          <li key={`${relation.id}-loop-${index}`}>{loop}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p>Sem pendências abertas registradas.</p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="relation-panel">
+                  <span>Tópicos recentes</span>
+                  {relation.recent_topics.length > 0 ? (
+                    <div className="relation-topic-row">
+                      {relation.recent_topics.slice(0, 5).map((topic, index) => (
+                        <span key={`${relation.id}-topic-${index}`} className="relation-topic-chip">{topic}</span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p>Sem tópicos recentes consolidados para este vínculo.</p>
+                  )}
+                </div>
+
+                <div className="relation-card-footer">
+                  <span>{relation.source_message_count} mensagem(ns) contribuíram para esta memória</span>
+                  <strong>{relation.last_analyzed_at ? `Atualizado ${formatShortDateTime(relation.last_analyzed_at)}` : `Registrado ${formatShortDateTime(relation.updated_at)}`}</strong>
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+
+      <Card>
+        <SectionTitle title="Como manter isso melhor" icon={MessageSquare} action={<button className="ac-secondary-button" onClick={onRefresh} type="button">Recarregar</button>} />
+        <p className="support-copy">
+          Quando você roda a próxima atualização de memória, o modelo cruza mensagens novas com esta base de pessoas. Isso melhora tipo de vínculo, fatos recorrentes, pendências e tom da relação de forma cumulativa.
+        </p>
+      </Card>
     </div>
   );
 }
