@@ -179,6 +179,7 @@ class DeepSeekService:
         window_end: datetime,
         source_message_count: int,
         contains_group_messages: bool = False,
+        max_output_tokens: int | None = None,
     ) -> DeepSeekMemoryResult:
         prompt_preview = self.build_analysis_prompt_preview(
             transcript=transcript,
@@ -199,7 +200,7 @@ class DeepSeekService:
         payload = self._build_completion_payload(
             system_prompt=prompt_preview.system_prompt,
             user_prompt=prompt_preview.user_prompt,
-            max_tokens=self._analysis_max_output_tokens(intent=intent),
+            max_tokens=max_output_tokens or self._analysis_max_output_tokens(intent=intent),
         )
 
         return await self._request_parsed_completion(

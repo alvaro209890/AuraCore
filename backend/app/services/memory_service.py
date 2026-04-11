@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from app.config import Settings
 from app.services.deepseek_service import (
+    DeepSeekError,
     DeepSeekContactMemoryRefinementResult,
     DeepSeekMemoryResult,
     DeepSeekProjectMemory,
@@ -186,6 +187,18 @@ class FirstAnalysisSynthesisNode:
     window_start: datetime
     window_end: datetime
     result: DeepSeekMemoryResult
+
+
+@dataclass(slots=True)
+class AnalyzeMemoryPromptContext:
+    transcript: str
+    conversation_context: str
+    people_memory_context: str
+    current_life_summary: str
+    prior_analyses_context: str
+    project_context: str
+    chat_context: str
+    open_questions_context: str
 
 
 class MemoryAnalysisService:
@@ -1259,36 +1272,70 @@ class MemoryAnalysisService:
             self.settings.default_user_id,
             limit=max(1, self.settings.chat_context_projects),
         )
-        project_context = self._build_project_context(existing_projects)
-        chat_context = self._build_chat_context()
-        open_questions_context = self._build_open_questions_context(current_persona)
-        current_life_summary = self._build_persona_context(current_persona)
+        prompt_context = AnalyzeMemoryPromptContext(
+            transcript=plan.transcript,
+            conversation_context=plan.conversation_context,
+            people_memory_context=plan.people_memory_context,
+            current_life_summary=self._build_persona_context(current_persona),
+            prior_analyses_context=prior_analyses_context,
+            project_context=self._build_project_context(existing_projects),
+            chat_context=self._build_chat_context(),
+            open_questions_context=self._build_open_questions_context(current_persona),
+        )
+        self._log_analysis_prompt_context_sizes(plan=plan, context=prompt_context, stage="primary")
+        current_life_summary = prompt_context.current_life_summary
         if self._should_chunk_first_analysis(plan):
             deepseek_result = await self._analyze_first_analysis_in_chunks(
                 plan,
                 current_life_summary=current_life_summary,
                 prior_analyses_context=prior_analyses_context,
-                project_context=project_context,
-                chat_context=chat_context,
-                open_questions_context=open_questions_context,
+                project_context=prompt_context.project_context,
+                chat_context=prompt_context.chat_context,
+                open_questions_context=prompt_context.open_questions_context,
             )
         else:
-            deepseek_result = await self.deepseek_service.analyze_memory(
-                transcript=plan.transcript,
-                conversation_context=plan.conversation_context,
-                people_memory_context=plan.people_memory_context,
-                current_life_summary=current_life_summary,
-                prior_analyses_context=prior_analyses_context,
-                project_context=project_context,
-                chat_context=chat_context,
-                open_questions_context=open_questions_context,
-                intent=plan.intent,
-                window_hours=plan.window_hours,
-                window_start=plan.window_start,
-                window_end=plan.window_end,
-                source_message_count=len(plan.source_messages),
-                contains_group_messages=any(self._is_group_message(message) for message in plan.source_messages),
-            )
+            try:
+                deepseek_result = await self._run_analyze_memory_request(
+                    plan=plan,
+                    context=prompt_context,
+                )
+            except DeepSeekError as exc:
+                if not self._should_retry_analyze_memory_with_compact_context(plan=plan, error=exc):
+                    raise
+                compact_context = self._build_compact_analysis_prompt_context(prompt_context)
+                compact_max_output_tokens = self._compact_analysis_max_output_tokens()
+                logger.warning(
+                    "fixed_plan_stage_retry stage=analyze_memory intent=%s reason=compact_context_retry "
+                    "compact_max_output_tokens=%s error=%s",
+                    plan.intent,
+                    compact_max_output_tokens,
+                    str(exc),
+                )
+                self._log_analysis_prompt_context_sizes(plan=plan, context=compact_context, stage="compact_retry")
+                try:
+                    deepseek_result = await self._run_analyze_memory_request(
+                        plan=plan,
+                        context=compact_context,
+                        max_output_tokens=compact_max_output_tokens,
+                    )
+                except DeepSeekError as compact_exc:
+                    if not self._should_retry_analyze_memory_with_compact_context(plan=plan, error=compact_exc):
+                        raise
+                    minimal_context = self._build_minimal_analysis_prompt_context(prompt_context)
+                    minimal_max_output_tokens = self._minimal_analysis_max_output_tokens()
+                    logger.warning(
+                        "fixed_plan_stage_retry stage=analyze_memory intent=%s reason=minimal_context_retry "
+                        "minimal_max_output_tokens=%s error=%s",
+                        plan.intent,
+                        minimal_max_output_tokens,
+                        str(compact_exc),
+                    )
+                    self._log_analysis_prompt_context_sizes(plan=plan, context=minimal_context, stage="minimal_retry")
+                    deepseek_result = await self._run_analyze_memory_request(
+                        plan=plan,
+                        context=minimal_context,
+                        max_output_tokens=minimal_max_output_tokens,
+                    )
         logger.info(
             "fixed_plan_stage_done stage=analyze_memory intent=%s projects=%s contacts=%s open_questions=%s",
             plan.intent,
@@ -1432,6 +1479,137 @@ class MemoryAnalysisService:
             source_message_ids=[message.message_id for message in plan.source_messages],
             source_messages=plan.source_messages,
             selected_transcript_chars=plan.selected_transcript_chars,
+        )
+
+    async def _run_analyze_memory_request(
+        self,
+        *,
+        plan: FixedAnalysisPlan,
+        context: AnalyzeMemoryPromptContext,
+        max_output_tokens: int | None = None,
+    ) -> DeepSeekMemoryResult:
+        return await self.deepseek_service.analyze_memory(
+            transcript=context.transcript,
+            conversation_context=context.conversation_context,
+            people_memory_context=context.people_memory_context,
+            current_life_summary=context.current_life_summary,
+            prior_analyses_context=context.prior_analyses_context,
+            project_context=context.project_context,
+            chat_context=context.chat_context,
+            open_questions_context=context.open_questions_context,
+            intent=plan.intent,
+            window_hours=plan.window_hours,
+            window_start=plan.window_start,
+            window_end=plan.window_end,
+            source_message_count=len(plan.source_messages),
+            contains_group_messages=any(self._is_group_message(message) for message in plan.source_messages),
+            max_output_tokens=max_output_tokens,
+        )
+
+    def _should_retry_analyze_memory_with_compact_context(
+        self,
+        *,
+        plan: FixedAnalysisPlan,
+        error: DeepSeekError,
+    ) -> bool:
+        if plan.intent != "improve_memory":
+            return False
+        detail = str(error).strip().lower()
+        return (
+            "timeout" in detail
+            or "timed out" in detail
+            or "readtimeout" in detail
+            or "invalid json" in detail
+            or "invalid structured response" in detail
+        )
+
+    def _build_compact_analysis_prompt_context(
+        self,
+        context: AnalyzeMemoryPromptContext,
+    ) -> AnalyzeMemoryPromptContext:
+        return AnalyzeMemoryPromptContext(
+            transcript=context.transcript,
+            conversation_context=self._truncate_context_block(context.conversation_context, char_budget=1200),
+            people_memory_context=self._truncate_context_block(context.people_memory_context, char_budget=1000),
+            current_life_summary=self._truncate_context_block(context.current_life_summary, char_budget=1100),
+            prior_analyses_context=self._truncate_context_block(context.prior_analyses_context, char_budget=1500),
+            project_context=self._truncate_context_block(context.project_context, char_budget=1200),
+            chat_context=self._truncate_context_block(context.chat_context, char_budget=900),
+            open_questions_context=self._truncate_context_block(context.open_questions_context, char_budget=500),
+        )
+
+    def _build_minimal_analysis_prompt_context(
+        self,
+        context: AnalyzeMemoryPromptContext,
+    ) -> AnalyzeMemoryPromptContext:
+        return AnalyzeMemoryPromptContext(
+            transcript=context.transcript,
+            conversation_context=self._truncate_context_block(context.conversation_context, char_budget=320),
+            people_memory_context=self._truncate_context_block(context.people_memory_context, char_budget=260),
+            current_life_summary=self._truncate_context_block(context.current_life_summary, char_budget=560),
+            prior_analyses_context=self._truncate_context_block(context.prior_analyses_context, char_budget=420),
+            project_context=self._truncate_context_block(context.project_context, char_budget=360),
+            chat_context=self._truncate_context_block(context.chat_context, char_budget=160),
+            open_questions_context=self._truncate_context_block(context.open_questions_context, char_budget=160),
+        )
+
+    def _truncate_context_block(self, text: str, *, char_budget: int) -> str:
+        normalized = str(text or "").strip()
+        if not normalized or char_budget <= 0 or len(normalized) <= char_budget:
+            return normalized
+
+        lines = [line.rstrip() for line in normalized.splitlines()]
+        kept: list[str] = []
+        current_size = 0
+        for line in lines:
+            candidate = line.strip()
+            if not candidate:
+                continue
+            extra = len(candidate) + (1 if kept else 0)
+            if kept and current_size + extra > char_budget:
+                break
+            if not kept and len(candidate) > char_budget:
+                kept.append(candidate[: max(0, char_budget - 16)].rstrip() + " [cortado]")
+                return "\n".join(kept)
+            kept.append(candidate)
+            current_size += extra
+
+        if not kept:
+            return normalized[: max(0, char_budget - 16)].rstrip() + " [cortado]"
+        if "\n".join(kept) == normalized:
+            return normalized
+        return "\n".join(kept) + "\n[contexto reduzido automaticamente]"
+
+    def _compact_analysis_max_output_tokens(self) -> int:
+        if "reasoner" in self.settings.deepseek_model.strip().lower():
+            return 7000
+        return 2400
+
+    def _minimal_analysis_max_output_tokens(self) -> int:
+        if "reasoner" in self.settings.deepseek_model.strip().lower():
+            return 4200
+        return 2200
+
+    def _log_analysis_prompt_context_sizes(
+        self,
+        *,
+        plan: FixedAnalysisPlan,
+        context: AnalyzeMemoryPromptContext,
+        stage: str,
+    ) -> None:
+        logger.info(
+            "fixed_plan_prompt_context intent=%s stage=%s transcript_chars=%s conversation_chars=%s "
+            "people_chars=%s persona_chars=%s prior_chars=%s project_chars=%s chat_chars=%s open_questions_chars=%s",
+            plan.intent,
+            stage,
+            len(context.transcript),
+            len(context.conversation_context),
+            len(context.people_memory_context),
+            len(context.current_life_summary),
+            len(context.prior_analyses_context),
+            len(context.project_context),
+            len(context.chat_context),
+            len(context.open_questions_context),
         )
 
     def _should_chunk_first_analysis(self, plan: FixedAnalysisPlan) -> bool:

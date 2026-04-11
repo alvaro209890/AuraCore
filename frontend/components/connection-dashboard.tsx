@@ -5491,15 +5491,15 @@ function ManualTab({
           <Card>
             <SectionTitle title="Mapa Das Abas" icon={Database} />
             <div className="manual-grid">
-              <ManualInfoCard title="Visao Geral" text="Painel-resumo do estado atual: conexao, memoria, projetos, sinais e atalhos para o fluxo principal." />
-              <ManualInfoCard title="Observador" text="Ponto de entrada do WhatsApp. Mostra QR, estado da instancia, sessao e a saude da captura." />
-              <ManualInfoCard title="Grupos" text="Lista os grupos vistos no historico sincronizado. Todos nascem desativados e so entram na memoria incremental quando voce ativa." />
-              <ManualInfoCard title="Memoria" text="Aqui nasce e evolui a memoria central. Primeira analise, lotes economicos de mensagens novas, estado da fila e resumo do dono." />
-              <ManualInfoCard title="Importantes" text="Cofre de fatos duraveis: acessos, valores, clientes, prazos, riscos e sinais operacionais reaproveitaveis." />
-              <ManualInfoCard title="Projetos" text="Organiza frentes reais detectadas nas conversas, com resumo, status, evidencias e proximos passos." />
-              <ManualInfoCard title="Chat Pessoal" text="Thread por assunto usando a memoria central. Bom para separar estrategia, rotina, vendas, produto e operacao." />
-              <ManualInfoCard title="Atividade" text="Mostra o pipeline trabalhando: logs, lotes, trilha de execucao e o melhor raciocinio operacional salvo." />
-              <ManualInfoCard title="Atividade Manual" text="Mostra syncs recentes, jobs manuais e execucoes de modelo persistidas no backend." />
+              <ManualInfoCard title="Visao Geral" text="Painel-resumo do estado atual: conexao, memoria, projetos, sinais e atalhos para o fluxo principal." icon={BarChart3} tone="indigo" />
+              <ManualInfoCard title="Observador" text="Ponto de entrada do WhatsApp. Mostra QR, estado da instancia, sessao e a saude da captura." icon={Eye} tone="emerald" />
+              <ManualInfoCard title="Grupos" text="Lista os grupos vistos no historico sincronizado. Todos nascem desativados e so entram na memoria incremental quando voce ativa." icon={Users} tone="amber" />
+              <ManualInfoCard title="Memoria" text="Aqui nasce e evolui a memoria central. Primeira analise, lotes economicos de mensagens novas, estado da fila e resumo do dono." icon={Database} tone="indigo" />
+              <ManualInfoCard title="Importantes" text="Cofre de fatos duraveis: acessos, valores, clientes, prazos, riscos e sinais operacionais reaproveitaveis." icon={Archive} tone="amber" />
+              <ManualInfoCard title="Projetos" text="Organiza frentes reais detectadas nas conversas, com resumo, status, evidencias e proximos passos." icon={FolderGit2} tone="emerald" />
+              <ManualInfoCard title="Chat Pessoal" text="Thread por assunto usando a memoria central. Bom para separar estrategia, rotina, vendas, produto e operacao." icon={MessageSquare} tone="indigo" />
+              <ManualInfoCard title="Atividade" text="Mostra o pipeline trabalhando: logs, lotes, trilha de execucao e o melhor raciocinio operacional salvo." icon={Activity} tone="emerald" />
+              <ManualInfoCard title="Atividade Manual" text="Mostra syncs recentes, jobs manuais e execucoes de modelo persistidas no backend." icon={Terminal} tone="zinc" />
             </div>
           </Card>
 
@@ -5519,24 +5519,24 @@ function ManualTab({
           <Card>
             <SectionTitle title="Fluxo Real Do Site" icon={Terminal} />
             <div className="manual-sequence">
-              <ManualStep title="1. Conectar o observador" text="Voce gera o QR, conecta o WhatsApp e libera a captura. A partir daqui o sistema passa a receber somente o que interessa para memoria." />
-              <ManualStep title="2. Filtrar a entrada" text="Nem tudo entra. A ingestao evita status, broadcast, newsletter e lixo sem texto relevante. Conversas diretas entram por padrao; grupos ficam opt-in para leituras futuras." />
-              <ManualStep title="3. Criar a memoria base" text="A primeira analise e manual e usa uma selecao balanceada das mensagens diretas mais relevantes e recentes. Grupos nunca entram nessa etapa inicial." />
-              <ManualStep title="4. Atualizar por contato" text="Durante as analises, o sistema tenta entender com quem e cada conversa e atualiza memorias separadas por pessoa ou participante de grupo de forma cumulativa." />
-              <ManualStep title="5. Processar lotes incrementais" text="Depois da base inicial, o backend passa a trabalhar em lotes economicos de mensagens novas, incluindo grupos ativados quando fizer sentido." />
-              <ManualStep title="6. Salvar o que dura" text="O processamento atualiza resumo do dono, snapshots, projetos, memorias por pessoa e o cofre de mensagens importantes." />
-              <ManualStep title="7. Reutilizar no chat" text="O chat pessoal consome a memoria consolidada, projetos, contexto da thread atual e sinais importantes para responder melhor." />
+              <ManualStep title="1. Conectar o observador" text="Voce gera o QR, conecta o WhatsApp e libera a captura. A partir daqui o sistema passa a receber somente o que interessa para memoria." icon={Eye} tone="emerald" />
+              <ManualStep title="2. Filtrar a entrada" text="Nem tudo entra. A ingestao evita status, broadcast, newsletter e lixo sem texto relevante. Conversas diretas entram por padrao; grupos ficam opt-in para leituras futuras." icon={Activity} tone="indigo" />
+              <ManualStep title="3. Criar a memoria base" text="A primeira analise e manual e usa uma selecao balanceada das mensagens diretas mais relevantes e recentes." icon={Database} tone="amber" />
+              <ManualStep title="4. Atualizar por contato" text="Durante as analises, o sistema tenta entender com quem e cada conversa e atualiza memorias separadas por pessoa." icon={User} tone="indigo" />
+              <ManualStep title="5. Processar em lotes" text="Depois da base inicial, o backend passa a trabalhar em lotes economicos de mensagens novas." icon={RefreshCw} tone="emerald" />
+              <ManualStep title="6. Salvar o que dura" text="O processamento atualiza resumo do dono, snapshots, projetos, e itens duraveis." icon={Archive} tone="amber" />
+              <ManualStep title="7. Reutilizar no chat" text="O chat pessoal consome a memoria consolidada, projetos, contexto da thread e sinais importantes." icon={MessageSquare} tone="indigo" />
             </div>
           </Card>
 
           <Card>
             <SectionTitle title="Botoes Principais" icon={Zap} />
             <div className="manual-grid">
-              <ManualInfoCard title="Puxar Novas Mensagens do WhatsApp" text="Forca uma releitura das conversas recentes e atualiza a fila operacional no banco." />
-              <ManualInfoCard title="Fazer Primeira Analise" text="Cria a base inicial da memoria quando o sistema ainda nao conhece bem o dono." />
-              <ManualInfoCard title="Executar Analise" text="Usa as mensagens pendentes mais a memoria ja salva para atualizar resumo, importantes e projetos de forma incremental." />
-              <ManualInfoCard title="Nova Conversa" text="Abre uma thread nova no chat sem perder a memoria central nem o restante do historico salvo." />
-              <ManualInfoCard title="Rodar Tick Agora" text="Executa o ciclo da automacao manualmente: fecha syncs, registra decisoes e tenta processar a fila." />
+              <ManualInfoCard title="Puxar Novas Mensagens" text="Forca uma releitura das conversas recentes e atualiza a fila operacional no banco." icon={RefreshCw} tone="indigo" />
+              <ManualInfoCard title="Primeira Analise" text="Cria a base inicial da memoria quando o sistema ainda nao conhece bem o dono." icon={Play} tone="emerald" />
+              <ManualInfoCard title="Executar Analise" text="Usa as mensagens pendentes mais a memoria ja salva para atualizar resumo, importantes e projetos de forma incremental." icon={Sparkles} tone="indigo" />
+              <ManualInfoCard title="Nova Conversa" text="Abre uma thread nova no chat sem perder a memoria central nem o restante do historico salvo." icon={Plus} tone="amber" />
+              <ManualInfoCard title="Rodar Tick" text="Executa o ciclo da automacao manualmente: fecha syncs, registra decisoes e tenta processar a fila." icon={Zap} tone="emerald" />
             </div>
           </Card>
         </>
@@ -5547,10 +5547,10 @@ function ManualTab({
           <Card>
             <SectionTitle title="Arquitetura Em Camadas" icon={Server} />
             <div className="manual-grid">
-              <ManualInfoCard title="Frontend" text="O painel organiza as abas de operacao, memoria, atividade e chat. Ele consulta a API e mostra o estado persistido do sistema." />
-              <ManualInfoCard title="Backend FastAPI" text="Coordena observador, memoria, automacao, chat e persistencia. E onde ficam as regras de selecao de mensagens e atualizacao de contexto." />
-              <ManualInfoCard title="Banco local" text="Armazena mensagens operacionais, snapshots, persona, projetos, memorias por pessoa, threads do chat e trilhas da automacao." />
-              <ManualInfoCard title="Modelos" text="O motor de analise consolida memoria e o chat responde usando o contexto salvo. O frontend nao inventa raciocinio que o backend nao persistiu." />
+              <ManualInfoCard title="Frontend" text="O painel organiza as abas de operacao, memoria, atividade e chat. Ele consulta a API e mostra o estado persistido do sistema." icon={Smartphone} tone="indigo" />
+              <ManualInfoCard title="Backend FastAPI" text="Coordena observador, memoria, automacao, chat e persistencia. E onde ficam as regras de selecao de mensagens." icon={Server} tone="emerald" />
+              <ManualInfoCard title="Banco local SQLite" text="Armazena mensagens operacionais, snapshots, persona, projetos, memorias por pessoa, threads do chat e trilhas." icon={Database} tone="amber" />
+              <ManualInfoCard title="Modelos de IA" text="O motor de analise consolida memoria e o chat responde usando o contexto salvo do banco de dados local." icon={Brain} tone="indigo" />
             </div>
           </Card>
 
@@ -5571,14 +5571,14 @@ function ManualTab({
           <Card>
             <SectionTitle title="O Que Vai Para O Banco Local" icon={Database} />
             <div className="manual-grid">
-              <ManualInfoCard title="mensagens" text="Fila operacional de mensagens aproveitaveis que ainda podem alimentar analise e memoria. No bootstrap entram so diretas; depois podem entrar grupos ativados." />
-              <ManualInfoCard title="persona e memory_snapshots" text="Resumo principal do dono e historico de janelas consolidadas ao longo do tempo." />
-              <ManualInfoCard title="person_memories" text="Memoria separada por contato ou participante, atualizada progressivamente para cada pessoa relevante nas conversas." />
-              <ManualInfoCard title="project_memories" text="Projetos, frentes, entregas, clientes e proximos passos com base nas conversas consolidadas." />
-              <ManualInfoCard title="important_messages" text="Cofre de itens duraveis como acesso, dinheiro, prazo, risco e fatos operacionais." />
-              <ManualInfoCard title="chat_threads e chat_messages" text="Threads do chat pessoal usadas para separar contextos sem perder a memoria central." />
-              <ManualInfoCard title="wa_sync_runs, automation_decisions, analysis_jobs, model_runs" text="Auditoria do que foi sincronizado, decidido, processado e executado." />
-              <ManualInfoCard title="wa_sessions e wa_session_keys" text="Estado de sessao e chaves do observador do WhatsApp." />
+              <ManualInfoCard title="mensagens" text="Fila operacional de mensagens aproveitaveis." icon={MessageSquare} tone="zinc" />
+              <ManualInfoCard title="persona & snapshots" text="Resumo principal do dono e historico consolidado." icon={Fingerprint} tone="emerald" />
+              <ManualInfoCard title="person_memories" text="Memoria separada por contato ou participante progressivamente." icon={User} tone="amber" />
+              <ManualInfoCard title="project_memories" text="Projetos, frentes, entregas com base nas conversas." icon={FolderGit2} tone="indigo" />
+              <ManualInfoCard title="important_messages" text="Cofre de itens duraveis como acessos, valores." icon={Archive} tone="amber" />
+              <ManualInfoCard title="chat_threads" text="Threads do chat pessoal para separar contextos." icon={MessageSquare} tone="zinc" />
+              <ManualInfoCard title="Logs do motor" text="Auditoria operacional sincronizada, processada e executada." icon={Activity} tone="emerald" />
+              <ManualInfoCard title="wa_sessions" text="Estado de sessao e chaves locais." icon={Eye} tone="zinc" />
             </div>
           </Card>
 
@@ -5609,6 +5609,8 @@ function ManualTab({
                     ? `Ultima consolidacao em ${formatDateTime(memory.last_analyzed_at)}.`
                     : "Ainda sem consolidacao inicial."
                 }
+                icon={memory?.last_analyzed_at ? Database : AlertCircle}
+                tone={memory?.last_analyzed_at ? "indigo" : "amber"}
               />
               <ManualInfoCard
                 title="Ultimo Snapshot"
@@ -5617,6 +5619,8 @@ function ManualTab({
                     ? `Ultima janela consolidada em ${formatShortDateTime(latestSnapshot.created_at)} com ${latestSnapshot.source_message_count} mensagens.`
                     : "Nenhum snapshot consolidado ainda."
                 }
+                icon={latestSnapshot ? Fingerprint : Brain}
+                tone={latestSnapshot ? "emerald" : "zinc"}
               />
               <ManualInfoCard
                 title="Mensagens Importantes"
@@ -5625,6 +5629,8 @@ function ManualTab({
                     ? `${importantCount} item(ns) ativos no cofre, atualizados pelas execucoes manuais de analise.`
                     : "Nenhuma mensagem importante ativa ainda."
                 }
+                icon={Archive}
+                tone={importantCount > 0 ? "amber" : "zinc"}
               />
               <ManualInfoCard
                 title="Projetos e Threads"
@@ -5637,6 +5643,8 @@ function ManualTab({
                     ? `${automationStatus.queued_jobs_count} job(s) na fila e ${automationStatus.running_job_id ? "1 execucao em andamento" : "nenhuma execucao rodando agora"}.`
                     : "Status da atividade manual ainda nao carregado."
                 }
+                icon={automationStatus?.running_job_id ? Zap : Clock}
+                tone={automationStatus?.running_job_id ? "emerald" : "zinc"}
               />
             </div>
           </Card>
@@ -5644,10 +5652,10 @@ function ManualTab({
           <Card>
             <SectionTitle title="Como Diagnosticar Rapido" icon={AlertCircle} />
             <div className="manual-grid">
-              <ManualInfoCard title="Sem mensagens novas" text="Olhe primeiro a aba Observador e a releitura manual. Se nao houver entrada, a memoria nao tem o que processar." />
-              <ManualInfoCard title="Sem memoria base" text="A automacao nao inicia a base sozinha. Rode manualmente a primeira analise na aba Memoria." />
-              <ManualInfoCard title="Chat ruim ou vazio" text="Confira se ja existe memoria consolidada, se ha snapshots e se a thread atual tem historico suficiente." />
-              <ManualInfoCard title="Fila travada" text="Use Atividade e Automacao para ver ultimo sync, decisao, job e rastro do pipeline." />
+              <ManualInfoCard title="Sem mensagens" text="Olhe primeiro a aba Observador e a releitura manual." icon={AlertCircle} tone="amber" />
+              <ManualInfoCard title="Sem memoria base" text="Rode manualmente a primeira analise na aba Memoria." icon={Database} tone="indigo" />
+              <ManualInfoCard title="Chat ruim/vazio" text="Confira se ja existe memoria consolidada e historico." icon={XCircle} tone="emerald" />
+              <ManualInfoCard title="Fila travada" text="Use Atividade e Automacao para ver rastro." icon={Terminal} tone="zinc" />
             </div>
           </Card>
         </>
@@ -5656,11 +5664,26 @@ function ManualTab({
   );
 }
 
-function ManualInfoCard({ title, text }: { title: string; text: string }) {
+function ManualInfoCard({ 
+  title, 
+  text, 
+  icon: Icon, 
+  tone = "zinc" 
+}: { 
+  title: string; 
+  text: string; 
+  icon?: LucideIcon; 
+  tone?: "emerald" | "amber" | "indigo" | "zinc" 
+}) {
   return (
-    <div className="manual-info-card">
-      <strong>{title}</strong>
-      <p>{text}</p>
+    <div className={`manual-info-card manual-info-card-${tone}`}>
+      <div className="manual-info-card-icon">
+        {Icon && <Icon size={20} />}
+      </div>
+      <div className="manual-info-card-content">
+        <strong>{title}</strong>
+        <p>{text}</p>
+      </div>
     </div>
   );
 }
@@ -5683,14 +5706,28 @@ function AgentMetricPanel({
   );
 }
 
-function ManualStep({ title, text }: { title: string; text: string }) {
+function ManualStep({ 
+  title, 
+  text, 
+  icon: Icon, 
+  tone = "indigo" 
+}: { 
+  title: string; 
+  text: string; 
+  icon?: LucideIcon; 
+  tone?: "emerald" | "amber" | "indigo" | "zinc" 
+}) {
   const [stepLabel, ...titleParts] = title.split(". ");
   const heading = titleParts.length > 0 ? titleParts.join(". ") : title;
   return (
-    <div className="manual-step">
-      <span>{stepLabel}</span>
-      <strong>{heading}</strong>
-      <p>{text}</p>
+    <div className={`manual-step manual-step-${tone}`}>
+      <div className="manual-step-indicator">
+        {Icon ? <Icon size={16} /> : <span>{stepLabel}</span>}
+      </div>
+      <div className="manual-step-content">
+        <strong>{heading}</strong>
+        <p>{text}</p>
+      </div>
     </div>
   );
 }
