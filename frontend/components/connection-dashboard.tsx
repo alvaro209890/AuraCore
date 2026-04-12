@@ -6314,7 +6314,7 @@ function ImportantMessagesTab({
             <SectionTitle title="Entradas Mais Recentes" icon={Sparkles} />
             <div className="important-list">
               {latestMessages.map((message) => (
-                <ImportantMessageCard key={message.id} message={message} />
+                <CompactImportantCard key={message.id} message={message} type="signal" />
               ))}
             </div>
           </Card>
@@ -6326,7 +6326,7 @@ function ImportantMessagesTab({
               <SectionTitle title={`${groupLabel} (${groupMessages.length})`} icon={Archive} />
               <div className="important-list">
                 {groupMessages.map((message) => (
-                  <ImportantMessageCard key={message.id} message={message} />
+                  <CompactImportantCard key={message.id} message={message} type="signal" />
                 ))}
               </div>
             </Card>
