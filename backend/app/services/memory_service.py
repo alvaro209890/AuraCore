@@ -13,6 +13,7 @@ from app.services.deepseek_service import (
     DeepSeekError,
     DeepSeekContactMemoryRefinementResult,
     DeepSeekMemoryResult,
+    DeepSeekPersonMemory,
     DeepSeekProjectMemory,
     DeepSeekProjectMergeResult,
     DeepSeekService,
