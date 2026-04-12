@@ -11,7 +11,9 @@ import {
   Bot,
   Brain,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
+  ChevronUp,
   Clock,
   Cpu,
   Database,
@@ -1151,11 +1153,21 @@ function getSignalColorClass(color: InsightMetric["color"]): string {
 function Card({
   children,
   className = "",
+  onClick,
 }: {
   children: React.ReactNode;
   className?: string;
+  onClick?: () => void;
 }) {
-  return <section className={`neo-card ${className}`}>{children}</section>;
+  return (
+    <section 
+      className={`neo-card ${className}`} 
+      onClick={onClick}
+      style={onClick ? { cursor: "pointer" } : undefined}
+    >
+      {children}
+    </section>
+  );
 }
 
 function SectionTitle({
@@ -6364,44 +6376,77 @@ function ImportantMessagesTab({
 }
 
 function ImportantMessageCard({ message }: { message: ImportantMessage }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
   return (
-    <Card className="important-card">
+    <Card
+      className={`important-card-collapsible ${isExpanded ? "important-card-expanded" : ""}`}
+      onClick={() => setIsExpanded(!isExpanded)}
+    >
       <div className="important-card-head">
-        <div>
+        <div className="important-card-main-info">
           <div className="important-badges">
-            <span className={`important-category-pill important-category-${message.category}`}>{formatImportantCategory(message.category)}</span>
+            <span className={`important-category-pill important-category-${message.category}`}>
+              {formatImportantCategory(message.category)}
+            </span>
             <span className="micro-badge">{getImportantCategoryFamilyLabel(message.category)}</span>
-            <span className="micro-badge">{message.direction === "outbound" ? "Saída" : "Entrada"}</span>
             <span className="micro-badge">{message.confidence}/100</span>
           </div>
           <h3>{message.contact_name || message.contact_phone || "Contato"}</h3>
+          {!isExpanded && (
+            <p className="important-message-preview">
+              {truncateText(message.message_text, 120)}
+            </p>
+          )}
         </div>
-        <div className="important-card-meta">
-          <span>Capturada {formatRelativeTime(message.saved_at)}</span>
-          <strong>{formatShortDateTime(message.message_timestamp)}</strong>
+        <div className="important-card-right">
+          <div className="important-card-meta">
+            <div className="important-date-group">
+              <span>{formatRelativeTime(message.saved_at)}</span>
+            </div>
+            <div className={`expand-icon-wrap ${isExpanded ? "expand-icon-active" : ""}`}>
+              <ChevronDown size={18} />
+            </div>
+          </div>
         </div>
       </div>
 
-      <p className="important-message-text">{message.message_text}</p>
+      {isExpanded && (
+        <div className="important-card-expanded-content">
+          <div className="important-expanded-body">
+            <div className="important-expanded-section">
+              <div className="important-body-label">
+                <MessageSquare size={14} />
+                Conteúdo Original
+              </div>
+              <p className="important-message-text">{message.message_text}</p>
+            </div>
 
-      <div className="important-review-stack">
-        <MiniPanel
-          title="Por Que Foi Salva"
-          tone="emerald"
-          icon={Sparkles}
-          content={message.importance_reason}
-        />
-        <MiniPanel
-          title="Estado da Revisão"
-          tone={getImportantConfidenceBand(message.confidence) === "low" ? "amber" : "emerald"}
-          icon={Clock}
-          content={
-            message.last_reviewed_at
-              ? `Revisada em ${formatShortDateTime(message.last_reviewed_at)}. ${message.review_notes ?? "Mantida no cofre ativo."}`
-              : "Ainda aguardando a primeira revisão diária automática."
-          }
-        />
-      </div>
+            <div className="important-review-stack">
+              <MiniPanel
+                title="Por Que Foi Salva"
+                tone="emerald"
+                icon={Sparkles}
+                content={message.importance_reason}
+              />
+              <MiniPanel
+                title="Estado da Revisão"
+                tone={getImportantConfidenceBand(message.confidence) === "low" ? "amber" : "emerald"}
+                icon={Clock}
+                content={
+                  message.last_reviewed_at
+                    ? `Revisada em ${formatShortDateTime(message.last_reviewed_at)}. ${message.review_notes ?? "Mantida no cofre ativo."}`
+                    : "Ainda aguardando a primeira revisão diária automática."
+                }
+              />
+            </div>
+          </div>
+          <div className="important-card-timestamp-footer">
+            <Clock size={12} />
+            <span>Mensagem de {formatShortDateTime(message.message_timestamp)}</span>
+          </div>
+        </div>
+      )}
     </Card>
   );
 }
