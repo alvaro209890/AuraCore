@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
@@ -21,6 +23,7 @@ from app.schemas import (
     MemoryActivityResponse,
     MemoryAnalysisPreviewResponse,
     MemoryCurrentResponse,
+    MemoryLiveSummaryResponse,
     PersonMemoryResponse,
     MemorySnapshotResponse,
     MemorySnapshotsListResponse,
@@ -84,6 +87,86 @@ async def get_memory_activity(
 ) -> MemoryActivityResponse:
     activity = await memory_job_service.get_activity_snapshot()
     return _to_activity_response(activity)
+
+
+@router.get("/live-summary", response_model=MemoryLiveSummaryResponse)
+async def get_memory_live_summary(
+    memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
+    memory_job_service: MemoryJobService = Depends(get_memory_job_service),
+) -> MemoryLiveSummaryResponse:
+    memory_status, snapshots, important_messages, projects, relations = await asyncio.gather(
+        run_in_threadpool(memory_service.get_memory_status),
+        run_in_threadpool(memory_service.list_snapshots, limit=1),
+        run_in_threadpool(memory_service.list_important_messages, limit=80),
+        run_in_threadpool(memory_service.list_projects, limit=8),
+        run_in_threadpool(memory_service.list_relations, limit=80),
+    )
+    activity = await memory_job_service.get_activity_snapshot()
+    current_job, latest_completed_job = _resolve_job_refs(activity.jobs)
+    latest_snapshot = snapshots[0] if snapshots else None
+    latest_important = important_messages[0] if important_messages else None
+    latest_project = projects[0] if projects else None
+    latest_relation = relations[0] if relations else None
+    latest_reviewed_at = max(
+        (message.last_reviewed_at for message in important_messages if message.last_reviewed_at is not None),
+        default=None,
+    )
+
+    return MemoryLiveSummaryResponse(
+        generated_at=datetime.now(UTC),
+        pending_new_messages=memory_status.new_messages_after_first_analysis,
+        has_initial_analysis=memory_status.has_initial_analysis,
+        current_job_id=current_job.id if current_job else None,
+        current_job_status=current_job.status if current_job else None,
+        latest_completed_job_id=latest_completed_job.id if latest_completed_job else None,
+        latest_completed_job_status=latest_completed_job.status if latest_completed_job else None,
+        latest_snapshot_id=latest_snapshot.id if latest_snapshot else None,
+        latest_snapshot_created_at=latest_snapshot.created_at if latest_snapshot else None,
+        latest_important_id=latest_important.id if latest_important else None,
+        latest_important_saved_at=latest_important.saved_at if latest_important else None,
+        latest_important_reviewed_at=latest_reviewed_at,
+        latest_project_id=latest_project.id if latest_project else None,
+        latest_project_updated_at=latest_project.updated_at if latest_project else None,
+        latest_relation_id=latest_relation.id if latest_relation else None,
+        latest_relation_updated_at=latest_relation.updated_at if latest_relation else None,
+        memory_signature=_build_live_signature(
+            memory_status.has_initial_analysis,
+            memory_status.new_messages_after_first_analysis,
+            memory_status.last_analyzed_at,
+            current_job.id if current_job else None,
+            current_job.status if current_job else None,
+            latest_snapshot.id if latest_snapshot else None,
+            latest_snapshot.created_at if latest_snapshot else None,
+        ),
+        activity_signature=_build_live_signature(
+            activity.running_job_id,
+            activity.sync_runs[0].id if activity.sync_runs else None,
+            activity.sync_runs[0].status if activity.sync_runs else None,
+            activity.sync_runs[0].last_activity_at if activity.sync_runs else None,
+            current_job.id if current_job else None,
+            current_job.status if current_job else None,
+            latest_completed_job.id if latest_completed_job else None,
+            latest_completed_job.status if latest_completed_job else None,
+            activity.model_runs[0].id if activity.model_runs else None,
+            activity.model_runs[0].success if activity.model_runs else None,
+        ),
+        important_signature=_build_live_signature(
+            len(important_messages),
+            latest_important.id if latest_important else None,
+            latest_important.saved_at if latest_important else None,
+            latest_reviewed_at,
+        ),
+        projects_signature=_build_live_signature(
+            len(projects),
+            latest_project.id if latest_project else None,
+            latest_project.updated_at if latest_project else None,
+        ),
+        relations_signature=_build_live_signature(
+            len(relations),
+            latest_relation.id if latest_relation else None,
+            latest_relation.updated_at if latest_relation else None,
+        ),
+    )
 
 
 @router.get("/snapshots", response_model=MemorySnapshotsListResponse)
@@ -491,6 +574,18 @@ def _to_model_run_response(model_run: ModelRunRecord) -> ModelRunResponse:
         error_text=model_run.error_text,
         created_at=model_run.created_at,
     )
+
+
+def _build_live_signature(*parts: Any) -> str:
+    return "|".join(_serialize_live_signature_part(part) for part in parts)
+
+
+def _serialize_live_signature_part(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if value is None:
+        return "-"
+    return str(value)
 
 
 def _to_job_response(job: Any) -> AnalysisJobResponse | None:

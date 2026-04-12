@@ -54,6 +54,7 @@ import {
   getCurrentMemory,
   getMemoryActivity,
   getMemoryGroups,
+  getMemoryLiveSummary,
   getMemoryProjects,
   getMemoryRelations,
   getImportantMessages,
@@ -79,6 +80,7 @@ import {
   type ImportantMessage,
   type MemoryActivity,
   type MemoryCurrent,
+  type MemoryLiveSummary,
   type MemoryStatus,
   type MemorySnapshot,
   type ModelRun,
@@ -176,6 +178,7 @@ type HeavyLiveResourceKey = "groups" | "projects" | "snapshots" | "important" | 
 
 const CONNECTING_STATUS_POLL_INTERVAL_MS = 3200;
 const LIVE_STATUS_POLL_INTERVAL_MS = 9000;
+const LIVE_MEMORY_DIGEST_POLL_INTERVAL_MS = 2200;
 const QR_REFRESH_INTERVAL_MS = 45000;
 const ATTENTION_REFRESH_THROTTLE_MS = 2500;
 const LIVE_REFRESH_INTERVALS: Record<TabId, number> = {
@@ -422,6 +425,62 @@ function formatImportantCategory(category: string): string {
       return "Risco";
     default:
       return "Importante";
+  }
+}
+
+function normalizeImportantCategory(category: string): string {
+  return (category || "other").trim().toLowerCase();
+}
+
+function getImportantCategoryFamily(category: string): "access" | "operation" | "attention" | "other" {
+  switch (normalizeImportantCategory(category)) {
+    case "credential":
+    case "access":
+      return "access";
+    case "project":
+    case "client":
+    case "money":
+    case "document":
+      return "operation";
+    case "deadline":
+    case "risk":
+      return "attention";
+    default:
+      return "other";
+  }
+}
+
+function getImportantCategoryFamilyLabel(category: string): string {
+  switch (getImportantCategoryFamily(category)) {
+    case "access":
+      return "Acessos";
+    case "operation":
+      return "Operação";
+    case "attention":
+      return "Atenção";
+    default:
+      return "Diversos";
+  }
+}
+
+function getImportantConfidenceBand(confidence: number): "high" | "medium" | "low" {
+  if (confidence >= 85) {
+    return "high";
+  }
+  if (confidence >= 65) {
+    return "medium";
+  }
+  return "low";
+}
+
+function getImportantConfidenceLabel(confidence: number): string {
+  switch (getImportantConfidenceBand(confidence)) {
+    case "high":
+      return "Sinal forte";
+    case "medium":
+      return "Sinal médio";
+    default:
+      return "Pedir revisão";
   }
 }
 
@@ -1404,6 +1463,8 @@ export function ConnectionDashboard({
   const observerStatusInFlightRef = useRef(false);
   const agentStatusInFlightRef = useRef(false);
   const dashboardRefreshInFlightRef = useRef(false);
+  const liveSummaryInFlightRef = useRef(false);
+  const liveMemorySummaryRef = useRef<MemoryLiveSummary | null>(null);
   const lastObservedSyncRef = useRef<string | null>(null);
   const lastObservedJobRef = useRef<string | null>(null);
   const lastObservedModelRunRef = useRef<string | null>(null);
@@ -1561,6 +1622,81 @@ export function ConnectionDashboard({
         markHeavyResourceRefreshed("groups");
       }
     });
+  }
+
+  async function refreshFromLiveSummary(): Promise<void> {
+    if (isHydrating || liveSummaryInFlightRef.current || !isDocumentVisible()) {
+      return;
+    }
+
+    liveSummaryInFlightRef.current = true;
+    try {
+      const nextSummary = await getMemoryLiveSummary();
+      const previousSummary = liveMemorySummaryRef.current;
+      liveMemorySummaryRef.current = nextSummary;
+
+      if (!previousSummary) {
+        return;
+      }
+
+      const shouldRefreshMemoryCore = previousSummary.memory_signature !== nextSummary.memory_signature;
+      const shouldRefreshActivity = previousSummary.activity_signature !== nextSummary.activity_signature;
+      const shouldRefreshImportant = previousSummary.important_signature !== nextSummary.important_signature;
+      const shouldRefreshProjects = previousSummary.projects_signature !== nextSummary.projects_signature;
+      const shouldRefreshRelations = previousSummary.relations_signature !== nextSummary.relations_signature;
+
+      if (!shouldRefreshMemoryCore && !shouldRefreshActivity && !shouldRefreshImportant && !shouldRefreshProjects && !shouldRefreshRelations) {
+        return;
+      }
+
+      const [memoryResult, memoryStatusResult, snapshotsResult, memoryActivityResult, importantMessagesResult, projectsResult, relationsResult] =
+        await Promise.allSettled([
+          shouldRefreshMemoryCore ? getCurrentMemory() : Promise.resolve(null),
+          shouldRefreshMemoryCore ? getMemoryStatus() : Promise.resolve(null),
+          shouldRefreshMemoryCore ? getMemorySnapshots(6) : Promise.resolve(null),
+          shouldRefreshActivity ? getMemoryActivity() : Promise.resolve(null),
+          shouldRefreshImportant ? getImportantMessages(80) : Promise.resolve(null),
+          shouldRefreshProjects ? getMemoryProjects() : Promise.resolve(null),
+          shouldRefreshRelations ? getMemoryRelations() : Promise.resolve(null),
+        ]);
+
+      startTransition(() => {
+        if (memoryResult.status === "fulfilled" && memoryResult.value) {
+          setMemory(memoryResult.value);
+          setMemoryError(null);
+        }
+        if (memoryStatusResult.status === "fulfilled" && memoryStatusResult.value) {
+          setMemoryStatus(memoryStatusResult.value);
+        }
+        if (snapshotsResult.status === "fulfilled" && snapshotsResult.value) {
+          setSnapshots(snapshotsResult.value);
+          markHeavyResourceRefreshed("snapshots");
+        }
+        if (memoryActivityResult.status === "fulfilled" && memoryActivityResult.value) {
+          setMemoryActivity(memoryActivityResult.value);
+          setMemoryActivityError(null);
+          syncQueuedJobFromAutomationSnapshot(memoryActivityResult.value);
+        }
+        if (importantMessagesResult.status === "fulfilled" && importantMessagesResult.value) {
+          setImportantMessages(importantMessagesResult.value);
+          setImportantMessagesError(null);
+          markHeavyResourceRefreshed("important");
+        }
+        if (projectsResult.status === "fulfilled" && projectsResult.value) {
+          setProjects(projectsResult.value);
+          markHeavyResourceRefreshed("projects");
+        }
+        if (relationsResult.status === "fulfilled" && relationsResult.value) {
+          setRelations(relationsResult.value);
+          setRelationsError(null);
+          markHeavyResourceRefreshed("relations");
+        }
+      });
+    } catch {
+      // Ignore digest failures and let the regular polling path keep the dashboard alive.
+    } finally {
+      liveSummaryInFlightRef.current = false;
+    }
   }
 
   async function toggleGroupSelection(chatJid: string, enabledForAnalysis: boolean): Promise<void> {
@@ -2009,6 +2145,20 @@ export function ConnectionDashboard({
 
     return () => window.clearInterval(intervalId);
   }, [isHydrating, liveRefreshIntervalMs]);
+
+  useEffect(() => {
+    if (isHydrating) {
+      return;
+    }
+
+    void refreshFromLiveSummary();
+
+    const intervalId = window.setInterval(() => {
+      void refreshFromLiveSummary();
+    }, LIVE_MEMORY_DIGEST_POLL_INTERVAL_MS);
+
+    return () => window.clearInterval(intervalId);
+  }, [isHydrating]);
 
   useEffect(() => {
     if (isHydrating || (!queuedJobId && !memoryJobIsPending && !agentState.running)) {
@@ -5470,31 +5620,132 @@ function ImportantMessagesTab({
   error: string | null;
   onRefresh: () => void;
 }) {
-  const credentialCount = messages.filter((message) => message.category === "credential" || message.category === "access").length;
-  const businessCount = messages.filter((message) => ["project", "money", "client", "deadline"].includes(message.category)).length;
-  const strongSignalsCount = messages.filter((message) => message.confidence >= 80).length;
+  const [importantSubTab, setImportantSubTab] = useState<"overview" | "access" | "operation" | "attention">("overview");
+  const [search, setSearch] = useState("");
+  const deferredSearch = useDeferredValue(search);
+  const normalizedSearch = deferredSearch.trim().toLowerCase();
+  const credentialCount = messages.filter((message) => getImportantCategoryFamily(message.category) === "access").length;
+  const operationCount = messages.filter((message) => getImportantCategoryFamily(message.category) === "operation").length;
+  const attentionCount = messages.filter((message) => getImportantCategoryFamily(message.category) === "attention").length;
+  const strongSignalsCount = messages.filter((message) => getImportantConfidenceBand(message.confidence) === "high").length;
+  const needsReviewCount = messages.filter((message) => !message.last_reviewed_at || message.confidence < 65).length;
   const lastReviewedAt = messages
     .map((message) => message.last_reviewed_at)
     .filter((value): value is string => Boolean(value))
     .sort((left, right) => new Date(right).getTime() - new Date(left).getTime())[0] ?? null;
+  const importantSubTabs = [
+    { id: "overview" as const, label: "Painel", count: messages.length, icon: Archive },
+    { id: "access" as const, label: "Acessos", count: credentialCount, icon: LockKeyhole },
+    { id: "operation" as const, label: "Operação", count: operationCount, icon: FolderGit2 },
+    { id: "attention" as const, label: "Atenção", count: attentionCount, icon: AlertCircle },
+  ];
+  const filteredMessages = useMemo(
+    () =>
+      messages.filter((message) => {
+        const family = getImportantCategoryFamily(message.category);
+        const matchesTab =
+          importantSubTab === "overview"
+            ? true
+            : importantSubTab === "access"
+              ? family === "access"
+              : importantSubTab === "operation"
+                ? family === "operation"
+                : family === "attention";
+        if (!matchesTab) {
+          return false;
+        }
+        if (!normalizedSearch) {
+          return true;
+        }
+        const haystack = [
+          message.contact_name,
+          message.contact_phone ?? "",
+          message.message_text,
+          message.importance_reason,
+          formatImportantCategory(message.category),
+          getImportantCategoryFamilyLabel(message.category),
+          message.review_notes ?? "",
+        ].join(" ").toLowerCase();
+        return haystack.includes(normalizedSearch);
+      }),
+    [importantSubTab, messages, normalizedSearch],
+  );
+  const groupedMessages = useMemo(() => {
+    const groups = new Map<string, ImportantMessage[]>();
+    for (const message of filteredMessages) {
+      const key = formatImportantCategory(message.category);
+      const current = groups.get(key) ?? [];
+      current.push(message);
+      groups.set(key, current);
+    }
+    return Array.from(groups.entries()).sort((left, right) => right[1].length - left[1].length);
+  }, [filteredMessages]);
+  const latestMessages = useMemo(
+    () => [...messages].sort((left, right) => new Date(right.saved_at).getTime() - new Date(left.saved_at).getTime()).slice(0, 3),
+    [messages],
+  );
+  const strongestMessages = useMemo(
+    () => [...messages].sort((left, right) => right.confidence - left.confidence).slice(0, 3),
+    [messages],
+  );
+  const reviewQueue = useMemo(
+    () =>
+      [...messages]
+        .filter((message) => !message.last_reviewed_at || getImportantConfidenceBand(message.confidence) === "low")
+        .sort((left, right) => new Date(right.saved_at).getTime() - new Date(left.saved_at).getTime())
+        .slice(0, 4),
+    [messages],
+  );
 
   return (
     <div className="page-stack">
-      <Card>
-        <SectionTitle
-          title="Cofre de Mensagens Importantes"
-          icon={Archive}
-          action={
+      <Card className="important-shell-card">
+        <div className="important-shell-head">
+          <div>
+            <div className="hero-kicker">
+              <Archive size={14} />
+              Cofre operacional
+            </div>
+            <h3>As mensagens importantes agora ficam separadas por frente de uso.</h3>
+            <p className="support-copy">
+              O painel abaixo divide o cofre entre acessos, operação e atenção crítica. Assim fica mais fácil localizar o que é sensível, o que sustenta trabalho e o que exige revisão rápida.
+            </p>
+          </div>
+          <div className="important-shell-actions">
+            <label className="relation-search-shell important-search-shell">
+              <Search size={16} />
+              <input
+                className="ac-input relation-search-input"
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Buscar por contato, conteúdo, motivo ou categoria..."
+                type="text"
+                value={search}
+              />
+            </label>
             <button className="ac-secondary-button" onClick={onRefresh} type="button">
               <RefreshCw size={14} />
               Atualizar
             </button>
-          }
-        />
-        <p className="support-copy">
-          Este cofre recebe, junto da primeira análise e dos próximos lotes, mensagens consideradas duráveis: acessos, dinheiro,
-          projetos, riscos e fatos operacionais que merecem sobreviver além do lote curto de processamento.
-        </p>
+          </div>
+        </div>
+
+        <div className="important-shell-tabs">
+          {importantSubTabs.map((tab) => {
+            const Icon = tab.icon;
+            return (
+              <button
+                key={tab.id}
+                className={`activity-subtab${importantSubTab === tab.id ? " activity-subtab-active" : ""}`}
+                onClick={() => setImportantSubTab(tab.id)}
+                type="button"
+              >
+                <Icon size={14} />
+                {tab.label}
+                <strong>{tab.count}</strong>
+              </button>
+            );
+          })}
+        </div>
 
         <div className="important-top-grid">
           <ModernStatCard
@@ -5505,35 +5756,26 @@ function ImportantMessagesTab({
             tone="emerald"
           />
           <ModernStatCard
-            label="Acessos & Credenciais"
+            label="Acessos"
             value={String(credentialCount)}
             meta="Logins, senhas e dados de acesso"
-            icon={CheckCircle2}
+            icon={LockKeyhole}
             tone="amber"
           />
           <ModernStatCard
-            label="Projetos & Dinheiro"
-            value={String(businessCount)}
-            meta="Operação, clientes, prazos e valores"
+            label="Operação"
+            value={String(operationCount)}
+            meta="Projeto, cliente, documento e dinheiro"
             icon={FolderGit2}
             tone="indigo"
           />
           <ModernStatCard
-            label="Última Revisão"
-            value={lastReviewedAt ? formatShortDateTime(lastReviewedAt) : "Pendente"}
-            meta={lastReviewedAt ? formatRelativeTime(lastReviewedAt) : "Ainda sem revisão diária"}
-            icon={Clock}
+            label="Fila de Revisão"
+            value={String(needsReviewCount)}
+            meta={lastReviewedAt ? `Última revisão ${formatRelativeTime(lastReviewedAt)}` : "Ainda sem revisão diária"}
+            icon={AlertCircle}
             tone="zinc"
           />
-        </div>
-      </Card>
-
-      <Card>
-        <SectionTitle title="Como Isso Funciona" icon={Sparkles} />
-        <div className="manual-grid">
-          <ManualInfoCard title="Entrada Manual" text="Depois de cada análise de memória, o sistema separa só o que merece virar memória durável." />
-          <ManualInfoCard title="Critério" text="A prioridade é guardar acessos, dinheiro, projetos, clientes, prazos, riscos e fatos operacionais reutilizáveis." />
-          <ManualInfoCard title="Revisão Diária" text="O backend revisa esse cofre a partir da virada do dia em São Paulo e tira do uso ativo o que envelheceu ou perdeu valor." />
         </div>
       </Card>
 
@@ -5544,48 +5786,88 @@ function ImportantMessagesTab({
             <p>Nenhuma mensagem importante ativa ainda. Assim que a primeira análise ou o próximo lote concluir, o cofre começa a ser preenchido.</p>
           </div>
         </Card>
-      ) : (
-        <div className="important-list">
-          {messages.map((message) => (
-            <Card key={message.id} className="important-card">
-              <div className="important-card-head">
-                <div>
-                  <div className="important-badges">
-                    <span className={`important-category-pill important-category-${message.category}`}>{formatImportantCategory(message.category)}</span>
-                    <span className="micro-badge">{message.direction === "outbound" ? "Saída" : "Entrada"}</span>
-                    <span className="micro-badge">{message.confidence}/100</span>
-                  </div>
-                  <h3>{message.contact_name || message.contact_phone || "Contato"}</h3>
-                </div>
-                <div className="important-card-meta">
-                  <span>Capturada {formatRelativeTime(message.saved_at)}</span>
-                  <strong>{formatShortDateTime(message.message_timestamp)}</strong>
-                </div>
-              </div>
-
-              <p className="important-message-text">{message.message_text}</p>
-
-              <div className="important-review-stack">
-                <MiniPanel
-                  title="Por Que Foi Salva"
-                  tone="emerald"
-                  icon={Sparkles}
-                  content={message.importance_reason}
-                />
-                <MiniPanel
-                  title="Estado da Revisão"
-                  tone="amber"
-                  icon={Clock}
-                  content={
-                    message.last_reviewed_at
-                      ? `Revisada em ${formatShortDateTime(message.last_reviewed_at)}. ${message.review_notes ?? "Mantida no cofre ativo."}`
-                      : "Ainda aguardando a primeira revisão diária automática."
-                  }
-                />
+      ) : importantSubTab === "overview" ? (
+        <>
+          <div className="important-overview-grid">
+            <Card className="important-overview-card">
+              <SectionTitle title="Sinal Forte" icon={BarChart3} />
+              <p className="support-copy">
+                Os itens abaixo tendem a ser os melhores candidatos para reuso futuro em contexto, operação e decisão.
+              </p>
+              <div className="important-spotlight-list">
+                {strongestMessages.map((message) => (
+                  <button className="important-spotlight-item" key={message.id} onClick={() => setImportantSubTab(getImportantCategoryFamily(message.category) === "attention" ? "attention" : getImportantCategoryFamily(message.category) === "access" ? "access" : "operation")} type="button">
+                    <div className="important-spotlight-copy">
+                      <span>{formatImportantCategory(message.category)}</span>
+                      <strong>{message.contact_name || message.contact_phone || "Contato"}</strong>
+                      <p>{truncateText(message.importance_reason, 120)}</p>
+                    </div>
+                    <div className="important-spotlight-meta">
+                      <span>{message.confidence}/100</span>
+                      <small>{formatRelativeTime(message.saved_at)}</small>
+                    </div>
+                  </button>
+                ))}
               </div>
             </Card>
-          ))}
-        </div>
+
+            <Card className="important-overview-card">
+              <SectionTitle title="Revisar Primeiro" icon={Clock} />
+              <p className="support-copy">
+                Entram aqui mensagens ainda sem revisão automática ou com confiança mais baixa.
+              </p>
+              <div className="important-spotlight-list">
+                {reviewQueue.length > 0 ? reviewQueue.map((message) => (
+                  <div className="important-spotlight-item important-spotlight-item-static" key={message.id}>
+                    <div className="important-spotlight-copy">
+                      <span>{getImportantConfidenceLabel(message.confidence)}</span>
+                      <strong>{message.contact_name || message.contact_phone || "Contato"}</strong>
+                      <p>{truncateText(message.message_text, 120)}</p>
+                    </div>
+                    <div className="important-spotlight-meta">
+                      <span>{formatImportantCategory(message.category)}</span>
+                      <small>{message.last_reviewed_at ? formatRelativeTime(message.last_reviewed_at) : "sem revisão"}</small>
+                    </div>
+                  </div>
+                )) : (
+                  <div className="empty-hint">
+                    <CheckCircle2 size={18} />
+                    <p>Nenhum item fraco na fila agora.</p>
+                  </div>
+                )}
+              </div>
+            </Card>
+          </div>
+
+          <Card>
+            <SectionTitle title="Entradas Mais Recentes" icon={Sparkles} />
+            <div className="important-list">
+              {latestMessages.map((message) => (
+                <ImportantMessageCard key={message.id} message={message} />
+              ))}
+            </div>
+          </Card>
+        </>
+      ) : (
+        groupedMessages.length > 0 ? (
+          groupedMessages.map(([groupLabel, groupMessages]) => (
+            <Card key={groupLabel}>
+              <SectionTitle title={`${groupLabel} (${groupMessages.length})`} icon={Archive} />
+              <div className="important-list">
+                {groupMessages.map((message) => (
+                  <ImportantMessageCard key={message.id} message={message} />
+                ))}
+              </div>
+            </Card>
+          ))
+        ) : (
+          <Card>
+            <div className="empty-hint">
+              <Search size={18} />
+              <p>Nenhuma mensagem bateu com a busca atual nessa subaba.</p>
+            </div>
+          </Card>
+        )
       )}
 
       {error ? <InlineError title="Falha nas mensagens importantes" message={error} /> : null}
@@ -5599,6 +5881,49 @@ function ImportantMessagesTab({
         </Card>
       ) : null}
     </div>
+  );
+}
+
+function ImportantMessageCard({ message }: { message: ImportantMessage }) {
+  return (
+    <Card className="important-card">
+      <div className="important-card-head">
+        <div>
+          <div className="important-badges">
+            <span className={`important-category-pill important-category-${message.category}`}>{formatImportantCategory(message.category)}</span>
+            <span className="micro-badge">{getImportantCategoryFamilyLabel(message.category)}</span>
+            <span className="micro-badge">{message.direction === "outbound" ? "Saída" : "Entrada"}</span>
+            <span className="micro-badge">{message.confidence}/100</span>
+          </div>
+          <h3>{message.contact_name || message.contact_phone || "Contato"}</h3>
+        </div>
+        <div className="important-card-meta">
+          <span>Capturada {formatRelativeTime(message.saved_at)}</span>
+          <strong>{formatShortDateTime(message.message_timestamp)}</strong>
+        </div>
+      </div>
+
+      <p className="important-message-text">{message.message_text}</p>
+
+      <div className="important-review-stack">
+        <MiniPanel
+          title="Por Que Foi Salva"
+          tone="emerald"
+          icon={Sparkles}
+          content={message.importance_reason}
+        />
+        <MiniPanel
+          title="Estado da Revisão"
+          tone={getImportantConfidenceBand(message.confidence) === "low" ? "amber" : "emerald"}
+          icon={Clock}
+          content={
+            message.last_reviewed_at
+              ? `Revisada em ${formatShortDateTime(message.last_reviewed_at)}. ${message.review_notes ?? "Mantida no cofre ativo."}`
+              : "Ainda aguardando a primeira revisão diária automática."
+          }
+        />
+      </div>
+    </Card>
   );
 }
 

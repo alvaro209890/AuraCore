@@ -483,6 +483,30 @@ export type MemoryActivity = {
   settings?: AutomationSettings | null;
 };
 
+export type MemoryLiveSummary = {
+  generated_at: string;
+  pending_new_messages: number;
+  has_initial_analysis: boolean;
+  current_job_id: string | null;
+  current_job_status: string | null;
+  latest_completed_job_id: string | null;
+  latest_completed_job_status: string | null;
+  latest_snapshot_id: string | null;
+  latest_snapshot_created_at: string | null;
+  latest_important_id: string | null;
+  latest_important_saved_at: string | null;
+  latest_important_reviewed_at: string | null;
+  latest_project_id: string | null;
+  latest_project_updated_at: string | null;
+  latest_relation_id: string | null;
+  latest_relation_updated_at: string | null;
+  memory_signature: string;
+  activity_signature: string;
+  important_signature: string;
+  projects_signature: string;
+  relations_signature: string;
+};
+
 const REMOTE_FALLBACK_API_BASE_URL = "https://api.cursar.space";
 const EXPLICIT_API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ?? null;
 
@@ -710,6 +734,10 @@ export async function getMemoryStatus(): Promise<MemoryStatus> {
 
 export async function getMemoryActivity(): Promise<MemoryActivity> {
   return request<MemoryActivity>("/api/memories/activity");
+}
+
+export async function getMemoryLiveSummary(): Promise<MemoryLiveSummary> {
+  return request<MemoryLiveSummary>("/api/memories/live-summary");
 }
 
 export async function getMemorySnapshots(limit = 20): Promise<MemorySnapshot[]> {

@@ -600,6 +600,30 @@ class MemoryActivityResponse(BaseModel):
     settings: "AutomationSettingsResponse | None" = None
 
 
+class MemoryLiveSummaryResponse(BaseModel):
+    generated_at: datetime
+    pending_new_messages: int = Field(default=0, ge=0)
+    has_initial_analysis: bool
+    current_job_id: str | None = None
+    current_job_status: str | None = None
+    latest_completed_job_id: str | None = None
+    latest_completed_job_status: str | None = None
+    latest_snapshot_id: str | None = None
+    latest_snapshot_created_at: datetime | None = None
+    latest_important_id: str | None = None
+    latest_important_saved_at: datetime | None = None
+    latest_important_reviewed_at: datetime | None = None
+    latest_project_id: str | None = None
+    latest_project_updated_at: datetime | None = None
+    latest_relation_id: str | None = None
+    latest_relation_updated_at: datetime | None = None
+    memory_signature: str
+    activity_signature: str
+    important_signature: str
+    projects_signature: str
+    relations_signature: str
+
+
 class ModelRunResponse(BaseModel):
     id: str
     job_id: str | None = None

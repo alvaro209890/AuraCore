@@ -5163,7 +5163,9 @@ textarea {
 
 .important-top-grid,
 .important-review-stack,
-.important-list {
+.important-list,
+.important-overview-grid,
+.important-spotlight-list {
   display: grid;
   gap: 16px;
 }
@@ -5172,8 +5174,110 @@ textarea {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+.important-overview-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .important-list {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.important-shell-card {
+  display: grid;
+  gap: 20px;
+  background:
+    radial-gradient(circle at top right, rgba(251, 191, 36, 0.14), transparent 24%),
+    radial-gradient(circle at bottom left, rgba(14, 165, 233, 0.12), transparent 28%),
+    linear-gradient(180deg, rgba(18, 26, 41, 0.92), rgba(8, 14, 26, 0.95));
+}
+
+.important-shell-head,
+.important-shell-actions,
+.important-shell-tabs,
+.important-spotlight-item,
+.important-spotlight-meta {
+  display: flex;
+  gap: 14px;
+}
+
+.important-shell-head {
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.important-shell-actions {
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.important-search-shell {
+  min-width: 320px;
+}
+
+.important-shell-tabs {
+  flex-wrap: wrap;
+}
+
+.important-shell-tabs .activity-subtab strong {
+  margin-left: 6px;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 0.8rem;
+}
+
+.important-overview-card {
+  min-height: 100%;
+}
+
+.important-spotlight-list {
+  grid-template-columns: 1fr;
+}
+
+.important-spotlight-item {
+  width: 100%;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 16px 18px;
+  border-radius: 18px;
+  border: 1px solid rgba(59, 130, 246, 0.16);
+  background: rgba(8, 14, 26, 0.54);
+  color: inherit;
+  text-align: left;
+}
+
+.important-spotlight-item-static {
+  cursor: default;
+}
+
+.important-spotlight-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.important-spotlight-copy span {
+  color: #7dd3fc;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.important-spotlight-copy strong {
+  color: #f0f6fc;
+  font-size: 1rem;
+}
+
+.important-spotlight-copy p {
+  margin: 0;
+  color: rgba(201, 213, 225, 0.86);
+  line-height: 1.6;
+}
+
+.important-spotlight-meta {
+  flex-direction: column;
+  align-items: flex-end;
+  color: rgba(203, 213, 225, 0.76);
+  font-size: 0.8rem;
+  white-space: nowrap;
 }
 
 .important-card {
@@ -5776,6 +5880,7 @@ textarea {
   .automation-settings-grid,
   .automation-history-grid,
   .important-top-grid,
+  .important-overview-grid,
   .important-list,
   .important-review-stack,
   .manual-hero-card,
@@ -5826,6 +5931,7 @@ textarea {
 
   .projects-toolbar,
   .relations-toolbar,
+  .important-shell-head,
   .project-modern-head,
   .project-detail-modern-head,
   .relation-card-head,
@@ -5917,6 +6023,7 @@ textarea {
 
   .chat-sidebar-head,
   .important-card-head,
+  .important-spotlight-item,
   .projects-toolbar,
   .relations-toolbar,
   .relation-card-footer,
@@ -5929,6 +6036,15 @@ textarea {
   .important-top-grid,
   .chat-stage-metrics {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .important-shell-actions {
+    align-items: stretch;
+  }
+
+  .important-search-shell {
+    min-width: 0;
+    width: 100%;
   }
 
   .chat-header-pills,
