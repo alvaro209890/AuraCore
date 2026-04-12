@@ -128,4 +128,4 @@ class Settings(BaseSettings):
 
     @property
     def system_gateway_database_path(self) -> str:
-        return str(Path(self.normalized_database_root) / ".system" / "gateway.sqlite3")
+        return str(Path(self.normalized_database_root) / "agent-session" / "gateway.sqlite3")

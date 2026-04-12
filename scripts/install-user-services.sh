@@ -13,6 +13,7 @@ DB_ROOT_DIR="/home/acer/Documentos/Bando_de_dados/Aura_Core"
 mkdir -p "${UNIT_TARGET_DIR}"
 mkdir -p "${CLOUDFLARED_TARGET_DIR}"
 mkdir -p "${DB_ROOT_DIR}/.system"
+mkdir -p "${DB_ROOT_DIR}/agent-session"
 
 install -m 644 "${UNIT_SOURCE_DIR}/auracore-backend.service" "${UNIT_TARGET_DIR}/auracore-backend.service"
 install -m 644 "${UNIT_SOURCE_DIR}/auracore-whatsapp-gateway.service" "${UNIT_TARGET_DIR}/auracore-whatsapp-gateway.service"

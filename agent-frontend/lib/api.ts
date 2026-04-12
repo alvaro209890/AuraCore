@@ -34,6 +34,7 @@ export type GlobalAgentStatus = {
   state: string;
   gateway_ready: boolean;
   routing_mode: "observer_owner_phone";
+  mapped_accounts_count: number;
   owner_number: string | null;
   qr_code: string | null;
   qr_expires_in_sec: number | null;

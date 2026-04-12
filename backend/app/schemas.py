@@ -650,6 +650,7 @@ class GlobalAgentStatusResponse(BaseModel):
     state: str
     gateway_ready: bool
     routing_mode: Literal["observer_owner_phone"] = "observer_owner_phone"
+    mapped_accounts_count: int = Field(default=0, ge=0)
     owner_number: str | None = None
     qr_code: str | None = None
     qr_expires_in_sec: int | None = None

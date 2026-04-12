@@ -7,7 +7,6 @@ import {
   CheckCircle2,
   Database,
   LoaderCircle,
-  LogOut,
   MessageCircleMore,
   QrCode,
   RefreshCw,
@@ -19,44 +18,33 @@ import {
 import {
   connectGlobalAgent,
   getGlobalAgentStatus,
-  getObserverStatus,
   resetGlobalAgent,
-  type AuthenticatedAccount,
   type GlobalAgentStatus,
-  type ObserverStatus,
 } from "@/lib/api";
-
-type DashboardProps = {
-  account: AuthenticatedAccount;
-  onLogout: () => void;
-};
 
 const DISCONNECTED_POLL_MS = 4000;
 const CONNECTED_POLL_MS = 10000;
 
-export function GlobalAgentDashboard({ account, onLogout }: DashboardProps) {
+export function GlobalAgentDashboard() {
   const [agentStatus, setAgentStatus] = useState<GlobalAgentStatus | null>(null);
-  const [observerStatus, setObserverStatus] = useState<ObserverStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyAction, setBusyAction] = useState<"connect" | "reset" | "refresh" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    void loadDashboard(true);
+    void bootstrapAgent();
   }, []);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
-      void loadDashboard(false);
+      void refreshAgentStatus();
     }, agentStatus?.connected ? CONNECTED_POLL_MS : DISCONNECTED_POLL_MS);
 
     return () => window.clearInterval(interval);
   }, [agentStatus?.connected]);
 
-  const routingPhone = observerStatus?.owner_number ?? agentStatus?.current_user_observer_phone ?? null;
-  const routingReady = Boolean(agentStatus?.connected && observerStatus?.connected && routingPhone);
   const agentNumberLabel = agentStatus?.owner_number ?? "Ainda sem numero conectado";
-  const observerNumberLabel = routingPhone ?? "Conecte o observador no app principal";
+  const mappedAccountsLabel = `${agentStatus?.mapped_accounts_count ?? 0} contas mapeadas`;
   const connectionLabel = useMemo(() => {
     if (!agentStatus) {
       return "Carregando";
@@ -64,33 +52,41 @@ export function GlobalAgentDashboard({ account, onLogout }: DashboardProps) {
     if (agentStatus.connected) {
       return "Agente online";
     }
-    return agentStatus.state === "connecting" ? "Aguardando leitura do QR" : "Sessao desligada";
+    if (agentStatus.qr_code) {
+      return "QR pronto para leitura";
+    }
+    return agentStatus.state === "connecting" ? "Preparando QR" : "Sessao desligada";
   }, [agentStatus]);
 
-  async function loadDashboard(initial: boolean): Promise<void> {
-    if (initial) {
-      setLoading(true);
-    }
-    if (!initial) {
-      setBusyAction((current) => current ?? "refresh");
-    }
+  async function bootstrapAgent(): Promise<void> {
+    setLoading(true);
     try {
-      const [nextAgentStatus, nextObserverStatus] = await Promise.all([
-        getGlobalAgentStatus(),
-        getObserverStatus(false),
-      ]);
-      setAgentStatus(nextAgentStatus);
-      setObserverStatus(nextObserverStatus);
+      const nextStatus = await connectGlobalAgent();
+      setAgentStatus(nextStatus);
+      setError(null);
+    } catch (nextError) {
+      setError(formatUiError(nextError));
+      try {
+        const fallbackStatus = await getGlobalAgentStatus();
+        setAgentStatus(fallbackStatus);
+      } catch {
+        // Keep the original error state if even the fallback fails.
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function refreshAgentStatus(): Promise<void> {
+    setBusyAction((current) => current ?? "refresh");
+    try {
+      const nextStatus = await getGlobalAgentStatus();
+      setAgentStatus(nextStatus);
       setError(null);
     } catch (nextError) {
       setError(formatUiError(nextError));
     } finally {
-      if (initial) {
-        setLoading(false);
-      }
-      if (!initial) {
-        setBusyAction((current) => (current === "refresh" ? null : current));
-      }
+      setBusyAction((current) => (current === "refresh" ? null : current));
     }
   }
 
@@ -100,7 +96,6 @@ export function GlobalAgentDashboard({ account, onLogout }: DashboardProps) {
       const nextStatus = await connectGlobalAgent();
       setAgentStatus(nextStatus);
       setError(null);
-      await loadDashboard(false);
     } catch (nextError) {
       setError(formatUiError(nextError));
     } finally {
@@ -114,7 +109,6 @@ export function GlobalAgentDashboard({ account, onLogout }: DashboardProps) {
       const nextStatus = await resetGlobalAgent();
       setAgentStatus(nextStatus);
       setError(null);
-      await loadDashboard(false);
     } catch (nextError) {
       setError(formatUiError(nextError));
     } finally {
@@ -132,16 +126,7 @@ export function GlobalAgentDashboard({ account, onLogout }: DashboardProps) {
               Canal global do agente
             </div>
             <h1>Agent Hub</h1>
-            <p>O mesmo numero atende todas as contas. O backend resolve a conta certa pelo numero do observador conectado em cada workspace.</p>
-          </div>
-
-          <div className="agent-user-box">
-            <span>@{account.username ?? "sem-username"}</span>
-            <strong>{account.email}</strong>
-            <button className="agent-ghost-button" onClick={onLogout} type="button">
-              <LogOut size={16} />
-              Sair
-            </button>
+            <p>Esta pagina abre direto no QR. O mesmo numero atende todas as contas e o backend resolve o banco correto pelo numero do observador salvo em cada workspace.</p>
           </div>
         </header>
 
@@ -155,7 +140,7 @@ export function GlobalAgentDashboard({ account, onLogout }: DashboardProps) {
         {loading ? (
           <section className="agent-loading-card">
             <LoaderCircle className="spin" size={22} />
-            <strong>Carregando status do agente global...</strong>
+            <strong>Preparando o QR do agente global...</strong>
           </section>
         ) : (
           <>
@@ -173,23 +158,23 @@ export function GlobalAgentDashboard({ account, onLogout }: DashboardProps) {
 
                 <div className="agent-metrics-grid">
                   <MetricCard icon={MessageCircleMore} label="Numero do agente" value={agentNumberLabel} />
-                  <MetricCard icon={Smartphone} label="Seu numero observador" value={observerNumberLabel} />
-                  <MetricCard icon={ShieldCheck} label="Roteamento" value={routingReady ? "Pronto" : "Pendente"} />
-                  <MetricCard icon={Database} label="Modo" value="observer_owner_phone" />
+                  <MetricCard icon={ShieldCheck} label="Roteamento" value="observer_owner_phone" />
+                  <MetricCard icon={Database} label="Contas mapeadas" value={mappedAccountsLabel} />
+                  <MetricCard icon={Smartphone} label="Persistencia" value="Banco local fora das pastas dos usuarios" />
                 </div>
 
                 <div className="agent-action-row">
                   <button className="agent-primary-button" disabled={busyAction === "connect"} onClick={() => void handleConnect()} type="button">
                     {busyAction === "connect" ? <LoaderCircle className="spin" size={18} /> : <QrCode size={18} />}
-                    {agentStatus?.connected ? "Gerar novo QR" : "Conectar agente"}
+                    Atualizar QR
                   </button>
                   <button className="agent-danger-button" disabled={busyAction === "reset"} onClick={() => void handleReset()} type="button">
                     {busyAction === "reset" ? <LoaderCircle className="spin" size={18} /> : <Unplug size={18} />}
                     Resetar sessao
                   </button>
-                  <button className="agent-ghost-button" disabled={busyAction === "refresh"} onClick={() => void loadDashboard(false)} type="button">
+                  <button className="agent-ghost-button" disabled={busyAction === "refresh"} onClick={() => void refreshAgentStatus()} type="button">
                     {busyAction === "refresh" ? <LoaderCircle className="spin" size={18} /> : <RefreshCw size={18} />}
-                    Atualizar
+                    Atualizar status
                   </button>
                 </div>
               </article>
@@ -198,7 +183,7 @@ export function GlobalAgentDashboard({ account, onLogout }: DashboardProps) {
                 <div className="agent-panel-head">
                   <div>
                     <span className="agent-section-kicker">QR do agente</span>
-                    <h2>Conexao do numero unico</h2>
+                    <h2>Leitura instantanea</h2>
                   </div>
                 </div>
 
@@ -208,7 +193,7 @@ export function GlobalAgentDashboard({ account, onLogout }: DashboardProps) {
                   ) : (
                     <div className="agent-empty-qr">
                       <QrCode size={28} />
-                      <span>{agentStatus?.connected ? "A sessao ja esta online." : "Gere uma sessao para exibir o QR."}</span>
+                      <span>{agentStatus?.connected ? "A sessao ja esta online." : "O gateway esta gerando um novo QR agora."}</span>
                     </div>
                   )}
                 </div>
@@ -219,29 +204,25 @@ export function GlobalAgentDashboard({ account, onLogout }: DashboardProps) {
               <article className="agent-panel">
                 <div className="agent-panel-head">
                   <div>
-                    <span className="agent-section-kicker">Resolucao da conta</span>
-                    <h2>Como o backend encontra o banco certo</h2>
+                    <span className="agent-section-kicker">Como funciona</span>
+                    <h2>Resolucao por numero do observador</h2>
                   </div>
                 </div>
                 <div className="agent-rule-list">
                   <RuleRow
-                    ok={Boolean(observerStatus?.connected)}
-                    title="Observador da conta"
-                    detail={observerStatus?.connected
-                      ? `Conectado no numero ${observerStatus.owner_number ?? "desconhecido"}.`
-                      : "Esta conta ainda precisa conectar o observador no app principal."}
+                    ok
+                    title="Numero unico do agente"
+                    detail="Este WhatsApp recebe todas as mensagens diretas no mesmo canal global."
                   />
                   <RuleRow
-                    ok={Boolean(routingPhone)}
-                    title="Numero usado como chave"
-                    detail={routingPhone
-                      ? `O numero ${routingPhone} fica salvo no registro local e serve para achar o workspace desta conta.`
-                      : "Sem numero do observador salvo ainda, o agente nao consegue resolver a conta."}
+                    ok
+                    title="Chave de roteamento"
+                    detail="Quando o backend identifica o numero do observador de uma conta, ele localiza o workspace correto e consulta apenas aquele banco."
                   />
                   <RuleRow
-                    ok={Boolean(agentStatus?.connected && routingPhone)}
-                    title="Consulta isolada"
-                    detail="Quando esse mesmo numero falar com o agente global, o backend consulta apenas o SQLite deste usuario."
+                    ok
+                    title="Persistencia separada"
+                    detail="A sessao global do agente fica em um banco local fora das pastas dos usuarios, sem misturar credenciais com os workspaces individuais."
                   />
                 </div>
               </article>
@@ -257,8 +238,8 @@ export function GlobalAgentDashboard({ account, onLogout }: DashboardProps) {
                   <StatusLine label="Estado do agente" value={agentStatus?.state ?? "desconhecido"} />
                   <StatusLine label="Gateway pronto" value={agentStatus?.gateway_ready ? "sim" : "nao"} />
                   <StatusLine label="Ultimo erro" value={agentStatus?.last_error ?? "nenhum"} />
-                  <StatusLine label="Observer da conta" value={observerStatus?.connected ? "online" : "offline"} />
                   <StatusLine label="Modo de roteamento" value="observer_owner_phone" />
+                  <StatusLine label="Contas mapeadas" value={mappedAccountsLabel} />
                 </div>
               </article>
             </section>
