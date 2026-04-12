@@ -459,6 +459,7 @@ class ChatThreadResponse(BaseModel):
     id: str
     thread_key: str
     title: str
+    can_delete: bool = True
     message_count: int = Field(ge=0)
     last_message_preview: str | None = None
     last_message_role: Literal["user", "assistant"] | None = None
@@ -489,6 +490,13 @@ class SendChatMessageRequest(BaseModel):
 
 class CreateChatThreadRequest(BaseModel):
     title: str | None = Field(default=None, max_length=80)
+
+
+class DeleteChatThreadResponse(BaseModel):
+    active_thread_id: str
+    deleted_thread_id: str
+    threads: list[ChatThreadResponse] = Field(default_factory=list)
+    session: ChatSessionResponse
 
 
 class AutomationSettingsResponse(BaseModel):
@@ -573,6 +581,9 @@ class AnalysisJobResponse(BaseModel):
     estimated_cost_ceiling_usd: float = Field(ge=0)
     snapshot_id: str | None = None
     error_text: str | None = None
+    progress_percent: int = Field(default=0, ge=0, le=100)
+    live_stage: str | None = None
+    live_status_text: str | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
     created_at: datetime

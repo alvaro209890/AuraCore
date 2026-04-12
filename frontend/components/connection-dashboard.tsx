@@ -43,6 +43,7 @@ import {
 
 import {
   createChatThread,
+  deleteChatThread,
   connectAgent,
   connectObserver,
   clearSavedDatabase,
@@ -615,6 +616,15 @@ function resolveLiveStageIndex(intent: AgentIntent, job: AnalysisJob | null, syn
   if (!job) {
     return null;
   }
+  if (job.live_stage === "queued") {
+    return 1;
+  }
+  if (job.live_stage === "analyzing") {
+    return intent === "first_analysis" ? 3 : 2;
+  }
+  if (job.live_stage === "completed") {
+    return intent === "first_analysis" ? 4 : 3;
+  }
   if (job.status === "queued") {
     return 1;
   }
@@ -630,6 +640,16 @@ function resolveLiveProgress(intent: AgentIntent, job: AnalysisJob | null, syncR
   }
   if (!job) {
     return 0;
+  }
+  if (job.status === "succeeded") {
+    return 100;
+  }
+  if (job.status === "failed") {
+    return 0;
+  }
+  const backendProgress = Math.max(0, Math.min(100, Number(job.progress_percent ?? 0)));
+  if (backendProgress > 0) {
+    return backendProgress;
   }
   if (job.status === "queued") {
     return 24;
@@ -661,6 +681,9 @@ function resolveLiveStatus(args: {
       : "Atualizacao de memoria enfileirada no backend. O painel avanca apenas quando o servidor persistir a proxima fase.";
   }
   if (job.status === "running") {
+    if (job.live_status_text) {
+      return job.live_status_text;
+    }
     const batchSize = syncRun?.messages_saved_count || job.selected_message_count;
     const base = intent === "first_analysis"
       ? "Primeira analise real em execucao no backend."
@@ -1342,6 +1365,7 @@ export function ConnectionDashboard({
   const [streamingText, setStreamingText] = useState<string | null>(null);
   const [isLoadingChatThread, setIsLoadingChatThread] = useState(false);
   const [isCreatingChatThread, setIsCreatingChatThread] = useState(false);
+  const [deletingChatThreadIds, setDeletingChatThreadIds] = useState<string[]>([]);
   const [isClearingDatabase, setIsClearingDatabase] = useState(false);
   const [savingGroupJids, setSavingGroupJids] = useState<string[]>([]);
   const [savingProjectKeys, setSavingProjectKeys] = useState<string[]>([]);
@@ -2655,6 +2679,34 @@ export function ConnectionDashboard({
     }
   }
 
+  async function removeChatThread(thread: ChatThread): Promise<void> {
+    if (!thread.can_delete || deletingChatThreadIds.includes(thread.id)) {
+      return;
+    }
+
+    const confirmed = window.confirm(`Excluir a conversa "${thread.title}"? Isso também apaga as mensagens dela no banco local.`);
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingChatThreadIds((previous) => [...previous, thread.id]);
+    setChatError(null);
+    try {
+      const workspace = await deleteChatThread(thread.id);
+      applyChatWorkspace(workspace);
+      setChatDraft("");
+      setActiveTab("chat");
+      pushAgentLog("success", `Conversa pessoal excluída: ${thread.title}. Os registros também saíram do banco local.`);
+    } catch (error) {
+      const message = getErrorMessage(error);
+      setChatError(message);
+      setActiveTab("chat");
+      pushAgentLog("error", `Falha ao excluir a conversa pessoal: ${message}`);
+    } finally {
+      setDeletingChatThreadIds((previous) => previous.filter((id) => id !== thread.id));
+    }
+  }
+
   async function submitChatMessage(): Promise<void> {
     const normalized = chatDraft.trim();
     if (!normalized) {
@@ -2956,10 +3008,12 @@ export function ConnectionDashboard({
                   isSendingChat={isSendingChat}
                   isLoadingChatThread={isLoadingChatThread}
                   isCreatingChatThread={isCreatingChatThread}
+                  deletingChatThreadIds={deletingChatThreadIds}
                   chatScrollRef={chatScrollRef}
                   onChatDraftChange={setChatDraft}
                   onSelectThread={(threadId) => void openChatThread(threadId)}
                   onCreateThread={() => void startNewChatThread()}
+                  onDeleteThread={(thread) => void removeChatThread(thread)}
                   onApplyPrompt={setChatDraft}
                   onSubmit={() => void submitChatMessage()}
                 />
@@ -5496,10 +5550,12 @@ function ChatTab({
   isSendingChat,
   isLoadingChatThread,
   isCreatingChatThread,
+  deletingChatThreadIds,
   chatScrollRef,
   onChatDraftChange,
   onSelectThread,
   onCreateThread,
+  onDeleteThread,
   onApplyPrompt,
   onSubmit,
 }: {
@@ -5512,10 +5568,12 @@ function ChatTab({
   isSendingChat: boolean;
   isLoadingChatThread: boolean;
   isCreatingChatThread: boolean;
+  deletingChatThreadIds: string[];
   chatScrollRef: React.RefObject<HTMLDivElement | null>;
   onChatDraftChange: (value: string) => void;
   onSelectThread: (threadId: string) => void;
   onCreateThread: () => void;
+  onDeleteThread: (thread: ChatThread) => void;
   onApplyPrompt: (value: string) => void;
   onSubmit: () => void;
 }) {
@@ -5542,17 +5600,31 @@ function ChatTab({
           ) : (
             chatThreads.map((thread) => {
               const active = activeChatThread?.id === thread.id;
+              const isDeleting = deletingChatThreadIds.includes(thread.id);
               return (
-                <button
-                  key={thread.id}
-                  className={`gpt-thread-item${active ? " gpt-thread-item-active" : ""}`}
-                  onClick={() => onSelectThread(thread.id)}
-                  type="button"
-                >
-                  <MessageSquare size={14} />
-                  <span className="gpt-thread-title">{truncateText(thread.title, 32)}</span>
-                  <span className="gpt-thread-time">{formatRelativeTime(thread.last_message_at ?? thread.updated_at)}</span>
-                </button>
+                <div key={thread.id} className={`gpt-thread-item${active ? " gpt-thread-item-active" : ""}`}>
+                  <button
+                    className="gpt-thread-item-main"
+                    onClick={() => onSelectThread(thread.id)}
+                    type="button"
+                  >
+                    <MessageSquare size={14} />
+                    <span className="gpt-thread-title">{truncateText(thread.title, 32)}</span>
+                    <span className="gpt-thread-time">{formatRelativeTime(thread.last_message_at ?? thread.updated_at)}</span>
+                  </button>
+                  {thread.can_delete ? (
+                    <button
+                      className="gpt-thread-delete-btn"
+                      onClick={() => onDeleteThread(thread)}
+                      type="button"
+                      disabled={isDeleting}
+                      aria-label={`Excluir conversa ${thread.title}`}
+                      title={isDeleting ? "Excluindo..." : "Excluir conversa"}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  ) : null}
+                </div>
               );
             })
           )}

@@ -10,6 +10,7 @@ from app.schemas import (
     ChatThreadResponse,
     ChatWorkspaceResponse,
     CreateChatThreadRequest,
+    DeleteChatThreadResponse,
     SendChatMessageRequest,
 )
 from app.services.chat_service import ChatAssistantService, ChatSessionState, ChatThreadSummary, ChatWorkspaceState
@@ -45,6 +46,20 @@ async def create_chat_thread(
     return _to_chat_workspace_response(workspace)
 
 
+@router.delete("/threads/{thread_id}", response_model=DeleteChatThreadResponse)
+async def delete_chat_thread(
+    thread_id: str,
+    chat_service: ChatAssistantService = Depends(get_chat_assistant_service),
+) -> DeleteChatThreadResponse:
+    workspace = chat_service.delete_thread(thread_id=thread_id)
+    return DeleteChatThreadResponse(
+        active_thread_id=workspace.session.thread.id,
+        deleted_thread_id=thread_id,
+        threads=[_to_chat_thread_response(thread) for thread in workspace.threads],
+        session=_to_chat_session_response(workspace.session),
+    )
+
+
 @router.post("/messages", response_model=ChatWorkspaceResponse)
 async def send_chat_message(
     request: SendChatMessageRequest = Body(...),
@@ -72,6 +87,7 @@ def _to_chat_thread_response(summary: ChatThreadSummary) -> ChatThreadResponse:
         id=summary.thread.id,
         thread_key=summary.thread.thread_key,
         title=summary.thread.title,
+        can_delete=summary.thread.thread_key != "default",
         message_count=summary.message_count,
         last_message_preview=summary.last_message_preview,
         last_message_role=summary.last_message_role,

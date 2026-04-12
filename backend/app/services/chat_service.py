@@ -81,6 +81,26 @@ class ChatAssistantService:
         )
         return self.get_workspace(thread_id=created_thread.id)
 
+    def delete_thread(self, *, thread_id: str) -> ChatWorkspaceState:
+        thread = self.store.get_chat_thread(
+            user_id=self.settings.default_user_id,
+            thread_id=thread_id,
+        )
+        if thread is None:
+            raise ChatServiceError("A conversa selecionada nao foi encontrada.")
+
+        self.store.delete_chat_thread(
+            user_id=self.settings.default_user_id,
+            thread_id=thread_id,
+        )
+
+        remaining_threads = self.store.list_chat_threads(user_id=self.settings.default_user_id, limit=1)
+        if remaining_threads:
+            next_thread = remaining_threads[0]
+        else:
+            next_thread = self.store.get_or_create_chat_thread(user_id=self.settings.default_user_id)
+        return self.get_workspace(thread_id=next_thread.id)
+
     async def send_message(self, *, message_text: str, thread_id: str | None = None, context_hint: str | None = None) -> ChatWorkspaceState:
         normalized_text = " ".join(message_text.split()).strip()
         if not normalized_text:

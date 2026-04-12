@@ -496,6 +496,7 @@ def _to_model_run_response(model_run: ModelRunRecord) -> ModelRunResponse:
 def _to_job_response(job: Any) -> AnalysisJobResponse | None:
     if job is None:
         return None
+    progress_percent, live_stage, live_status_text = _resolve_job_live_fields(job)
     return AnalysisJobResponse(
         id=job.id,
         intent=job.intent,
@@ -514,7 +515,37 @@ def _to_job_response(job: Any) -> AnalysisJobResponse | None:
         estimated_cost_ceiling_usd=job.estimated_cost_ceiling_usd,
         snapshot_id=job.snapshot_id,
         error_text=job.error_text,
+        progress_percent=progress_percent,
+        live_stage=live_stage,
+        live_status_text=live_status_text,
         started_at=job.started_at,
         finished_at=job.finished_at,
         created_at=job.created_at,
     )
+
+
+def _resolve_job_live_fields(job: AnalysisJobRecord) -> tuple[int, str | None, str | None]:
+    intent = str(job.intent or "improve_memory").strip().lower()
+    is_first = intent == "first_analysis"
+
+    if job.status == "queued":
+        return (
+            12 if is_first else 18,
+            "queued",
+            "Job registrado no backend e aguardando o worker principal iniciar o processamento.",
+        )
+    if job.status == "running":
+        return (
+            64 if is_first else 72,
+            "analyzing",
+            (
+                "Primeira analise em execucao no backend principal."
+                if is_first
+                else "Atualizacao de memoria em execucao no backend principal."
+            ),
+        )
+    if job.status == "succeeded":
+        return 100, "completed", "Backend concluiu a analise e persistiu o resultado final."
+    if job.status == "failed":
+        return 0, "failed", job.error_text or "A analise falhou antes da persistencia final."
+    return 0, None, None

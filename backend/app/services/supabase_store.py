@@ -2566,6 +2566,19 @@ class SupabaseStore:
         self.client.table("chat_threads").update(payload).eq("id", thread_id).execute()
         return self.get_chat_thread(user_id=self.default_user_id, thread_id=thread_id)
 
+    def delete_chat_thread(
+        self,
+        *,
+        user_id: UUID,
+        thread_id: str,
+    ) -> bool:
+        thread = self.get_chat_thread(user_id=user_id, thread_id=thread_id)
+        if thread is None:
+            return False
+        self.client.table("chat_messages").delete().eq("thread_id", thread_id).execute()
+        self.client.table("chat_threads").delete().eq("user_id", str(user_id)).eq("id", thread_id).execute()
+        return True
+
     def list_chat_messages(self, thread_id: str, *, limit: int = 30) -> list[ChatMessageRecord]:
         response = (
             self.client.table("chat_messages")

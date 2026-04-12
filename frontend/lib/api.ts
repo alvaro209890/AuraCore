@@ -309,6 +309,7 @@ export type ChatThread = {
   id: string;
   thread_key: string;
   title: string;
+  can_delete: boolean;
   message_count: number;
   last_message_preview: string | null;
   last_message_role: "user" | "assistant" | null;
@@ -352,6 +353,13 @@ export type ChatSession = {
 
 export type ChatWorkspace = {
   active_thread_id: string;
+  threads: ChatThread[];
+  session: ChatSession;
+};
+
+export type DeleteChatThreadResponse = {
+  active_thread_id: string;
+  deleted_thread_id: string;
   threads: ChatThread[];
   session: ChatSession;
 };
@@ -428,6 +436,9 @@ export type AnalysisJob = {
   estimated_cost_ceiling_usd: number;
   snapshot_id: string | null;
   error_text: string | null;
+  progress_percent: number;
+  live_stage: string | null;
+  live_status_text: string | null;
   started_at: string | null;
   finished_at: string | null;
   created_at: string;
@@ -873,6 +884,12 @@ export async function createChatThread(title?: string): Promise<ChatWorkspace> {
   return request<ChatWorkspace>("/api/chat/threads", {
     method: "POST",
     body: JSON.stringify(title ? { title } : {}),
+  });
+}
+
+export async function deleteChatThread(threadId: string): Promise<DeleteChatThreadResponse> {
+  return request<DeleteChatThreadResponse>(`/api/chat/threads/${encodeURIComponent(threadId)}`, {
+    method: "DELETE",
   });
 }
 

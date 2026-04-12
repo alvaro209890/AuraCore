@@ -5302,14 +5302,13 @@ textarea {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 10px;
+  gap: 8px;
+  padding: 0;
   border: 1px solid transparent;
   border-radius: 10px;
   background: transparent;
   color: var(--muted);
   font-size: 0.85rem;
-  cursor: pointer;
   text-align: left;
   transition: all 200ms ease;
 }
@@ -5332,6 +5331,43 @@ textarea {
 
 .gpt-thread-item-active svg {
   color: #60a5fa;
+}
+
+.gpt-thread-item-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 10px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.gpt-thread-delete-btn {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  margin-right: 6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted-soft);
+  cursor: pointer;
+  transition: all 180ms ease;
+}
+
+.gpt-thread-delete-btn:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.12);
+  color: #fca5a5;
+}
+
+.gpt-thread-delete-btn:disabled {
+  opacity: 0.55;
+  cursor: wait;
 }
 
 .gpt-thread-title {
