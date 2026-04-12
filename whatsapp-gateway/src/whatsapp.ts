@@ -259,11 +259,12 @@ export class WhatsAppGatewayChannel {
     }
 
     const activeQr = this.getActiveQrCode();
-    if (this.connected || activeQr) {
+    if (this.connected || activeQr || this.state === "connecting" || this.state === "reconnecting") {
       return this.getStatus();
     }
 
-    await this.resetSession();
+    this.lastError = null;
+    await this.connect();
     return this.getStatus();
   }
 

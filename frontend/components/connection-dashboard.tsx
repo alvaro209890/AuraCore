@@ -6,6 +6,7 @@ import {
   Activity,
   AlertCircle,
   Archive,
+  BadgeCheck,
   BarChart3,
   Bot,
   Brain,
@@ -19,6 +20,7 @@ import {
   FolderGit2,
   Fingerprint,
   GitBranch,
+  LockKeyhole,
   Menu,
   MessageSquare,
   Play,
@@ -28,6 +30,7 @@ import {
   Send,
   Server,
   Settings,
+  ShieldCheck,
   Sparkles,
   Smartphone,
   Terminal,
@@ -65,6 +68,7 @@ import {
   updateMemoryGroupSelection,
   updateMemoryProjectCompletion,
   runAutomationTick,
+  type AuthenticatedAccount,
   type AnalysisJob,
   type AutomationStatus,
   type AutomationDecision,
@@ -106,7 +110,8 @@ type TabId =
   | "chat"
   | "activity"
   | "automation"
-  | "manual";
+  | "manual"
+  | "account";
 type LogTone = "info" | "success" | "error";
 
 type AgentStep = {
@@ -185,6 +190,7 @@ const LIVE_REFRESH_INTERVALS: Record<TabId, number> = {
   activity: 12000,
   automation: 12000,
   manual: 20000,
+  account: 20000,
 };
 const HEAVY_RESOURCE_REFRESH_MIN_INTERVAL_MS: Record<HeavyLiveResourceKey, number> = {
   groups: 18000,
@@ -227,6 +233,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     title: "Sistema",
     items: [
+      { id: "account", label: "Minha Conta", icon: Fingerprint },
       { id: "activity", label: "Atividade", icon: Activity },
       { id: "manual", label: "Manual", icon: FileText },
     ],
@@ -1280,7 +1287,13 @@ function buildSmartContextHint(
   return parts.length > 0 ? parts.join("\n") : undefined;
 }
 
-export function ConnectionDashboard() {
+export function ConnectionDashboard({
+  account,
+  onLogout,
+}: {
+  account: AuthenticatedAccount;
+  onLogout: () => void;
+}) {
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [status, setStatus] = useState<ObserverStatus | null>(null);
@@ -1694,7 +1707,7 @@ export function ConnectionDashboard() {
         !lastQrRefreshAtRef.current ||
         Date.now() - lastQrRefreshAtRef.current >= QR_REFRESH_INTERVAL_MS
       );
-      const nextStatus = shouldRefreshQr ? await connectObserver() : await getObserverStatus(false);
+      const nextStatus = await getObserverStatus(shouldRefreshQr);
 
       if (shouldRefreshQr) {
         lastQrRefreshAtRef.current = Date.now();
@@ -2464,7 +2477,7 @@ export function ConnectionDashboard() {
         Date.now() - lastQrRefreshAtRef.current >= QR_REFRESH_INTERVAL_MS
       );
 
-      const nextStatus = shouldRefreshQr ? await connectObserver() : await getObserverStatus(false);
+      const nextStatus = await getObserverStatus(shouldRefreshQr);
 
       if (shouldRefreshQr) {
         lastQrRefreshAtRef.current = Date.now();
@@ -2992,6 +3005,9 @@ export function ConnectionDashboard() {
                   chatMessages={chatMessages}
                   automationStatus={automationStatus}
                 />
+              ) : null}
+              {activeTab === "account" ? (
+                <AccountTab account={account} onLogout={onLogout} />
               ) : null}
             </>
           )}
@@ -6793,6 +6809,72 @@ function InlineError({ title, message }: { title: string; message: string }) {
       <div>
         <strong>{title}</strong>
         <p>{message}</p>
+      </div>
+    </div>
+  );
+}
+
+function AccountTab({
+  account,
+  onLogout,
+}: {
+  account: AuthenticatedAccount;
+  onLogout: () => void;
+}) {
+  return (
+    <div className="ac-tab-content">
+      <SectionTitle title="Minha Conta" icon={Fingerprint} />
+      
+      <div className="auth-account-dock" style={{ 
+        position: 'relative', 
+        bottom: 'auto', 
+        right: 'auto', 
+        width: '100%', 
+        maxWidth: '460px', 
+        margin: '24px 0',
+        padding: '32px'
+      }}>
+        <div className="auth-account-dock-eyebrow" style={{ fontSize: '0.8rem', letterSpacing: '0.15em' }}>CONTA ATIVA</div>
+        <strong style={{ fontSize: '2rem', marginTop: '8px', display: 'block' }}>@{account?.username || 'usuario'}</strong>
+        <span style={{ fontSize: '1.1rem', opacity: 0.7, display: 'block', marginTop: '4px' }}>{account?.email || 'email-nao-disponivel'}</span>
+        
+        <div style={{ marginTop: '32px' }}>
+          <button 
+            className="auth-dock-button" 
+            type="button" 
+            onClick={onLogout} 
+            style={{ 
+              width: 'auto', 
+              padding: '14px 48px',
+              fontSize: '1rem',
+              fontWeight: '500'
+            }}
+          >
+            Sair desta conta
+          </button>
+        </div>
+      </div>
+
+      <div className="ac-manual-grid" style={{ marginTop: '32px' }}>
+        <div className="ac-manual-card" style={{ padding: '24px' }}>
+          <SectionTitle title="Segurança e Isolamento" icon={LockKeyhole} />
+          <p style={{ color: 'var(--muted)', fontSize: '0.95rem', lineHeight: '1.7', marginTop: '12px' }}>
+            Seu AuraCore utiliza uma arquitetura de <strong>workspace isolado</strong>. 
+            Isso significa que todas as suas mensagens do WhatsApp, aprendizados de memória, 
+            estatísticas e projetos estão salvos em um banco de dados SQLite local, 
+            vinculado exclusivamente à sua conta Firebase <strong>@{account?.username || 'usuario'}</strong>.
+          </p>
+          <div style={{ display: 'flex', gap: '12px', marginTop: '20px' }}>
+            <div className="auth-feature-pill" style={{ fontSize: '0.8rem', padding: '8px 12px' }}>
+              <BadgeCheck size={14} />
+              <span>Banco de dados exclusivo</span>
+            </div>
+            <div className="auth-feature-pill" style={{ fontSize: '0.8rem', padding: '8px 12px' }}>
+              <ShieldCheck size={14} />
+              <span>Sessão criptografada</span>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );

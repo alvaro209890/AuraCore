@@ -228,15 +228,7 @@ export function AuthGate() {
   if (phase === "ready" && account) {
     return (
       <div className="auth-workspace-shell">
-        <ConnectionDashboard />
-        <aside className="auth-account-dock">
-          <div className="auth-account-dock-eyebrow">Conta ativa</div>
-          <strong>@{account.username}</strong>
-          <span>{account.email}</span>
-          <button className="auth-dock-button" type="button" onClick={() => void handleLogout()}>
-            Sair
-          </button>
-        </aside>
+        <ConnectionDashboard account={account} onLogout={() => void handleLogout()} />
       </div>
     );
   }
