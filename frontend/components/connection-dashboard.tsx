@@ -183,7 +183,8 @@ type HeavyLiveResourceKey = "groups" | "projects" | "snapshots" | "important" | 
 
 const CONNECTING_STATUS_POLL_INTERVAL_MS = 3200;
 const LIVE_STATUS_POLL_INTERVAL_MS = 9000;
-const LIVE_MEMORY_DIGEST_POLL_INTERVAL_MS = 2200;
+const LIVE_MEMORY_DIGEST_POLL_INTERVAL_MS = 6000;
+const ACTIVE_JOB_POLL_INTERVAL_MS = 5000;
 const QR_REFRESH_INTERVAL_MS = 45000;
 const ATTENTION_REFRESH_THROTTLE_MS = 2500;
 const LIVE_REFRESH_INTERVALS: Record<TabId, number> = {
@@ -2290,7 +2291,7 @@ export function ConnectionDashboard({
 
     const intervalId = window.setInterval(() => {
       void refreshLiveDataRef.current?.();
-    }, 2200);
+    }, ACTIVE_JOB_POLL_INTERVAL_MS);
 
     return () => window.clearInterval(intervalId);
   }, [agentState.running, isHydrating, memoryJobIsPending, queuedJobId]);
@@ -4345,8 +4346,9 @@ function GroupsTab({
   onRefresh: () => void;
 }) {
   const [search, setSearch] = useState("");
+  const deferredSearch = useDeferredValue(search);
   const filteredGroups = useMemo(() => {
-    const query = search.trim().toLowerCase();
+    const query = deferredSearch.trim().toLowerCase();
     if (!query) {
       return groups;
     }
@@ -4354,7 +4356,7 @@ function GroupsTab({
       group.chat_name.toLowerCase().includes(query) ||
       group.chat_jid.toLowerCase().includes(query)
     ));
-  }, [groups, search]);
+  }, [groups, deferredSearch]);
   const enabledCount = groups.filter((group) => group.enabled_for_analysis).length;
 
   return (
@@ -5304,7 +5306,8 @@ function ProjectsTab({
     () => sortedProjects.filter((project) => isProjectManuallyCompleted(project)),
     [sortedProjects],
   );
-  const normalizedSearch = normalizeProjectSearchText(search.trim());
+  const deferredSearch = useDeferredValue(search);
+  const normalizedSearch = useMemo(() => normalizeProjectSearchText(deferredSearch.trim()), [deferredSearch]);
 
   const filteredProjects = useMemo(
     () =>
