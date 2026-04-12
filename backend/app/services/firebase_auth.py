@@ -87,42 +87,48 @@ class FirebaseAuthService:
         if self._initialized:
             return
         if firebase_admin is None or firebase_admin_auth is None or firebase_credentials is None:
+            if GoogleAuthRequest is not None and google_id_token is not None:
+                self._verification_mode = "google"
+                self._initialized = True
+                return
             raise FirebaseAuthError(
                 "firebase-admin nao esta instalado no backend. Instale as dependencias do backend antes de usar a autenticacao."
             )
 
-        try:
-            firebase_admin.get_app()
+        options: dict[str, Any] = {"projectId": self.settings.firebase_project_id}
+        service_account_path = (self.settings.firebase_service_account_path or "").strip()
+
+        if service_account_path:
+            credential_path = Path(service_account_path).expanduser()
+            if not credential_path.is_file():
+                raise FirebaseAuthError(
+                    f"Arquivo da service account do Firebase nao encontrado: {credential_path}"
+                )
+            try:
+                app = firebase_admin.get_app()
+            except ValueError:
+                credential = firebase_credentials.Certificate(str(credential_path))
+                firebase_admin.initialize_app(credential=credential, options=options)
             self._verification_mode = "admin"
             self._initialized = True
             return
-        except ValueError:
-            pass
 
-        options: dict[str, Any] = {"projectId": self.settings.firebase_project_id}
-        service_account_path = (self.settings.firebase_service_account_path or "").strip()
-        try:
-            if service_account_path:
-                credential_path = Path(service_account_path).expanduser()
-                if not credential_path.is_file():
-                    raise FirebaseAuthError(
-                        f"Arquivo da service account do Firebase nao encontrado: {credential_path}"
-                    )
-                credential = firebase_credentials.Certificate(str(credential_path))
-                firebase_admin.initialize_app(credential=credential, options=options)
-                self._verification_mode = "admin"
-            else:
-                try:
-                    firebase_admin.initialize_app(options=options)
-                    self._verification_mode = "admin"
-                except Exception:
-                    if GoogleAuthRequest is None or google_id_token is None:
-                        raise
-                    self._verification_mode = "google"
-        except FirebaseAuthError:
-            raise
-        except Exception as exc:  # pragma: no cover - depends on local credentials
-            raise FirebaseAuthError(f"Nao foi possivel inicializar o Firebase Admin: {exc}") from exc
-        if self._verification_mode is None:
+        # No service account configured — prefer google-auth public-key
+        # verification which works without any local GCP credentials.
+        if GoogleAuthRequest is not None and google_id_token is not None:
             self._verification_mode = "google"
+            self._initialized = True
+            return
+
+        # Last resort: try firebase-admin with default credentials (ADC).
+        try:
+            try:
+                firebase_admin.get_app()
+            except ValueError:
+                firebase_admin.initialize_app(options=options)
+            self._verification_mode = "admin"
+        except Exception as exc:
+            raise FirebaseAuthError(
+                f"Nao foi possivel inicializar o Firebase Admin sem service account: {exc}"
+            ) from exc
         self._initialized = True

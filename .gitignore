@@ -25,3 +25,4 @@ agent-frontend/out/
 whatsapp-gateway/dist/
 whatsapp-gateway/.baileys_auth/
 .DS_Store
+backend_nohup.log
