@@ -780,6 +780,11 @@ export class WhatsAppGatewayChannel {
       return null;
     }
 
+    const deliveryChatJid =
+      this.channelName === "agent" && rawRemoteJid.endsWith("@lid")
+        ? rawRemoteJid
+        : resolvedChatJid;
+
     const { value: contactName, source: contactNameSource } = this.resolveContactName(
       message,
       rawRemoteJid,
@@ -794,7 +799,7 @@ export class WhatsAppGatewayChannel {
       from_me: Boolean(key.fromMe),
       contact_name: contactName || contactPhone,
       contact_name_source: contactNameSource,
-      chat_jid: resolvedChatJid,
+      chat_jid: deliveryChatJid,
       contact_phone: contactPhone,
       participant_name: null,
       participant_phone: null,
@@ -1201,9 +1206,7 @@ export class WhatsAppGatewayChannel {
     }
 
     if (trimmed.endsWith("@lid")) {
-      const exact = this.lidToPhoneJid.get(trimmed);
-      const base = this.lidToPhoneJid.get(this.toBaseLidJid(trimmed));
-      return exact || base || trimmed;
+      return trimmed;
     }
 
     if (

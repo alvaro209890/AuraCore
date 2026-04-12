@@ -1959,6 +1959,58 @@ textarea {
   margin-bottom: 18px;
 }
 
+.memory-shell-card {
+  background:
+    radial-gradient(circle at top left, rgba(45, 212, 191, 0.12), transparent 28%),
+    radial-gradient(circle at top right, rgba(59, 130, 246, 0.16), transparent 32%),
+    linear-gradient(180deg, rgba(14, 22, 38, 0.82), rgba(8, 14, 26, 0.92));
+}
+
+.memory-shell-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 18px;
+}
+
+.memory-shell-head h3 {
+  margin: 8px 0 10px;
+}
+
+.memory-shell-status {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.memory-shell-tabs {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.memory-surface-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: 0.95fr 1.05fr;
+}
+
+.memory-panel-card {
+  height: 100%;
+}
+
+.memory-inline-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.memory-embedded-activity {
+  margin-top: 2px;
+}
+
 .memory-signal-card {
   padding: 16px;
   border-radius: 18px;
@@ -5714,6 +5766,8 @@ textarea {
   .memory-metrics-grid,
   .memory-capacity-grid,
   .memory-breakdown-grid,
+  .memory-shell-tabs,
+  .memory-surface-grid,
   .memory-economics-grid,
   .memory-doc-grid,
   .activity-insight-grid,
@@ -5756,6 +5810,14 @@ textarea {
 
   .proj-stats-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .memory-shell-head {
+    flex-direction: column;
+  }
+
+  .memory-shell-status {
+    justify-content: flex-start;
   }
 
   .proj-detail-two-col {

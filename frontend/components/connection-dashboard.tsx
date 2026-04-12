@@ -235,7 +235,6 @@ const NAV_GROUPS: NavGroup[] = [
     title: "Sistema",
     items: [
       { id: "account", label: "Minha Conta", icon: Fingerprint },
-      { id: "activity", label: "Atividade", icon: Activity },
       { id: "manual", label: "Manual", icon: FileText },
     ],
   },
@@ -1318,6 +1317,7 @@ export function ConnectionDashboard({
   onLogout: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<TabId>("overview");
+  const resolvedActiveTab: TabId = activeTab === "activity" ? "memory" : activeTab;
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [status, setStatus] = useState<ObserverStatus | null>(null);
   const [viewState, setViewState] = useState<ViewState>("idle");
@@ -1793,45 +1793,43 @@ export function ConnectionDashboard({
     ) && !isLoadingChatThread && !isCreatingChatThread && !isSendingChat && streamingText === null;
     const shouldRefreshAgentWorkspace = false;
     const shouldRefreshMemoryCurrent = (
-      activeTab === "overview" ||
-      activeTab === "manual" ||
-      activeTab === "memory"
+      resolvedActiveTab === "overview" ||
+      resolvedActiveTab === "manual" ||
+      resolvedActiveTab === "memory"
     );
     const shouldRefreshProjects = (
-      activeTab === "projects" ||
-      activeTab === "manual" ||
-      (activeTab === "overview" && analysisIsBusy)
+      resolvedActiveTab === "projects" ||
+      resolvedActiveTab === "manual" ||
+      (resolvedActiveTab === "overview" && analysisIsBusy)
     ) && shouldRefreshHeavyResource("projects", analysisIsBusy);
     const shouldRefreshRelations = (
-      activeTab === "relations" ||
-      activeTab === "manual"
+      resolvedActiveTab === "relations" ||
+      resolvedActiveTab === "manual"
     ) && shouldRefreshHeavyResource("relations", analysisIsBusy);
     const shouldRefreshMemoryStatus = (
-      activeTab === "overview" ||
-      activeTab === "manual" ||
-      activeTab === "observer" ||
-      activeTab === "memory" ||
-      activeTab === "activity" ||
-      activeTab === "automation"
+      resolvedActiveTab === "overview" ||
+      resolvedActiveTab === "manual" ||
+      resolvedActiveTab === "observer" ||
+      resolvedActiveTab === "memory" ||
+      resolvedActiveTab === "automation"
     );
     const shouldRefreshSnapshots = (
-      activeTab === "memory" ||
-      activeTab === "manual" ||
-      (activeTab === "overview" && analysisIsBusy)
+      resolvedActiveTab === "memory" ||
+      resolvedActiveTab === "manual" ||
+      (resolvedActiveTab === "overview" && analysisIsBusy)
     ) && shouldRefreshHeavyResource("snapshots", analysisIsBusy);
     const shouldRefreshImportantMessages = (
-      activeTab === "manual" ||
-      activeTab === "important"
+      resolvedActiveTab === "manual" ||
+      resolvedActiveTab === "important"
     ) && shouldRefreshHeavyResource("important", analysisIsBusy);
     const shouldRefreshAutomation = !isTickingAutomation && (
-      activeTab === "manual" ||
-      activeTab === "memory" ||
-      activeTab === "activity" ||
-      activeTab === "automation" ||
+      resolvedActiveTab === "manual" ||
+      resolvedActiveTab === "memory" ||
+      resolvedActiveTab === "automation" ||
       queuedJobId !== null
     );
     const shouldRefreshHeavyGroups = shouldRefreshHeavyResource("groups", analysisIsBusy);
-    const shouldRefreshMemoryGroups = (activeTab === "manual" || activeTab === "groups") && shouldRefreshHeavyGroups;
+    const shouldRefreshMemoryGroups = (resolvedActiveTab === "manual" || resolvedActiveTab === "groups") && shouldRefreshHeavyGroups;
 
     dashboardRefreshInFlightRef.current = true;
     try {
@@ -1854,7 +1852,7 @@ export function ConnectionDashboard({
         shouldRefreshProjects ? getMemoryProjects() : Promise.resolve(null),
         shouldRefreshRelations ? getMemoryRelations() : Promise.resolve(null),
         shouldRefreshMemoryStatus ? getMemoryStatus() : Promise.resolve(null),
-        shouldRefreshSnapshots ? getMemorySnapshots(activeTab === "overview" ? 1 : 6) : Promise.resolve(null),
+        shouldRefreshSnapshots ? getMemorySnapshots(resolvedActiveTab === "overview" ? 1 : 6) : Promise.resolve(null),
         shouldRefreshImportantMessages ? getImportantMessages(80) : Promise.resolve(null),
         shouldRefreshAutomation ? getAutomationStatus() : Promise.resolve(null),
       ]);
@@ -2151,7 +2149,7 @@ export function ConnectionDashboard({
     const shouldLoadRelations = activeTab === "relations" || activeTab === "manual";
     const shouldLoadSnapshots = activeTab === "overview" || activeTab === "memory" || activeTab === "manual";
     const shouldLoadImportantMessages = activeTab === "important" || activeTab === "manual";
-    const shouldLoadAutomation = activeTab === "memory" || activeTab === "activity" || activeTab === "automation" || activeTab === "manual" || queuedJobId !== null;
+    const shouldLoadAutomation = resolvedActiveTab === "memory" || resolvedActiveTab === "automation" || resolvedActiveTab === "manual" || queuedJobId !== null;
 
     const [
       statusResult,
@@ -2823,7 +2821,7 @@ export function ConnectionDashboard({
               <div className="ac-nav-group-items">
                 {group.items.map((item) => {
                   const Icon = item.icon;
-                  const active = activeTab === item.id;
+                  const active = resolvedActiveTab === item.id;
                   return (
                     <button
                       key={item.id}
@@ -2916,7 +2914,7 @@ export function ConnectionDashboard({
             </Card>
           ) : (
             <>
-              {activeTab === "overview" ? (
+              {resolvedActiveTab === "overview" ? (
                 <OverviewTab
                   memory={memory}
                   memoryStatus={memoryStatus}
@@ -2929,11 +2927,10 @@ export function ConnectionDashboard({
                   onGoToObserver={() => setActiveTab("observer")}
                   onGoToMemory={() => setActiveTab("memory")}
                   onGoToChat={() => setActiveTab("chat")}
-                  onGoToActivity={() => setActiveTab("activity")}
                 />
               ) : null}
 
-              {activeTab === "observer" ? (
+              {resolvedActiveTab === "observer" ? (
                 <ObserverTab
                   status={status}
                   statusLabel={statusLabel}
@@ -2946,7 +2943,7 @@ export function ConnectionDashboard({
                 />
               ) : null}
 
-              {activeTab === "groups" ? (
+              {resolvedActiveTab === "groups" ? (
                 <GroupsTab
                   groups={memoryGroups}
                   error={memoryGroupsError}
@@ -2956,7 +2953,7 @@ export function ConnectionDashboard({
                 />
               ) : null}
 
-              {activeTab === "memory" ? (
+              {resolvedActiveTab === "memory" ? (
                 <MemoryTab
                   memoryStatus={memoryStatus}
                   memory={memory}
@@ -2966,13 +2963,19 @@ export function ConnectionDashboard({
                   agentState={displayAgentState}
                   steps={currentSteps}
                   logs={activityLogs}
+                  projectsCount={projects.length}
+                  snapshotsCount={snapshots.length}
+                  automationStatus={automationStatus}
+                  automationError={automationError ?? memoryActivityError}
+                  isClearingDatabase={isClearingDatabase}
                   onInitialAnalysis={() => void runMemoryJob("first_analysis")}
                   onImproveMemory={() => void runMemoryJob("improve_memory")}
+                  onClearDatabase={() => void handleClearSavedDatabase()}
                   queuedJobId={queuedJobId}
                 />
               ) : null}
 
-              {activeTab === "important" ? (
+              {resolvedActiveTab === "important" ? (
                 <ImportantMessagesTab
                   messages={importantMessages}
                   error={importantMessagesError}
@@ -2980,7 +2983,7 @@ export function ConnectionDashboard({
                 />
               ) : null}
 
-              {activeTab === "relations" ? (
+              {resolvedActiveTab === "relations" ? (
                 <RelationsTab
                   relations={relations}
                   error={relationsError}
@@ -2988,7 +2991,7 @@ export function ConnectionDashboard({
                 />
               ) : null}
 
-              {activeTab === "projects" ? (
+              {resolvedActiveTab === "projects" ? (
                 <ProjectsTab
                   projects={projects}
                   onToggleCompletion={toggleProjectCompletion}
@@ -2997,7 +3000,7 @@ export function ConnectionDashboard({
                 />
               ) : null}
 
-              {activeTab === "chat" ? (
+              {resolvedActiveTab === "chat" ? (
                 <ChatTab
                   chatThreads={chatThreads}
                   activeChatThread={activeChatThread}
@@ -3019,23 +3022,7 @@ export function ConnectionDashboard({
                 />
               ) : null}
 
-              {activeTab === "activity" ? (
-                <ActivityTab
-                  agentState={displayAgentState}
-                  steps={currentSteps}
-                  logs={activityLogs}
-                  memory={memory}
-                  latestSnapshot={latestSnapshot}
-                  projectsCount={projects.length}
-                  snapshotsCount={snapshots.length}
-                  automationStatus={automationStatus}
-                  automationError={automationError}
-                  isClearingDatabase={isClearingDatabase}
-                  onClearDatabase={() => void handleClearSavedDatabase()}
-                />
-              ) : null}
-
-              {activeTab === "automation" ? (
+              {resolvedActiveTab === "automation" ? (
                 <AutomationTab
                   automationStatus={automationStatus}
                   automationDraft={automationDraft}
@@ -3048,7 +3035,7 @@ export function ConnectionDashboard({
                 />
               ) : null}
 
-              {activeTab === "manual" ? (
+              {resolvedActiveTab === "manual" ? (
                 <ManualTab
                   status={status}
                   memory={memory}
@@ -3060,7 +3047,7 @@ export function ConnectionDashboard({
                   automationStatus={automationStatus}
                 />
               ) : null}
-              {activeTab === "account" ? (
+              {resolvedActiveTab === "account" ? (
                 <AccountTab account={account} onLogout={onLogout} />
               ) : null}
             </>
@@ -3083,7 +3070,6 @@ function OverviewTab({
   onGoToObserver,
   onGoToMemory,
   onGoToChat,
-  onGoToActivity,
 }: {
   memory: MemoryCurrent | null;
   memoryStatus: MemoryStatus | null;
@@ -3096,7 +3082,6 @@ function OverviewTab({
   onGoToObserver: () => void;
   onGoToMemory: () => void;
   onGoToChat: () => void;
-  onGoToActivity: () => void;
 }) {
   const [subTab, setSubTab] = useState<"summary" | "mapping" | "signals">("summary");
   const structuralStrengths = memory?.structural_strengths?.length ? memory.structural_strengths : (latestSnapshot?.key_learnings ?? []);
@@ -3127,7 +3112,7 @@ function OverviewTab({
       onGoToChat();
       return;
     }
-    onGoToActivity();
+    onGoToMemory();
   };
   const journeySteps = [
     {
@@ -3184,9 +3169,9 @@ function OverviewTab({
             <Database size={15} />
             Abrir Memória
           </button>
-          <button className="ac-secondary-button" onClick={onGoToActivity} type="button">
+          <button className="ac-secondary-button" onClick={onGoToMemory} type="button">
             <Activity size={15} />
-            Ver Atividade
+            Ver Pipeline
           </button>
         </div>
       </Card>
@@ -3225,7 +3210,7 @@ function OverviewTab({
                   <ChevronRight size={15} />
                   {nextAction.buttonLabel}
                 </button>
-                <button className="ac-secondary-button" onClick={onGoToActivity} type="button">
+                <button className="ac-secondary-button" onClick={onGoToMemory} type="button">
                   <Activity size={15} />
                   Acompanhar pipeline
                 </button>
@@ -3407,12 +3392,12 @@ function OverviewTab({
             ) : (
               <div className="overview-empty-state">
                 <p className="support-copy">
-                  Este quadro sai do zero assim que a memoria inicial nasce. Ate la, use a aba de atividade para acompanhar sync, fila e pipeline.
+                  Este quadro sai do zero assim que a memoria inicial nasce. Ate la, use Memoria para acompanhar sync, fila e pipeline.
                 </p>
                 <div className="hero-actions">
-                  <button className="ac-secondary-button" onClick={onGoToActivity} type="button">
+                  <button className="ac-secondary-button" onClick={onGoToMemory} type="button">
                     <Activity size={15} />
-                    Abrir Atividade
+                    Abrir Pipeline
                   </button>
                 </div>
               </div>
@@ -4205,9 +4190,15 @@ function MemoryTab({
   agentState,
   steps,
   logs,
+  projectsCount,
+  snapshotsCount,
+  automationStatus,
+  automationError,
+  isClearingDatabase,
   queuedJobId,
   onInitialAnalysis,
   onImproveMemory,
+  onClearDatabase,
 }: {
   memoryStatus: MemoryStatus | null;
   memory: MemoryCurrent | null;
@@ -4217,10 +4208,17 @@ function MemoryTab({
   agentState: DisplayAgentState;
   steps: AgentStep[];
   logs: AgentLog[];
+  projectsCount: number;
+  snapshotsCount: number;
+  automationStatus: AutomationStatus | null;
+  automationError: string | null;
+  isClearingDatabase: boolean;
   queuedJobId: string | null;
   onInitialAnalysis: () => void;
   onImproveMemory: () => void;
+  onClearDatabase: () => void;
 }) {
+  const [memorySubTab, setMemorySubTab] = useState<"overview" | "profile" | "snapshot" | "pipeline">("overview");
   const memoryReady = memoryStatus?.has_initial_analysis ?? false;
   const structuralStrengths = memory?.structural_strengths ?? [];
   const structuralRoutines = memory?.structural_routines ?? [];
@@ -4244,6 +4242,12 @@ function MemoryTab({
     latestModelRun,
   }).slice(0, 4);
   const displayedLogs = logs.slice(0, 8);
+  const memorySubTabs = [
+    { id: "overview" as const, label: "Painel", icon: Database },
+    { id: "profile" as const, label: "Perfil", icon: Fingerprint },
+    { id: "snapshot" as const, label: "Janela", icon: FileText },
+    { id: "pipeline" as const, label: "Pipeline", icon: Activity },
+  ];
   const executeLabel = !memoryReady
     ? pendingNewMessages > 0
       ? `Fazer Primeira Analise (${formatTokenCount(pendingNewMessages)} mensagens disponiveis)`
@@ -4269,266 +4273,324 @@ function MemoryTab({
 
   return (
     <div className="page-stack">
-      <Card>
-        <SectionTitle title="Estado da Memoria" icon={Database} />
-        <p className="support-copy">
-          A memoria agora funciona em fluxo manual. Depois da primeira analise, este painel conta apenas
-          as mensagens que chegaram depois da base inicial e deixa a consolidacao sob seu comando.
-        </p>
-        <div className="memory-breakdown-grid">
-          <MemorySignalCard
-            label="Status da memoria"
-            value={memoryReady ? "Base criada" : "Primeira analise pendente"}
-            meta={
-              memoryStatus?.last_analyzed_at
-                ? `Ultima atualizacao em ${formatDateTime(memoryStatus.last_analyzed_at)}`
-                : "Ainda sem consolidacao inicial"
-            }
-            accent
-          />
-          <MemorySignalCard
-            label="Mensagens novas"
-            value={formatTokenCount(pendingNewMessages)}
-            meta={memoryReady ? "Mensagens que chegaram depois da ultima analise" : "Mensagens disponiveis para criar a base inicial"}
-            tone="indigo"
-          />
-          <MemorySignalCard
-            label="Job atual"
-            value={currentJob ? formatState(currentJob.status) : "Livre"}
-            meta={
-              currentJob
-                ? `${getIntentTitle(currentJob.intent as AgentIntent)} • ${formatShortDateTime(currentJob.created_at)}`
-                : "Nenhuma analise em execucao no momento"
-            }
-            tone="amber"
-          />
-          <MemorySignalCard
-            label="Ultimo job concluido"
-            value={latestCompletedJob ? formatState(latestCompletedJob.status) : "--"}
-            meta={
-              latestCompletedJob
-                ? `${getIntentTitle(latestCompletedJob.intent as AgentIntent)} • ${formatShortDateTime(latestCompletedJob.finished_at ?? latestCompletedJob.created_at)}`
-                : "Nenhuma execucao concluida ainda"
-            }
-            tone="emerald"
-          />
-        </div>
-      </Card>
-
-      <Card>
-        <SectionTitle title="Acoes" icon={Zap} />
-        {!memoryReady ? (
-          <>
-            <p className="support-copy">
-              A primeira analise agora mistura recencia, diversidade de contatos e mensagens do proprio dono para montar
-              uma base inicial menos enviesada, ja salvando importantes, projetos e a primeira memoria consolidada.
-            </p>
-            <button
-              className="ac-success-button"
-              onClick={onInitialAnalysis}
-              disabled={agentState.running || hasPendingJob || !canExecuteAnalysis}
-              type="button"
-            >
-              <Play size={15} />
-              {currentJobIsPending
-                ? currentJob.status === "queued"
-                  ? "Primeira analise na fila..."
-                  : "Primeira analise em andamento..."
-                : agentState.running && agentState.intent === "first_analysis"
-                  ? "Executando..."
-                  : !!queuedJobId
-                    ? "Aguardando fila..."
-                    : executeLabel}
-            </button>
-            {blockedReason ? <p className="support-copy">{blockedReason}</p> : null}
-          </>
-        ) : (
-          <>
-            <p className="support-copy">
-              Quando voce clicar em executar, o DeepSeek reaproveita a memoria ja criada, le apenas as mensagens novas
-              pendentes e melhora a analise de forma incremental, incluindo importantes e projetos.
-            </p>
-            <button
-              className="ac-primary-button"
-              onClick={onImproveMemory}
-              disabled={agentState.running || hasPendingJob || !canExecuteAnalysis}
-              type="button"
-            >
-              <Sparkles size={15} />
-              {currentJobIsPending
-                ? currentJob.status === "queued"
-                  ? "Atualizacao na fila..."
-                  : "Atualizacao em andamento..."
-                : agentState.running && agentState.intent === "improve_memory"
-                  ? "Processando..."
-                  : !!queuedJobId
-                    ? "Fila ativa..."
-                    : executeLabel}
-            </button>
-            {blockedReason ? <p className="support-copy">{blockedReason}</p> : null}
-          </>
-        )}
-      </Card>
-
-      <div className="activity-lab-columns">
-        <Card className="activity-trace-card">
-          <SectionTitle title="Pipeline Ao Vivo" icon={Cpu} />
-          <p className="support-copy">
-            Esta trilha mostra o que o backend está fazendo agora e avança automaticamente quando o job muda de fila para execução e depois para concluído.
-          </p>
-          <div className="step-pill-row">
-            {steps.map((step, stepIndex) => {
-              const { completed, active } = getStepVisualState(agentState, stepIndex, steps.length);
-              return (
-                <span
-                  key={step.label}
-                  className={`step-pill${completed ? " step-pill-done" : ""}${active ? " step-pill-active" : ""}`}
-                >
-                  {completed ? <CheckCircle2 size={12} /> : active ? <RefreshCw size={12} className="spin" /> : <Clock size={12} />}
-                  {step.label}
-                </span>
-              );
-            })}
-          </div>
-          <div className="activity-trace-list">
-            {traceItems.length > 0 ? (
-              traceItems.map((item) => (
-                <div key={item.id} className={`activity-trace-item activity-trace-${item.tone}`}>
-                  <div className="activity-trace-dot" />
-                  <div className="activity-trace-content">
-                    <div className="activity-trace-top">
-                      <strong>{item.title}</strong>
-                      <span>{item.timestamp ? formatShortDateTime(item.timestamp) : "Agora"}</span>
-                    </div>
-                    <p>{item.detail}</p>
-                    <div className="activity-trace-meta">
-                      <span>{getActivityToneLabel(item.tone)}</span>
-                      {item.meta ? <span>{item.meta}</span> : null}
-                    </div>
-                  </div>
-                </div>
-              ))
-            ) : (
-              <div className="empty-hint">
-                <Terminal size={18} />
-                <p>Nenhum evento recente ainda. Assim que a análise começar, a linha do tempo aparece aqui sem precisar recarregar.</p>
-              </div>
-            )}
-          </div>
-        </Card>
-
-        <div className="terminal-shell activity-terminal-shell">
-          <div className="terminal-header activity-terminal-header">
-            <div className="activity-terminal-leds">
-              <span className="terminal-dot terminal-dot-red" />
-              <span className="terminal-dot terminal-dot-yellow" />
-              <span className="terminal-dot terminal-dot-green" />
+      <Card className="memory-shell-card">
+        <div className="memory-shell-head">
+          <div>
+            <div className="hero-kicker">
+              <Database size={14} />
+              Central de Memória
             </div>
-            <div className="activity-terminal-titles">
-              <strong>memory-analysis.log</strong>
-              <span>eventos reais e estados interpretados do pipeline</span>
-            </div>
-            <span className={`micro-status micro-status-${agentState.running || hasPendingJob ? "indigo" : "zinc"}`}>
-              {agentState.running || hasPendingJob ? "auto-refresh ligado" : "monitorando"}
+            <h3>Memória, progresso e manutenção agora vivem no mesmo lugar.</h3>
+            <p className="support-copy">
+              Separei o fluxo em painéis menores para deixar claro o que já foi consolidado, o que ainda está chegando e como o pipeline está se comportando em tempo real.
+            </p>
+          </div>
+          <div className="memory-shell-status">
+            <span className={`micro-status micro-status-${agentState.running || hasPendingJob ? "teal" : "zinc"}`}>
+              {agentState.running || hasPendingJob ? "pipeline ativo" : "monitorando"}
+            </span>
+            <span className={`micro-status micro-status-${memoryReady ? "emerald" : "amber"}`}>
+              {memoryReady ? "base criada" : "base pendente"}
             </span>
           </div>
-          <div className="terminal-body">
-            {displayedLogs.length > 0 ? (
-              displayedLogs.map((log) => (
-                <div key={log.id} className={`terminal-line activity-terminal-line activity-terminal-${log.tone}`}>
-                  <span className="terminal-time">{formatShortDateTime(log.createdAt)}</span>
-                  <span>{log.message}</span>
+        </div>
+
+        <div className="memory-shell-tabs">
+          {memorySubTabs.map((tab) => {
+            const Icon = tab.icon;
+            return (
+              <button
+                key={tab.id}
+                className={`activity-subtab${memorySubTab === tab.id ? " activity-subtab-active" : ""}`}
+                onClick={() => setMemorySubTab(tab.id)}
+                type="button"
+              >
+                <Icon size={14} />
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
+      </Card>
+
+      {memorySubTab === "overview" ? (
+        <>
+          <div className="memory-breakdown-grid">
+            <MemorySignalCard
+              label="Status da memoria"
+              value={memoryReady ? "Base criada" : "Primeira analise pendente"}
+              meta={
+                memoryStatus?.last_analyzed_at
+                  ? `Ultima atualizacao em ${formatDateTime(memoryStatus.last_analyzed_at)}`
+                  : "Ainda sem consolidacao inicial"
+              }
+              accent
+            />
+            <MemorySignalCard
+              label="Mensagens novas"
+              value={formatTokenCount(pendingNewMessages)}
+              meta={memoryReady ? "Diretas recebidas e enviadas desde a ultima analise" : "Mensagens disponiveis para criar a base inicial"}
+              tone="indigo"
+            />
+            <MemorySignalCard
+              label="Job atual"
+              value={currentJob ? formatState(currentJob.status) : "Livre"}
+              meta={
+                currentJob
+                  ? `${getIntentTitle(currentJob.intent as AgentIntent)} • ${formatShortDateTime(currentJob.created_at)}`
+                  : "Nenhuma analise em execucao no momento"
+              }
+              tone="amber"
+            />
+            <MemorySignalCard
+              label="Ultimo job concluido"
+              value={latestCompletedJob ? formatState(latestCompletedJob.status) : "--"}
+              meta={
+                latestCompletedJob
+                  ? `${getIntentTitle(latestCompletedJob.intent as AgentIntent)} • ${formatShortDateTime(latestCompletedJob.finished_at ?? latestCompletedJob.created_at)}`
+                  : "Nenhuma execucao concluida ainda"
+              }
+              tone="emerald"
+            />
+          </div>
+
+          <div className="memory-surface-grid">
+            <Card className="memory-panel-card">
+              <SectionTitle title="Ações" icon={Zap} />
+              {!memoryReady ? (
+                <div className="memory-inline-stack">
+                  <p className="support-copy">
+                    A primeira analise mistura recencia, diversidade de contatos e mensagens do proprio dono para montar uma base inicial menos enviesada.
+                  </p>
+                  <button
+                    className="ac-success-button"
+                    onClick={onInitialAnalysis}
+                    disabled={agentState.running || hasPendingJob || !canExecuteAnalysis}
+                    type="button"
+                  >
+                    <Play size={15} />
+                    {currentJobIsPending
+                      ? currentJob.status === "queued"
+                        ? "Primeira analise na fila..."
+                        : "Primeira analise em andamento..."
+                      : agentState.running && agentState.intent === "first_analysis"
+                        ? "Executando..."
+                        : !!queuedJobId
+                          ? "Aguardando fila..."
+                          : executeLabel}
+                  </button>
+                  {blockedReason ? <p className="support-copy">{blockedReason}</p> : null}
                 </div>
-              ))
-            ) : (
-              <div className="empty-hint">
-                <Terminal size={18} />
-                <p>Sem logs recentes por enquanto.</p>
+              ) : (
+                <div className="memory-inline-stack">
+                  <p className="support-copy">
+                    O refinamento incremental reaproveita a memória já salva e processa apenas o lote novo pendente.
+                  </p>
+                  <button
+                    className="ac-primary-button"
+                    onClick={onImproveMemory}
+                    disabled={agentState.running || hasPendingJob || !canExecuteAnalysis}
+                    type="button"
+                  >
+                    <Sparkles size={15} />
+                    {currentJobIsPending
+                      ? currentJob.status === "queued"
+                        ? "Atualizacao na fila..."
+                        : "Atualizacao em andamento..."
+                      : agentState.running && agentState.intent === "improve_memory"
+                        ? "Processando..."
+                        : !!queuedJobId
+                          ? "Fila ativa..."
+                          : executeLabel}
+                  </button>
+                  {blockedReason ? <p className="support-copy">{blockedReason}</p> : null}
+                </div>
+              )}
+            </Card>
+
+            <Card className="memory-panel-card">
+              <SectionTitle title="Pulso do Pipeline" icon={Cpu} />
+              <p className="support-copy">
+                O backend avança sozinho entre fila, execução e conclusão. Este resumo reflete o estado real persistido.
+              </p>
+              <div className="step-pill-row">
+                {steps.map((step, stepIndex) => {
+                  const { completed, active } = getStepVisualState(agentState, stepIndex, steps.length);
+                  return (
+                    <span
+                      key={step.label}
+                      className={`step-pill${completed ? " step-pill-done" : ""}${active ? " step-pill-active" : ""}`}
+                    >
+                      {completed ? <CheckCircle2 size={12} /> : active ? <RefreshCw size={12} className="spin" /> : <Clock size={12} />}
+                      {step.label}
+                    </span>
+                  );
+                })}
               </div>
-            )}
+              <div className="activity-trace-list">
+                {traceItems.length > 0 ? (
+                  traceItems.map((item) => (
+                    <div key={item.id} className={`activity-trace-item activity-trace-${item.tone}`}>
+                      <div className="activity-trace-dot" />
+                      <div className="activity-trace-content">
+                        <div className="activity-trace-top">
+                          <strong>{item.title}</strong>
+                          <span>{item.timestamp ? formatShortDateTime(item.timestamp) : "Agora"}</span>
+                        </div>
+                        <p>{item.detail}</p>
+                        <div className="activity-trace-meta">
+                          <span>{getActivityToneLabel(item.tone)}</span>
+                          {item.meta ? <span>{item.meta}</span> : null}
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="empty-hint">
+                    <Terminal size={18} />
+                    <p>Nenhum evento recente ainda. Assim que a análise começar, a linha do tempo aparece aqui.</p>
+                  </div>
+                )}
+              </div>
+            </Card>
           </div>
-        </div>
-      </div>
 
-      <Card>
-        <SectionTitle title="Ultima Janela Recente" icon={FileText} />
-        {latestSnapshot ? (
-          <div className="manual-list">
-            <p>{latestSnapshot.window_summary}</p>
-            <p>
-              Baseado em {formatTokenCount(latestSnapshot.source_message_count)} mensagens entre{" "}
-              {formatDateTime(latestSnapshot.window_start)} e {formatDateTime(latestSnapshot.window_end)}.
-            </p>
-            <div className="memory-breakdown-grid">
-              <MemorySignalCard
-                label="Cobertura do lote"
-                value={`${latestSnapshot.coverage_score}/100`}
-                meta={`${getSnapshotCoverageLabel(latestSnapshot)} com ${formatTokenCount(latestSnapshot.distinct_contact_count)} contatos distintos.`}
-                tone={latestSnapshotCoverageTone}
-              />
-              <MemorySignalCard
-                label="Direcao das mensagens"
-                value={formatSnapshotDirectionMix(latestSnapshot)}
-                meta="Ajuda a separar o que o dono afirma, pede e decide do que foi dito pelos contatos."
-                tone="indigo"
-              />
-              <MemorySignalCard
-                label="Amplitude temporal"
-                value={`${formatTokenCount(latestSnapshot.window_hours)}h`}
-                meta="A primeira leitura tenta cobrir curto prazo e historico recente para nao nascer viciada em um unico momento."
-                tone="amber"
-              />
+          <div className="terminal-shell activity-terminal-shell">
+            <div className="terminal-header activity-terminal-header">
+              <div className="activity-terminal-leds">
+                <span className="terminal-dot terminal-dot-red" />
+                <span className="terminal-dot terminal-dot-yellow" />
+                <span className="terminal-dot terminal-dot-green" />
+              </div>
+              <div className="activity-terminal-titles">
+                <strong>memory-analysis.log</strong>
+                <span>eventos reais e estados interpretados do pipeline</span>
+              </div>
+              <span className={`micro-status micro-status-${agentState.running || hasPendingJob ? "indigo" : "zinc"}`}>
+                {agentState.running || hasPendingJob ? "auto-refresh ligado" : "monitorando"}
+              </span>
             </div>
-            <p>Este bloco mostra somente a janela mais recente. O retrato cumulativo do dono fica logo abaixo.</p>
+            <div className="terminal-body">
+              {displayedLogs.length > 0 ? (
+                displayedLogs.map((log) => (
+                  <div key={log.id} className={`terminal-line activity-terminal-line activity-terminal-${log.tone}`}>
+                    <span className="terminal-time">{formatShortDateTime(log.createdAt)}</span>
+                    <span>{log.message}</span>
+                  </div>
+                ))
+              ) : (
+                <div className="empty-hint">
+                  <Terminal size={18} />
+                  <p>Sem logs recentes por enquanto.</p>
+                </div>
+              )}
+            </div>
           </div>
-        ) : (
-          <div className="empty-hint">
-            <Database size={18} />
-            <p>Sem snapshot ainda. A primeira leitura vai criar a base consolidada do dono com um lote inicial balanceado.</p>
-          </div>
-        )}
-      </Card>
+        </>
+      ) : null}
 
-      <Card>
-        <SectionTitle title="Memoria Atual do Dono" icon={Fingerprint} />
-        <p className="lead-copy">
-          {memory?.life_summary?.trim()
-            ? memory.life_summary
-            : "Nenhum resumo consolidado ainda. Assim que a primeira leitura rodar, este bloco vira a visao mais util do dono para o chat e para futuras atualizacoes manuais."}
-        </p>
-      </Card>
+      {memorySubTab === "profile" ? (
+        <>
+          <Card>
+            <SectionTitle title="Memoria Atual do Dono" icon={Fingerprint} />
+            <p className="lead-copy">
+              {memory?.life_summary?.trim()
+                ? memory.life_summary
+                : "Nenhum resumo consolidado ainda. Assim que a primeira leitura rodar, este bloco vira a visao mais util do dono para o chat e para futuras atualizacoes manuais."}
+            </p>
+          </Card>
 
-      <Card>
-        <SectionTitle title="Mapa Estrutural Cumulativo" icon={Brain} />
-        <div className="dual-column-grid">
-          <div className="signal-cluster">
-            <SignalBlock
-              title="Forcas recorrentes"
-              lines={structuralStrengths}
-              emptyLabel="Sem forcas recorrentes consolidadas ainda."
-            />
-            <SignalBlock
-              title="Rotina detectada"
-              lines={structuralRoutines}
-              emptyLabel="Sem rotina consolidada ainda."
-            />
-          </div>
-          <div className="signal-cluster">
-            <SignalBlock
-              title="Preferencias operacionais"
-              lines={structuralPreferences}
-              emptyLabel="Sem preferencias fortes consolidadas ainda."
-              subtle
-            />
-            <SignalBlock
-              title="Lacunas ainda abertas"
-              lines={structuralOpenQuestions}
-              emptyLabel="Sem lacunas importantes em aberto."
-              subtle
-            />
-          </div>
-        </div>
-      </Card>
+          <Card>
+            <SectionTitle title="Mapa Estrutural Cumulativo" icon={Brain} />
+            <div className="dual-column-grid">
+              <div className="signal-cluster">
+                <SignalBlock
+                  title="Forcas recorrentes"
+                  lines={structuralStrengths}
+                  emptyLabel="Sem forcas recorrentes consolidadas ainda."
+                />
+                <SignalBlock
+                  title="Rotina detectada"
+                  lines={structuralRoutines}
+                  emptyLabel="Sem rotina consolidada ainda."
+                />
+              </div>
+              <div className="signal-cluster">
+                <SignalBlock
+                  title="Preferencias operacionais"
+                  lines={structuralPreferences}
+                  emptyLabel="Sem preferencias fortes consolidadas ainda."
+                  subtle
+                />
+                <SignalBlock
+                  title="Lacunas ainda abertas"
+                  lines={structuralOpenQuestions}
+                  emptyLabel="Sem lacunas importantes em aberto."
+                  subtle
+                />
+              </div>
+            </div>
+          </Card>
+        </>
+      ) : null}
+
+      {memorySubTab === "snapshot" ? (
+        <Card>
+          <SectionTitle title="Ultima Janela Recente" icon={FileText} />
+          {latestSnapshot ? (
+            <div className="manual-list">
+              <p>{latestSnapshot.window_summary}</p>
+              <p>
+                Baseado em {formatTokenCount(latestSnapshot.source_message_count)} mensagens entre{" "}
+                {formatDateTime(latestSnapshot.window_start)} e {formatDateTime(latestSnapshot.window_end)}.
+              </p>
+              <div className="memory-breakdown-grid">
+                <MemorySignalCard
+                  label="Cobertura do lote"
+                  value={`${latestSnapshot.coverage_score}/100`}
+                  meta={`${getSnapshotCoverageLabel(latestSnapshot)} com ${formatTokenCount(latestSnapshot.distinct_contact_count)} contatos distintos.`}
+                  tone={latestSnapshotCoverageTone}
+                />
+                <MemorySignalCard
+                  label="Direcao das mensagens"
+                  value={formatSnapshotDirectionMix(latestSnapshot)}
+                  meta="Ajuda a separar o que o dono afirma, pede e decide do que foi dito pelos contatos."
+                  tone="indigo"
+                />
+                <MemorySignalCard
+                  label="Amplitude temporal"
+                  value={`${formatTokenCount(latestSnapshot.window_hours)}h`}
+                  meta="A primeira leitura tenta cobrir curto prazo e historico recente para nao nascer viciada em um unico momento."
+                  tone="amber"
+                />
+              </div>
+              <p>Este bloco mostra somente a janela mais recente. O retrato cumulativo do dono fica na aba Perfil.</p>
+            </div>
+          ) : (
+            <div className="empty-hint">
+              <Database size={18} />
+              <p>Sem snapshot ainda. A primeira leitura vai criar a base consolidada do dono com um lote inicial balanceado.</p>
+            </div>
+          )}
+        </Card>
+      ) : null}
+
+      {memorySubTab === "pipeline" ? (
+        <ActivityTab
+          agentState={agentState}
+          steps={steps}
+          logs={logs}
+          memory={memory}
+          latestSnapshot={latestSnapshot}
+          projectsCount={projectsCount}
+          snapshotsCount={snapshotsCount}
+          automationStatus={automationStatus}
+          automationError={automationError}
+          isClearingDatabase={isClearingDatabase}
+          onClearDatabase={onClearDatabase}
+          embedded
+        />
+      ) : null}
 
       {memoryError ? <InlineError title="Falha na memoria" message={memoryError} /> : null}
     </div>
@@ -5739,6 +5801,7 @@ function ActivityTab({
   automationError,
   isClearingDatabase,
   onClearDatabase,
+  embedded = false,
 }: {
   agentState: DisplayAgentState;
   steps: AgentStep[];
@@ -5751,6 +5814,7 @@ function ActivityTab({
   automationError: string | null;
   isClearingDatabase: boolean;
   onClearDatabase: () => void;
+  embedded?: boolean;
 }) {
   const [activitySubTab, setActivitySubTab] = useState<"overview" | "persist" | "logs">("overview");
   const memoryReady = hasEstablishedMemory(memory, latestSnapshot);
@@ -5794,7 +5858,7 @@ function ActivityTab({
   ];
 
   return (
-    <div className="page-stack narrow-stack">
+    <div className={`page-stack narrow-stack${embedded ? " memory-embedded-activity" : ""}`}>
       <div className="section-head">
         <div className="activity-subtab-bar">
           {subTabs.map((tab) => {
