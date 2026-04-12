@@ -389,7 +389,7 @@ textarea {
 
 .auth-account-dock {
   position: fixed;
-  top: 18px;
+  bottom: 18px;
   right: 18px;
   z-index: 90;
   width: min(280px, calc(100vw - 36px));
