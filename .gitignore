@@ -3,6 +3,9 @@
 !.env.example
 !frontend/.env.development.example
 !frontend/.env.production.example
+!agent-frontend/.env.example
+!agent-frontend/.env.development.example
+!agent-frontend/.env.production.example
 .codex
 __pycache__/
 *.pyc
@@ -17,6 +20,7 @@ build/
 .firebase/
 .local-run/
 frontend/out/
+agent-frontend/out/
 *.tsbuildinfo
 whatsapp-gateway/dist/
 whatsapp-gateway/.baileys_auth/

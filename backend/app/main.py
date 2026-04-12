@@ -6,9 +6,12 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.dependencies import get_settings, warm_registered_accounts
+from app.routers.auth import router as auth_router
 from app.routers.automation import router as automation_router
 from app.routers.chat import router as chat_router
-from app.dependencies import get_automation_service, get_settings
+from app.routers.global_agent import router as global_agent_router
+from app.routers.internal_accounts import router as internal_accounts_router
 from app.routers.internal_agent import router as internal_agent_router
 from app.routers.internal import router as internal_router
 from app.routers.internal_storage import router as internal_storage_router
@@ -38,10 +41,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(auth_router)
 app.include_router(observer_router)
+app.include_router(global_agent_router)
 app.include_router(memories_router)
 app.include_router(chat_router)
 app.include_router(automation_router)
+app.include_router(internal_accounts_router)
 app.include_router(internal_router)
 app.include_router(internal_agent_router)
 app.include_router(internal_storage_router)
@@ -50,7 +56,7 @@ app.include_router(whatsapp_agent_router)
 
 @app.on_event("startup")
 async def schedule_automation_warm_start() -> None:
-    get_automation_service().warm_start()
+    warm_registered_accounts()
 
 
 @app.get("/", tags=["meta"])

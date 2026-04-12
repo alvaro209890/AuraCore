@@ -211,7 +211,6 @@ const NAV_GROUPS: NavGroup[] = [
     title: "Inteligência",
     items: [
       { id: "observer", label: "Observador", icon: Eye },
-      { id: "agent", label: "WhatsApp Agente", icon: Bot },
       { id: "groups", label: "Grupos", icon: Users },
       { id: "memory", label: "Memória", icon: Database },
       { id: "important", label: "Importantes", icon: Archive },
@@ -1755,10 +1754,7 @@ export function ConnectionDashboard() {
       activeTab === "manual" ||
       activeTab === "chat"
     ) && !isLoadingChatThread && !isCreatingChatThread && !isSendingChat && streamingText === null;
-    const shouldRefreshAgentWorkspace = (
-      activeTab === "manual" ||
-      activeTab === "agent"
-    ) && !isAgentConnecting && !isAgentResetting;
+    const shouldRefreshAgentWorkspace = false;
     const shouldRefreshMemoryCurrent = (
       activeTab === "overview" ||
       activeTab === "manual" ||
@@ -2112,7 +2108,7 @@ export function ConnectionDashboard() {
       setIsHydrating(true);
     }
 
-    const shouldLoadAgentWorkspace = activeTab === "agent" || activeTab === "manual";
+    const shouldLoadAgentWorkspace = false;
     const shouldLoadChatWorkspace = activeTab === "chat" || activeTab === "manual";
     const shouldLoadGroups = activeTab === "groups" || activeTab === "manual";
     const shouldLoadRelations = activeTab === "relations" || activeTab === "manual";
@@ -2135,7 +2131,7 @@ export function ConnectionDashboard() {
       automationResult,
     ] = await Promise.allSettled([
       getObserverStatus(false),
-      getAgentStatus(),
+      Promise.resolve(null),
       shouldLoadAgentWorkspace ? getAgentWorkspace(activeAgentThreadId ?? undefined) : Promise.resolve(null),
       shouldLoadChatWorkspace ? getChatWorkspace(activeChatThreadId ?? undefined) : Promise.resolve(null),
       getCurrentMemory(),
@@ -2159,9 +2155,9 @@ export function ConnectionDashboard() {
       setConnectionError(getErrorMessage(statusResult.reason));
     }
 
-    if (agentStatusResult.status === "fulfilled") {
+    if (agentStatusResult.status === "fulfilled" && agentStatusResult.value) {
       applyAgentStatus(agentStatusResult.value, false);
-    } else {
+    } else if (agentStatusResult.status === "rejected") {
       const message = getErrorMessage(agentStatusResult.reason);
       setAgentConnectionError(message);
       setAgentViewState("error");
@@ -2791,13 +2787,6 @@ export function ConnectionDashboard() {
             {statusLabel}
           </div>
         </div>
-        <div className="ac-quick-status">
-          <span>Agente</span>
-          <div className={`ac-status-badge status-${agentViewState}`}>
-            <span className="status-dot" />
-            {agentStatusLabel}
-          </div>
-        </div>
           <div className="ac-quick-status">
             <span>Mensagens novas</span>
             <strong>{memoryStatus ? formatTokenCount(memoryStatus.new_messages_after_first_analysis) : "..."}</strong>
@@ -2869,8 +2858,6 @@ export function ConnectionDashboard() {
                   latestSnapshot={latestSnapshot}
                   projects={projects}
                   status={status}
-                  agentStatus={agentStatus}
-                  agentSettings={agentSettings}
                   connectionError={connectionError}
                   memoryError={memoryError}
                   insightMetrics={insightMetrics}
@@ -2891,30 +2878,6 @@ export function ConnectionDashboard() {
                   connectionError={connectionError}
                   onConnect={() => void startConnection()}
                   onReset={() => void resetConnection()}
-                />
-              ) : null}
-
-              {activeTab === "agent" ? (
-                <AgentTab
-                  status={agentStatus}
-                  statusLabel={agentStatusLabel}
-                  viewState={agentViewState}
-                  settings={agentSettings}
-                  activeSession={agentActiveSession}
-                  contactMemory={agentContactMemory}
-                  threads={agentThreads}
-                  messages={agentMessages}
-                  activeThreadId={activeAgentThreadId}
-                  isConnecting={isAgentConnecting}
-                  isResetting={isAgentResetting}
-                  isSaving={isAgentSaving}
-                  connectionError={agentConnectionError}
-                  messagesError={agentMessagesError}
-                  onConnect={() => void startAgentConnection()}
-                  onReset={() => void resetAgentConnection()}
-                  onToggleAutoReply={(value) => void toggleAgentAutoReply(value)}
-                  onSelectThread={(threadId) => void openAgentThread(threadId)}
-                  onRefresh={() => void refreshAgentWorkspace(activeAgentThreadId ?? undefined)}
                 />
               ) : null}
 
@@ -3021,8 +2984,6 @@ export function ConnectionDashboard() {
               {activeTab === "manual" ? (
                 <ManualTab
                   status={status}
-                  agentStatus={agentStatus}
-                  agentSettings={agentSettings}
                   memory={memory}
                   projects={projects}
                   snapshots={snapshots}
@@ -3046,8 +3007,6 @@ function OverviewTab({
   latestSnapshot,
   projects,
   status,
-  agentStatus,
-  agentSettings,
   connectionError,
   memoryError,
   insightMetrics,
@@ -3061,8 +3020,6 @@ function OverviewTab({
   latestSnapshot: MemorySnapshot | null;
   projects: ProjectMemory[];
   status: ObserverStatus | null;
-  agentStatus: WhatsAppAgentStatus | null;
-  agentSettings: WhatsAppAgentSettings | null;
   connectionError: string | null;
   memoryError: string | null;
   insightMetrics: InsightMetric[];
@@ -3275,7 +3232,6 @@ function OverviewTab({
               <SectionTitle title="Leitura Operacional" icon={Server} />
               <div className="overview-context-list">
                 <StatusLine label="Numero conectado" value={status?.owner_number ?? "Sem numero"} tone="indigo" />
-                <StatusLine label="WhatsApp agente" value={agentStatus?.connected ? "Online" : "Aguardando"} tone={agentStatus?.connected ? "emerald" : "amber"} />
                 <StatusLine label="Ultima consolidacao" value={latestUpdateLabel} tone="amber" />
                 <StatusLine label="Cobertura do ultimo snapshot" value={latestSnapshot ? `${latestSnapshot.coverage_score}/100` : "Sem snapshot"} tone={latestSnapshotCoverageTone} />
               </div>
@@ -6282,8 +6238,6 @@ function AutomationTab({
 
 function ManualTab({
   status,
-  agentStatus,
-  agentSettings,
   memory,
   projects,
   snapshots,
@@ -6293,8 +6247,6 @@ function ManualTab({
   automationStatus,
 }: {
   status: ObserverStatus | null;
-  agentStatus: WhatsAppAgentStatus | null;
-  agentSettings: WhatsAppAgentSettings | null;
   memory: MemoryCurrent | null;
   projects: ProjectMemory[];
   snapshots: MemorySnapshot[];
@@ -6409,15 +6361,6 @@ function ManualTab({
               <ManualInfoCard title="Chat Pessoal" text="Thread por assunto usando a memoria central. Bom para separar estrategia, rotina, vendas, produto e operacao." icon={MessageSquare} tone="indigo" />
               <ManualInfoCard title="Atividade" text="Mostra o pipeline trabalhando: logs, lotes, trilha de execucao e o melhor raciocinio operacional salvo." icon={Activity} tone="emerald" />
               <ManualInfoCard title="Atividade Manual" text="Mostra syncs recentes, jobs manuais e execucoes de modelo persistidas no backend." icon={Terminal} tone="zinc" />
-            </div>
-          </Card>
-
-          <Card>
-            <SectionTitle title="WhatsApp Agente" icon={Bot} />
-            <div className="status-line-list">
-              <StatusLine label="Status" value={agentStatus?.connected ? "Online" : "Pendente"} tone="indigo" />
-              <StatusLine label="Auto-reply" value={agentSettings?.auto_reply_enabled ? "Ativo" : "Desligado"} tone="amber" />
-              <StatusLine label="Escopo de resposta" value={agentStatus?.reply_scope === "all_direct_contacts" ? "Todos os contatos diretos" : "Escopo legado"} tone="zinc" />
             </div>
           </Card>
         </>

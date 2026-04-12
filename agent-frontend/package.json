@@ -1,17 +1,16 @@
 {
-  "name": "auracore-frontend",
+  "name": "auracore-agent-frontend",
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --port 3001",
     "build": "next build",
-    "start": "next start"
+    "start": "next start --port 3001"
   },
   "dependencies": {
     "firebase": "^12.6.0",
     "lucide-react": "^1.7.0",
     "next": "15.2.4",
-    "qrcode.react": "^4.2.0",
     "react": "19.0.0",
     "react-dom": "19.0.0"
   },

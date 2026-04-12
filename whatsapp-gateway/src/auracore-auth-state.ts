@@ -19,6 +19,16 @@ type SessionKeysResponse = {
   values?: Record<string, unknown>;
 };
 
+export type AuraCoreStorageScope =
+  | {
+      kind: "user";
+      appUserId: string;
+    }
+  | {
+      kind: "system";
+      systemScope: string;
+    };
+
 function serializeForJson(value: unknown): unknown {
   return JSON.parse(JSON.stringify(value, BufferJSON.replacer));
 }
@@ -29,6 +39,7 @@ function deserializeFromJson<T>(value: unknown): T {
 
 export class AuraCoreAuthStateStore {
   constructor(
+    private readonly scope: AuraCoreStorageScope,
     private readonly sessionId: string,
     private readonly auracoreApiBaseUrl: string,
     private readonly internalApiToken: string,
@@ -166,13 +177,18 @@ export class AuraCoreAuthStateStore {
   }
 
   private async request<T>(path: string, init: RequestInit): Promise<T> {
+    const headers = new Headers(init.headers ?? undefined);
+    headers.set("content-type", "application/json");
+    headers.set("x-internal-api-token", this.internalApiToken);
+    if (this.scope.kind === "user") {
+      headers.set("x-auracore-user-id", this.scope.appUserId);
+    } else {
+      headers.set("x-auracore-system-scope", this.scope.systemScope);
+    }
+
     const response = await fetch(`${this.auracoreApiBaseUrl}${path}`, {
       ...init,
-      headers: {
-        "content-type": "application/json",
-        "x-internal-api-token": this.internalApiToken,
-        ...(init.headers ?? {}),
-      },
+      headers,
     });
 
     if (!response.ok) {

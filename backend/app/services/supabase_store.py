@@ -5543,7 +5543,7 @@ class SupabaseStore:
     def _default_whatsapp_agent_settings_record(self, *, user_id: UUID, updated_at: datetime) -> dict[str, Any]:
         return {
             "user_id": str(user_id),
-            "auto_reply_enabled": False,
+            "auto_reply_enabled": True,
             "allowed_contact_phone": None,
             "updated_at": updated_at.isoformat(),
         }

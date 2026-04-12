@@ -21,9 +21,18 @@ class WhatsAppGatewaySendResult:
 
 
 class _BaseWhatsAppGatewayService:
-    def __init__(self, *, settings: Settings, channel_name: str) -> None:
+    def __init__(
+        self,
+        *,
+        settings: Settings,
+        channel_name: str,
+        account_user_id: str | None = None,
+        account_username: str | None = None,
+    ) -> None:
         self.settings = settings
         self.channel_name = channel_name
+        self.account_user_id = account_user_id
+        self.account_username = account_username
 
     async def connect(self) -> ObserverStatusResponse:
         payload = await self._request("POST", f"/internal/{self.channel_name}/connect")
@@ -50,6 +59,10 @@ class _BaseWhatsAppGatewayService:
 
     async def _request(self, method: str, path: str, *, json: dict[str, Any] | None = None) -> dict[str, Any]:
         headers = {"x-internal-api-token": self.settings.internal_api_token}
+        if self.account_user_id:
+            headers["x-auracore-user-id"] = self.account_user_id
+        if self.account_username:
+            headers["x-auracore-username"] = self.account_username
         timeout = self.settings.request_timeout_seconds
 
         try:
@@ -126,8 +139,13 @@ class _BaseWhatsAppGatewayService:
 
 
 class ObserverGatewayService(_BaseWhatsAppGatewayService):
-    def __init__(self, settings: Settings) -> None:
-        super().__init__(settings=settings, channel_name="observer")
+    def __init__(self, settings: Settings, account_user_id: str | None = None, account_username: str | None = None) -> None:
+        super().__init__(
+            settings=settings,
+            channel_name="observer",
+            account_user_id=account_user_id,
+            account_username=account_username,
+        )
 
     async def connect_observer(self) -> ObserverStatusResponse:
         return await self.connect()
@@ -146,8 +164,13 @@ class ObserverGatewayService(_BaseWhatsAppGatewayService):
 
 
 class WhatsAppAgentGatewayService(_BaseWhatsAppGatewayService):
-    def __init__(self, settings: Settings) -> None:
-        super().__init__(settings=settings, channel_name="agent")
+    def __init__(self, settings: Settings, account_user_id: str | None = None, account_username: str | None = None) -> None:
+        super().__init__(
+            settings=settings,
+            channel_name="agent",
+            account_user_id=account_user_id,
+            account_username=account_username,
+        )
 
     async def connect_agent(self) -> ObserverStatusResponse:
         return await self.connect()

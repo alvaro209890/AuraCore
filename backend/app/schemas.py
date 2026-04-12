@@ -625,5 +625,48 @@ class AutomationStatusResponse(BaseModel):
     running_job_id: str | None = None
 
 
+class RegisterAccountRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=32)
+
+
+class AuthenticatedAccountResponse(BaseModel):
+    firebase_uid: str
+    app_user_id: str | None = None
+    username: str | None = None
+    email: str
+    email_verified: bool
+    provisioned: bool
+
+
+class UsernameAvailabilityResponse(BaseModel):
+    available: bool
+    normalized_username: str | None = None
+    reason: str | None = None
+
+
+class GlobalAgentStatusResponse(BaseModel):
+    instance_name: str
+    connected: bool
+    state: str
+    gateway_ready: bool
+    routing_mode: Literal["observer_owner_phone"] = "observer_owner_phone"
+    owner_number: str | None = None
+    qr_code: str | None = None
+    qr_expires_in_sec: int | None = None
+    last_seen_at: datetime | None = None
+    last_error: str | None = None
+    current_username: str | None = None
+    current_user_observer_phone: str | None = None
+
+
+class ActiveAccountResponse(BaseModel):
+    app_user_id: str
+    username: str
+
+
+class ActiveAccountsListResponse(BaseModel):
+    accounts: list[ActiveAccountResponse] = Field(default_factory=list)
+
+
 AnalyzeMemoryResponse.model_rebuild()
 RefineMemoryResponse.model_rebuild()

@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Header, HTTPException, status
+from fastapi import APIRouter, Depends
 from fastapi.concurrency import run_in_threadpool
 
 from app.dependencies import (
-    get_automation_service,
-    get_observer_gateway_service,
-    get_settings,
-    get_supabase_store,
-    get_whatsapp_agent_gateway_service,
+    get_account_registry,
+    get_internal_account,
+    get_internal_automation_service,
+    get_internal_observer_gateway_service,
+    get_internal_supabase_store,
+    get_internal_whatsapp_agent_gateway_service,
 )
 from app.schemas import (
     GroupMetadataUpdateRequest,
@@ -18,6 +19,7 @@ from app.schemas import (
     IngestMessagesResponse,
     SimpleOkResponse,
 )
+from app.services.account_registry import AccountRecord, AccountRegistry
 from app.services.supabase_store import IngestedMessageRecord, SupabaseStore
 
 router = APIRouter(prefix="/api/internal/observer", tags=["internal"])
@@ -27,24 +29,25 @@ logger = logging.getLogger("auracore.observer_ingest")
 @router.post("/messages/ingest", response_model=IngestMessagesResponse)
 async def ingest_messages(
     payload: IngestMessagesRequest,
-    x_internal_api_token: str | None = Header(default=None),
+    account: AccountRecord = Depends(get_internal_account),
+    registry: AccountRegistry = Depends(get_account_registry),
+    store: SupabaseStore = Depends(get_internal_supabase_store),
+    automation_service = Depends(get_internal_automation_service),
+    observer_gateway = Depends(get_internal_observer_gateway_service),
+    agent_gateway = Depends(get_internal_whatsapp_agent_gateway_service),
 ) -> IngestMessagesResponse:
-    settings = get_settings()
-    if x_internal_api_token != settings.internal_api_token:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid internal API token.")
-
-    store = get_supabase_store()
-    automation_service = get_automation_service()
     blocked_contact_phone: str | None = None
     try:
-        observer_gateway = get_observer_gateway_service()
         observer_status = await observer_gateway.get_status()
         blocked_contact_phone = store.normalize_contact_phone(observer_status.owner_number)
+        registry.set_observer_owner_phone(
+            app_user_id=account.app_user_id,
+            phone=observer_status.owner_number,
+        )
     except Exception:
         blocked_contact_phone = None
     if not blocked_contact_phone:
         try:
-            agent_gateway = get_whatsapp_agent_gateway_service()
             agent_status = await agent_gateway.get_agent_status()
             blocked_contact_phone = store.normalize_contact_phone(agent_status.owner_number)
         except Exception:
@@ -76,13 +79,8 @@ async def ingest_messages(
 @router.post("/groups/upsert", response_model=SimpleOkResponse)
 async def upsert_groups(
     payload: GroupMetadataUpdateRequest,
-    x_internal_api_token: str | None = Header(default=None),
+    store: SupabaseStore = Depends(get_internal_supabase_store),
 ) -> SimpleOkResponse:
-    settings = get_settings()
-    if x_internal_api_token != settings.internal_api_token:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid internal API token.")
-
-    store = get_supabase_store()
     updated_count = 0
     for item in payload.groups:
         updated = await run_in_threadpool(

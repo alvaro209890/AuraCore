@@ -2058,7 +2058,7 @@ class MemoryAnalysisService:
         return "\n\n".join(sections)
 
     def _get_observer_owner_phone(self) -> str | None:
-        return self.store.get_whatsapp_session_owner_phone(session_id="observer")
+        return self.store.get_whatsapp_session_owner_phone(session_id=f"{self.settings.default_user_id}:observer")
 
     def _is_owner_direct_message(
         self,
@@ -2867,7 +2867,9 @@ class MemoryAnalysisService:
         char_budget = min(max(1000, self.settings.memory_analysis_snapshot_context_chars // 4), 1600)
         per_thread_limit = max(1, min(self.settings.chat_max_history_messages, 6))
 
-        owner_phone = self.store.get_whatsapp_session_owner_phone(session_id="observer")
+        owner_phone = self.store.get_whatsapp_session_owner_phone(
+            session_id=f"{self.settings.default_user_id}:observer"
+        )
         if owner_phone:
             owner_whatsapp_messages = self.store.list_whatsapp_agent_messages_for_contact(
                 user_id=self.settings.default_user_id,

@@ -1,6 +1,17 @@
 {
   "projects": {
     "default": "auracore-82bf2"
+  },
+  "targets": {
+    "auracore-82bf2": {
+      "hosting": {
+        "app": [
+          "auracore-82bf2"
+        ],
+        "agent": [
+          "auracore-agent-82bf2"
+        ]
+      }
+    }
   }
 }
-

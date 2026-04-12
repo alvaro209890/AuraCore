@@ -2,12 +2,17 @@ import cors from "cors";
 import express, { type NextFunction, type Request, type Response } from "express";
 
 import { config } from "./config";
-import { buildGatewayRunId, WhatsAppGatewayChannel } from "./whatsapp";
+import { AuraCoreGatewayManager } from "./gateway-manager";
+import { buildGatewayRunId } from "./whatsapp";
 
 const app = express();
-const observerGateway = new WhatsAppGatewayChannel("observer", config.observerInstanceName, config.observerInstanceName);
-const agentGateway = new WhatsAppGatewayChannel("agent", config.agentInstanceName, config.agentInstanceName);
+const gatewayManager = new AuraCoreGatewayManager();
 const runId = buildGatewayRunId();
+
+type AuraCoreUserContext = {
+  appUserId: string;
+  username: string;
+};
 
 function requireInternalToken(req: Request, res: Response, next: NextFunction): void {
   const token = req.header("x-internal-api-token")?.trim();
@@ -16,6 +21,16 @@ function requireInternalToken(req: Request, res: Response, next: NextFunction): 
     return;
   }
   next();
+}
+
+function resolveAuraCoreUser(req: Request, res: Response): AuraCoreUserContext | null {
+  const appUserId = req.header("x-auracore-user-id")?.trim() ?? "";
+  const username = req.header("x-auracore-username")?.trim() ?? appUserId;
+  if (!appUserId) {
+    res.status(400).json({ detail: "Missing x-auracore-user-id header." });
+    return null;
+  }
+  return { appUserId, username };
 }
 
 app.use(cors());
@@ -27,31 +42,47 @@ app.get("/health", (_req, res) => {
 
 app.use("/internal", requireInternalToken);
 
-app.get("/internal/observer/status", (_req, res) => {
-  res.json(observerGateway.getStatus());
+app.get("/internal/observer/status", (req, res) => {
+  const user = resolveAuraCoreUser(req, res);
+  if (!user) {
+    return;
+  }
+  res.json(gatewayManager.getStatus(user.appUserId, user.username, "observer"));
 });
 
-app.post("/internal/observer/connect", async (_req, res, next) => {
+app.post("/internal/observer/connect", async (req, res, next) => {
+  const user = resolveAuraCoreUser(req, res);
+  if (!user) {
+    return;
+  }
   try {
-    const status = await observerGateway.connectSession();
+    const status = await gatewayManager.connect(user.appUserId, user.username, "observer");
     res.json(status);
   } catch (error) {
     next(error);
   }
 });
 
-app.post("/internal/observer/reset", async (_req, res, next) => {
+app.post("/internal/observer/reset", async (req, res, next) => {
+  const user = resolveAuraCoreUser(req, res);
+  if (!user) {
+    return;
+  }
   try {
-    await observerGateway.resetSession();
-    res.json(observerGateway.getStatus());
+    const status = await gatewayManager.reset(user.appUserId, user.username, "observer");
+    res.json(status);
   } catch (error) {
     next(error);
   }
 });
 
-app.post("/internal/observer/messages/refresh", async (_req, res, next) => {
+app.post("/internal/observer/messages/refresh", async (req, res, next) => {
+  const user = resolveAuraCoreUser(req, res);
+  if (!user) {
+    return;
+  }
   try {
-    const status = await observerGateway.refreshDirectHistory();
+    const status = await gatewayManager.refreshObserverHistory(user.appUserId, user.username);
     res.json(status);
   } catch (error) {
     next(error);
@@ -59,33 +90,37 @@ app.post("/internal/observer/messages/refresh", async (_req, res, next) => {
 });
 
 app.post("/internal/observer/send", async (req, res, next) => {
+  const user = resolveAuraCoreUser(req, res);
+  if (!user) {
+    return;
+  }
   try {
     const chatJid = String(req.body?.chat_jid ?? "").trim();
     const messageText = String(req.body?.message_text ?? "").trim();
-    const result = await observerGateway.sendTextMessage(chatJid, messageText);
+    const result = await gatewayManager.sendTextMessage(user.appUserId, user.username, "observer", chatJid, messageText);
     res.json(result);
   } catch (error) {
     next(error);
   }
 });
 
-app.get("/internal/agent/status", (_req, res) => {
-  res.json(agentGateway.getStatus());
+app.get("/internal/agent/status", (req, res) => {
+  res.json(gatewayManager.getGlobalAgentStatus());
 });
 
-app.post("/internal/agent/connect", async (_req, res, next) => {
+app.post("/internal/agent/connect", async (req, res, next) => {
   try {
-    const status = await agentGateway.connectSession();
+    const status = await gatewayManager.connectGlobalAgent();
     res.json(status);
   } catch (error) {
     next(error);
   }
 });
 
-app.post("/internal/agent/reset", async (_req, res, next) => {
+app.post("/internal/agent/reset", async (req, res, next) => {
   try {
-    await agentGateway.resetSession();
-    res.json(agentGateway.getStatus());
+    const status = await gatewayManager.resetGlobalAgent();
+    res.json(status);
   } catch (error) {
     next(error);
   }
@@ -95,7 +130,7 @@ app.post("/internal/agent/send", async (req, res, next) => {
   try {
     const chatJid = String(req.body?.chat_jid ?? "").trim();
     const messageText = String(req.body?.message_text ?? "").trim();
-    const result = await agentGateway.sendTextMessage(chatJid, messageText);
+    const result = await gatewayManager.sendGlobalAgentTextMessage(chatJid, messageText);
     res.json(result);
   } catch (error) {
     next(error);
@@ -111,18 +146,14 @@ const server = app.listen(config.port, "127.0.0.1", () => {
   console.log(`AuraCore WhatsApp gateway listening on 127.0.0.1:${config.port}`);
 });
 
-void observerGateway.start().catch((error) => {
-  console.error("Failed to start AuraCore WhatsApp gateway", error);
-});
-void agentGateway.start().catch((error) => {
-  console.error("Failed to start AuraCore WhatsApp agent gateway", error);
+void gatewayManager.start().catch((error) => {
+  console.error("Failed to bootstrap AuraCore WhatsApp gateway manager", error);
 });
 
 async function shutdown(signal: string): Promise<void> {
   console.warn(`Received ${signal}; shutting down AuraCore WhatsApp gateway.`);
   server.close();
-  await observerGateway.shutdown();
-  await agentGateway.shutdown();
+  await gatewayManager.shutdown();
   process.exit(0);
 }
 

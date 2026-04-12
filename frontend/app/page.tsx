@@ -1,6 +1,5 @@
-import { ConnectionDashboard } from "@/components/connection-dashboard";
+import { AuthGate } from "@/components/auth-gate";
 
 export default function HomePage() {
-  return <ConnectionDashboard />;
+  return <AuthGate />;
 }
-

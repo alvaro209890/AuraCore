@@ -1,3 +1,5 @@
+import { firebaseAuth } from "./firebase";
+
 export type ObserverStatus = {
   instance_name: string;
   connected: boolean;
@@ -17,6 +19,21 @@ export type ObserverMessageRefreshResponse = {
   status: ObserverStatus;
   message: string;
   sync_run_id: string | null;
+};
+
+export type AuthenticatedAccount = {
+  firebase_uid: string;
+  app_user_id: string | null;
+  username: string | null;
+  email: string;
+  email_verified: boolean;
+  provisioned: boolean;
+};
+
+export type UsernameAvailability = {
+  available: boolean;
+  normalized_username: string | null;
+  reason: string | null;
 };
 
 export type WhatsAppAgentStatus = {
@@ -543,6 +560,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (hasBody && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
+  const authHeader = await getAuthorizationHeaderValue();
+  if (authHeader && !headers.has("Authorization")) {
+    headers.set("Authorization", authHeader);
+  }
 
   const networkErrors: string[] = [];
 
@@ -587,6 +608,30 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       + "Isso tambem pode acontecer quando o backend local nao esta acessivel a partir desta aba. "
       + `Bases testadas: ${networkErrors.join(" | ") || "nenhuma"}`,
   );
+}
+
+async function getAuthorizationHeaderValue(): Promise<string | null> {
+  const currentUser = firebaseAuth.currentUser;
+  if (!currentUser) {
+    return null;
+  }
+  const token = await currentUser.getIdToken();
+  return token ? `Bearer ${token}` : null;
+}
+
+export async function getAuthMe(): Promise<AuthenticatedAccount> {
+  return request<AuthenticatedAccount>("/api/auth/me");
+}
+
+export async function checkUsernameAvailability(username: string): Promise<UsernameAvailability> {
+  return request<UsernameAvailability>(`/api/auth/check-username?username=${encodeURIComponent(username)}`);
+}
+
+export async function registerAuthenticatedAccount(username: string): Promise<AuthenticatedAccount> {
+  return request<AuthenticatedAccount>("/api/auth/register", {
+    method: "POST",
+    body: JSON.stringify({ username }),
+  });
 }
 
 export async function connectObserver(): Promise<ObserverStatus> {
@@ -851,12 +896,17 @@ export async function* sendChatMessageStream(
   contextHint?: string,
 ): AsyncGenerator<ChatStreamEvent> {
   let response: Response | null = null;
+  const authHeader = await getAuthorizationHeaderValue();
 
   for (const baseUrl of buildApiBaseCandidates()) {
     try {
       response = await fetch(`${baseUrl}/api/chat/messages/stream`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+          ...(authHeader ? { Authorization: authHeader } : {}),
+        },
         body: JSON.stringify({ message_text: messageText, thread_id: threadId, context_hint: contextHint }),
         cache: "no-store",
       });

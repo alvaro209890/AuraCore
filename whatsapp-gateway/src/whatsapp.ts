@@ -11,7 +11,7 @@ import { randomUUID } from "node:crypto";
 import Pino from "pino";
 import QRCode from "qrcode";
 
-import { AuraCoreAuthStateStore } from "./auracore-auth-state";
+import { AuraCoreAuthStateStore, type AuraCoreStorageScope } from "./auracore-auth-state";
 import { config } from "./config";
 
 const logger = Pino({ level: config.nodeEnv === "development" ? "debug" : "info" });
@@ -211,11 +211,13 @@ export class WhatsAppGatewayChannel {
   private backendDeliveryInFlight = false;
 
   constructor(
+    private readonly scope: AuraCoreStorageScope,
     private readonly channelName: "observer" | "agent",
     private readonly sessionId: string,
     private readonly instanceName: string,
   ) {
     this.authStore = new AuraCoreAuthStateStore(
+      scope,
       sessionId,
       config.auracoreApiBaseUrl,
       config.internalApiToken,
@@ -520,10 +522,7 @@ export class WhatsAppGatewayChannel {
     try {
       const response = await fetch(`${config.auracoreApiBaseUrl}/api/internal/observer/groups/upsert`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-internal-api-token": config.internalApiToken,
-        },
+        headers: this.buildAuraCoreHeaders(),
         body: JSON.stringify({ groups: payload }),
       });
       if (!response.ok) {
@@ -588,10 +587,7 @@ export class WhatsAppGatewayChannel {
     try {
       const response = await fetch(`${config.auracoreApiBaseUrl}${ingestPath}`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-internal-api-token": config.internalApiToken,
-        },
+        headers: this.buildAuraCoreHeaders(),
         body: JSON.stringify({ messages: batch }),
       });
 
@@ -629,6 +625,19 @@ export class WhatsAppGatewayChannel {
       );
       return false;
     }
+  }
+
+  private buildAuraCoreHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "x-internal-api-token": config.internalApiToken,
+    };
+    if (this.scope.kind === "user") {
+      headers["x-auracore-user-id"] = this.scope.appUserId;
+    } else {
+      headers["x-auracore-system-scope"] = this.scope.systemScope;
+    }
+    return headers;
   }
 
   private enqueueBackendBatch(

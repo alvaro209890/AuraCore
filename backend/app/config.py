@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from uuid import UUID
 
 from pydantic import Field
@@ -21,16 +22,35 @@ class Settings(BaseSettings):
         "/home/acer/Documentos/Bando_de_dados/Aura_Core/sqlite/auracore.sqlite3",
         alias="AURACORE_DB_PATH",
     )
+    database_root: str = Field(
+        "/home/acer/Documentos/Bando_de_dados/Aura_Core",
+        alias="AURACORE_DB_ROOT",
+    )
     default_user_id: UUID = Field(
         UUID("00000000-0000-0000-0000-000000000001"),
         alias="DEFAULT_USER_ID",
     )
+    system_user_id: UUID = Field(
+        UUID("00000000-0000-0000-0000-000000000002"),
+        alias="SYSTEM_USER_ID",
+    )
     frontend_origins: str = Field(
-        "http://localhost:3000,http://127.0.0.1:3000,https://auracore-82bf2.web.app,https://auracore-82bf2.firebaseapp.com",
+        (
+            "http://localhost:3000,"
+            "http://127.0.0.1:3000,"
+            "http://localhost:3001,"
+            "http://127.0.0.1:3001,"
+            "https://auracore-82bf2.web.app,"
+            "https://auracore-82bf2.firebaseapp.com,"
+            "https://auracore-agent-82bf2.web.app,"
+            "https://auracore-agent-82bf2.firebaseapp.com"
+        ),
         alias="FRONTEND_ORIGINS",
     )
     whatsapp_gateway_url: str = Field(..., alias="WHATSAPP_GATEWAY_URL")
     internal_api_token: str = Field(..., alias="INTERNAL_API_TOKEN")
+    firebase_project_id: str = Field("auracore-82bf2", alias="FIREBASE_PROJECT_ID")
+    firebase_service_account_path: str | None = Field(default=None, alias="FIREBASE_SERVICE_ACCOUNT_PATH")
     deepseek_api_key: str | None = Field(default=None, alias="DEEPSEEK_API_KEY")
     deepseek_model: str = Field("deepseek-chat", alias="DEEPSEEK_MODEL")
     deepseek_api_base_url: str = Field("https://api.deepseek.com", alias="DEEPSEEK_API_BASE_URL")
@@ -78,8 +98,12 @@ class Settings(BaseSettings):
         return [
             "http://localhost:3000",
             "http://127.0.0.1:3000",
+            "http://localhost:3001",
+            "http://127.0.0.1:3001",
             "https://auracore-82bf2.web.app",
             "https://auracore-82bf2.firebaseapp.com",
+            "https://auracore-agent-82bf2.web.app",
+            "https://auracore-agent-82bf2.firebaseapp.com",
         ]
 
     @property
@@ -93,3 +117,15 @@ class Settings(BaseSettings):
     @property
     def normalized_groq_api_base_url(self) -> str:
         return self.groq_api_base_url.rstrip("/")
+
+    @property
+    def normalized_database_root(self) -> str:
+        return str(Path(self.database_root).expanduser())
+
+    @property
+    def auth_registry_path(self) -> str:
+        return str(Path(self.normalized_database_root) / ".system" / "auth.sqlite3")
+
+    @property
+    def system_gateway_database_path(self) -> str:
+        return str(Path(self.normalized_database_root) / ".system" / "gateway.sqlite3")
