@@ -5236,6 +5236,29 @@ function ProjectsTab({
   const [projectAiDrafts, setProjectAiDrafts] = useState<Record<string, string>>({});
   const [projectAiChats, setProjectAiChats] = useState<Record<string, ProjectChatEntry[]>>({});
 
+  useEffect(() => {
+    if (!aiProjectId) {
+      return;
+    }
+
+    const handlePointerDown = (event: MouseEvent): void => {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        closeProjectAi();
+        return;
+      }
+
+      if (target.closest(`[data-project-ai-root="${aiProjectId}"]`)) {
+        return;
+      }
+
+      closeProjectAi();
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, [aiProjectId]);
+
   const sortedProjects = useMemo(
     () =>
       [...projects].sort((left, right) => {
@@ -5522,6 +5545,7 @@ function ProjectsTab({
     return (
       <button
         className="ac-secondary-button project-action-button project-ai-button"
+        data-project-ai-root={project.id}
         disabled={loading}
         onClick={() => (open ? closeProjectAi() : openProjectAi(project))}
         type="button"
@@ -5591,7 +5615,7 @@ function ProjectsTab({
     const draft = projectAiDrafts[project.id] ?? "";
     const loading = aiProjectKeys.includes(project.project_key);
     return (
-      <div className="project-ai-panel">
+      <div className="project-ai-panel" data-project-ai-root={project.id}>
         <div className="project-ai-messages">
           {entries.map((entry) => (
             <div key={entry.id} className={`project-ai-message project-ai-message-${entry.role}`}>
