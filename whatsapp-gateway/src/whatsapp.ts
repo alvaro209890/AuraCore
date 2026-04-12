@@ -790,6 +790,7 @@ export class WhatsAppGatewayChannel {
       rawRemoteJid,
       resolvedChatJid,
       contactPhone,
+      Boolean(key.fromMe),
     );
     return {
       message_id: key.id,
@@ -935,6 +936,7 @@ export class WhatsAppGatewayChannel {
     rawRemoteJid: string,
     resolvedChatJid: string,
     contactPhone: string,
+    fromMe: boolean,
   ): { value: string; source: ContactNameSource } {
     const socketWithContacts = this.socket as
       | (WASocket & {
@@ -952,7 +954,10 @@ export class WhatsAppGatewayChannel {
       { value: resolvedContact?.name || rawContact?.name, source: "saved_contact" },
       { value: resolvedContact?.verifiedBizName || rawContact?.verifiedBizName, source: "verified_business" },
       { value: resolvedContact?.verifiedName || rawContact?.verifiedName, source: "verified_name" },
-      { value: message.pushName || resolvedContact?.notify || rawContact?.notify, source: "push_name" },
+      {
+        value: fromMe ? (resolvedContact?.notify || rawContact?.notify) : (message.pushName || resolvedContact?.notify || rawContact?.notify),
+        source: "push_name",
+      },
       {
         value: cachedName,
         source:

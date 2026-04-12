@@ -2196,11 +2196,10 @@ class MemoryAnalysisService:
         filtered_messages = self._exclude_owner_messages(source_messages)
         grouped_messages = self._group_messages_by_person(filtered_messages)
         replacements = self._build_project_name_replacements(filtered_messages)
-        sanitized_contacts = [
-            person
-            for person in result.contact_memories
-            if person.person_key in grouped_messages
-        ]
+        sanitized_contacts = self._sanitize_contact_memories(
+            result.contact_memories,
+            grouped_messages=grouped_messages,
+        )
 
         return DeepSeekMemoryResult(
             updated_life_summary=self._sanitize_project_text(result.updated_life_summary, replacements),
@@ -2216,6 +2215,68 @@ class MemoryAnalysisService:
             ),
             contact_memories=sanitized_contacts[:24],
         )
+
+    def _sanitize_contact_memories(
+        self,
+        contacts: list[DeepSeekPersonMemory],
+        *,
+        grouped_messages: dict[str, list[StoredMessageRecord]],
+    ) -> list[DeepSeekPersonMemory]:
+        if not contacts or not grouped_messages:
+            return []
+
+        normalized_name_to_keys: dict[str, list[str]] = {}
+        for person_key, messages in grouped_messages.items():
+            last_message = messages[-1]
+            candidate_names = {
+                self._normalize_contact_lookup_name(self._message_person_name(last_message)),
+                self._normalize_contact_lookup_name(self._message_conversation_label(last_message)),
+            }
+            for candidate in candidate_names:
+                if not candidate:
+                    continue
+                normalized_name_to_keys.setdefault(candidate, []).append(person_key)
+
+        sanitized: list[DeepSeekPersonMemory] = []
+        seen_keys: set[str] = set()
+        for person in contacts:
+            resolved_key = person.person_key if person.person_key in grouped_messages else None
+            if resolved_key is None:
+                normalized_contact_name = self._normalize_contact_lookup_name(person.contact_name)
+                candidate_keys = normalized_name_to_keys.get(normalized_contact_name, [])
+                if len(candidate_keys) == 1:
+                    resolved_key = candidate_keys[0]
+            if resolved_key is None or resolved_key in seen_keys:
+                continue
+
+            grouped = grouped_messages[resolved_key]
+            last_message = grouped[-1]
+            resolved_name = person.contact_name.strip()
+            if self._contact_name_is_generic(resolved_name):
+                resolved_name = self._message_person_name(last_message)
+            sanitized.append(
+                DeepSeekPersonMemory(
+                    person_key=resolved_key,
+                    contact_name=resolved_name,
+                    profile_summary=person.profile_summary,
+                    relationship_type=person.relationship_type,
+                    relationship_summary=person.relationship_summary,
+                    salient_facts=person.salient_facts,
+                    open_loops=person.open_loops,
+                    recent_topics=person.recent_topics,
+                )
+            )
+            seen_keys.add(resolved_key)
+
+        return sanitized
+
+    def _normalize_contact_lookup_name(self, value: str | None) -> str:
+        normalized = " ".join(str(value or "").split()).strip().casefold()
+        return normalized
+
+    def _contact_name_is_generic(self, value: str | None) -> bool:
+        normalized = self._normalize_contact_lookup_name(value)
+        return normalized in {"", "contato", "o contato", "a contato", "pessoa", "unknown"}
 
     def _persist_person_memories(
         self,
