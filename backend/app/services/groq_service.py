@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 from dataclasses import dataclass
 from typing import Any
@@ -78,6 +79,37 @@ class GroqAgentMemoryDecision:
 class GroqChatService:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+
+    async def transcribe_audio_data_url(self, audio_data_url: str) -> str:
+        if not self.settings.groq_api_key:
+            raise GroqChatError("GROQ_API_KEY nao configurada no backend local.")
+
+        parsed = self._parse_data_url(audio_data_url)
+        if parsed is None:
+            raise GroqChatError("Payload de audio invalido para transcricao.")
+
+        mime_type, audio_bytes = parsed
+        if not audio_bytes:
+            raise GroqChatError("Payload de audio vazio para transcricao.")
+
+        models = ("whisper-large-v3-turbo", "whisper-large-v3")
+        last_error: GroqChatError | None = None
+        for model_name in models:
+            try:
+                transcript = await self._transcribe_audio_bytes(
+                    audio_bytes=audio_bytes,
+                    mime_type=mime_type,
+                    model_name=model_name,
+                )
+            except GroqChatError as exc:
+                last_error = exc
+                continue
+            if transcript:
+                return transcript
+
+        if last_error is not None:
+            raise last_error
+        raise GroqChatError("Groq nao retornou transcricao para o audio enviado.")
 
     async def generate_reply(
         self,
@@ -408,6 +440,45 @@ class GroqChatService:
 
         return self._parse_agent_memory(content)
 
+    async def _transcribe_audio_bytes(
+        self,
+        *,
+        audio_bytes: bytes,
+        mime_type: str,
+        model_name: str,
+    ) -> str:
+        headers = {
+            "Authorization": f"Bearer {self.settings.groq_api_key}",
+        }
+        file_extension = self._audio_extension_for_mime(mime_type)
+        files = {
+            "file": (f"audio.{file_extension}", audio_bytes, mime_type),
+        }
+        data = {
+            "model": model_name,
+        }
+
+        async with httpx.AsyncClient(
+            base_url=self.settings.normalized_groq_api_base_url,
+            timeout=max(20.0, self.settings.groq_timeout_seconds),
+        ) as client:
+            response = await client.post(
+                "/audio/transcriptions",
+                headers=headers,
+                data=data,
+                files=files,
+            )
+
+        if response.status_code >= 400:
+            detail = response.text.strip() or "Unexpected Groq transcription error."
+            raise GroqChatError(f"Groq transcription failed ({response.status_code}): {detail}")
+
+        payload = response.json()
+        transcript = str(payload.get("text") or "").strip()
+        if not transcript:
+            raise GroqChatError("Groq retornou uma transcricao vazia.")
+        return transcript
+
     def _build_prompt(
         self,
         *,
@@ -500,6 +571,54 @@ Regras:
             return "\n".join(text_parts).strip()
 
         raise GroqChatError("Groq returned an empty content payload.")
+
+    def _parse_data_url(self, value: str) -> tuple[str, bytes] | None:
+        if not value.startswith("data:"):
+            return None
+        comma_index = value.find(",")
+        if comma_index <= 5:
+            return None
+        metadata = value[5:comma_index].strip()
+        payload = value[comma_index + 1 :].strip()
+        if not metadata or not payload:
+            return None
+        parts = [part.strip() for part in metadata.split(";") if part.strip()]
+        mime_type = (parts[0] if parts else "").lower()
+        if not mime_type.startswith("audio/"):
+            return None
+        try:
+            return self._normalize_audio_mime_type(mime_type), base64.b64decode(payload, validate=True)
+        except (ValueError, base64.binascii.Error):
+            return None
+
+    def _normalize_audio_mime_type(self, mime_type: str) -> str:
+        normalized = mime_type.split(";")[0].strip().lower()
+        if normalized == "audio/opus":
+            return "audio/ogg"
+        if "ogg" in normalized:
+            return "audio/ogg"
+        if "mpeg" in normalized or "mp3" in normalized:
+            return "audio/mpeg"
+        if "wav" in normalized:
+            return "audio/wav"
+        if "webm" in normalized:
+            return "audio/webm"
+        if "flac" in normalized:
+            return "audio/flac"
+        if "mp4" in normalized or "m4a" in normalized or "aac" in normalized:
+            return "audio/mp4"
+        return "audio/ogg"
+
+    def _audio_extension_for_mime(self, mime_type: str) -> str:
+        mapping = {
+            "audio/ogg": "ogg",
+            "audio/mpeg": "mp3",
+            "audio/wav": "wav",
+            "audio/webm": "webm",
+            "audio/flac": "flac",
+            "audio/mp4": "mp4",
+        }
+        return mapping.get(mime_type, "ogg")
 
     def _parse_search_intent(self, content: str) -> GroqChatSearchIntent:
         cleaned = self._strip_json_fence(content)

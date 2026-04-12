@@ -11,6 +11,7 @@ export const {
   Browsers,
   BufferJSON,
   DisconnectReason,
+  downloadMediaMessage,
   extractMessageContent,
   fetchLatestBaileysVersion,
   initAuthCreds,

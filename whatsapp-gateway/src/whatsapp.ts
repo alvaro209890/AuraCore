@@ -1,6 +1,7 @@
 import makeWASocket, {
   Browsers,
   DisconnectReason,
+  downloadMediaMessage,
   fetchLatestBaileysVersion,
   extractMessageContent,
   type WASocket,
@@ -57,6 +58,9 @@ type IngestMessagePayload = {
   participant_phone: string | null;
   participant_jid: string | null;
   message_text: string;
+  media_type?: "text" | "audio";
+  audio_data_url?: string | null;
+  audio_mime_type?: string | null;
   timestamp: string;
   source: "baileys";
   source_event: string;
@@ -160,6 +164,21 @@ function extractMessageText(message: BaileysProto.IWebMessageInfo): string {
     return payload.templateButtonReplyMessage.selectedDisplayText;
   }
   return "";
+}
+
+function isAudioMessage(message: BaileysProto.IWebMessageInfo): boolean {
+  const payload = extractMessageContent(message.message);
+  return Boolean(payload?.audioMessage);
+}
+
+function getAudioMimeType(message: BaileysProto.IWebMessageInfo): string | null {
+  const payload = extractMessageContent(message.message);
+  const rawMimeType = payload?.audioMessage?.mimetype;
+  if (typeof rawMimeType !== "string") {
+    return null;
+  }
+  const trimmed = rawMimeType.trim();
+  return trimmed || null;
 }
 
 function toIsoTimestamp(rawValue: unknown): string {
@@ -560,7 +579,7 @@ export class WhatsAppGatewayChannel {
 
     const batch: IngestMessagePayload[] = [];
     for (const message of messages) {
-      const normalized = this.normalizeMessage(message, sourceEvent);
+      const normalized = await this.normalizeMessage(message, sourceEvent);
       if (normalized) {
         batch.push(normalized);
       }
@@ -716,7 +735,10 @@ export class WhatsAppGatewayChannel {
     }
   }
 
-  private normalizeMessage(message: BaileysProto.IWebMessageInfo, sourceEvent: string): IngestMessagePayload | null {
+  private async normalizeMessage(
+    message: BaileysProto.IWebMessageInfo,
+    sourceEvent: string,
+  ): Promise<IngestMessagePayload | null> {
     const key = message.key;
     if (!key || !key.id || !key.remoteJid) {
       return null;
@@ -748,9 +770,12 @@ export class WhatsAppGatewayChannel {
     }
 
     const messageText = extractMessageText(message).trim();
-    if (!messageText) {
+    const audioDataUrl = await this.extractInboundAudioDataUrl(message);
+    if (!messageText && !audioDataUrl) {
       return null;
     }
+    const mediaType: "text" | "audio" = audioDataUrl ? "audio" : "text";
+    const audioMimeType = audioDataUrl ? (getAudioMimeType(message) || "audio/ogg") : null;
 
     if (isGroupChat) {
       const chatName = this.resolveGroupName(rawRemoteJid, resolvedChatJid);
@@ -769,6 +794,9 @@ export class WhatsAppGatewayChannel {
         participant_phone: participant.phone,
         participant_jid: participant.jid,
         message_text: messageText,
+        media_type: mediaType,
+        audio_data_url: audioDataUrl,
+        audio_mime_type: audioMimeType,
         timestamp: toIsoTimestamp(message.messageTimestamp),
         source: "baileys",
         source_event: sourceEvent,
@@ -806,10 +834,64 @@ export class WhatsAppGatewayChannel {
       participant_phone: null,
       participant_jid: null,
       message_text: messageText,
+      media_type: mediaType,
+      audio_data_url: audioDataUrl,
+      audio_mime_type: audioMimeType,
       timestamp: toIsoTimestamp(message.messageTimestamp),
       source: "baileys",
       source_event: sourceEvent,
     };
+  }
+
+  private getMediaDownloadContext():
+    | { reuploadRequest: (msg: BaileysProto.IWebMessageInfo) => Promise<BaileysProto.IWebMessageInfo>; logger: WASocket["logger"] }
+    | undefined {
+    const socket = this.socket;
+    if (!socket) return undefined;
+    return {
+      reuploadRequest: socket.updateMediaMessage,
+      logger: socket.logger,
+    };
+  }
+
+  private async extractInboundAudioDataUrl(message: BaileysProto.IWebMessageInfo): Promise<string | null> {
+    if (!isAudioMessage(message)) {
+      return null;
+    }
+
+    const mimeType = getAudioMimeType(message) || "audio/ogg";
+    try {
+      const mediaBuffer = await downloadMediaMessage(message, "buffer", {}, this.getMediaDownloadContext());
+      if (!mediaBuffer || mediaBuffer.length === 0) {
+        return null;
+      }
+
+      const maxAudioBytes = 10 * 1024 * 1024;
+      if (mediaBuffer.length > maxAudioBytes) {
+        logger.warn(
+          {
+            channel: this.channelName,
+            messageId: message.key?.id ?? null,
+            size: mediaBuffer.length,
+            maxAllowed: maxAudioBytes,
+          },
+          "Ignoring inbound audio because it exceeds max size.",
+        );
+        return null;
+      }
+
+      return `data:${mimeType};base64,${mediaBuffer.toString("base64")}`;
+    } catch (error) {
+      logger.warn(
+        {
+          channel: this.channelName,
+          messageId: message.key?.id ?? null,
+          errorMessage: error instanceof Error ? error.message : String(error),
+        },
+        "Failed to download inbound WhatsApp audio.",
+      );
+      return null;
+    }
   }
 
   private resolveGroupName(rawRemoteJid: string, resolvedChatJid: string): string {

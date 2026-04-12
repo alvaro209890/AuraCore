@@ -88,6 +88,7 @@ class IngestedMessageRecord:
     contact_name_source: str = "unknown"
     source: str = "baileys"
     source_event: str | None = None
+    media_type: str | None = None
 
 
 @dataclass(slots=True)

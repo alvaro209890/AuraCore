@@ -161,7 +161,10 @@ class IngestMessageRequestItem(BaseModel):
     participant_name: str | None = None
     participant_phone: str | None = None
     participant_jid: str | None = None
-    message_text: str = Field(min_length=1)
+    message_text: str = ""
+    media_type: Literal["text", "audio"] | None = None
+    audio_data_url: str | None = None
+    audio_mime_type: str | None = None
     timestamp: datetime
     source: str = Field(default="baileys", min_length=1)
     source_event: str | None = None
