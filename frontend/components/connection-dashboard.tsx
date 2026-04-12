@@ -6285,19 +6285,9 @@ function ImportantMessagesTab({
               <p className="support-copy">
                 Os itens abaixo tendem a ser os melhores candidatos para reuso futuro em contexto, operação e decisão.
               </p>
-              <div className="important-spotlight-list">
+              <div className="important-list">
                 {strongestMessages.map((message) => (
-                  <button className="important-spotlight-item" key={message.id} onClick={() => setImportantSubTab(getImportantCategoryFamily(message.category) === "attention" ? "attention" : getImportantCategoryFamily(message.category) === "access" ? "access" : "operation")} type="button">
-                    <div className="important-spotlight-copy">
-                      <span>{formatImportantCategory(message.category)}</span>
-                      <strong>{message.contact_name || message.contact_phone || "Contato"}</strong>
-                      <p>{truncateText(message.importance_reason, 120)}</p>
-                    </div>
-                    <div className="important-spotlight-meta">
-                      <span>{message.confidence}/100</span>
-                      <small>{formatRelativeTime(message.saved_at)}</small>
-                    </div>
-                  </button>
+                  <CompactImportantCard key={message.id} message={message} type="signal" />
                 ))}
               </div>
             </Card>
@@ -6307,19 +6297,9 @@ function ImportantMessagesTab({
               <p className="support-copy">
                 Entram aqui mensagens ainda sem revisão automática ou com confiança mais baixa.
               </p>
-              <div className="important-spotlight-list">
+              <div className="important-list">
                 {reviewQueue.length > 0 ? reviewQueue.map((message) => (
-                  <div className="important-spotlight-item important-spotlight-item-static" key={message.id}>
-                    <div className="important-spotlight-copy">
-                      <span>{getImportantConfidenceLabel(message.confidence)}</span>
-                      <strong>{message.contact_name || message.contact_phone || "Contato"}</strong>
-                      <p>{truncateText(message.message_text, 120)}</p>
-                    </div>
-                    <div className="important-spotlight-meta">
-                      <span>{formatImportantCategory(message.category)}</span>
-                      <small>{message.last_reviewed_at ? formatRelativeTime(message.last_reviewed_at) : "sem revisão"}</small>
-                    </div>
-                  </div>
+                  <CompactImportantCard key={message.id} message={message} type="review" />
                 )) : (
                   <div className="empty-hint">
                     <CheckCircle2 size={18} />
@@ -6443,6 +6423,59 @@ function ImportantMessageCard({ message }: { message: ImportantMessage }) {
           </div>
           <div className="important-card-timestamp-footer">
             <Clock size={12} />
+            <span>Mensagem de {formatShortDateTime(message.message_timestamp)}</span>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function CompactImportantCard({ message, type }: { message: ImportantMessage, type?: "signal" | "review" }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  return (
+    <Card
+      className={`important-card-collapsible important-compact-card ${isExpanded ? "important-card-expanded" : ""}`}
+      onClick={() => setIsExpanded(!isExpanded)}
+    >
+      <div className="important-compact-head">
+        <div className="important-compact-main">
+          <span>{type === "review" ? getImportantConfidenceLabel(message.confidence) : formatImportantCategory(message.category)}</span>
+          <strong>{message.contact_name || message.contact_phone || "Contato"}</strong>
+          {!isExpanded && <p>{truncateText(type === "review" ? message.message_text : message.importance_reason, 90)}</p>}
+        </div>
+        <div className="important-compact-right">
+          <div className="important-compact-meta">
+            {type === "review" ? formatImportantCategory(message.category) : `${message.confidence}/100`}
+          </div>
+          <div className="important-compact-date">{formatRelativeTime(message.saved_at)}</div>
+          <div className={`expand-icon-wrap ${isExpanded ? "expand-icon-active" : ""}`} style={{ width: 24, height: 24 }}>
+            <ChevronDown size={14} />
+          </div>
+        </div>
+      </div>
+
+      {isExpanded && (
+        <div className="important-compact-expanded-body">
+          <div className="important-expanded-section">
+            <div className="important-body-label">
+              <MessageSquare size={12} />
+              Conteúdo Original
+            </div>
+            <p className="important-message-text">{message.message_text}</p>
+          </div>
+          <div className="important-expanded-section">
+            <div className="important-body-label">
+              <Sparkles size={12} />
+              Raciocínio da IA
+            </div>
+            <p className="support-copy" style={{ fontSize: "0.85rem", margin: 0 }}>
+              {message.importance_reason}
+            </p>
+          </div>
+          <div className="important-card-timestamp-footer">
+            <Clock size={10} />
             <span>Mensagem de {formatShortDateTime(message.message_timestamp)}</span>
           </div>
         </div>
