@@ -877,7 +877,17 @@ export async function getChatSession(threadId?: string): Promise<ChatSession> {
 
 export async function getChatWorkspace(threadId?: string): Promise<ChatWorkspace> {
   const query = threadId ? `?thread_id=${encodeURIComponent(threadId)}` : "";
-  return request<ChatWorkspace>(`/api/chat/workspace${query}`);
+  try {
+    return await request<ChatWorkspace>(`/api/chat/workspace${query}`);
+  } catch (error) {
+    if (threadId) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/nao foi encontrada|não foi encontrada|status 400|status 404/i.test(message)) {
+        return request<ChatWorkspace>("/api/chat/workspace");
+      }
+    }
+    throw error;
+  }
 }
 
 export async function createChatThread(title?: string): Promise<ChatWorkspace> {
@@ -912,91 +922,10 @@ export async function* sendChatMessageStream(
   threadId?: string,
   contextHint?: string,
 ): AsyncGenerator<ChatStreamEvent> {
-  let response: Response | null = null;
-  const authHeader = await getAuthorizationHeaderValue();
-
-  for (const baseUrl of buildApiBaseCandidates()) {
-    try {
-      response = await fetch(`${baseUrl}/api/chat/messages/stream`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "text/event-stream",
-          ...(authHeader ? { Authorization: authHeader } : {}),
-        },
-        body: JSON.stringify({ message_text: messageText, thread_id: threadId, context_hint: contextHint }),
-        cache: "no-store",
-      });
-      activeApiBaseUrl = baseUrl;
-      break;
-    } catch {
-      response = null;
-    }
+  const workspace = await sendChatMessage(messageText, threadId, contextHint);
+  const lastMsg = workspace.session.messages[workspace.session.messages.length - 1];
+  if (lastMsg?.role === "assistant") {
+    yield { type: "token", content: lastMsg.content };
   }
-
-  if (!response) {
-    const workspace = await sendChatMessage(messageText, threadId, contextHint);
-    const lastMsg = workspace.session.messages[workspace.session.messages.length - 1];
-    if (lastMsg?.role === "assistant") {
-      yield { type: "token", content: lastMsg.content };
-    }
-    yield { type: "done", workspace };
-    return;
-  }
-
-  if (!response.ok || !response.body) {
-    // Fallback: non-streaming
-    const workspace = await sendChatMessage(messageText, threadId, contextHint);
-    const lastMsg = workspace.session.messages[workspace.session.messages.length - 1];
-    if (lastMsg?.role === "assistant") {
-      yield { type: "token", content: lastMsg.content };
-    }
-    yield { type: "done", workspace };
-    return;
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-
-      for (const line of lines) {
-        if (line.startsWith("data: ")) {
-          const payload = line.slice(6).trim();
-          if (payload === "[DONE]") {
-            // Fetch final workspace state
-            const workspace = await getChatWorkspace(threadId);
-            yield { type: "done", workspace };
-            return;
-          }
-          try {
-            const parsed = JSON.parse(payload) as { token?: string; workspace?: ChatWorkspace };
-            if (parsed.token) {
-              yield { type: "token", content: parsed.token };
-            }
-            if (parsed.workspace) {
-              yield { type: "done", workspace: parsed.workspace };
-              return;
-            }
-          } catch {
-            // Non-JSON data line, treat as raw token
-            yield { type: "token", content: payload };
-          }
-        }
-      }
-    }
-
-    // Stream ended without explicit DONE — fetch workspace
-    const workspace = await getChatWorkspace(threadId);
-    yield { type: "done", workspace };
-  } finally {
-    reader.releaseLock();
-  }
+  yield { type: "done", workspace };
 }
