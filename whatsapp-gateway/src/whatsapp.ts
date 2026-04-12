@@ -319,7 +319,7 @@ export class WhatsAppGatewayChannel {
       version,
       logger: baileysLogger,
       printQRInTerminal: false,
-      syncFullHistory: this.channelName === "observer",
+      syncFullHistory: false,
       shouldIgnoreJid: (jid) => {
         if (isStatusJid(jid) || isBroadcastJid(jid) || isNewsletterJid(jid)) {
           return true;
