@@ -24,6 +24,8 @@ from app.schemas import (
     MemoryAnalysisPreviewResponse,
     MemoryCurrentResponse,
     MemoryLiveSummaryResponse,
+    ProjectAssistantEditRequest,
+    ProjectAssistantEditResponse,
     PersonMemoryResponse,
     MemorySnapshotResponse,
     MemorySnapshotsListResponse,
@@ -304,15 +306,92 @@ async def update_memory_project(
     request: UpdateProjectMemoryRequest,
     memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
 ) -> ProjectMemoryResponse:
-    updated = await run_in_threadpool(
-        memory_service.update_project_completion,
-        project_key=project_key,
-        completed=request.completed,
-        completion_notes=request.completion_notes,
-    )
+    updated: ProjectMemoryRecord | None
+    try:
+        if request.completed is not None:
+            updated = await run_in_threadpool(
+                memory_service.update_project_completion,
+                project_key=project_key,
+                completed=request.completed,
+                completion_notes=request.completion_notes,
+            )
+            if updated is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Projeto nao encontrado.")
+            if any(
+                value is not None
+                for value in (
+                    request.project_name,
+                    request.summary,
+                    request.status,
+                    request.what_is_being_built,
+                    request.built_for,
+                    request.next_steps,
+                    request.evidence,
+                )
+            ):
+                updated = await run_in_threadpool(
+                    memory_service.update_project,
+                    project_key=updated.project_key,
+                    project_name=request.project_name,
+                    summary=request.summary,
+                    status=request.status,
+                    what_is_being_built=request.what_is_being_built,
+                    built_for=request.built_for,
+                    next_steps=request.next_steps,
+                    evidence=request.evidence,
+                )
+        else:
+            updated = await run_in_threadpool(
+                memory_service.update_project,
+                project_key=project_key,
+                project_name=request.project_name,
+                summary=request.summary,
+                status=request.status,
+                what_is_being_built=request.what_is_being_built,
+                built_for=request.built_for,
+                next_steps=request.next_steps,
+                evidence=request.evidence,
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if updated is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Projeto nao encontrado.")
     return _to_project_response(updated)
+
+
+@router.post("/projects/{project_key}/assist", response_model=ProjectAssistantEditResponse)
+async def assist_memory_project_edit(
+    project_key: str,
+    request: ProjectAssistantEditRequest,
+    memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
+) -> ProjectAssistantEditResponse:
+    try:
+        updated, assistant_message = await memory_service.edit_project_with_ai(
+            project_key=project_key,
+            instruction=request.instruction,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    if updated is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Projeto nao encontrado.")
+    return ProjectAssistantEditResponse(
+        project=_to_project_response(updated),
+        assistant_message=assistant_message,
+    )
+
+
+@router.delete("/projects/{project_key}", response_model=SimpleOkResponse)
+async def delete_memory_project(
+    project_key: str,
+    memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
+) -> SimpleOkResponse:
+    deleted = await run_in_threadpool(
+        memory_service.delete_project,
+        project_key=project_key,
+    )
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Projeto nao encontrado.")
+    return SimpleOkResponse(ok=True)
 
 
 @router.get("/groups", response_model=WhatsAppGroupSelectionsListResponse)

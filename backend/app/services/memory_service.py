@@ -2558,6 +2558,75 @@ class MemoryAnalysisService:
             changed_at=datetime.now(UTC),
         )
 
+    def update_project(
+        self,
+        *,
+        project_key: str,
+        project_name: str | None = None,
+        summary: str | None = None,
+        status: str | None = None,
+        what_is_being_built: str | None = None,
+        built_for: str | None = None,
+        next_steps: list[str] | None = None,
+        evidence: list[str] | None = None,
+    ) -> ProjectMemoryRecord | None:
+        return self.store.update_project_memory(
+            user_id=self.settings.default_user_id,
+            project_key=project_key,
+            project_name=project_name,
+            summary=summary,
+            status=status,
+            what_is_being_built=what_is_being_built,
+            built_for=built_for,
+            next_steps=next_steps,
+            evidence=evidence,
+            updated_at=datetime.now(UTC),
+        )
+
+    async def edit_project_with_ai(
+        self,
+        *,
+        project_key: str,
+        instruction: str,
+    ) -> tuple[ProjectMemoryRecord | None, str]:
+        current_persona = self.get_current_persona()
+        projects = self.store.list_project_memories(self.settings.default_user_id, limit=max(8, self.settings.chat_context_projects))
+        target_project = next((project for project in projects if project.project_key == project_key), None)
+        if target_project is None:
+            return None, ""
+
+        project_context = self._build_project_context(projects)
+        target_project_block = self._build_project_context([target_project])
+        result = await self.deepseek_service.edit_project_memory(
+            current_life_summary=self._build_persona_context(current_persona),
+            current_project_context=project_context,
+            target_project_block=target_project_block,
+            instruction=instruction,
+        )
+        updated = self.store.update_project_memory(
+            user_id=self.settings.default_user_id,
+            project_key=project_key,
+            project_name=result.project.name,
+            summary=result.project.summary,
+            status=result.project.status,
+            what_is_being_built=result.project.what_is_being_built,
+            built_for=result.project.built_for,
+            next_steps=result.project.next_steps,
+            evidence=result.project.evidence,
+            updated_at=datetime.now(UTC),
+        )
+        return updated, (result.assistant_message or "Projeto atualizado com ajuda da IA.")
+
+    def delete_project(
+        self,
+        *,
+        project_key: str,
+    ) -> bool:
+        return self.store.delete_project_memory(
+            user_id=self.settings.default_user_id,
+            project_key=project_key,
+        )
+
     def list_important_messages(self, *, limit: int = 80) -> list[ImportantMessageRecord]:
         return self.store.list_important_messages(self.settings.default_user_id, limit=limit)
 

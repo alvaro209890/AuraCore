@@ -3082,7 +3082,7 @@ textarea {
 .project-modern-grid,
 .project-completed-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
 }
 
@@ -3091,6 +3091,15 @@ textarea {
   display: grid;
   gap: 18px;
   padding: 20px !important;
+}
+
+.project-modern-card-compact {
+  gap: 14px;
+  padding: 16px !important;
+}
+
+.project-modern-card-expanded {
+  gap: 16px;
 }
 
 .project-modern-card {
@@ -3135,6 +3144,16 @@ textarea {
   line-height: 1.65;
 }
 
+.project-modern-card-compact .project-modern-title h3 {
+  font-size: 0.98rem;
+}
+
+.project-modern-card-compact .project-modern-title p {
+  margin-top: 6px;
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
 .project-modern-actions,
 .project-detail-modern-actions {
   display: flex;
@@ -3144,6 +3163,18 @@ textarea {
   gap: 10px;
   flex-shrink: 0;
   width: 100%;
+}
+
+.project-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.project-ai-button {
+  border-color: rgba(59, 130, 246, 0.25) !important;
+  color: #bfdbfe !important;
 }
 
 .project-modern-icon {
@@ -3180,6 +3211,16 @@ textarea {
 .project-detail-toggle {
   width: auto !important;
   white-space: nowrap;
+}
+
+.project-delete-button {
+  border-color: rgba(239, 68, 68, 0.25) !important;
+  color: #fecaca !important;
+}
+
+.project-delete-button:hover:not(:disabled) {
+  border-color: rgba(239, 68, 68, 0.45) !important;
+  background: rgba(127, 29, 29, 0.28) !important;
 }
 
 .project-completion-banner {
@@ -3223,6 +3264,107 @@ textarea {
   gap: 12px;
 }
 
+.project-modern-expand-area {
+  display: grid;
+  gap: 12px;
+}
+
+.project-inline-editor,
+.project-ai-panel {
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(59, 130, 246, 0.18);
+  background: rgba(7, 12, 22, 0.82);
+}
+
+.project-inline-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.project-inline-field {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.project-inline-field span {
+  color: #bfdbfe;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.project-inline-field-full {
+  grid-column: 1 / -1;
+}
+
+.project-inline-textarea,
+.project-ai-textarea {
+  min-height: 92px;
+  resize: vertical;
+}
+
+.project-inline-list {
+  min-height: 116px;
+}
+
+.project-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.project-ai-messages {
+  display: grid;
+  gap: 10px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.project-ai-message {
+  display: grid;
+  gap: 6px;
+  padding: 12px 13px;
+  border-radius: 14px;
+  border: 1px solid rgba(63, 63, 70, 0.32);
+  background: rgba(10, 15, 24, 0.84);
+}
+
+.project-ai-message-assistant {
+  border-color: rgba(59, 130, 246, 0.22);
+  background: rgba(12, 21, 39, 0.92);
+}
+
+.project-ai-message strong {
+  font-size: 0.78rem;
+  color: #bfdbfe;
+}
+
+.project-ai-message p {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.project-ai-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #bfdbfe;
+  font-size: 0.88rem;
+}
+
+.project-ai-compose {
+  display: grid;
+  gap: 10px;
+}
+
 .project-modern-panel,
 .project-completed-card {
   display: grid;
@@ -3237,6 +3379,7 @@ textarea {
   margin: 0;
   color: var(--muted);
   line-height: 1.55;
+  font-size: 0.88rem;
 }
 
 .project-modern-panel ul {
@@ -3252,6 +3395,7 @@ textarea {
   padding-left: 14px;
   color: var(--text);
   line-height: 1.55;
+  font-size: 0.88rem;
 }
 
 .project-modern-panel li::before {
@@ -5942,6 +6086,10 @@ textarea {
   }
 
   .proj-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .project-inline-grid {
     grid-template-columns: 1fr;
   }
 

@@ -349,8 +349,24 @@ class UpdateWhatsAppGroupSelectionRequest(BaseModel):
 
 
 class UpdateProjectMemoryRequest(BaseModel):
-    completed: bool
+    completed: bool | None = None
     completion_notes: str = Field(default="", max_length=400)
+    project_name: str | None = Field(default=None, min_length=1, max_length=120)
+    summary: str | None = Field(default=None, max_length=1200)
+    status: str | None = Field(default=None, max_length=120)
+    what_is_being_built: str | None = Field(default=None, max_length=800)
+    built_for: str | None = Field(default=None, max_length=800)
+    next_steps: list[str] | None = None
+    evidence: list[str] | None = None
+
+
+class ProjectAssistantEditRequest(BaseModel):
+    instruction: str = Field(min_length=1, max_length=2000)
+
+
+class ProjectAssistantEditResponse(BaseModel):
+    project: "ProjectMemoryResponse"
+    assistant_message: str
 
 
 class MemorySnapshotResponse(BaseModel):

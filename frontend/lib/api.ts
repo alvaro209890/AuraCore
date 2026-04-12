@@ -211,6 +211,11 @@ export type ProjectMemory = {
   updated_at: string;
 };
 
+export type ProjectAssistantEditResponse = {
+  project: ProjectMemory;
+  assistant_message: string;
+};
+
 export type PersonRelation = {
   id: string;
   person_key: string;
@@ -776,6 +781,42 @@ export async function updateMemoryProjectCompletion(
       completed: input.completed,
       completion_notes: input.completion_notes ?? "",
     }),
+  });
+}
+
+export async function updateMemoryProject(
+  projectKey: string,
+  input: {
+    completed?: boolean;
+    completion_notes?: string;
+    project_name?: string;
+    summary?: string;
+    status?: string;
+    what_is_being_built?: string;
+    built_for?: string;
+    next_steps?: string[];
+    evidence?: string[];
+  },
+): Promise<ProjectMemory> {
+  return request<ProjectMemory>(`/api/memories/projects/${encodeURIComponent(projectKey)}`, {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function assistMemoryProjectEdit(
+  projectKey: string,
+  instruction: string,
+): Promise<ProjectAssistantEditResponse> {
+  return request<ProjectAssistantEditResponse>(`/api/memories/projects/${encodeURIComponent(projectKey)}/assist`, {
+    method: "POST",
+    body: JSON.stringify({ instruction }),
+  });
+}
+
+export async function deleteMemoryProject(projectKey: string): Promise<SimpleOkResponse> {
+  return request<SimpleOkResponse>(`/api/memories/projects/${encodeURIComponent(projectKey)}`, {
+    method: "DELETE",
   });
 }
 

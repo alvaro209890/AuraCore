@@ -48,6 +48,8 @@ import {
   connectObserver,
   clearSavedDatabase,
   executeMemoryAnalysis,
+  assistMemoryProjectEdit,
+  deleteMemoryProject,
   getAgentStatus,
   getAgentWorkspace,
   getChatWorkspace,
@@ -68,6 +70,7 @@ import {
   updateAgentSettings,
   updateAutomationSettings,
   updateMemoryGroupSelection,
+  updateMemoryProject,
   updateMemoryProjectCompletion,
   runAutomationTick,
   type AuthenticatedAccount,
@@ -1428,6 +1431,9 @@ export function ConnectionDashboard({
   const [isClearingDatabase, setIsClearingDatabase] = useState(false);
   const [savingGroupJids, setSavingGroupJids] = useState<string[]>([]);
   const [savingProjectKeys, setSavingProjectKeys] = useState<string[]>([]);
+  const [deletingProjectKeys, setDeletingProjectKeys] = useState<string[]>([]);
+  const [editingProjectKeys, setEditingProjectKeys] = useState<string[]>([]);
+  const [aiProjectKeys, setAiProjectKeys] = useState<string[]>([]);
   const [projectActionError, setProjectActionError] = useState<string | null>(null);
   const [pollingEnabled, setPollingEnabled] = useState(false);
   const [agentPollingEnabled, setAgentPollingEnabled] = useState(false);
@@ -1494,7 +1500,7 @@ export function ConnectionDashboard({
     const modelRun = resolveRelatedModelRun(memoryActivity, pendingJob);
     const stageIndex = resolveLiveStageIndex(resolvedIntent, pendingJob, syncRun);
 
-    if (pendingJob || (syncRun?.status === "running" && !pendingJob)) {
+    if (pendingJob) {
       return {
         mode: "analyze",
         intent: resolvedIntent,
@@ -1509,6 +1515,26 @@ export function ConnectionDashboard({
         error: null,
         completedAt: null,
         stageIndex,
+        badgeTone: "teal",
+      };
+    }
+
+    if (syncRun?.status === "running") {
+      return {
+        ...agentState,
+        mode: "idle",
+        intent: agentState.intent ?? resolvedIntent,
+        running: false,
+        progress: 0,
+        status: resolveLiveStatus({
+          intent: resolvedIntent,
+          job: null,
+          syncRun,
+          modelRun,
+        }),
+        error: null,
+        completedAt: null,
+        stageIndex: null,
         badgeTone: "teal",
       };
     }
@@ -1771,6 +1797,91 @@ export function ConnectionDashboard({
       pushAgentLog("error", `Falha ao atualizar o projeto ${project.project_name}: ${message}`);
     } finally {
       setSavingProjectKeys((current) => current.filter((value) => value !== projectKey));
+    }
+  }
+
+  async function removeProject(project: ProjectMemory): Promise<void> {
+    const projectKey = project.project_key;
+    const confirmed = window.confirm(`Excluir o projeto "${project.project_name}" do cofre de projetos?`);
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingProjectKeys((current) => (current.includes(projectKey) ? current : [...current, projectKey]));
+    setProjectActionError(null);
+    const previousProjects = projects;
+    startTransition(() => {
+      setProjects((current) => current.filter((item) => item.project_key !== projectKey));
+    });
+
+    try {
+      await deleteMemoryProject(projectKey);
+      markHeavyResourceRefreshed("projects");
+      pushAgentLog("success", `Projeto ${project.project_name} removido do cofre de projetos.`);
+    } catch (error) {
+      startTransition(() => {
+        setProjects(previousProjects);
+      });
+      const message = getErrorMessage(error);
+      setProjectActionError(message);
+      pushAgentLog("error", `Falha ao excluir o projeto ${project.project_name}: ${message}`);
+    } finally {
+      setDeletingProjectKeys((current) => current.filter((value) => value !== projectKey));
+    }
+  }
+
+  async function saveProjectEdits(
+    project: ProjectMemory,
+    input: {
+      project_name: string;
+      summary: string;
+      status: string;
+      what_is_being_built: string;
+      built_for: string;
+      next_steps: string[];
+      evidence: string[];
+    },
+  ): Promise<ProjectMemory> {
+    const projectKey = project.project_key;
+    setEditingProjectKeys((current) => (current.includes(projectKey) ? current : [...current, projectKey]));
+    setProjectActionError(null);
+    try {
+      const updated = await updateMemoryProject(projectKey, input);
+      startTransition(() => {
+        setProjects((current) => current.map((item) => (item.id === updated.id || item.project_key === projectKey ? updated : item)));
+      });
+      markHeavyResourceRefreshed("projects");
+      pushAgentLog("success", `Projeto ${updated.project_name} atualizado manualmente.`);
+      return updated;
+    } catch (error) {
+      const message = getErrorMessage(error);
+      setProjectActionError(message);
+      pushAgentLog("error", `Falha ao editar o projeto ${project.project_name}: ${message}`);
+      throw error;
+    } finally {
+      setEditingProjectKeys((current) => current.filter((value) => value !== projectKey));
+    }
+  }
+
+  async function assistProjectEdit(project: ProjectMemory, instruction: string): Promise<{ project: ProjectMemory; assistant_message: string }> {
+    const projectKey = project.project_key;
+    setAiProjectKeys((current) => (current.includes(projectKey) ? current : [...current, projectKey]));
+    setProjectActionError(null);
+    try {
+      const response = await assistMemoryProjectEdit(projectKey, instruction);
+      startTransition(() => {
+        setProjects((current) => current.map((item) => (item.id === response.project.id || item.project_key === projectKey ? response.project : item)));
+      });
+      markHeavyResourceRefreshed("projects");
+      pushAgentLog("success", `IA aplicou ajustes no projeto ${response.project.project_name}.`);
+      return response;
+    } catch (error) {
+      const message = getErrorMessage(error);
+      setProjectActionError(message);
+      pushAgentLog("error", `Falha na edicao assistida do projeto ${project.project_name}: ${message}`);
+      throw error;
+    } finally {
+      setAiProjectKeys((current) => current.filter((value) => value !== projectKey));
     }
   }
 
@@ -3145,7 +3256,13 @@ export function ConnectionDashboard({
                 <ProjectsTab
                   projects={projects}
                   onToggleCompletion={toggleProjectCompletion}
+                  onSaveProject={saveProjectEdits}
+                  onAssistProject={assistProjectEdit}
+                  onDeleteProject={removeProject}
                   savingProjectKeys={savingProjectKeys}
+                  deletingProjectKeys={deletingProjectKeys}
+                  editingProjectKeys={editingProjectKeys}
+                  aiProjectKeys={aiProjectKeys}
                   actionError={projectActionError}
                 />
               ) : null}
@@ -5061,18 +5178,63 @@ function RelationsTab({
 function ProjectsTab({
   projects,
   onToggleCompletion,
+  onSaveProject,
+  onAssistProject,
+  onDeleteProject,
   savingProjectKeys,
+  deletingProjectKeys,
+  editingProjectKeys,
+  aiProjectKeys,
   actionError,
 }: {
   projects: ProjectMemory[];
   onToggleCompletion: (project: ProjectMemory, completed: boolean) => Promise<void>;
+  onSaveProject: (
+    project: ProjectMemory,
+    input: {
+      project_name: string;
+      summary: string;
+      status: string;
+      what_is_being_built: string;
+      built_for: string;
+      next_steps: string[];
+      evidence: string[];
+    },
+  ) => Promise<ProjectMemory>;
+  onAssistProject: (project: ProjectMemory, instruction: string) => Promise<{ project: ProjectMemory; assistant_message: string }>;
+  onDeleteProject: (project: ProjectMemory) => Promise<void>;
   savingProjectKeys: string[];
+  deletingProjectKeys: string[];
+  editingProjectKeys: string[];
+  aiProjectKeys: string[];
   actionError: string | null;
 }) {
+  type ProjectEditDraft = {
+    project_name: string;
+    summary: string;
+    status: string;
+    what_is_being_built: string;
+    built_for: string;
+    next_steps_text: string;
+    evidence_text: string;
+  };
+
+  type ProjectChatEntry = {
+    id: string;
+    role: "user" | "assistant";
+    text: string;
+  };
+
   const [subTab, setSubTab] = useState<"overview" | "details" | "roadmap">("overview");
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [compactExpandedId, setCompactExpandedId] = useState<string | null>(null);
+  const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
+  const [aiProjectId, setAiProjectId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<"all" | "active" | "completed" | "no_steps">("all");
+  const [projectDrafts, setProjectDrafts] = useState<Record<string, ProjectEditDraft>>({});
+  const [projectAiDrafts, setProjectAiDrafts] = useState<Record<string, string>>({});
+  const [projectAiChats, setProjectAiChats] = useState<Record<string, ProjectChatEntry[]>>({});
 
   const sortedProjects = useMemo(
     () =>
@@ -5197,6 +5359,116 @@ function ProjectsTab({
           ? "Todos os projetos ativos já têm próximos passos."
           : "Nada para mostrar com o filtro atual.";
 
+  function buildProjectDraft(project: ProjectMemory): ProjectEditDraft {
+    return {
+      project_name: project.project_name,
+      summary: project.summary,
+      status: project.status,
+      what_is_being_built: project.what_is_being_built,
+      built_for: project.built_for,
+      next_steps_text: project.next_steps.join("\n"),
+      evidence_text: project.evidence.join("\n"),
+    };
+  }
+
+  function parseProjectLines(value: string): string[] {
+    return value.split("\n").map((line) => line.trim()).filter(Boolean);
+  }
+
+  function openProjectEditor(project: ProjectMemory): void {
+    setEditingProjectId(project.id);
+    setProjectDrafts((current) => ({
+      ...current,
+      [project.id]: current[project.id] ?? buildProjectDraft(project),
+    }));
+  }
+
+  function closeProjectEditor(): void {
+    setEditingProjectId(null);
+  }
+
+  function updateProjectDraft(projectId: string, field: keyof ProjectEditDraft, value: string): void {
+    setProjectDrafts((current) => ({
+      ...current,
+      [projectId]: {
+        ...(current[projectId] ?? {
+          project_name: "",
+          summary: "",
+          status: "",
+          what_is_being_built: "",
+          built_for: "",
+          next_steps_text: "",
+          evidence_text: "",
+        }),
+        [field]: value,
+      },
+    }));
+  }
+
+  async function submitProjectDraft(project: ProjectMemory): Promise<void> {
+    const draft = projectDrafts[project.id] ?? buildProjectDraft(project);
+    const updated = await onSaveProject(project, {
+      project_name: draft.project_name.trim(),
+      summary: draft.summary.trim(),
+      status: draft.status.trim(),
+      what_is_being_built: draft.what_is_being_built.trim(),
+      built_for: draft.built_for.trim(),
+      next_steps: parseProjectLines(draft.next_steps_text),
+      evidence: parseProjectLines(draft.evidence_text),
+    });
+    setProjectDrafts((current) => ({
+      ...current,
+      [updated.id]: buildProjectDraft(updated),
+    }));
+    setEditingProjectId(null);
+  }
+
+  function openProjectAi(project: ProjectMemory): void {
+    setAiProjectId(project.id);
+    setProjectAiDrafts((current) => ({ ...current, [project.id]: current[project.id] ?? "" }));
+    setProjectAiChats((current) => ({
+      ...current,
+      [project.id]: current[project.id] ?? [
+        {
+          id: `${project.id}-assistant-intro`,
+          role: "assistant",
+          text: "Descreva o que deve mudar no projeto. Eu ajusto resumo, status, público, próximos passos e evidências sem sair da aba.",
+        },
+      ],
+    }));
+  }
+
+  function closeProjectAi(): void {
+    setAiProjectId(null);
+  }
+
+  async function submitProjectAiInstruction(project: ProjectMemory): Promise<void> {
+    const instruction = (projectAiDrafts[project.id] ?? "").trim();
+    if (!instruction) {
+      return;
+    }
+    setProjectAiChats((current) => ({
+      ...current,
+      [project.id]: [
+        ...(current[project.id] ?? []),
+        { id: `${Date.now()}-${project.id}-user`, role: "user", text: instruction },
+      ],
+    }));
+    setProjectAiDrafts((current) => ({ ...current, [project.id]: "" }));
+    const response = await onAssistProject(project, instruction);
+    setProjectAiChats((current) => ({
+      ...current,
+      [project.id]: [
+        ...(current[project.id] ?? []),
+        { id: `${Date.now()}-${project.id}-assistant`, role: "assistant", text: response.assistant_message },
+      ],
+    }));
+    setProjectDrafts((current) => ({
+      ...current,
+      [response.project.id]: buildProjectDraft(response.project),
+    }));
+  }
+
   function renderProjectAction(project: ProjectMemory) {
     const completed = isProjectManuallyCompleted(project);
     const saving = savingProjectKeys.includes(project.project_key);
@@ -5210,6 +5482,145 @@ function ProjectsTab({
         {saving ? <RefreshCw size={14} className="spin" /> : completed ? <XCircle size={14} /> : <CheckCircle2 size={14} />}
         {saving ? "Salvando..." : completed ? "Reabrir projeto" : "Marcar concluído"}
       </button>
+    );
+  }
+
+  function renderProjectDeleteAction(project: ProjectMemory) {
+    const deleting = deletingProjectKeys.includes(project.project_key);
+    return (
+      <button
+        className="ac-secondary-button project-action-button project-delete-button"
+        disabled={deleting}
+        onClick={() => void onDeleteProject(project)}
+        type="button"
+      >
+        {deleting ? <RefreshCw size={14} className="spin" /> : <Trash2 size={14} />}
+        {deleting ? "Excluindo..." : "Excluir"}
+      </button>
+    );
+  }
+
+  function renderProjectEditAction(project: ProjectMemory) {
+    const editing = editingProjectId === project.id;
+    const saving = editingProjectKeys.includes(project.project_key);
+    return (
+      <button
+        className="ac-secondary-button project-action-button"
+        disabled={saving}
+        onClick={() => (editing ? closeProjectEditor() : openProjectEditor(project))}
+        type="button"
+      >
+        {saving ? <RefreshCw size={14} className="spin" /> : <Settings size={14} />}
+        {saving ? "Salvando..." : editing ? "Fechar edição" : "Editar"}
+      </button>
+    );
+  }
+
+  function renderProjectAiAction(project: ProjectMemory) {
+    const open = aiProjectId === project.id;
+    const loading = aiProjectKeys.includes(project.project_key);
+    return (
+      <button
+        className="ac-secondary-button project-action-button project-ai-button"
+        disabled={loading}
+        onClick={() => (open ? closeProjectAi() : openProjectAi(project))}
+        type="button"
+      >
+        {loading ? <RefreshCw size={14} className="spin" /> : <Bot size={14} />}
+        {loading ? "IA editando..." : open ? "Fechar IA" : "IA"}
+      </button>
+    );
+  }
+
+  function renderProjectEditor(project: ProjectMemory) {
+    if (editingProjectId !== project.id) {
+      return null;
+    }
+    const draft = projectDrafts[project.id] ?? buildProjectDraft(project);
+    const saving = editingProjectKeys.includes(project.project_key);
+    return (
+      <div className="project-inline-editor">
+        <div className="project-inline-grid">
+          <label className="project-inline-field">
+            <span>Nome</span>
+            <input className="ac-input" type="text" value={draft.project_name} onChange={(event) => updateProjectDraft(project.id, "project_name", event.target.value)} />
+          </label>
+          <label className="project-inline-field">
+            <span>Status</span>
+            <input className="ac-input" type="text" value={draft.status} onChange={(event) => updateProjectDraft(project.id, "status", event.target.value)} />
+          </label>
+          <label className="project-inline-field project-inline-field-full">
+            <span>Resumo</span>
+            <textarea className="ac-input project-inline-textarea" value={draft.summary} onChange={(event) => updateProjectDraft(project.id, "summary", event.target.value)} />
+          </label>
+          <label className="project-inline-field">
+            <span>O que está sendo construído</span>
+            <textarea className="ac-input project-inline-textarea" value={draft.what_is_being_built} onChange={(event) => updateProjectDraft(project.id, "what_is_being_built", event.target.value)} />
+          </label>
+          <label className="project-inline-field">
+            <span>Público</span>
+            <textarea className="ac-input project-inline-textarea" value={draft.built_for} onChange={(event) => updateProjectDraft(project.id, "built_for", event.target.value)} />
+          </label>
+          <label className="project-inline-field">
+            <span>Próximos passos</span>
+            <textarea className="ac-input project-inline-textarea project-inline-list" value={draft.next_steps_text} onChange={(event) => updateProjectDraft(project.id, "next_steps_text", event.target.value)} />
+          </label>
+          <label className="project-inline-field">
+            <span>Evidências</span>
+            <textarea className="ac-input project-inline-textarea project-inline-list" value={draft.evidence_text} onChange={(event) => updateProjectDraft(project.id, "evidence_text", event.target.value)} />
+          </label>
+        </div>
+        <div className="project-inline-actions">
+          <button className="ac-primary-button" disabled={saving} onClick={() => void submitProjectDraft(project)} type="button">
+            {saving ? <RefreshCw size={14} className="spin" /> : <BadgeCheck size={14} />}
+            {saving ? "Salvando..." : "Salvar projeto"}
+          </button>
+          <button className="ac-secondary-button" disabled={saving} onClick={closeProjectEditor} type="button">
+            Cancelar
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  function renderProjectAiPanel(project: ProjectMemory) {
+    if (aiProjectId !== project.id) {
+      return null;
+    }
+    const entries = projectAiChats[project.id] ?? [];
+    const draft = projectAiDrafts[project.id] ?? "";
+    const loading = aiProjectKeys.includes(project.project_key);
+    return (
+      <div className="project-ai-panel">
+        <div className="project-ai-messages">
+          {entries.map((entry) => (
+            <div key={entry.id} className={`project-ai-message project-ai-message-${entry.role}`}>
+              <strong>{entry.role === "assistant" ? "IA" : "Você"}</strong>
+              <p>{entry.text}</p>
+            </div>
+          ))}
+          {loading ? (
+            <div className="project-ai-loading">
+              <RefreshCw size={14} className="spin" />
+              <span>DeepSeek editando o projeto...</span>
+            </div>
+          ) : null}
+        </div>
+        <div className="project-ai-compose">
+          <textarea
+            className="ac-input project-ai-textarea"
+            placeholder="Ex.: atualize o resumo, deixe o status como em validação, limpe evidências vagas e reescreva os próximos passos."
+            value={draft}
+            onChange={(event) => setProjectAiDrafts((current) => ({ ...current, [project.id]: event.target.value }))}
+          />
+          <div className="project-inline-actions">
+            <button className="ac-primary-button" disabled={loading || !draft.trim()} onClick={() => void submitProjectAiInstruction(project)} type="button">
+              {loading ? <RefreshCw size={14} className="spin" /> : <Send size={14} />}
+              {loading ? "Editando..." : "Enviar para IA"}
+            </button>
+          </div>
+        </div>
+      </div>
     );
   }
 
@@ -5314,10 +5725,15 @@ function ProjectsTab({
           <div className="project-modern-grid">
             {filteredProjects.map((project) => {
               const completed = isProjectManuallyCompleted(project);
+              const compactExpanded = compactExpandedId === project.id;
               const statusTone = getProjectStatusTone(project);
-              const previewSteps = completed ? [] : project.next_steps.slice(0, 3);
+              const previewSteps = completed ? [] : project.next_steps.slice(0, compactExpanded ? 4 : 2);
+              const previewEvidence = project.evidence.slice(0, compactExpanded ? 4 : 2);
               return (
-                <Card key={`project-overview-${project.id}`} className={`project-modern-card${completed ? " project-modern-card-completed" : ""}`}>
+                <Card
+                  key={`project-overview-${project.id}`}
+                  className={`project-modern-card project-modern-card-compact${completed ? " project-modern-card-completed" : ""}${compactExpanded ? " project-modern-card-expanded" : ""}`}
+                >
                   <div className="project-modern-head">
                     <div className="project-modern-title">
                       <div className={`project-modern-icon project-modern-icon-${statusTone}`}>
@@ -5325,12 +5741,25 @@ function ProjectsTab({
                       </div>
                       <div>
                         <h3>{project.project_name}</h3>
-                        <p>{truncateText(project.summary, 160)}</p>
+                        <p>{truncateText(project.summary, compactExpanded ? 220 : 110)}</p>
                       </div>
                     </div>
                     <div className="project-modern-actions">
                       <div className={`micro-status micro-status-${statusTone}`}>{getProjectStatusLabel(project)}</div>
-                      {renderProjectAction(project)}
+                      <div className="project-action-row">
+                        {renderProjectAiAction(project)}
+                        {renderProjectEditAction(project)}
+                        <button
+                          className="ac-secondary-button project-action-button project-detail-toggle"
+                          onClick={() => setCompactExpandedId(compactExpanded ? null : project.id)}
+                          type="button"
+                        >
+                          {compactExpanded ? "Retrair" : "Expandir"}
+                          <ChevronRight size={15} className={compactExpanded ? "proj-expand-chevron proj-expand-chevron-open" : "proj-expand-chevron"} />
+                        </button>
+                        {renderProjectAction(project)}
+                        {renderProjectDeleteAction(project)}
+                      </div>
                     </div>
                   </div>
 
@@ -5375,9 +5804,9 @@ function ProjectsTab({
                     </div>
                     <div className="project-modern-panel">
                       <span>Evidências</span>
-                      {project.evidence.length > 0 ? (
+                      {previewEvidence.length > 0 ? (
                         <ul>
-                          {project.evidence.slice(0, 3).map((evidence, index) => (
+                          {previewEvidence.map((evidence, index) => (
                             <li key={`${project.id}-evidence-preview-${index}`}>{evidence}</li>
                           ))}
                         </ul>
@@ -5386,6 +5815,24 @@ function ProjectsTab({
                       )}
                     </div>
                   </div>
+
+                  {compactExpanded ? (
+                    <div className="project-modern-expand-area">
+                      <div className="project-modern-panel">
+                        <span>Resumo operacional</span>
+                        <p>{project.what_is_being_built || "Sem descrição detalhada ainda."}</p>
+                      </div>
+                      {project.manual_completion_notes ? (
+                        <div className="project-modern-panel">
+                          <span>Notas de fechamento</span>
+                          <p>{project.manual_completion_notes}</p>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  {renderProjectEditor(project)}
+                  {renderProjectAiPanel(project)}
                 </Card>
               );
             })}
@@ -5414,15 +5861,20 @@ function ProjectsTab({
                   </div>
                   <div className="project-detail-modern-actions">
                     <div className={`micro-status micro-status-${statusTone}`}>{getProjectStatusLabel(project)}</div>
-                    {renderProjectAction(project)}
-                    <button
-                      className="ac-secondary-button project-detail-toggle"
-                      onClick={() => setExpandedId(isExpanded ? null : project.id)}
-                      type="button"
-                    >
-                      {isExpanded ? "Ocultar detalhes" : "Abrir detalhes"}
-                      <ChevronRight size={15} className={isExpanded ? "proj-expand-chevron proj-expand-chevron-open" : "proj-expand-chevron"} />
-                    </button>
+                    <div className="project-action-row">
+                      {renderProjectAiAction(project)}
+                      {renderProjectEditAction(project)}
+                      {renderProjectAction(project)}
+                      {renderProjectDeleteAction(project)}
+                      <button
+                        className="ac-secondary-button project-detail-toggle"
+                        onClick={() => setExpandedId(isExpanded ? null : project.id)}
+                        type="button"
+                      >
+                        {isExpanded ? "Ocultar detalhes" : "Abrir detalhes"}
+                        <ChevronRight size={15} className={isExpanded ? "proj-expand-chevron proj-expand-chevron-open" : "proj-expand-chevron"} />
+                      </button>
+                    </div>
                   </div>
                 </div>
 
@@ -5508,6 +5960,9 @@ function ProjectsTab({
                     </div>
                   </div>
                 ) : null}
+
+                {renderProjectEditor(project)}
+                {renderProjectAiPanel(project)}
               </Card>
             );
           })}

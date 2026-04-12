@@ -61,6 +61,11 @@ class DeepSeekProjectMergeResult(BaseModel):
     active_projects: list[DeepSeekProjectMemory] = Field(default_factory=list)
 
 
+class DeepSeekProjectEditResult(BaseModel):
+    project: DeepSeekProjectMemory
+    assistant_message: str = ""
+
+
 class DeepSeekContactMemoryRefinementResult(BaseModel):
     contact_memories: list[DeepSeekPersonMemory] = Field(default_factory=list)
 
@@ -295,6 +300,35 @@ class DeepSeekService:
             parser=self._parse_project_merge_result,
             validator=self._validate_project_merge_result,
             operation="merge_projects_incrementally",
+        )
+
+    async def edit_project_memory(
+        self,
+        *,
+        current_life_summary: str,
+        current_project_context: str,
+        target_project_block: str,
+        instruction: str,
+    ) -> DeepSeekProjectEditResult:
+        payload = self._build_completion_payload(
+            system_prompt=(
+                "Voce edita um unico projeto do AuraCore a partir de uma instrucao do usuario. "
+                "Sua funcao e reescrever somente esse projeto com clareza, sem inventar fatos fora do que ja esta no projeto "
+                "ou explicitamente pedido na instrucao. Retorne apenas JSON valido."
+            ),
+            user_prompt=self._build_project_edit_prompt(
+                current_life_summary=current_life_summary,
+                current_project_context=current_project_context,
+                target_project_block=target_project_block,
+                instruction=instruction,
+            ),
+            max_tokens=3200 if self._is_reasoning_model() else 1800,
+        )
+        return await self._request_parsed_completion(
+            payload=payload,
+            parser=self._parse_project_edit_result,
+            validator=self._validate_project_edit_result,
+            operation="edit_project_memory",
         )
 
     async def extract_important_messages(
@@ -1002,6 +1036,53 @@ Regras:
 - Nao inclua markdown fences.
 """.strip()
 
+    def _build_project_edit_prompt(
+        self,
+        *,
+        current_life_summary: str,
+        current_project_context: str,
+        target_project_block: str,
+        instruction: str,
+    ) -> str:
+        return f"""
+Edite apenas o projeto alvo abaixo com base na instrucao do usuario.
+
+Resumo atual da vida do dono:
+{current_life_summary.strip() or "(memoria consolidada ainda vazia)"}
+
+Panorama atual dos projetos:
+{current_project_context.strip() or "(nenhum projeto salvo ainda)"}
+
+Projeto alvo:
+{target_project_block.strip() or "(projeto alvo ausente)"}
+
+Instrucao do usuario:
+{instruction.strip()}
+
+Retorne um JSON com exatamente este formato:
+{{
+  "project": {{
+    "name": "string",
+    "summary": "string",
+    "status": "string",
+    "what_is_being_built": "string",
+    "built_for": "string",
+    "next_steps": ["string"],
+    "evidence": ["string"]
+  }},
+  "assistant_message": "string"
+}}
+
+Regras:
+- Edite apenas este projeto, sem criar outros.
+- Mantenha o resultado coerente com o estado atual do projeto e com a instrucao dada.
+- Se a instrucao pedir limpeza, remova ruido, duplicatas e itens vagos.
+- Em next_steps e evidence, prefira listas curtas, concretas e sem repeticao.
+- Nao invente cliente, escopo ou prova sem sustentacao no projeto atual ou na instrucao do usuario.
+- assistant_message deve resumir o que foi alterado em linguagem natural curta.
+- Nao inclua markdown fences.
+""".strip()
+
     def _build_contact_refinement_prompt(
         self,
         *,
@@ -1395,6 +1476,13 @@ Regras:
             if not project.summary.strip():
                 raise DeepSeekError("DeepSeek retornou um projeto reconciliado sem resumo.")
 
+    def _validate_project_edit_result(self, parsed: DeepSeekProjectEditResult) -> None:
+        if not parsed.project.name.strip():
+            raise DeepSeekError("DeepSeek retornou um projeto editado sem nome.")
+        if not parsed.project.summary.strip():
+            raise DeepSeekError("DeepSeek retornou um projeto editado sem resumo.")
+        parsed.assistant_message = parsed.assistant_message.strip()
+
     def _validate_contact_refinement_result(self, parsed: DeepSeekContactMemoryRefinementResult) -> None:
         for person in parsed.contact_memories:
             if not person.person_key.strip():
@@ -1499,6 +1587,20 @@ Regras:
         )
         return DeepSeekProjectMergeResult(
             active_projects=self._as_projects(raw.get("active_projects")),
+        )
+
+    def _parse_project_edit_result(self, content: str) -> DeepSeekProjectEditResult:
+        raw = self._parse_json_dict(
+            content,
+            error_message="DeepSeek retornou JSON invalido na edicao assistida de projeto.",
+            shape_error_message="DeepSeek retornou um payload inesperado na edicao assistida de projeto.",
+        )
+        projects = self._as_projects([raw.get("project")])
+        if not projects:
+            raise DeepSeekError("DeepSeek nao devolveu um projeto valido na edicao assistida.")
+        return DeepSeekProjectEditResult(
+            project=projects[0],
+            assistant_message=self._as_text(raw.get("assistant_message")),
         )
 
     def _parse_contact_refinement_result(self, content: str) -> DeepSeekContactMemoryRefinementResult:

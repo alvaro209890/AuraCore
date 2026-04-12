@@ -2246,6 +2246,98 @@ class SupabaseStore:
             None,
         )
 
+    def update_project_memory(
+        self,
+        *,
+        user_id: UUID,
+        project_key: str,
+        project_name: str | None = None,
+        summary: str | None = None,
+        status: str | None = None,
+        what_is_being_built: str | None = None,
+        built_for: str | None = None,
+        next_steps: list[str] | None = None,
+        evidence: list[str] | None = None,
+        updated_at: datetime,
+    ) -> ProjectMemoryRecord | None:
+        normalized_key = self._normalize_project_key(project_key)
+        if not normalized_key:
+            return None
+
+        existing = next(
+            (
+                project
+                for project in self.list_project_memories(user_id, limit=128)
+                if project.project_key == normalized_key
+            ),
+            None,
+        )
+        if existing is None:
+            return None
+
+        resolved_name = (project_name or existing.project_name).strip()
+        if not resolved_name:
+            resolved_name = existing.project_name
+        next_project_key = self._normalize_project_key(resolved_name) or existing.project_key
+
+        if next_project_key != existing.project_key:
+            collision = next(
+                (
+                    project
+                    for project in self.list_project_memories(user_id, limit=128)
+                    if project.project_key == next_project_key and project.id != existing.id
+                ),
+                None,
+            )
+            if collision is not None:
+                raise ValueError("Ja existe outro projeto com esse nome canonico.")
+
+        payload: dict[str, Any] = {
+            "project_key": next_project_key,
+            "project_name": resolved_name,
+            "summary": (summary if summary is not None else existing.summary).strip(),
+            "status": (status if status is not None else existing.status).strip(),
+            "what_is_being_built": (what_is_being_built if what_is_being_built is not None else existing.what_is_being_built).strip(),
+            "built_for": (built_for if built_for is not None else existing.built_for).strip(),
+            "next_steps": self._clean_string_list(next_steps if next_steps is not None else existing.next_steps),
+            "evidence": self._clean_string_list(evidence if evidence is not None else existing.evidence),
+            "updated_at": updated_at.isoformat(),
+        }
+
+        self.client.table("project_memories").update(payload).eq("user_id", str(user_id)).eq("project_key", normalized_key).execute()
+        return next(
+            (
+                project
+                for project in self.list_project_memories(user_id, limit=128)
+                if project.id == existing.id
+            ),
+            None,
+        )
+
+    def delete_project_memory(
+        self,
+        *,
+        user_id: UUID,
+        project_key: str,
+    ) -> bool:
+        normalized_key = self._normalize_project_key(project_key)
+        if not normalized_key:
+            return False
+
+        existing = next(
+            (
+                project
+                for project in self.list_project_memories(user_id, limit=128)
+                if project.project_key == normalized_key
+            ),
+            None,
+        )
+        if existing is None:
+            return False
+
+        self.client.table("project_memories").delete().eq("user_id", str(user_id)).eq("project_key", normalized_key).execute()
+        return True
+
     def upsert_important_messages(
         self,
         *,
