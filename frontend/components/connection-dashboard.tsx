@@ -5732,7 +5732,7 @@ function ProjectsTab({
               return (
                 <Card
                   key={`project-overview-${project.id}`}
-                  className={`project-modern-card project-modern-card-compact${completed ? " project-modern-card-completed" : ""}${compactExpanded ? " project-modern-card-expanded" : ""}`}
+                  className={`project-modern-card project-modern-card-compact${completed ? " project-modern-card-completed" : ""}${compactExpanded ? " project-modern-card-expanded" : ""}${aiProjectId === project.id ? " project-card-with-ai-open" : ""}`}
                 >
                   <div className="project-modern-head">
                     <div className="project-modern-title">
@@ -5847,7 +5847,7 @@ function ProjectsTab({
             const completed = isProjectManuallyCompleted(project);
             const statusTone = getProjectStatusTone(project);
             return (
-              <Card key={`project-detail-${project.id}`} className={`project-detail-modern-card${completed ? " project-detail-modern-card-completed" : ""}`}>
+              <Card key={`project-detail-${project.id}`} className={`project-detail-modern-card${completed ? " project-detail-modern-card-completed" : ""}${aiProjectId === project.id ? " project-card-with-ai-open" : ""}`}>
                 <div className="project-detail-modern-head">
                   <div className="project-detail-modern-copy">
                     <div className="project-detail-modern-title">

@@ -3091,6 +3091,8 @@ textarea {
   display: grid;
   gap: 18px;
   padding: 20px !important;
+  position: relative;
+  overflow: visible;
 }
 
 .project-modern-card-compact {
@@ -3279,6 +3281,35 @@ textarea {
   background: rgba(7, 12, 22, 0.82);
 }
 
+.project-card-with-ai-open {
+  z-index: 8;
+}
+
+.project-ai-panel {
+  position: absolute;
+  top: 92px;
+  right: 16px;
+  width: min(420px, calc(100% - 32px));
+  max-height: min(460px, 72vh);
+  z-index: 20;
+  box-shadow: 0 20px 60px rgba(2, 6, 23, 0.55);
+  border-color: rgba(59, 130, 246, 0.28);
+  backdrop-filter: blur(18px);
+}
+
+.project-ai-panel::before {
+  content: "";
+  position: absolute;
+  top: -10px;
+  right: 42px;
+  width: 18px;
+  height: 18px;
+  transform: rotate(45deg);
+  background: rgba(7, 12, 22, 0.94);
+  border-top: 1px solid rgba(59, 130, 246, 0.28);
+  border-left: 1px solid rgba(59, 130, 246, 0.28);
+}
+
 .project-inline-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3322,7 +3353,7 @@ textarea {
 .project-ai-messages {
   display: grid;
   gap: 10px;
-  max-height: 240px;
+  max-height: 220px;
   overflow-y: auto;
 }
 
@@ -6091,6 +6122,13 @@ textarea {
 
   .project-inline-grid {
     grid-template-columns: 1fr;
+  }
+
+  .project-ai-panel {
+    left: 12px;
+    right: 12px;
+    width: auto;
+    top: 84px;
   }
 
   .project-modern-actions,
