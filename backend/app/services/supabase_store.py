@@ -3577,6 +3577,24 @@ class SupabaseStore:
             )
         )
 
+    def count_selected_messages_after_timestamp(
+        self,
+        user_id: UUID,
+        *,
+        after_timestamp: datetime,
+        include_groups: bool = False,
+    ) -> int:
+        self.reconcile_observer_backlog(user_id=user_id)
+        return sum(
+            1
+            for message in self._list_messages_for_selection(
+                user_id=user_id,
+                include_groups=include_groups,
+                pending_only=None,
+            )
+            if message.timestamp > after_timestamp
+        )
+
     def count_messages_in_window(self, *, user_id: UUID, window_start: datetime, window_end: datetime) -> int:
         response = (
             self.client.table("mensagens")

@@ -328,7 +328,9 @@ export class WhatsAppGatewayChannel {
         if (this.channelName === "observer") {
           return false;
         }
-        return !isDirectUserJid(jid);
+        // The global agent still needs unresolved LID chats to pass through so
+        // normalizeMessage() can buffer and replay them once the phone mapping arrives.
+        return !(isDirectUserJid(jid) || String(jid ?? "").trim().endsWith("@lid"));
       },
       browser: Browsers.macOS(`AuraCore-${this.instanceName}`),
       // Let Baileys recover linked-device decrypt retries that show up as

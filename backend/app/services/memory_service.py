@@ -218,10 +218,18 @@ class MemoryAnalysisService:
     def get_memory_status(self) -> MemoryStatus:
         persona = self.get_current_persona()
         has_initial_analysis = bool(persona.last_analyzed_at or persona.last_snapshot_id)
-        pending_new_message_count = self.store.count_pending_messages(
-            self.settings.default_user_id,
-            include_groups=self._analysis_includes_groups(has_memory=has_initial_analysis),
-        )
+        include_groups = self._analysis_includes_groups(has_memory=has_initial_analysis)
+        if has_initial_analysis and persona.last_analyzed_at is not None:
+            pending_new_message_count = self.store.count_selected_messages_after_timestamp(
+                self.settings.default_user_id,
+                after_timestamp=persona.last_analyzed_at,
+                include_groups=include_groups,
+            )
+        else:
+            pending_new_message_count = self.store.count_pending_messages(
+                self.settings.default_user_id,
+                include_groups=include_groups,
+            )
         return MemoryStatus(
             has_initial_analysis=has_initial_analysis,
             last_analyzed_at=persona.last_analyzed_at,
