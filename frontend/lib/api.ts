@@ -771,6 +771,19 @@ export async function getMemoryRelations(): Promise<PersonRelation[]> {
   return request<PersonRelation[]>("/api/memories/relations");
 }
 
+export async function updateMemoryRelation(
+  contactName: string,
+  input: {
+    contact_name?: string;
+    relationship_type?: string;
+  },
+): Promise<PersonRelation> {
+  return request<PersonRelation>(`/api/memories/relations/${encodeURIComponent(contactName)}`, {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+}
+
 export async function updateMemoryProjectCompletion(
   projectKey: string,
   input: { completed: boolean; completion_notes?: string },

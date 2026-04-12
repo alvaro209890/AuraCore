@@ -363,6 +363,11 @@ class UpdateProjectMemoryRequest(BaseModel):
     evidence: list[str] | None = None
 
 
+class UpdatePersonMemoryRequest(BaseModel):
+    contact_name: str | None = Field(default=None, min_length=1, max_length=120)
+    relationship_type: str | None = Field(default=None, max_length=120)
+
+
 class ProjectAssistantEditRequest(BaseModel):
     instruction: str = Field(min_length=1, max_length=2000)
 

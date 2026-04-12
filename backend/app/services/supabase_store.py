@@ -2073,6 +2073,47 @@ class SupabaseStore:
             person_keys=[person.person_key for person in normalized_people],
         )
 
+    def update_person_memory(
+        self,
+        *,
+        user_id: UUID,
+        contact_name: str,
+        new_contact_name: str | None = None,
+        relationship_type: str | None = None,
+        updated_at: datetime,
+    ) -> PersonMemoryRecord | None:
+        normalized_contact_name = contact_name.strip()
+        existing = next(
+            (
+                person
+                for person in self.list_person_memories(user_id, limit=256)
+                if person.contact_name == normalized_contact_name
+            ),
+            None,
+        )
+        if existing is None:
+            return None
+
+        resolved_name = (new_contact_name or existing.contact_name).strip()
+        if not resolved_name:
+            resolved_name = existing.contact_name
+
+        payload: dict[str, Any] = {
+            "contact_name": resolved_name,
+            "relationship_type": (relationship_type if relationship_type is not None else existing.relationship_type).strip(),
+            "updated_at": updated_at.isoformat(),
+        }
+
+        self.client.table("person_memories").update(payload).eq("user_id", str(user_id)).eq("person_key", existing.person_key).execute()
+        return next(
+            (
+                person
+                for person in self.list_person_memories(user_id, limit=256)
+                if person.id == existing.id
+            ),
+            None,
+        )
+
     def upsert_project_memories(
         self,
         *,

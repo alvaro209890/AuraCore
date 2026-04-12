@@ -1,6 +1,7 @@
 "use client";
 
 import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import toast, { Toaster } from "react-hot-toast";
 import type { LucideIcon } from "lucide-react";
 import {
   Activity,
@@ -17,6 +18,8 @@ import {
   Clock,
   Cpu,
   Database,
+  Edit2,
+  Check,
   Eye,
   FileText,
   FolderGit2,
@@ -39,6 +42,7 @@ import {
   Trash2,
   User,
   Users,
+  X,
   XCircle,
   Zap,
 } from "lucide-react";
@@ -49,8 +53,10 @@ import {
   connectAgent,
   connectObserver,
   clearSavedDatabase,
-  executeMemoryAnalysis,
   assistMemoryProjectEdit,
+  executeMemoryAnalysis,
+  updateMemoryRelation,
+  RefineMemoryResponse,
   deleteMemoryProject,
   getAgentStatus,
   getAgentWorkspace,
@@ -1843,6 +1849,19 @@ export function ConnectionDashboard({
     }
   }
 
+  async function saveRelationEdits(
+    contactName: string,
+    input: { contact_name?: string; relationship_type?: string }
+  ): Promise<void> {
+    try {
+      const updated = await updateMemoryRelation(contactName, input);
+      setRelations((current) => current.map((item) => (item.id === updated.id || item.contact_name === contactName ? updated : item)));
+      toast.success("Relação atualizada!");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   async function saveProjectEdits(
     project: ProjectMemory,
     input: {
@@ -3068,6 +3087,13 @@ export function ConnectionDashboard({
 
   return (
     <div className="ac-layout-shell">
+      <Toaster position="bottom-right" toastOptions={{
+        style: {
+          background: '#27272a',
+          color: '#e4e4e7',
+          border: '1px solid #3f3f46',
+        },
+      }} />
       {sidebarOpen ? (
         <button
           className="ac-sidebar-overlay"
@@ -3153,6 +3179,14 @@ export function ConnectionDashboard({
           </div>
 
           <div className="ac-topbar-actions">
+            {status ? (
+              <div 
+                className={`micro-status micro-status-${status.connected && status.gateway_ready ? "emerald" : "amber"}`}
+                style={{ marginRight: "0.5rem" }}
+              >
+                {status.connected ? "WhatsApp Conectado" : "WhatsApp Desconectado"}
+              </div>
+            ) : null}
             <button className="ac-icon-button" onClick={() => void hydrateDashboard("manual")} disabled={isRefreshing} type="button">
               <RefreshCw size={16} className={isRefreshing ? "spin" : ""} />
             </button>
@@ -3222,7 +3256,7 @@ export function ConnectionDashboard({
                   groups={memoryGroups}
                   error={memoryGroupsError}
                   isSavingJids={savingGroupJids}
-                  onToggleGroup={(chatJid, enabledForAnalysis) => void toggleGroupSelection(chatJid, enabledForAnalysis)}
+                  onToggleGroup={toggleGroupSelection}
                   onRefresh={() => void hydrateDashboard("manual")}
                 />
               ) : null}
@@ -3262,6 +3296,7 @@ export function ConnectionDashboard({
                   relations={relations}
                   error={relationsError}
                   onRefresh={() => void hydrateDashboard("manual")}
+                  onSaveRelation={saveRelationEdits}
                 />
               ) : null}
 
@@ -4342,22 +4377,63 @@ function GroupsTab({
   groups: WhatsAppGroupSelection[];
   error: string | null;
   isSavingJids: string[];
-  onToggleGroup: (chatJid: string, enabledForAnalysis: boolean) => void;
+  onToggleGroup: (chatJid: string, enabledForAnalysis: boolean) => Promise<void>;
   onRefresh: () => void;
 }) {
   const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [selectedJids, setSelectedJids] = useState<Set<string>>(new Set());
   const deferredSearch = useDeferredValue(search);
   const filteredGroups = useMemo(() => {
+    let result = groups;
+    if (filter === "active") result = result.filter(g => g.enabled_for_analysis);
+    else if (filter === "inactive") result = result.filter(g => !g.enabled_for_analysis);
+    else if (filter === "pending") result = result.filter(g => g.pending_message_count > 0);
+
     const query = deferredSearch.trim().toLowerCase();
-    if (!query) {
-      return groups;
+    if (query) {
+      result = result.filter((group) => (
+        group.chat_name.toLowerCase().includes(query) ||
+        group.chat_jid.toLowerCase().includes(query)
+      ));
     }
-    return groups.filter((group) => (
-      group.chat_name.toLowerCase().includes(query) ||
-      group.chat_jid.toLowerCase().includes(query)
-    ));
-  }, [groups, deferredSearch]);
+    return result;
+  }, [groups, deferredSearch, filter]);
   const enabledCount = groups.filter((group) => group.enabled_for_analysis).length;
+
+  const handleSelectAll = () => {
+    if (selectedJids.size === filteredGroups.length) {
+      setSelectedJids(new Set());
+    } else {
+      setSelectedJids(new Set(filteredGroups.map(g => g.chat_jid)));
+    }
+  };
+
+  const handleToggleSelection = (jid: string) => {
+    const next = new Set(selectedJids);
+    if (next.has(jid)) next.delete(jid);
+    else next.add(jid);
+    setSelectedJids(next);
+  };
+
+  const executeMassAction = async (activate: boolean) => {
+    if (selectedJids.size === 0) return;
+    const toastId = toast.loading("Processando...");
+    try {
+      const promises = Array.from(selectedJids).map(jid => {
+        const group = groups.find(g => g.chat_jid === jid);
+        if (group && group.enabled_for_analysis !== activate) {
+          return onToggleGroup(jid, activate);
+        }
+        return Promise.resolve();
+      });
+      await Promise.all(promises);
+      toast.success(`${selectedJids.size} grupo(s) modificado(s)!`, { id: toastId });
+      setSelectedJids(new Set());
+    } catch (e) {
+      toast.error("Alguns grupos falharam.", { id: toastId });
+    }
+  };
 
   return (
     <div className="page-stack">
@@ -4407,13 +4483,33 @@ function GroupsTab({
           </button>
         </div>
 
-        <input
-          className="ac-input groups-search-input"
-          onChange={(event) => setSearch(event.target.value)}
-          placeholder="Buscar por nome do grupo ou JID..."
-          type="text"
-          value={search}
-        />
+        <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap' }}>
+          <input
+            className="ac-input groups-search-input"
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Buscar por nome do grupo ou JID..."
+            type="text"
+            value={search}
+            style={{ flex: 1, margin: 0 }}
+          />
+          <SegmentedControl 
+            options={["Todos", "Ativos", "Desativados", "Com Pendências"]} 
+            selected={filter === "all" ? "Todos" : filter === "active" ? "Ativos" : filter === "inactive" ? "Desativados" : "Com Pendências"}
+            onChange={(sel) => setFilter(sel === "Todos" ? "all" : sel === "Ativos" ? "active" : sel === "Desativados" ? "inactive" : "pending")}
+          />
+        </div>
+
+        {selectedJids.size > 0 && (
+          <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', background: 'var(--zinc-800)', padding: '0.5rem', borderRadius: '8px', alignItems: 'center' }}>
+            <span style={{ fontSize: '0.85rem', color: 'var(--zinc-400)', marginRight: 'auto' }}>{selectedJids.size} selecionado(s)</span>
+            <button className="ac-secondary-button" onClick={() => executeMassAction(true)}>
+              <CheckCircle2 size={16} style={{ color: 'var(--emerald-500)' }}/> Ativar
+            </button>
+            <button className="ac-secondary-button" onClick={() => executeMassAction(false)}>
+              <XCircle size={16} style={{ color: 'var(--zinc-500)' }}/> Desativar
+            </button>
+          </div>
+        )}
 
         {filteredGroups.length === 0 ? (
           <div className="empty-hint">
@@ -4430,7 +4526,13 @@ function GroupsTab({
               const isSaving = isSavingJids.includes(group.chat_jid);
               return (
                 <div key={group.chat_jid} className={`group-row${group.enabled_for_analysis ? " group-row-enabled" : ""}`}>
-                  <div className="group-row-main">
+                  <input
+                    type="checkbox"
+                    checked={selectedJids.has(group.chat_jid)}
+                    onChange={() => handleToggleSelection(group.chat_jid)}
+                    style={{ marginRight: '1rem', cursor: 'pointer', accentColor: 'var(--indigo-500)', width: '18px', height: '18px' }}
+                  />
+                  <div className="group-row-main" style={{ marginLeft: '1rem' }}>
                     <div className="group-row-top">
                       <strong>{group.chat_name}</strong>
                       <span>{group.enabled_for_analysis ? "ativo para analise" : "desativado"}</span>
@@ -4445,10 +4547,16 @@ function GroupsTab({
                   <button
                     className={`group-toggle${group.enabled_for_analysis ? " group-toggle-enabled" : ""}`}
                     disabled={isSaving}
-                    onClick={() => onToggleGroup(group.chat_jid, !group.enabled_for_analysis)}
+                    onClick={() => {
+                      if (!isSaving) {
+                        onToggleGroup(group.chat_jid, !group.enabled_for_analysis);
+                        toast.success(group.enabled_for_analysis ? "Grupo desativado" : "Grupo ativado");
+                      }
+                    }}
                     type="button"
                   >
-                    <span>{isSaving ? "Salvando..." : group.enabled_for_analysis ? "Ativado" : "Ativar"}</span>
+                    {isSaving ? <span className="ac-spinner" style={{ marginRight: 8, width: 14, height: 14 }} /> : null}
+                    <span>{group.enabled_for_analysis ? "Ativado" : "Ativar"}</span>
                   </button>
                 </div>
               );
@@ -4882,10 +4990,12 @@ function RelationsTab({
   relations,
   error,
   onRefresh,
+  onSaveRelation,
 }: {
   relations: PersonRelation[];
   error: string | null;
   onRefresh: () => void;
+  onSaveRelation: (contactName: string, input: { contact_name?: string; relationship_type?: string }) => Promise<void>;
 }) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<
@@ -4896,11 +5006,15 @@ function RelationsTab({
     | "friend"
     | "work"
     | "client"
-    | "service"
+        | "service"
     | "acquaintance"
     | "other"
     | "unknown"
   >("all");
+  const [editingRelationId, setEditingRelationId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editType, setEditType] = useState("");
+
   const deferredSearch = useDeferredValue(search.trim());
   const normalizedSearch = useMemo(() => normalizeProjectSearchText(deferredSearch), [deferredSearch]);
 
@@ -5106,13 +5220,82 @@ function RelationsTab({
                   <div className={`project-modern-icon project-modern-icon-${tone === "rose" ? "indigo" : tone === "zinc" ? "amber" : tone}`}>
                     <User size={18} />
                   </div>
-                  <div className="relation-card-copy">
-                    <h3>{relation.contact_name}</h3>
-                    <div className="relation-card-meta">
-                      <span className={`relation-badge relation-badge-${relationType}`}>{getRelationTypeLabel(relationType)}</span>
-                      <span>{identifier}</span>
-                      <span>{relation.last_message_at ? formatRelativeTime(relation.last_message_at) : "sem mensagem recente"}</span>
+                  {editingRelationId === relation.id ? (
+                    <div className="relation-card-copy" style={{ flex: 1 }}>
+                      <input
+                        type="text"
+                        className="ac-input"
+                        value={editName}
+                        onChange={(e) => setEditName(e.target.value)}
+                        placeholder="Nome do contato"
+                        style={{ marginBottom: "0.25rem", padding: "0.25rem 0.5rem" }}
+                      />
+                      <div className="relation-card-meta">
+                        <select
+                          className="ac-input"
+                          value={editType}
+                          onChange={(e) => setEditType(e.target.value)}
+                          style={{ width: "auto", padding: "0.25rem 0.5rem", fontSize: "0.75rem" }}
+                        >
+                          <option value="partner">Parceiro(a)</option>
+                          <option value="family">Família</option>
+                          <option value="friend">Amigo(a)</option>
+                          <option value="work">Trabalho</option>
+                          <option value="client">Cliente</option>
+                          <option value="service">Serviço</option>
+                          <option value="acquaintance">Conhecido(a)</option>
+                          <option value="other">Outro</option>
+                          <option value="unknown">Desconhecido</option>
+                        </select>
+                        <span>{identifier}</span>
+                        <span>{relation.last_message_at ? formatRelativeTime(relation.last_message_at) : "sem mensagem recente"}</span>
+                      </div>
                     </div>
+                  ) : (
+                    <div className="relation-card-copy">
+                      <h3>{relation.contact_name}</h3>
+                      <div className="relation-card-meta">
+                        <span className={`relation-badge relation-badge-${relationType}`}>{getRelationTypeLabel(relationType)}</span>
+                        <span>{identifier}</span>
+                        <span>{relation.last_message_at ? formatRelativeTime(relation.last_message_at) : "sem mensagem recente"}</span>
+                      </div>
+                    </div>
+                  )}
+
+                  <div style={{ marginLeft: "auto", display: "flex", gap: "0.5rem" }}>
+                    {editingRelationId === relation.id ? (
+                      <>
+                        <button
+                          type="button"
+                          className="ac-button ac-button-primary ac-button-sm"
+                          onClick={() => {
+                            void onSaveRelation(relation.contact_name, { contact_name: editName, relationship_type: editType });
+                            setEditingRelationId(null);
+                          }}
+                        >
+                          <Check size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          className="ac-button ac-button-outline ac-button-sm"
+                          onClick={() => setEditingRelationId(null)}
+                        >
+                          <X size={14} />
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        className="ac-button ac-button-outline ac-button-sm"
+                        onClick={() => {
+                          setEditingRelationId(relation.id);
+                          setEditName(relation.contact_name);
+                          setEditType(relationType);
+                        }}
+                      >
+                        <Edit2 size={14} />
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -6530,6 +6713,30 @@ function ChatTab({
     "Monte um plano de prioridades para hoje.",
   ];
 
+  const [threadSearch, setThreadSearch] = useState("");
+
+  const filteredThreads = useMemo(() => {
+    if (!threadSearch.trim()) return chatThreads;
+    const lowerSearch = threadSearch.toLowerCase();
+    return chatThreads.filter((t) => t.title.toLowerCase().includes(lowerSearch));
+  }, [chatThreads, threadSearch]);
+
+  const handleDraftChange = (val: string) => {
+    // Regex shortcuts
+    let newDraft = val;
+    // Replace "/hoje" with current localized date
+    newDraft = newDraft.replace(/(?:\b|^)\/hoje\b/gi, new Date().toLocaleDateString("pt-BR"));
+    newDraft = newDraft.replace(/(?:\b|^)\/amanha\b/gi, () => {
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      return tomorrow.toLocaleDateString("pt-BR");
+    });
+    // Replace "/tarefas" with quick prompt
+    newDraft = newDraft.replace(/(?:\b|^)\/tarefas\b/gi, "liste as tarefas pendentes extraídas da minha memória");
+    
+    onChatDraftChange(newDraft);
+  };
+
   return (
     <div className="gpt-chat-layout">
       {/* Thread Sidebar */}
@@ -6539,13 +6746,24 @@ function ChatTab({
             <Plus size={16} />
             {isCreatingChatThread ? "Criando..." : "Nova conversa"}
           </button>
+          <div className="gpt-thread-search-box" style={{ marginTop: "0.75rem", position: "relative" }}>
+            <Search size={14} style={{ position: "absolute", left: "10px", top: "50%", transform: "translateY(-50%)", color: "var(--color-zinc-400)" }} />
+            <input 
+              type="text" 
+              className="ac-input" 
+              placeholder="Buscar histórico..." 
+              value={threadSearch}
+              onChange={(e) => setThreadSearch(e.target.value)}
+              style={{ paddingLeft: "1.8rem", width: "100%", fontSize: "0.85rem" }}
+            />
+          </div>
         </div>
 
         <div className="gpt-thread-list">
-          {chatThreads.length === 0 ? (
-            <p className="gpt-thread-empty">Nenhuma conversa ainda.</p>
+          {filteredThreads.length === 0 ? (
+            <p className="gpt-thread-empty">Nenhuma conversa encontrada.</p>
           ) : (
-            chatThreads.map((thread) => {
+            filteredThreads.map((thread) => {
               const active = activeChatThread?.id === thread.id;
               const isDeleting = deletingChatThreadIds.includes(thread.id);
               return (
@@ -6652,7 +6870,7 @@ function ChatTab({
             <textarea
               rows={1}
               value={chatDraft}
-              onChange={(event) => onChatDraftChange(event.target.value)}
+              onChange={(event) => handleDraftChange(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();

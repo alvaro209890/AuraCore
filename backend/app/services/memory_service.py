@@ -2543,6 +2543,21 @@ class MemoryAnalysisService:
     def list_relations(self, *, limit: int = 80) -> list[PersonMemoryRecord]:
         return self.store.list_person_memories(self.settings.default_user_id, limit=limit)
 
+    def update_relation(
+        self,
+        *,
+        contact_name: str,
+        new_contact_name: str | None = None,
+        relationship_type: str | None = None,
+    ) -> PersonMemoryRecord | None:
+        return self.store.update_person_memory(
+            user_id=self.settings.default_user_id,
+            contact_name=contact_name,
+            new_contact_name=new_contact_name,
+            relationship_type=relationship_type,
+            updated_at=datetime.now(UTC),
+        )
+
     def update_project_completion(
         self,
         *,

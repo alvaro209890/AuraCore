@@ -34,6 +34,7 @@ from app.schemas import (
     ProjectMemoryResponse,
     SimpleOkResponse,
     UpdateProjectMemoryRequest,
+    UpdatePersonMemoryRequest,
     UpdateWhatsAppGroupSelectionRequest,
     WhatsAppSyncRunResponse,
     WhatsAppGroupSelectionResponse,
@@ -298,6 +299,23 @@ async def get_memory_relations(
     memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
 ) -> list[PersonMemoryResponse]:
     return [_to_person_memory_response(person) for person in memory_service.list_relations()]
+
+
+@router.put("/relations/{contact_name}", response_model=PersonMemoryResponse)
+async def update_memory_relation(
+    contact_name: str,
+    request: UpdatePersonMemoryRequest,
+    memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
+) -> PersonMemoryResponse:
+    updated = await run_in_threadpool(
+        memory_service.update_relation,
+        contact_name=contact_name,
+        new_contact_name=request.contact_name,
+        relationship_type=request.relationship_type,
+    )
+    if updated is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Relação não encontrada.")
+    return _to_person_memory_response(updated)
 
 
 @router.put("/projects/{project_key}", response_model=ProjectMemoryResponse)

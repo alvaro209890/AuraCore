@@ -6634,3 +6634,27 @@ textarea {
   border-color: rgba(239, 68, 68, 0.5);
   box-shadow: 0 4px 12px rgba(239, 68, 68, 0.2);
 }
+
+/* Skeletons and Spinners */
+@keyframes pulse-shimmer {
+  0% { opacity: 1; }
+  50% { opacity: 0.5; }
+  100% { opacity: 1; }
+}
+.ac-skeleton {
+  animation: pulse-shimmer 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  background-color: var(--zinc-800);
+  border-radius: 4px;
+}
+.ac-spinner {
+  border: 2px solid var(--zinc-800);
+  border-left-color: var(--indigo-500);
+  border-radius: 50%;
+  width: 16px;
+  height: 16px;
+  animation: spin 1s linear infinite;
+  display: inline-block;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
