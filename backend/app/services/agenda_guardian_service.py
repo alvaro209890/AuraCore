@@ -1,18 +1,23 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from app.config import Settings
 from app.services.deepseek_service import DeepSeekAgendaExtractionResult, DeepSeekService
-from app.services.observer_gateway import ObserverGatewayService
+from app.services.observer_gateway import ObserverGatewayService, WhatsAppAgentGatewayService
 from app.services.supabase_store import AgendaEventRecord, IngestedMessageRecord, SupabaseStore
 
 DEFAULT_TIMEZONE = ZoneInfo("America/Sao_Paulo")
 DEFAULT_EVENT_DURATION = timedelta(hours=1)
+REMINDER_LOOP_INTERVAL_SECONDS = 30
+REMINDER_LOOKAHEAD_SECONDS = 60
+STALE_REMINDER_SUPPRESSION_HOURS = 6
 logger = logging.getLogger("auracore.agenda_guardian")
 
 DATE_SIGNAL_REGEX = re.compile(
@@ -42,48 +47,147 @@ class AgendaGuardianService:
         store: SupabaseStore,
         deepseek_service: DeepSeekService,
         observer_gateway: ObserverGatewayService,
+        agent_gateway: WhatsAppAgentGatewayService,
     ) -> None:
         self.settings = settings
         self.store = store
         self.deepseek_service = deepseek_service
         self.observer_gateway = observer_gateway
+        self.agent_gateway = agent_gateway
+        self._reminder_task: asyncio.Task[None] | None = None
+        self._reminder_lock = asyncio.Lock()
+
+    def warm_start(self) -> None:
+        existing = self._reminder_task
+        if existing is not None and not existing.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.warning("agenda_reminder_loop_not_started user_id=%s reason=no_running_loop", self.settings.default_user_id)
+            return
+        self._reminder_task = loop.create_task(
+            self._schedule_reminder_loop(),
+            name=f"agenda-reminders-{self.settings.default_user_id}",
+        )
 
     async def process_message(self, *, message: IngestedMessageRecord) -> AgendaProcessingResult:
         if message.chat_type != "direct":
             return AgendaProcessingResult(skipped_reason="non_direct")
+        return await self._process_candidate(
+            user_id=message.user_id,
+            message_id=message.message_id,
+            contact_name=message.contact_name,
+            message_text=message.message_text,
+            occurred_at=message.timestamp,
+            source_label=f"Observador/{message.contact_name}",
+            should_send_conflict_alert=True,
+        )
 
-        if self.store.get_agenda_event_by_message_id(user_id=message.user_id, message_id=message.message_id):
+    async def process_agent_message(
+        self,
+        *,
+        user_id: UUID,
+        message_id: str,
+        contact_name: str,
+        message_text: str,
+        occurred_at: datetime,
+    ) -> AgendaProcessingResult:
+        return await self._process_candidate(
+            user_id=user_id,
+            message_id=message_id,
+            contact_name=contact_name,
+            message_text=message_text,
+            occurred_at=occurred_at,
+            source_label=f"Agente/{contact_name}",
+            should_send_conflict_alert=False,
+        )
+
+    async def process_due_reminders(self) -> None:
+        async with self._reminder_lock:
+            now = datetime.now(UTC)
+            due_before = now + timedelta(seconds=REMINDER_LOOKAHEAD_SECONDS)
+            stale_cutoff = now - timedelta(hours=STALE_REMINDER_SUPPRESSION_HOURS)
+            due_events = self.store.list_due_agenda_events(
+                user_id=self.settings.default_user_id,
+                due_before=due_before,
+                limit=20,
+            )
+            for event in due_events:
+                if event.reminder_sent_at is not None:
+                    continue
+                if event.inicio < stale_cutoff:
+                    self.store.mark_agenda_event_reminded(
+                        user_id=self.settings.default_user_id,
+                        event_id=event.id,
+                        reminded_at=now,
+                    )
+                    await self._log_debug(
+                        f"[Guardião do Tempo] Lembrete retroativo suprimido para '{event.titulo}' ({self._format_local(event.inicio)})."
+                    )
+                    continue
+                sent = await self._send_due_reminder(event=event)
+                if sent:
+                    self.store.mark_agenda_event_reminded(
+                        user_id=self.settings.default_user_id,
+                        event_id=event.id,
+                        reminded_at=datetime.now(UTC),
+                    )
+
+    async def _schedule_reminder_loop(self) -> None:
+        while True:
+            try:
+                await self.process_due_reminders()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("agenda_reminder_loop_failed user_id=%s detail=%s", self.settings.default_user_id, str(exc))
+                await self._log_debug(f"[Guardião do Tempo] Falha no loop de lembretes: {str(exc)}")
+            await asyncio.sleep(REMINDER_LOOP_INTERVAL_SECONDS)
+
+    async def _process_candidate(
+        self,
+        *,
+        user_id: UUID,
+        message_id: str,
+        contact_name: str,
+        message_text: str,
+        occurred_at: datetime,
+        source_label: str,
+        should_send_conflict_alert: bool,
+    ) -> AgendaProcessingResult:
+        if self.store.get_agenda_event_by_message_id(user_id=user_id, message_id=message_id):
             return AgendaProcessingResult(skipped_reason="duplicate_message")
 
-        normalized_text = " ".join(message.message_text.split()).strip()
+        normalized_text = " ".join(message_text.split()).strip()
         if not normalized_text:
             return AgendaProcessingResult(skipped_reason="empty_text")
         if not self._has_schedule_signal(normalized_text):
             return AgendaProcessingResult(skipped_reason="no_schedule_signal")
 
         await self._log_debug(
-            f"[Guardião do Tempo] Sinal temporal detectado em mensagem de {message.contact_name}: {normalized_text}"
+            f"[Guardião do Tempo] Sinal temporal detectado em {source_label}: {normalized_text}"
         )
 
         try:
             extraction = await self.deepseek_service.extract_agenda_signal(
                 message_text=normalized_text,
-                reference_now=message.timestamp.astimezone(DEFAULT_TIMEZONE),
+                reference_now=occurred_at.astimezone(DEFAULT_TIMEZONE),
             )
         except Exception as exc:
             await self._log_debug(f"[Guardião do Tempo] Falha na extração estruturada: {str(exc)}")
-            logger.warning("agenda_extraction_failed message_id=%s detail=%s", message.message_id, str(exc))
+            logger.warning("agenda_extraction_failed message_id=%s detail=%s", message_id, str(exc))
             return AgendaProcessingResult(skipped_reason="extract_failed")
 
         if not extraction.has_schedule_signal or not extraction.data_inicio:
             return AgendaProcessingResult(skipped_reason="no_structured_schedule")
 
         resolved_status = self._resolve_status(extraction=extraction, source_text=normalized_text)
-        inicio = self._normalize_datetime(extraction.data_inicio, reference=message.timestamp)
+        inicio = self._normalize_datetime(extraction.data_inicio, reference=occurred_at)
         if inicio is None:
             await self._log_debug("[Guardião do Tempo] Extração retornou data_inicio inválida.")
             return AgendaProcessingResult(skipped_reason="invalid_start")
-        fim = self._normalize_datetime(extraction.data_fim, reference=message.timestamp)
+        fim = self._normalize_datetime(extraction.data_fim, reference=occurred_at)
         if fim is None or fim <= inicio:
             fim = inicio + DEFAULT_EVENT_DURATION
 
@@ -93,20 +197,20 @@ class AgendaGuardianService:
         )
 
         conflicts = self.store.find_agenda_conflicts(
-            user_id=message.user_id,
+            user_id=user_id,
             inicio=inicio,
             fim=fim,
-            exclude_message_id=message.message_id,
+            exclude_message_id=message_id,
             limit=1,
         )
         saved_event = self.store.upsert_agenda_event(
-            user_id=message.user_id,
+            user_id=user_id,
             titulo=titulo,
             inicio=inicio,
             fim=fim,
             status=resolved_status,
-            contato_origem=message.contact_name,
-            message_id=message.message_id,
+            contato_origem=contact_name,
+            message_id=message_id,
         )
         await self._log_debug(
             f"[Guardião do Tempo] Compromisso salvo: '{saved_event.titulo}' de {self._format_local(saved_event.inicio)} até {self._format_local(saved_event.fim)}."
@@ -118,7 +222,8 @@ class AgendaGuardianService:
             await self._log_debug(
                 f"[Guardião do Tempo] Conflito detectado com '{conflict_event.titulo}' em {self._format_local(conflict_event.inicio)}."
             )
-            alert_sent = await self._send_conflict_alert(new_event=saved_event, existing_event=conflict_event)
+            if should_send_conflict_alert:
+                alert_sent = await self._send_conflict_alert(new_event=saved_event, existing_event=conflict_event)
 
         return AgendaProcessingResult(
             detected=True,
@@ -185,17 +290,8 @@ class AgendaGuardianService:
         )
 
     async def _send_conflict_alert(self, *, new_event: AgendaEventRecord, existing_event: AgendaEventRecord) -> bool:
-        owner_phone: str | None = None
-        try:
-            observer_status = await self.observer_gateway.get_observer_status(refresh_qr=False)
-            owner_phone = (observer_status.owner_number or "").strip() or None
-        except Exception:
-            owner_phone = None
-        if not owner_phone:
-            owner_phone = self.store.get_whatsapp_session_owner_phone(session_id=f"{self.settings.default_user_id}:observer")
-            if owner_phone and not owner_phone.startswith("55"):
-                owner_phone = f"55{owner_phone}"
-        if not owner_phone:
+        owner_target = await self._resolve_owner_chat_target(preferred_channel="observer")
+        if not owner_target:
             await self._log_debug("[Guardião do Tempo] Conflito detectado, mas o número conectado não foi localizado.")
             return False
         message_text = (
@@ -205,7 +301,7 @@ class AgendaGuardianService:
             "Deseja sugerir outro horário ou manter ambos?"
         )
         try:
-            await self.observer_gateway.send_text_message(chat_jid=owner_phone, message_text=message_text)
+            await self.observer_gateway.send_text_message(chat_jid=owner_target, message_text=message_text)
             await self._log_debug("[Guardião do Tempo] Alerta de conflito enviado ao WhatsApp do dono.")
             return True
         except Exception as exc:
@@ -217,6 +313,107 @@ class AgendaGuardianService:
                 str(exc),
             )
             return False
+
+    async def _send_due_reminder(self, *, event: AgendaEventRecord) -> bool:
+        owner_target = await self._resolve_owner_chat_target(preferred_channel="agent")
+        if not owner_target:
+            await self._log_debug(
+                f"[Guardião do Tempo] Horário de '{event.titulo}' chegou, mas o número conectado não foi localizado."
+            )
+            return False
+
+        status_label = "Firme" if event.status == "firme" else "Tentativo"
+        message_text = (
+            f"⏰ AuraCore: Chegou o horário de '{event.titulo}'.\n"
+            f"Início: {self._format_local(event.inicio)}\n"
+            f"Status: {status_label}\n"
+            f"Origem: {event.contato_origem or 'não identificada'}"
+        )
+
+        try:
+            await self.agent_gateway.send_text_message(chat_jid=owner_target, message_text=message_text)
+            await self._log_debug(f"[Guardião do Tempo] Lembrete enviado para '{event.titulo}'.")
+            return True
+        except Exception as agent_exc:
+            logger.warning("agenda_due_reminder_agent_failed event_id=%s detail=%s", event.id, str(agent_exc))
+            try:
+                await self.observer_gateway.send_text_message(chat_jid=owner_target, message_text=message_text)
+                await self._log_debug(f"[Guardião do Tempo] Lembrete enviado via observador para '{event.titulo}'.")
+                return True
+            except Exception as observer_exc:
+                await self._log_debug(
+                    f"[Guardião do Tempo] Falha ao enviar lembrete de '{event.titulo}': {str(observer_exc)}"
+                )
+                logger.warning(
+                    "agenda_due_reminder_failed event_id=%s detail=%s fallback_detail=%s",
+                    event.id,
+                    str(agent_exc),
+                    str(observer_exc),
+                )
+                return False
+
+    async def _resolve_owner_chat_target(self, *, preferred_channel: str) -> str | None:
+        attempts: list[tuple[str, str]] = []
+        if preferred_channel == "agent":
+            attempts.extend(
+                [
+                    ("agent_status", "agent"),
+                    ("agent_session", "agent"),
+                    ("observer_status", "observer"),
+                    ("observer_session", "observer"),
+                ]
+            )
+        else:
+            attempts.extend(
+                [
+                    ("observer_status", "observer"),
+                    ("observer_session", "observer"),
+                    ("agent_status", "agent"),
+                    ("agent_session", "agent"),
+                ]
+            )
+
+        for source_kind, channel in attempts:
+            target: str | None = None
+            try:
+                if source_kind == "agent_status":
+                    target = self._normalize_chat_target((await self.agent_gateway.get_agent_status()).owner_number)
+                elif source_kind == "observer_status":
+                    target = self._normalize_chat_target((await self.observer_gateway.get_observer_status(refresh_qr=False)).owner_number)
+                elif source_kind == "agent_session":
+                    target = self._normalize_chat_target(
+                        self.store.get_whatsapp_session_owner_phone(session_id=f"{self.settings.default_user_id}:agent")
+                    )
+                elif source_kind == "observer_session":
+                    target = self._normalize_chat_target(
+                        self.store.get_whatsapp_session_owner_phone(session_id=f"{self.settings.default_user_id}:observer")
+                    )
+            except Exception:
+                target = None
+            if target:
+                logger.info(
+                    "agenda_owner_target_resolved user_id=%s channel=%s source=%s",
+                    self.settings.default_user_id,
+                    channel,
+                    source_kind,
+                )
+                return target
+        return None
+
+    def _normalize_chat_target(self, value: str | None) -> str | None:
+        raw = (value or "").strip()
+        if not raw:
+            return None
+        if "@" in raw:
+            return raw
+        digits = "".join(char for char in raw if char.isdigit())
+        if not digits:
+            return None
+        if len(digits) >= 12 and digits.startswith("55"):
+            return digits
+        if 10 <= len(digits) <= 11:
+            return f"55{digits}"
+        return digits
 
     async def _log_debug(self, content: str) -> None:
         thread = self.store.get_or_create_chat_thread(user_id=self.settings.default_user_id)
@@ -230,6 +427,9 @@ class AgendaGuardianService:
     def _fallback_title(self, text: str) -> str:
         compact = " ".join(text.split()).strip()
         return compact[:120] if compact else "Compromisso"
+
+    def format_local_datetime(self, value: datetime) -> str:
+        return self._format_local(value)
 
     def _format_local(self, value: datetime) -> str:
         localized = value.astimezone(DEFAULT_TIMEZONE)

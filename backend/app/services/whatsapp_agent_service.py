@@ -14,8 +14,10 @@ from app.schemas import (
     WhatsAppAgentSettingsResponse,
     WhatsAppAgentStatusResponse,
 )
+from app.services.agenda_guardian_service import AgendaGuardianService, AgendaProcessingResult
 from app.services.assistant_reply_service import AssistantReplyService
 from app.services.deepseek_service import DeepSeekAgentMemoryDecision, DeepSeekService
+from app.services.groq_service import GroqChatService
 from app.services.observer_gateway import ObserverGatewayService, WhatsAppAgentGatewayService
 from app.services.supabase_store import (
     SupabaseStore,
@@ -58,15 +60,19 @@ class WhatsAppAgentService:
         store: SupabaseStore,
         reply_service: AssistantReplyService,
         deepseek_service: DeepSeekService,
+        groq_service: GroqChatService,
         observer_gateway: ObserverGatewayService,
         agent_gateway: WhatsAppAgentGatewayService,
+        agenda_guardian_service: AgendaGuardianService,
     ) -> None:
         self.settings = settings
         self.store = store
         self.reply_service = reply_service
         self.deepseek_service = deepseek_service
+        self.groq_service = groq_service
         self.observer_gateway = observer_gateway
         self.agent_gateway = agent_gateway
+        self.agenda_guardian_service = agenda_guardian_service
 
     async def get_status(self) -> WhatsAppAgentStatusResponse:
         agent_status = await self.agent_gateway.get_agent_status()
@@ -164,12 +170,36 @@ class WhatsAppAgentService:
         self,
         payload: WhatsAppAgentInboundMessageRequest,
     ) -> WhatsAppAgentInboundMessageResponse:
-        normalized_text = " ".join(payload.message_text.split()).strip()
+        raw_text = " ".join(payload.message_text.split()).strip()
         chat_jid = payload.chat_jid.strip()
         contact_phone = self.store.normalize_contact_phone(payload.contact_phone)
         contact_name = (payload.contact_name or payload.contact_phone or "Contato").strip()
         contact_name_source = (payload.contact_name_source or "unknown").strip() or "unknown"
         source_event = (payload.source_event or "unknown").strip() or "unknown"
+        media_type = (payload.media_type or "text").strip().lower() or "text"
+        transcript_text: str | None = None
+        transcription_error: str | None = None
+
+        if media_type == "audio" and payload.audio_data_url:
+            try:
+                transcript_text = " ".join(
+                    (await self.groq_service.transcribe_audio_data_url(payload.audio_data_url)).split()
+                ).strip()
+            except Exception as error:
+                transcription_error = str(error)
+                logger.warning(
+                    "agent_audio_transcription_failed message_id=%s contact_phone=%s detail=%s",
+                    payload.message_id,
+                    contact_phone,
+                    transcription_error,
+                )
+
+        normalized_text = raw_text
+        if transcript_text:
+            if normalized_text and transcript_text.casefold() != normalized_text.casefold():
+                normalized_text = f"{normalized_text}\n\n{transcript_text}".strip()
+            else:
+                normalized_text = transcript_text
 
         if not normalized_text:
             return WhatsAppAgentInboundMessageResponse(action="ignored_empty")
@@ -187,8 +217,7 @@ class WhatsAppAgentService:
             return WhatsAppAgentInboundMessageResponse(action="duplicate_message")
 
         agent_owner_number = await self._get_agent_owner_number()
-        if agent_owner_number and self.store.phone_matches(contact_phone, agent_owner_number):
-            return WhatsAppAgentInboundMessageResponse(action="ignored_self")
+        owner_self_message = bool(agent_owner_number and self.store.phone_matches(contact_phone, agent_owner_number))
 
         observer_status, settings_record = await self._load_observer_context()
         self.store.upsert_known_contact(
@@ -240,6 +269,10 @@ class WhatsAppAgentService:
                 "from_me": bool(payload.from_me),
                 "observer_owner_number": observer_status.owner_number,
                 "contact_name_source": contact_name_source,
+                "media_type": media_type,
+                "audio_transcribed": bool(transcript_text),
+                "audio_transcription_error": transcription_error,
+                "owner_self_message": owner_self_message,
             },
             created_at=datetime.now(UTC),
         )
@@ -281,13 +314,21 @@ class WhatsAppAgentService:
         if learning_outcome.memory is not None:
             contact_memory = learning_outcome.memory
 
+        agenda_outcome = await self.agenda_guardian_service.process_agent_message(
+            user_id=self.settings.default_user_id,
+            message_id=payload.message_id,
+            contact_name=contact_name,
+            message_text=normalized_text,
+            occurred_at=payload.timestamp,
+        )
+
         if not settings_record.auto_reply_enabled:
             self.store.update_whatsapp_agent_message(
                 message_id=inbound_message.id,
-                processing_status="auto_reply_disabled",
+                processing_status="scheduled_no_reply" if agenda_outcome.detected else "auto_reply_disabled",
             )
             return WhatsAppAgentInboundMessageResponse(
-                action="auto_reply_disabled",
+                action="scheduled_no_reply" if agenda_outcome.detected else "auto_reply_disabled",
                 thread_id=thread.id,
                 inbound_message_id=inbound_message.id,
             )
@@ -302,34 +343,41 @@ class WhatsAppAgentService:
         assistant_reply: str | None = None
         reply_error_text: str | None = None
         reply_model_run_id: str | None = None
-        try:
-            assistant_reply = await self.reply_service.generate_reply(
-                user_message=normalized_text,
-                recent_messages=prior_messages,
-                context_hint=None,
-                priority_context=None,
-                channel="web_chat",
-            )
-        except Exception as error:
-            reply_error_text = str(error)
+        reply_generated_by = "agenda_guardian" if agenda_outcome.detected else "deepseek"
+
+        if agenda_outcome.detected:
+            assistant_reply = self._build_agenda_confirmation_reply(agenda_outcome)
+        else:
+            try:
+                assistant_reply = await self.reply_service.generate_reply(
+                    user_message=normalized_text,
+                    recent_messages=prior_messages,
+                    context_hint=None,
+                    priority_context=None,
+                    channel="web_chat",
+                )
+            except Exception as error:
+                reply_error_text = str(error)
 
         reply_elapsed_ms = int((perf_counter() - reply_started) * 1000)
-        reply_model_run = self.store.create_model_run(
-            user_id=self.settings.default_user_id,
-            job_id=None,
-            provider="deepseek",
-            model_name=self.settings.deepseek_model,
-            run_type="whatsapp_agent_reply",
-            success=assistant_reply is not None,
-            latency_ms=reply_elapsed_ms,
-            input_tokens=None,
-            output_tokens=None,
-            reasoning_tokens=None,
-            estimated_cost_usd=None,
-            error_text=reply_error_text,
-            created_at=datetime.now(UTC),
-        )
-        reply_model_run_id = reply_model_run.id if reply_model_run else None
+
+        if not agenda_outcome.detected:
+            reply_model_run = self.store.create_model_run(
+                user_id=self.settings.default_user_id,
+                job_id=None,
+                provider="deepseek",
+                model_name=self.settings.deepseek_model,
+                run_type="whatsapp_agent_reply",
+                success=assistant_reply is not None,
+                latency_ms=reply_elapsed_ms,
+                input_tokens=None,
+                output_tokens=None,
+                reasoning_tokens=None,
+                estimated_cost_usd=None,
+                error_text=reply_error_text,
+                created_at=datetime.now(UTC),
+            )
+            reply_model_run_id = reply_model_run.id if reply_model_run else None
 
         if assistant_reply is None:
             self.store.update_whatsapp_agent_message(
@@ -349,6 +397,60 @@ class WhatsAppAgentService:
                 inbound_message_id=inbound_message.id,
             )
 
+        return await self._send_outbound_reply(
+            payload=payload,
+            inbound_message=inbound_message,
+            thread=thread,
+            session=session,
+            contact_phone=contact_phone,
+            delivery_chat_jid=delivery_chat_jid,
+            assistant_reply=assistant_reply,
+            response_latency_ms=reply_elapsed_ms,
+            reply_model_run_id=reply_model_run_id,
+            generated_by=reply_generated_by,
+        )
+
+    async def _load_observer_context(self) -> tuple[ObserverStatusResponse, WhatsAppAgentSettingsRecord]:
+        try:
+            observer_status = await self.observer_gateway.get_observer_status(refresh_qr=False)
+            settings_record = self._sync_settings_with_observer(observer_status)
+            return observer_status, settings_record
+        except Exception:
+            observer_status = ObserverStatusResponse(
+                instance_name="observer",
+                connected=False,
+                state="unknown",
+                gateway_ready=False,
+                ingestion_ready=False,
+                owner_number=None,
+                qr_code=None,
+                qr_expires_in_sec=None,
+                last_seen_at=None,
+                last_error="observer_unavailable",
+            )
+            return observer_status, self.store.get_whatsapp_agent_settings(self.settings.default_user_id)
+
+    async def _get_agent_owner_number(self) -> str | None:
+        try:
+            agent_status = await self.agent_gateway.get_agent_status()
+        except Exception:
+            return None
+        return self.store.normalize_contact_phone(agent_status.owner_number)
+
+    async def _send_outbound_reply(
+        self,
+        *,
+        payload: WhatsAppAgentInboundMessageRequest,
+        inbound_message: WhatsAppAgentMessageRecord,
+        thread: WhatsAppAgentThreadRecord,
+        session: WhatsAppAgentThreadSessionRecord,
+        contact_phone: str,
+        delivery_chat_jid: str,
+        assistant_reply: str,
+        response_latency_ms: int,
+        reply_model_run_id: str | None,
+        generated_by: str,
+    ) -> WhatsAppAgentInboundMessageResponse:
         outbound_message = self.store.append_whatsapp_agent_message(
             user_id=self.settings.default_user_id,
             thread_id=thread.id,
@@ -362,10 +464,10 @@ class WhatsAppAgentService:
             source_inbound_message_id=payload.message_id,
             processing_status="sending",
             learning_status="not_applicable",
-            response_latency_ms=reply_elapsed_ms,
+            response_latency_ms=response_latency_ms,
             model_run_id=reply_model_run_id,
             metadata={
-                "generated_by": "deepseek",
+                "generated_by": generated_by,
                 "reply_to_message_id": inbound_message.whatsapp_message_id,
                 "delivery_chat_jid": delivery_chat_jid,
             },
@@ -383,7 +485,7 @@ class WhatsAppAgentService:
                 send_status="sent",
                 processing_status="sent",
                 whatsapp_message_id=send_result.message_id,
-                response_latency_ms=reply_elapsed_ms,
+                response_latency_ms=response_latency_ms,
                 message_timestamp=sent_at,
             )
             self.store.update_whatsapp_agent_message(
@@ -405,13 +507,14 @@ class WhatsAppAgentService:
                 updated_at=sent_at,
             )
             logger.info(
-                "reply_sent thread_id=%s inbound_message_id=%s outbound_message_id=%s contact_phone=%s chat_jid=%s latency_ms=%s",
+                "reply_sent thread_id=%s inbound_message_id=%s outbound_message_id=%s contact_phone=%s chat_jid=%s latency_ms=%s generator=%s",
                 thread.id,
                 inbound_message.id,
                 outbound_message.id,
                 contact_phone,
                 delivery_chat_jid,
-                reply_elapsed_ms,
+                response_latency_ms,
+                generated_by,
             )
             return WhatsAppAgentInboundMessageResponse(
                 action="replied",
@@ -454,32 +557,24 @@ class WhatsAppAgentService:
                 outbound_message_id=outbound_message.id,
             )
 
-    async def _load_observer_context(self) -> tuple[ObserverStatusResponse, WhatsAppAgentSettingsRecord]:
-        try:
-            observer_status = await self.observer_gateway.get_observer_status(refresh_qr=False)
-            settings_record = self._sync_settings_with_observer(observer_status)
-            return observer_status, settings_record
-        except Exception:
-            observer_status = ObserverStatusResponse(
-                instance_name="observer",
-                connected=False,
-                state="unknown",
-                gateway_ready=False,
-                ingestion_ready=False,
-                owner_number=None,
-                qr_code=None,
-                qr_expires_in_sec=None,
-                last_seen_at=None,
-                last_error="observer_unavailable",
-            )
-            return observer_status, self.store.get_whatsapp_agent_settings(self.settings.default_user_id)
+    def _build_agenda_confirmation_reply(self, outcome: AgendaProcessingResult) -> str:
+        if outcome.saved_event is None:
+            return "Recebi a mensagem. Tive sinal de agenda, mas não consegui consolidar o compromisso com segurança."
 
-    async def _get_agent_owner_number(self) -> str | None:
-        try:
-            agent_status = await self.agent_gateway.get_agent_status()
-        except Exception:
-            return None
-        return self.store.normalize_contact_phone(agent_status.owner_number)
+        event = outcome.saved_event
+        status_label = "como firme" if event.status == "firme" else "como tentativo"
+        event_time = self.agenda_guardian_service.format_local_datetime(event.inicio)
+        if outcome.conflict_event is not None:
+            conflict_time = self.agenda_guardian_service.format_local_datetime(outcome.conflict_event.inicio)
+            return (
+                f"Anotei na agenda '{event.titulo}' para {event_time}, {status_label}. "
+                f"Também encontrei conflito com '{outcome.conflict_event.titulo}' no mesmo horário ({conflict_time}). "
+                "Se quiser, depois eu ajusto com você."
+            )
+        return (
+            f"Anotei na agenda '{event.titulo}' para {event_time}, {status_label}. "
+            "Vou te lembrar quando chegar o horário."
+        )
 
     async def _learn_from_inbound_message(
         self,

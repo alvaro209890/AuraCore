@@ -202,7 +202,10 @@ class WhatsAppAgentInboundMessageRequest(BaseModel):
     contact_name_source: str | None = None
     chat_jid: str = Field(min_length=1)
     contact_phone: str = Field(min_length=1)
-    message_text: str = Field(min_length=1)
+    message_text: str = ""
+    media_type: Literal["text", "audio"] | None = None
+    audio_data_url: str | None = None
+    audio_mime_type: str | None = None
     timestamp: datetime
     source: str = Field(default="baileys", min_length=1)
     source_event: str | None = None
@@ -527,12 +530,21 @@ class AgendaEventResponse(BaseModel):
     message_id: str
     has_conflict: bool = False
     conflict: AgendaConflictResponse | None = None
+    reminder_sent_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
 
 class AgendaEventsListResponse(BaseModel):
     events: list[AgendaEventResponse] = Field(default_factory=list)
+
+
+class UpdateAgendaEventRequest(BaseModel):
+    titulo: str | None = Field(default=None, min_length=1, max_length=160)
+    inicio: datetime | None = None
+    fim: datetime | None = None
+    status: Literal["firme", "tentativo"] | None = None
+    contato_origem: str | None = Field(default=None, max_length=160)
 
 
 class SendChatMessageRequest(BaseModel):

@@ -230,6 +230,7 @@ CREATE TABLE IF NOT EXISTS agenda (
   status TEXT NOT NULL DEFAULT 'tentativo',
   contato_origem TEXT,
   message_id TEXT NOT NULL,
+  reminder_sent_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE (user_id, message_id)

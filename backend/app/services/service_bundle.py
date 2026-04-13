@@ -112,19 +112,22 @@ class ServiceBundleCache:
                 store=store,
                 memory_service=memory_service,
             )
-            whatsapp_agent_service = WhatsAppAgentService(
-                settings=scoped_settings,
-                store=store,
-                reply_service=assistant_reply_service,
-                deepseek_service=deepseek_service,
-                observer_gateway=observer_gateway,
-                agent_gateway=agent_gateway,
-            )
             agenda_guardian_service = AgendaGuardianService(
                 settings=scoped_settings,
                 store=store,
                 deepseek_service=deepseek_service,
                 observer_gateway=observer_gateway,
+                agent_gateway=agent_gateway,
+            )
+            whatsapp_agent_service = WhatsAppAgentService(
+                settings=scoped_settings,
+                store=store,
+                reply_service=assistant_reply_service,
+                deepseek_service=deepseek_service,
+                groq_service=groq_service,
+                observer_gateway=observer_gateway,
+                agent_gateway=agent_gateway,
+                agenda_guardian_service=agenda_guardian_service,
             )
             bundle = ServiceBundle(
                 account=account,
@@ -153,5 +156,6 @@ class ServiceBundleCache:
             if cache_key in self._warmed_accounts:
                 return bundle
             bundle.automation_service.warm_start()
+            bundle.agenda_guardian_service.warm_start()
             self._warmed_accounts.add(cache_key)
         return bundle

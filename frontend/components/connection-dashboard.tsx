@@ -54,6 +54,7 @@ import {
   connectObserver,
   clearSavedDatabase,
   assistMemoryProjectEdit,
+  deleteAgendaEvent,
   executeMemoryAnalysis,
   updateMemoryRelation,
   RefineMemoryResponse,
@@ -77,6 +78,7 @@ import {
   sendChatMessageStream,
   getAgendaEvents,
   updateAgentSettings,
+  updateAgendaEvent,
   updateAutomationSettings,
   updateMemoryGroupSelection,
   updateMemoryProject,
@@ -98,6 +100,7 @@ import {
   type ModelRun,
   type ObserverStatus,
   type AgendaEvent,
+  type UpdateAgendaEventInput,
   type WhatsAppAgentMessage,
   type WhatsAppAgentContactMemory,
   type WhatsAppAgentSession,
@@ -1438,6 +1441,7 @@ export function ConnectionDashboard({
   const [importantMessagesError, setImportantMessagesError] = useState<string | null>(null);
   const [relationsError, setRelationsError] = useState<string | null>(null);
   const [agendaError, setAgendaError] = useState<string | null>(null);
+  const [agendaActionError, setAgendaActionError] = useState<string | null>(null);
   const [chatError, setChatError] = useState<string | null>(null);
   const [messageRefreshError, setMessageRefreshError] = useState<string | null>(null);
   const [memoryActivityError, setMemoryActivityError] = useState<string | null>(null);
@@ -1460,6 +1464,8 @@ export function ConnectionDashboard({
   const [deletingProjectKeys, setDeletingProjectKeys] = useState<string[]>([]);
   const [editingProjectKeys, setEditingProjectKeys] = useState<string[]>([]);
   const [aiProjectKeys, setAiProjectKeys] = useState<string[]>([]);
+  const [savingAgendaIds, setSavingAgendaIds] = useState<string[]>([]);
+  const [deletingAgendaIds, setDeletingAgendaIds] = useState<string[]>([]);
   const [projectActionError, setProjectActionError] = useState<string | null>(null);
   const [pollingEnabled, setPollingEnabled] = useState(false);
   const [agentPollingEnabled, setAgentPollingEnabled] = useState(false);
@@ -1866,6 +1872,54 @@ export function ConnectionDashboard({
       toast.success("Relação atualizada!");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function saveAgendaEdits(event: AgendaEvent, input: UpdateAgendaEventInput): Promise<AgendaEvent> {
+    setSavingAgendaIds((current) => (current.includes(event.id) ? current : [...current, event.id]));
+    setAgendaActionError(null);
+    try {
+      const updated = await updateAgendaEvent(event.id, input);
+      startTransition(() => {
+        setAgendaEvents((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+      });
+      pushAgentLog("success", `Compromisso ${updated.titulo} atualizado manualmente na agenda.`);
+      return updated;
+    } catch (error) {
+      const message = getErrorMessage(error);
+      setAgendaActionError(message);
+      pushAgentLog("error", `Falha ao editar o compromisso ${event.titulo}: ${message}`);
+      throw error;
+    } finally {
+      setSavingAgendaIds((current) => current.filter((value) => value !== event.id));
+    }
+  }
+
+  async function removeAgendaEvent(event: AgendaEvent): Promise<void> {
+    const confirmed = window.confirm(`Excluir o compromisso "${event.titulo}" da agenda?`);
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingAgendaIds((current) => (current.includes(event.id) ? current : [...current, event.id]));
+    setAgendaActionError(null);
+    const previousEvents = agendaEvents;
+    startTransition(() => {
+      setAgendaEvents((current) => current.filter((item) => item.id !== event.id));
+    });
+
+    try {
+      await deleteAgendaEvent(event.id);
+      pushAgentLog("success", `Compromisso ${event.titulo} removido da agenda.`);
+    } catch (error) {
+      startTransition(() => {
+        setAgendaEvents(previousEvents);
+      });
+      const message = getErrorMessage(error);
+      setAgendaActionError(message);
+      pushAgentLog("error", `Falha ao excluir o compromisso ${event.titulo}: ${message}`);
+    } finally {
+      setDeletingAgendaIds((current) => current.filter((value) => value !== event.id));
     }
   }
 
@@ -3334,7 +3388,12 @@ export function ConnectionDashboard({
                 <AgendaTab
                   events={agendaEvents}
                   error={agendaError}
+                  actionError={agendaActionError}
                   onRefresh={() => void hydrateDashboard("manual")}
+                  onSaveEvent={saveAgendaEdits}
+                  onDeleteEvent={removeAgendaEvent}
+                  savingAgendaIds={savingAgendaIds}
+                  deletingAgendaIds={deletingAgendaIds}
                 />
               ) : null}
 
@@ -5416,13 +5475,33 @@ function RelationsTab({
 function AgendaTab({
   events,
   error,
+  actionError,
   onRefresh,
+  onSaveEvent,
+  onDeleteEvent,
+  savingAgendaIds,
+  deletingAgendaIds,
 }: {
   events: AgendaEvent[];
   error: string | null;
+  actionError: string | null;
   onRefresh: () => void;
+  onSaveEvent: (event: AgendaEvent, input: UpdateAgendaEventInput) => Promise<AgendaEvent>;
+  onDeleteEvent: (event: AgendaEvent) => Promise<void>;
+  savingAgendaIds: string[];
+  deletingAgendaIds: string[];
 }) {
+  type AgendaEditDraft = {
+    titulo: string;
+    inicio: string;
+    fim: string;
+    status: "firme" | "tentativo";
+    contato_origem: string;
+  };
+
   const [filter, setFilter] = useState<"all" | "upcoming" | "firm" | "tentative" | "conflicts">("all");
+  const [editingEventId, setEditingEventId] = useState<string | null>(null);
+  const [agendaDrafts, setAgendaDrafts] = useState<Record<string, AgendaEditDraft>>({});
   const now = Date.now();
   const sortedEvents = useMemo(
     () => [...events].sort((left, right) => new Date(left.inicio).getTime() - new Date(right.inicio).getTime()),
@@ -5460,6 +5539,73 @@ function AgendaTab({
     { id: "conflicts" as const, label: "Conflitos", count: conflictCount },
   ];
 
+  const toDateTimeLocalValue = (iso: string): string => {
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) {
+      return "";
+    }
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    const hours = String(date.getHours()).padStart(2, "0");
+    const minutes = String(date.getMinutes()).padStart(2, "0");
+    return `${year}-${month}-${day}T${hours}:${minutes}`;
+  };
+
+  const buildDraft = (event: AgendaEvent): AgendaEditDraft => ({
+    titulo: event.titulo,
+    inicio: toDateTimeLocalValue(event.inicio),
+    fim: toDateTimeLocalValue(event.fim),
+    status: event.status,
+    contato_origem: event.contato_origem ?? "",
+  });
+
+  const openEdit = (event: AgendaEvent): void => {
+    setEditingEventId(event.id);
+    setAgendaDrafts((current) => ({
+      ...current,
+      [event.id]: current[event.id] ?? buildDraft(event),
+    }));
+  };
+
+  const closeEdit = (): void => {
+    setEditingEventId(null);
+  };
+
+  async function handleSave(event: AgendaEvent): Promise<void> {
+    const draft = agendaDrafts[event.id] ?? buildDraft(event);
+    const titulo = draft.titulo.trim();
+    const inicio = new Date(draft.inicio);
+    const fim = new Date(draft.fim);
+
+    if (!titulo) {
+      toast.error("Informe um título para o compromisso.");
+      return;
+    }
+    if (Number.isNaN(inicio.getTime()) || Number.isNaN(fim.getTime())) {
+      toast.error("Preencha início e fim com datas válidas.");
+      return;
+    }
+    if (fim.getTime() <= inicio.getTime()) {
+      toast.error("O horário final precisa ser depois do início.");
+      return;
+    }
+
+    try {
+      await onSaveEvent(event, {
+        titulo,
+        inicio: inicio.toISOString(),
+        fim: fim.toISOString(),
+        status: draft.status,
+        contato_origem: draft.contato_origem.trim() || undefined,
+      });
+      closeEdit();
+      toast.success("Compromisso atualizado.");
+    } catch {
+      // A camada superior já registra o erro e mantém a UI em edição.
+    }
+  }
+
   if (events.length === 0) {
     return (
       <div className="page-stack">
@@ -5469,8 +5615,8 @@ function AgendaTab({
           </div>
           <h3>Nenhum compromisso detectado ainda</h3>
           <p>
-            Assim que o Guardião do Tempo encontrar uma combinação de data e horário nas mensagens recebidas pelo Observador,
-            os compromissos aparecem aqui.
+            Assim que o Guardião do Tempo encontrar uma combinação de data e horário nas mensagens recebidas pelo Observador
+            ou pelo agente do WhatsApp, os compromissos aparecem aqui.
           </p>
           <div className="hero-actions">
             <button className="ac-secondary-button" onClick={onRefresh} type="button">
@@ -5479,6 +5625,7 @@ function AgendaTab({
             </button>
           </div>
           {error ? <InlineError title="Falha na agenda" message={error} /> : null}
+          {actionError ? <InlineError title="Falha na edição da agenda" message={actionError} /> : null}
         </Card>
       </div>
     );
@@ -5494,8 +5641,8 @@ function AgendaTab({
           </div>
           <h3>Compromissos detectados no WhatsApp</h3>
           <p>
-            Esta visão concentra os eventos extraídos pelo backend, já com status, contato de origem e marcação de conflito
-            quando houver sobreposição de horário.
+            Esta visão concentra os eventos extraídos pelo backend, já com status, contato de origem, lembrete automático e
+            marcação de conflito quando houver sobreposição de horário.
           </p>
         </div>
         <div className="projects-hero-metrics">
@@ -5550,49 +5697,177 @@ function AgendaTab({
         </div>
 
         <div className="project-list-modern">
-          {filteredEvents.map((event) => (
-            <div
-              key={event.id}
-              className={`project-card-modern${event.has_conflict ? " project-card-modern-attention" : ""}`}
-            >
-              <div className="project-card-head">
-                <div>
-                  <strong>{event.titulo}</strong>
-                  <span>
-                    {formatShortDateTime(event.inicio)} até {formatShortDateTime(event.fim)}
-                  </span>
-                </div>
-                <div className="project-card-actions">
-                  <span className={`micro-status micro-status-${event.status === "firme" ? "emerald" : "amber"}`}>
-                    {event.status === "firme" ? "Firme" : "Tentativo"}
-                  </span>
-                  {event.has_conflict ? (
-                    <span className="micro-status micro-status-amber">Conflito</span>
-                  ) : null}
-                </div>
-              </div>
-              <div className="project-summary-stack">
-                <p className="support-copy">
-                  {event.contato_origem ? `Origem: ${event.contato_origem}.` : "Origem não identificada."}
-                </p>
-                <p className="support-copy">
-                  ID da mensagem: <code>{event.message_id}</code>
-                </p>
-                {event.conflict ? (
-                  <div className="danger-box" style={{ marginTop: 12 }}>
-                    <h4>
-                      <AlertCircle size={16} />
-                      Possível conflito
-                    </h4>
-                    <p>
-                      Já existe <strong>{event.conflict.titulo}</strong> em {formatShortDateTime(event.conflict.inicio)} até{" "}
-                      {formatShortDateTime(event.conflict.fim)}.
-                    </p>
+          {filteredEvents.map((event) => {
+            const isEditing = editingEventId === event.id;
+            const draft = agendaDrafts[event.id] ?? buildDraft(event);
+            const isSaving = savingAgendaIds.includes(event.id);
+            const isDeleting = deletingAgendaIds.includes(event.id);
+
+            return (
+              <div
+                key={event.id}
+                className={`project-card-modern${event.has_conflict ? " project-card-modern-attention" : ""}`}
+              >
+                <div className="project-card-head">
+                  <div>
+                    <strong>{event.titulo}</strong>
+                    <span>
+                      {formatShortDateTime(event.inicio)} até {formatShortDateTime(event.fim)}
+                    </span>
                   </div>
-                ) : null}
+                  <div className="project-card-actions">
+                    <span className={`micro-status micro-status-${event.status === "firme" ? "emerald" : "amber"}`}>
+                      {event.status === "firme" ? "Firme" : "Tentativo"}
+                    </span>
+                    {event.has_conflict ? (
+                      <span className="micro-status micro-status-amber">Conflito</span>
+                    ) : null}
+                    <button
+                      className="ac-button ac-button-outline ac-button-sm"
+                      disabled={isSaving || isDeleting}
+                      onClick={() => (isEditing ? closeEdit() : openEdit(event))}
+                      type="button"
+                    >
+                      {isEditing ? <X size={14} /> : <Edit2 size={14} />}
+                    </button>
+                    <button
+                      className="ac-button ac-button-outline ac-button-sm"
+                      disabled={isSaving || isDeleting}
+                      onClick={() => void onDeleteEvent(event)}
+                      type="button"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </div>
+
+                {isEditing ? (
+                  <div className="project-summary-stack" style={{ gap: "0.85rem" }}>
+                    <label>
+                      <span className="support-copy">Título</span>
+                      <input
+                        className="ac-input"
+                        onChange={(editEvent) =>
+                          setAgendaDrafts((current) => ({
+                            ...current,
+                            [event.id]: { ...draft, titulo: editEvent.target.value },
+                          }))
+                        }
+                        type="text"
+                        value={draft.titulo}
+                      />
+                    </label>
+                    <div className="dual-column-grid" style={{ marginTop: 0 }}>
+                      <label>
+                        <span className="support-copy">Início</span>
+                        <input
+                          className="ac-input"
+                          onChange={(editEvent) =>
+                            setAgendaDrafts((current) => ({
+                              ...current,
+                              [event.id]: { ...draft, inicio: editEvent.target.value },
+                            }))
+                          }
+                          type="datetime-local"
+                          value={draft.inicio}
+                        />
+                      </label>
+                      <label>
+                        <span className="support-copy">Fim</span>
+                        <input
+                          className="ac-input"
+                          onChange={(editEvent) =>
+                            setAgendaDrafts((current) => ({
+                              ...current,
+                              [event.id]: { ...draft, fim: editEvent.target.value },
+                            }))
+                          }
+                          type="datetime-local"
+                          value={draft.fim}
+                        />
+                      </label>
+                    </div>
+                    <div className="dual-column-grid" style={{ marginTop: 0 }}>
+                      <label>
+                        <span className="support-copy">Status</span>
+                        <select
+                          className="ac-input"
+                          onChange={(editEvent) =>
+                            setAgendaDrafts((current) => ({
+                              ...current,
+                              [event.id]: {
+                                ...draft,
+                                status: editEvent.target.value === "firme" ? "firme" : "tentativo",
+                              },
+                            }))
+                          }
+                          value={draft.status}
+                        >
+                          <option value="firme">Firme</option>
+                          <option value="tentativo">Tentativo</option>
+                        </select>
+                      </label>
+                      <label>
+                        <span className="support-copy">Origem</span>
+                        <input
+                          className="ac-input"
+                          onChange={(editEvent) =>
+                            setAgendaDrafts((current) => ({
+                              ...current,
+                              [event.id]: { ...draft, contato_origem: editEvent.target.value },
+                            }))
+                          }
+                          type="text"
+                          value={draft.contato_origem}
+                        />
+                      </label>
+                    </div>
+                    <div className="hero-actions">
+                      <button
+                        className="ac-primary-button"
+                        disabled={isSaving || isDeleting}
+                        onClick={() => void handleSave(event)}
+                        type="button"
+                      >
+                        <Check size={14} />
+                        {isSaving ? "Salvando..." : "Salvar alterações"}
+                      </button>
+                      <button className="ac-secondary-button" disabled={isSaving} onClick={closeEdit} type="button">
+                        <X size={14} />
+                        Cancelar
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="project-summary-stack">
+                    <p className="support-copy">
+                      {event.contato_origem ? `Origem: ${event.contato_origem}.` : "Origem não identificada."}
+                    </p>
+                    <p className="support-copy">
+                      ID da mensagem: <code>{event.message_id}</code>
+                    </p>
+                    <p className="support-copy">
+                      {event.reminder_sent_at
+                        ? `Lembrete enviado em ${formatShortDateTime(event.reminder_sent_at)}.`
+                        : "Lembrete ainda pendente."}
+                    </p>
+                    {event.conflict ? (
+                      <div className="danger-box" style={{ marginTop: 12 }}>
+                        <h4>
+                          <AlertCircle size={16} />
+                          Possível conflito
+                        </h4>
+                        <p>
+                          Já existe <strong>{event.conflict.titulo}</strong> em {formatShortDateTime(event.conflict.inicio)} até{" "}
+                          {formatShortDateTime(event.conflict.fim)}.
+                        </p>
+                      </div>
+                    ) : null}
+                  </div>
+                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
         {filteredEvents.length === 0 ? (
@@ -5604,6 +5879,7 @@ function AgendaTab({
       </Card>
 
       {error ? <InlineError title="Falha na agenda" message={error} /> : null}
+      {actionError ? <InlineError title="Falha na edição da agenda" message={actionError} /> : null}
     </div>
   );
 }

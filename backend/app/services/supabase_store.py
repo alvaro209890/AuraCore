@@ -67,6 +67,9 @@ SQLITE_LEGACY_COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
         "outbound_message_count": "INTEGER DEFAULT 0",
         "coverage_score": "INTEGER DEFAULT 0",
     },
+    "agenda": {
+        "reminder_sent_at": "TEXT",
+    },
 }
 
 
@@ -308,6 +311,7 @@ class AgendaEventRecord:
     status: str
     contato_origem: str | None
     message_id: str
+    reminder_sent_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
@@ -2774,7 +2778,7 @@ class SupabaseStore:
     def get_agenda_event_by_message_id(self, *, user_id: UUID, message_id: str) -> AgendaEventRecord | None:
         response = (
             self.client.table("agenda")
-            .select("id,user_id,titulo,inicio,fim,status,contato_origem,message_id,created_at,updated_at")
+            .select("id,user_id,titulo,inicio,fim,status,contato_origem,message_id,reminder_sent_at,created_at,updated_at")
             .eq("user_id", str(user_id))
             .eq("message_id", message_id.strip())
             .limit(1)
@@ -2807,6 +2811,7 @@ class SupabaseStore:
             "status": "firme" if str(status).strip().lower() == "firme" else "tentativo",
             "contato_origem": self._optional_text(contato_origem),
             "message_id": message_id.strip(),
+            "reminder_sent_at": existing.reminder_sent_at.isoformat() if existing and existing.reminder_sent_at else None,
             "created_at": (existing.created_at if existing else now).astimezone(UTC).isoformat(),
             "updated_at": now.isoformat(),
         }
@@ -2826,7 +2831,7 @@ class SupabaseStore:
         limit: int = 5,
     ) -> list[AgendaEventRecord]:
         sql = """
-            SELECT id,user_id,titulo,inicio,fim,status,contato_origem,message_id,created_at,updated_at
+            SELECT id,user_id,titulo,inicio,fim,status,contato_origem,message_id,reminder_sent_at,created_at,updated_at
             FROM agenda
             WHERE user_id = ?
               AND inicio < ?
@@ -2860,7 +2865,7 @@ class SupabaseStore:
     ) -> list[AgendaEventRecord]:
         query = (
             self.client.table("agenda")
-            .select("id,user_id,titulo,inicio,fim,status,contato_origem,message_id,created_at,updated_at")
+            .select("id,user_id,titulo,inicio,fim,status,contato_origem,message_id,reminder_sent_at,created_at,updated_at")
             .eq("user_id", str(user_id))
             .order("inicio", desc=False)
             .limit(max(1, limit))
@@ -2875,6 +2880,99 @@ class SupabaseStore:
             if parsed is not None:
                 events.append(parsed)
         return events
+
+    def get_agenda_event(self, *, user_id: UUID, event_id: str) -> AgendaEventRecord | None:
+        response = (
+            self.client.table("agenda")
+            .select("id,user_id,titulo,inicio,fim,status,contato_origem,message_id,reminder_sent_at,created_at,updated_at")
+            .eq("user_id", str(user_id))
+            .eq("id", event_id)
+            .limit(1)
+            .execute()
+        )
+        rows = response.data or []
+        if not rows:
+            return None
+        return self._parse_agenda_event(rows[0], fallback_user_id=user_id)
+
+    def update_agenda_event(
+        self,
+        *,
+        user_id: UUID,
+        event_id: str,
+        titulo: str | None = None,
+        inicio: datetime | None = None,
+        fim: datetime | None = None,
+        status: str | None = None,
+        contato_origem: str | None = None,
+        reset_reminder: bool = True,
+    ) -> AgendaEventRecord | None:
+        existing = self.get_agenda_event(user_id=user_id, event_id=event_id)
+        if existing is None:
+            return None
+        payload: dict[str, Any] = {
+            "updated_at": datetime.now(UTC).isoformat(),
+        }
+        if titulo is not None:
+            payload["titulo"] = titulo.strip() or existing.titulo
+        if inicio is not None:
+            payload["inicio"] = inicio.astimezone(UTC).isoformat()
+        if fim is not None:
+            payload["fim"] = fim.astimezone(UTC).isoformat()
+        if status is not None:
+            payload["status"] = "firme" if str(status).strip().lower() == "firme" else "tentativo"
+        if contato_origem is not None:
+            payload["contato_origem"] = self._optional_text(contato_origem)
+        if reset_reminder:
+            payload["reminder_sent_at"] = None
+        self.client.table("agenda").update(payload).eq("user_id", str(user_id)).eq("id", event_id).execute()
+        return self.get_agenda_event(user_id=user_id, event_id=event_id)
+
+    def delete_agenda_event(self, *, user_id: UUID, event_id: str) -> bool:
+        existing = self.get_agenda_event(user_id=user_id, event_id=event_id)
+        if existing is None:
+            return False
+        self.client.table("agenda").delete().eq("user_id", str(user_id)).eq("id", event_id).execute()
+        return True
+
+    def list_due_agenda_events(
+        self,
+        *,
+        user_id: UUID,
+        due_before: datetime,
+        limit: int = 10,
+    ) -> list[AgendaEventRecord]:
+        sql = """
+            SELECT id,user_id,titulo,inicio,fim,status,contato_origem,message_id,reminder_sent_at,created_at,updated_at
+            FROM agenda
+            WHERE user_id = ?
+              AND inicio <= ?
+              AND (reminder_sent_at IS NULL OR trim(reminder_sent_at) = '')
+            ORDER BY inicio ASC
+            LIMIT ?
+        """
+        rows = self.client.fetchall(sql, (str(user_id), due_before.astimezone(UTC).isoformat(), max(1, limit)))
+        events: list[AgendaEventRecord] = []
+        for row in rows:
+            parsed = self._parse_agenda_event(row, fallback_user_id=user_id)
+            if parsed is not None:
+                events.append(parsed)
+        return events
+
+    def mark_agenda_event_reminded(
+        self,
+        *,
+        user_id: UUID,
+        event_id: str,
+        reminded_at: datetime,
+    ) -> AgendaEventRecord | None:
+        self.client.table("agenda").update(
+            {
+                "reminder_sent_at": reminded_at.astimezone(UTC).isoformat(),
+                "updated_at": reminded_at.astimezone(UTC).isoformat(),
+            }
+        ).eq("user_id", str(user_id)).eq("id", event_id).execute()
+        return self.get_agenda_event(user_id=user_id, event_id=event_id)
 
     def count_chat_messages(self, thread_id: str) -> int:
         response = (
@@ -6376,6 +6474,7 @@ class SupabaseStore:
             status="firme" if str(value.get("status") or "").strip().lower() == "firme" else "tentativo",
             contato_origem=self._optional_text(value.get("contato_origem")),
             message_id=message_id,
+            reminder_sent_at=self._parse_datetime(value.get("reminder_sent_at")),
             created_at=self._parse_datetime(value.get("created_at")) or datetime.now(UTC),
             updated_at=self._parse_datetime(value.get("updated_at")) or datetime.now(UTC),
         )

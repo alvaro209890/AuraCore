@@ -232,8 +232,17 @@ export type AgendaEvent = {
   message_id: string;
   has_conflict: boolean;
   conflict: AgendaConflict | null;
+  reminder_sent_at: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type UpdateAgendaEventInput = {
+  titulo?: string;
+  inicio?: string;
+  fim?: string;
+  status?: "firme" | "tentativo";
+  contato_origem?: string;
 };
 
 export type ProjectAssistantEditResponse = {
@@ -796,6 +805,19 @@ export async function getAgendaEvents(limit = 120, upcomingOnly = false): Promis
   const query = `?limit=${limit}&upcoming_only=${upcomingOnly ? "true" : "false"}`;
   const response = await request<AgendaEventsListResponse>(`/api/agenda${query}`);
   return response.events;
+}
+
+export async function updateAgendaEvent(eventId: string, input: UpdateAgendaEventInput): Promise<AgendaEvent> {
+  return request<AgendaEvent>(`/api/agenda/${encodeURIComponent(eventId)}`, {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function deleteAgendaEvent(eventId: string): Promise<SimpleOkResponse> {
+  return request<SimpleOkResponse>(`/api/agenda/${encodeURIComponent(eventId)}`, {
+    method: "DELETE",
+  });
 }
 
 export async function getMemoryProjects(): Promise<ProjectMemory[]> {
