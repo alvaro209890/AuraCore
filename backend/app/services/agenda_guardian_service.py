@@ -28,6 +28,21 @@ DATE_SIGNAL_REGEX = re.compile(
 )
 CONFIRMED_REGEX = re.compile(r"\b(?:fechado|confirmado|confirmada|bora|combinado|marcado|certo)\b", re.IGNORECASE)
 TENTATIVE_REGEX = re.compile(r"\b(?:talvez|vou tentar|tentar|se der|acho que|possivelmente)\b", re.IGNORECASE)
+REMINDER_OFFSET_REGEXES = [
+    re.compile(
+        r"\b(?:me\s+)?(?:avise|avisa|avisar|lembre|lembra|lembrar)(?:\s+de)?(?:\s+com)?\s+"
+        r"(?P<amount>\d{1,4}|uma|um|meia)\s*"
+        r"(?P<unit>min(?:uto)?s?|h(?:ora)?s?|dia?s?)\s+"
+        r"(?:antes|de\s+anteced[eê]ncia)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:com\s+)?(?P<amount>\d{1,4}|uma|um|meia)\s*"
+        r"(?P<unit>min(?:uto)?s?|h(?:ora)?s?|dia?s?)\s+"
+        r"(?:de\s+)?anteced[eê]ncia\b",
+        re.IGNORECASE,
+    ),
+]
 
 
 @dataclass(slots=True)
@@ -36,6 +51,7 @@ class AgendaProcessingResult:
     saved_event: AgendaEventRecord | None = None
     conflict_event: AgendaEventRecord | None = None
     alert_sent: bool = False
+    reminder_offset_minutes: int = 0
     skipped_reason: str | None = None
 
 
@@ -108,6 +124,31 @@ class AgendaGuardianService:
             now = datetime.now(UTC)
             due_before = now + timedelta(seconds=REMINDER_LOOKAHEAD_SECONDS)
             stale_cutoff = now - timedelta(hours=STALE_REMINDER_SUPPRESSION_HOURS)
+            due_pre_events = self.store.list_due_agenda_pre_reminders(
+                user_id=self.settings.default_user_id,
+                due_before=due_before,
+                limit=20,
+            )
+            for event in due_pre_events:
+                if event.pre_reminder_sent_at is not None or event.reminder_offset_minutes <= 0:
+                    continue
+                if event.inicio <= now:
+                    self.store.mark_agenda_event_pre_reminded(
+                        user_id=self.settings.default_user_id,
+                        event_id=event.id,
+                        reminded_at=now,
+                    )
+                    await self._log_debug(
+                        f"[Guardião do Tempo] Lembrete antecipado suprimido para '{event.titulo}' porque o horário já chegou."
+                    )
+                    continue
+                sent = await self._send_due_reminder(event=event, phase="pre")
+                if sent:
+                    self.store.mark_agenda_event_pre_reminded(
+                        user_id=self.settings.default_user_id,
+                        event_id=event.id,
+                        reminded_at=datetime.now(UTC),
+                    )
             due_events = self.store.list_due_agenda_events(
                 user_id=self.settings.default_user_id,
                 due_before=due_before,
@@ -126,7 +167,7 @@ class AgendaGuardianService:
                         f"[Guardião do Tempo] Lembrete retroativo suprimido para '{event.titulo}' ({self._format_local(event.inicio)})."
                     )
                     continue
-                sent = await self._send_due_reminder(event=event)
+                sent = await self._send_due_reminder(event=event, phase="start")
                 if sent:
                     self.store.mark_agenda_event_reminded(
                         user_id=self.settings.default_user_id,
@@ -183,6 +224,7 @@ class AgendaGuardianService:
             return AgendaProcessingResult(skipped_reason="no_structured_schedule")
 
         resolved_status = self._resolve_status(extraction=extraction, source_text=normalized_text)
+        reminder_offset_minutes = self._extract_reminder_offset_minutes(normalized_text)
         inicio = self._normalize_datetime(extraction.data_inicio, reference=occurred_at)
         if inicio is None:
             await self._log_debug("[Guardião do Tempo] Extração retornou data_inicio inválida.")
@@ -211,10 +253,15 @@ class AgendaGuardianService:
             status=resolved_status,
             contato_origem=contact_name,
             message_id=message_id,
+            reminder_offset_minutes=reminder_offset_minutes,
         )
         await self._log_debug(
             f"[Guardião do Tempo] Compromisso salvo: '{saved_event.titulo}' de {self._format_local(saved_event.inicio)} até {self._format_local(saved_event.fim)}."
         )
+        if reminder_offset_minutes > 0:
+            await self._log_debug(
+                f"[Guardião do Tempo] Lembrete antecipado configurado para {reminder_offset_minutes} minuto(s) antes, em horário de Brasília."
+            )
 
         conflict_event = conflicts[0] if conflicts else None
         alert_sent = False
@@ -230,6 +277,7 @@ class AgendaGuardianService:
             saved_event=saved_event,
             conflict_event=conflict_event,
             alert_sent=alert_sent,
+            reminder_offset_minutes=reminder_offset_minutes,
         )
 
     def _has_schedule_signal(self, text: str) -> bool:
@@ -314,31 +362,45 @@ class AgendaGuardianService:
             )
             return False
 
-    async def _send_due_reminder(self, *, event: AgendaEventRecord) -> bool:
+    async def _send_due_reminder(self, *, event: AgendaEventRecord, phase: str) -> bool:
         owner_target = await self._resolve_owner_chat_target(preferred_channel="agent")
         if not owner_target:
             await self._log_debug(
-                f"[Guardião do Tempo] Horário de '{event.titulo}' chegou, mas o número conectado não foi localizado."
+                f"[Guardião do Tempo] Lembrete de '{event.titulo}' não pôde ser entregue porque o número conectado não foi localizado."
             )
             return False
 
         status_label = "Firme" if event.status == "firme" else "Tentativo"
-        message_text = (
-            f"⏰ AuraCore: Chegou o horário de '{event.titulo}'.\n"
-            f"Início: {self._format_local(event.inicio)}\n"
-            f"Status: {status_label}\n"
-            f"Origem: {event.contato_origem or 'não identificada'}"
-        )
+        if phase == "pre":
+            message_text = (
+                f"⏰ AuraCore: Lembrete antecipado de '{event.titulo}'.\n"
+                f"Começa em {event.reminder_offset_minutes} minuto(s), às {self._format_local(event.inicio)}.\n"
+                f"Status: {status_label}\n"
+                f"Origem: {event.contato_origem or 'não identificada'}\n"
+                "Horário de Brasília."
+            )
+        else:
+            message_text = (
+                f"⏰ AuraCore: Chegou o horário de '{event.titulo}'.\n"
+                f"Início: {self._format_local(event.inicio)}\n"
+                f"Status: {status_label}\n"
+                f"Origem: {event.contato_origem or 'não identificada'}\n"
+                "Horário de Brasília."
+            )
 
         try:
             await self.agent_gateway.send_text_message(chat_jid=owner_target, message_text=message_text)
-            await self._log_debug(f"[Guardião do Tempo] Lembrete enviado para '{event.titulo}'.")
+            await self._log_debug(
+                f"[Guardião do Tempo] Lembrete {'antecipado' if phase == 'pre' else 'no horário'} enviado para '{event.titulo}'."
+            )
             return True
         except Exception as agent_exc:
             logger.warning("agenda_due_reminder_agent_failed event_id=%s detail=%s", event.id, str(agent_exc))
             try:
                 await self.observer_gateway.send_text_message(chat_jid=owner_target, message_text=message_text)
-                await self._log_debug(f"[Guardião do Tempo] Lembrete enviado via observador para '{event.titulo}'.")
+                await self._log_debug(
+                    f"[Guardião do Tempo] Lembrete {'antecipado' if phase == 'pre' else 'no horário'} enviado via observador para '{event.titulo}'."
+                )
                 return True
             except Exception as observer_exc:
                 await self._log_debug(
@@ -427,6 +489,48 @@ class AgendaGuardianService:
     def _fallback_title(self, text: str) -> str:
         compact = " ".join(text.split()).strip()
         return compact[:120] if compact else "Compromisso"
+
+    def _extract_reminder_offset_minutes(self, text: str) -> int:
+        compact = " ".join(text.split()).strip().lower()
+        if not compact:
+            return 0
+        for pattern in REMINDER_OFFSET_REGEXES:
+            match = pattern.search(compact)
+            if not match:
+                continue
+            amount = self._parse_reminder_amount(match.group("amount"))
+            unit = (match.group("unit") or "").strip().lower()
+            if amount <= 0:
+                continue
+            if unit.startswith("min"):
+                return min(amount, 10080)
+            if unit.startswith("h"):
+                return min(amount * 60, 10080)
+            if unit.startswith("dia"):
+                return min(amount * 24 * 60, 10080)
+        return 0
+
+    def _parse_reminder_amount(self, raw_value: str | None) -> int:
+        value = (raw_value or "").strip().lower()
+        if not value:
+            return 0
+        if value == "meia":
+            return 30
+        if value in {"uma", "um"}:
+            return 1
+        try:
+            return max(0, int(value))
+        except ValueError:
+            return 0
+
+    def format_reminder_rule(self, event: AgendaEventRecord) -> str:
+        if event.reminder_offset_minutes > 0:
+            pre_time = event.inicio - timedelta(minutes=event.reminder_offset_minutes)
+            return (
+                f"{event.reminder_offset_minutes} minuto(s) antes em {self._format_local(pre_time)} "
+                "e novamente no horário de Brasília"
+            )
+        return "Somente no horário de Brasília"
 
     def format_local_datetime(self, value: datetime) -> str:
         return self._format_local(value)

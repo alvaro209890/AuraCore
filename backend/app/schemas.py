@@ -530,6 +530,9 @@ class AgendaEventResponse(BaseModel):
     message_id: str
     has_conflict: bool = False
     conflict: AgendaConflictResponse | None = None
+    reminder_offset_minutes: int = Field(default=0, ge=0)
+    pre_reminder_at: datetime | None = None
+    pre_reminder_sent_at: datetime | None = None
     reminder_sent_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
@@ -545,6 +548,7 @@ class UpdateAgendaEventRequest(BaseModel):
     fim: datetime | None = None
     status: Literal["firme", "tentativo"] | None = None
     contato_origem: str | None = Field(default=None, max_length=160)
+    reminder_offset_minutes: int | None = Field(default=None, ge=0, le=10080)
 
 
 class SendChatMessageRequest(BaseModel):

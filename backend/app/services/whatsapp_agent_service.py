@@ -564,16 +564,18 @@ class WhatsAppAgentService:
         event = outcome.saved_event
         status_label = "como firme" if event.status == "firme" else "como tentativo"
         event_time = self.agenda_guardian_service.format_local_datetime(event.inicio)
+        reminder_rule = self.agenda_guardian_service.format_reminder_rule(event)
         if outcome.conflict_event is not None:
             conflict_time = self.agenda_guardian_service.format_local_datetime(outcome.conflict_event.inicio)
             return (
                 f"Anotei na agenda '{event.titulo}' para {event_time}, {status_label}. "
+                f"Lembretes: {reminder_rule}. "
                 f"Também encontrei conflito com '{outcome.conflict_event.titulo}' no mesmo horário ({conflict_time}). "
                 "Se quiser, depois eu ajusto com você."
             )
         return (
             f"Anotei na agenda '{event.titulo}' para {event_time}, {status_label}. "
-            "Vou te lembrar quando chegar o horário."
+            f"Lembretes: {reminder_rule}."
         )
 
     async def _learn_from_inbound_message(

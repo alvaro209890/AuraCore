@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -45,6 +45,9 @@ async def list_agenda_events(
                 message_id=event.message_id,
                 has_conflict=conflict is not None,
                 conflict=conflict,
+                reminder_offset_minutes=event.reminder_offset_minutes,
+                pre_reminder_at=_resolve_pre_reminder_at(event),
+                pre_reminder_sent_at=event.pre_reminder_sent_at,
                 reminder_sent_at=event.reminder_sent_at,
                 created_at=event.created_at,
                 updated_at=event.updated_at,
@@ -75,6 +78,7 @@ async def update_agenda_event(
         fim=payload.fim,
         status=payload.status,
         contato_origem=payload.contato_origem,
+        reminder_offset_minutes=payload.reminder_offset_minutes,
         reset_reminder=True,
     )
     if updated is None:
@@ -90,6 +94,9 @@ async def update_agenda_event(
         message_id=updated.message_id,
         has_conflict=conflict is not None,
         conflict=conflict,
+        reminder_offset_minutes=updated.reminder_offset_minutes,
+        pre_reminder_at=_resolve_pre_reminder_at(updated),
+        pre_reminder_sent_at=updated.pre_reminder_sent_at,
         reminder_sent_at=updated.reminder_sent_at,
         created_at=updated.created_at,
         updated_at=updated.updated_at,
@@ -128,3 +135,9 @@ def _resolve_first_conflict(*, store: SupabaseStore, event: AgendaEventRecord) -
         contato_origem=item.contato_origem,
         message_id=item.message_id,
     )
+
+
+def _resolve_pre_reminder_at(event: AgendaEventRecord) -> datetime | None:
+    if event.reminder_offset_minutes <= 0:
+        return None
+    return event.inicio - timedelta(minutes=event.reminder_offset_minutes)

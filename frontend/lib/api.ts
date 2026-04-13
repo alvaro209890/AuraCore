@@ -232,6 +232,9 @@ export type AgendaEvent = {
   message_id: string;
   has_conflict: boolean;
   conflict: AgendaConflict | null;
+  reminder_offset_minutes: number;
+  pre_reminder_at: string | null;
+  pre_reminder_sent_at: string | null;
   reminder_sent_at: string | null;
   created_at: string;
   updated_at: string;
@@ -243,6 +246,7 @@ export type UpdateAgendaEventInput = {
   fim?: string;
   status?: "firme" | "tentativo";
   contato_origem?: string;
+  reminder_offset_minutes?: number;
 };
 
 export type ProjectAssistantEditResponse = {

@@ -68,6 +68,8 @@ SQLITE_LEGACY_COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
         "coverage_score": "INTEGER DEFAULT 0",
     },
     "agenda": {
+        "reminder_offset_minutes": "INTEGER NOT NULL DEFAULT 0",
+        "pre_reminder_sent_at": "TEXT",
         "reminder_sent_at": "TEXT",
     },
 }
@@ -311,6 +313,8 @@ class AgendaEventRecord:
     status: str
     contato_origem: str | None
     message_id: str
+    reminder_offset_minutes: int
+    pre_reminder_sent_at: datetime | None
     reminder_sent_at: datetime | None
     created_at: datetime
     updated_at: datetime
@@ -2778,7 +2782,10 @@ class SupabaseStore:
     def get_agenda_event_by_message_id(self, *, user_id: UUID, message_id: str) -> AgendaEventRecord | None:
         response = (
             self.client.table("agenda")
-            .select("id,user_id,titulo,inicio,fim,status,contato_origem,message_id,reminder_sent_at,created_at,updated_at")
+            .select(
+                "id,user_id,titulo,inicio,fim,status,contato_origem,message_id,"
+                "reminder_offset_minutes,pre_reminder_sent_at,reminder_sent_at,created_at,updated_at"
+            )
             .eq("user_id", str(user_id))
             .eq("message_id", message_id.strip())
             .limit(1)
@@ -2799,6 +2806,7 @@ class SupabaseStore:
         status: str,
         contato_origem: str | None,
         message_id: str,
+        reminder_offset_minutes: int = 0,
     ) -> AgendaEventRecord:
         existing = self.get_agenda_event_by_message_id(user_id=user_id, message_id=message_id)
         now = datetime.now(UTC)
@@ -2811,6 +2819,10 @@ class SupabaseStore:
             "status": "firme" if str(status).strip().lower() == "firme" else "tentativo",
             "contato_origem": self._optional_text(contato_origem),
             "message_id": message_id.strip(),
+            "reminder_offset_minutes": max(0, int(reminder_offset_minutes)),
+            "pre_reminder_sent_at": (
+                existing.pre_reminder_sent_at.isoformat() if existing and existing.pre_reminder_sent_at else None
+            ),
             "reminder_sent_at": existing.reminder_sent_at.isoformat() if existing and existing.reminder_sent_at else None,
             "created_at": (existing.created_at if existing else now).astimezone(UTC).isoformat(),
             "updated_at": now.isoformat(),
@@ -2831,7 +2843,8 @@ class SupabaseStore:
         limit: int = 5,
     ) -> list[AgendaEventRecord]:
         sql = """
-            SELECT id,user_id,titulo,inicio,fim,status,contato_origem,message_id,reminder_sent_at,created_at,updated_at
+            SELECT id,user_id,titulo,inicio,fim,status,contato_origem,message_id,
+                   reminder_offset_minutes,pre_reminder_sent_at,reminder_sent_at,created_at,updated_at
             FROM agenda
             WHERE user_id = ?
               AND inicio < ?
@@ -2865,7 +2878,10 @@ class SupabaseStore:
     ) -> list[AgendaEventRecord]:
         query = (
             self.client.table("agenda")
-            .select("id,user_id,titulo,inicio,fim,status,contato_origem,message_id,reminder_sent_at,created_at,updated_at")
+            .select(
+                "id,user_id,titulo,inicio,fim,status,contato_origem,message_id,"
+                "reminder_offset_minutes,pre_reminder_sent_at,reminder_sent_at,created_at,updated_at"
+            )
             .eq("user_id", str(user_id))
             .order("inicio", desc=False)
             .limit(max(1, limit))
@@ -2884,7 +2900,10 @@ class SupabaseStore:
     def get_agenda_event(self, *, user_id: UUID, event_id: str) -> AgendaEventRecord | None:
         response = (
             self.client.table("agenda")
-            .select("id,user_id,titulo,inicio,fim,status,contato_origem,message_id,reminder_sent_at,created_at,updated_at")
+            .select(
+                "id,user_id,titulo,inicio,fim,status,contato_origem,message_id,"
+                "reminder_offset_minutes,pre_reminder_sent_at,reminder_sent_at,created_at,updated_at"
+            )
             .eq("user_id", str(user_id))
             .eq("id", event_id)
             .limit(1)
@@ -2905,6 +2924,7 @@ class SupabaseStore:
         fim: datetime | None = None,
         status: str | None = None,
         contato_origem: str | None = None,
+        reminder_offset_minutes: int | None = None,
         reset_reminder: bool = True,
     ) -> AgendaEventRecord | None:
         existing = self.get_agenda_event(user_id=user_id, event_id=event_id)
@@ -2923,7 +2943,10 @@ class SupabaseStore:
             payload["status"] = "firme" if str(status).strip().lower() == "firme" else "tentativo"
         if contato_origem is not None:
             payload["contato_origem"] = self._optional_text(contato_origem)
+        if reminder_offset_minutes is not None:
+            payload["reminder_offset_minutes"] = max(0, int(reminder_offset_minutes))
         if reset_reminder:
+            payload["pre_reminder_sent_at"] = None
             payload["reminder_sent_at"] = None
         self.client.table("agenda").update(payload).eq("user_id", str(user_id)).eq("id", event_id).execute()
         return self.get_agenda_event(user_id=user_id, event_id=event_id)
@@ -2935,6 +2958,34 @@ class SupabaseStore:
         self.client.table("agenda").delete().eq("user_id", str(user_id)).eq("id", event_id).execute()
         return True
 
+    def list_due_agenda_pre_reminders(
+        self,
+        *,
+        user_id: UUID,
+        due_before: datetime,
+        limit: int = 10,
+    ) -> list[AgendaEventRecord]:
+        sql = """
+            SELECT id,user_id,titulo,inicio,fim,status,contato_origem,message_id,
+                   reminder_offset_minutes,pre_reminder_sent_at,reminder_sent_at,created_at,updated_at
+            FROM agenda
+            WHERE user_id = ?
+              AND reminder_offset_minutes > 0
+              AND datetime(inicio, '-' || reminder_offset_minutes || ' minutes') <= ?
+              AND inicio > ?
+              AND (pre_reminder_sent_at IS NULL OR trim(pre_reminder_sent_at) = '')
+            ORDER BY inicio ASC
+            LIMIT ?
+        """
+        due_before_iso = due_before.astimezone(UTC).isoformat()
+        rows = self.client.fetchall(sql, (str(user_id), due_before_iso, due_before_iso, max(1, limit)))
+        events: list[AgendaEventRecord] = []
+        for row in rows:
+            parsed = self._parse_agenda_event(row, fallback_user_id=user_id)
+            if parsed is not None:
+                events.append(parsed)
+        return events
+
     def list_due_agenda_events(
         self,
         *,
@@ -2943,7 +2994,8 @@ class SupabaseStore:
         limit: int = 10,
     ) -> list[AgendaEventRecord]:
         sql = """
-            SELECT id,user_id,titulo,inicio,fim,status,contato_origem,message_id,reminder_sent_at,created_at,updated_at
+            SELECT id,user_id,titulo,inicio,fim,status,contato_origem,message_id,
+                   reminder_offset_minutes,pre_reminder_sent_at,reminder_sent_at,created_at,updated_at
             FROM agenda
             WHERE user_id = ?
               AND inicio <= ?
@@ -2958,6 +3010,21 @@ class SupabaseStore:
             if parsed is not None:
                 events.append(parsed)
         return events
+
+    def mark_agenda_event_pre_reminded(
+        self,
+        *,
+        user_id: UUID,
+        event_id: str,
+        reminded_at: datetime,
+    ) -> AgendaEventRecord | None:
+        self.client.table("agenda").update(
+            {
+                "pre_reminder_sent_at": reminded_at.astimezone(UTC).isoformat(),
+                "updated_at": reminded_at.astimezone(UTC).isoformat(),
+            }
+        ).eq("user_id", str(user_id)).eq("id", event_id).execute()
+        return self.get_agenda_event(user_id=user_id, event_id=event_id)
 
     def mark_agenda_event_reminded(
         self,
@@ -6474,6 +6541,8 @@ class SupabaseStore:
             status="firme" if str(value.get("status") or "").strip().lower() == "firme" else "tentativo",
             contato_origem=self._optional_text(value.get("contato_origem")),
             message_id=message_id,
+            reminder_offset_minutes=max(0, int(value.get("reminder_offset_minutes") or 0)),
+            pre_reminder_sent_at=self._parse_datetime(value.get("pre_reminder_sent_at")),
             reminder_sent_at=self._parse_datetime(value.get("reminder_sent_at")),
             created_at=self._parse_datetime(value.get("created_at")) or datetime.now(UTC),
             updated_at=self._parse_datetime(value.get("updated_at")) or datetime.now(UTC),

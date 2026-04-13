@@ -269,6 +269,7 @@ const runFirstMemoryAnalysis = () => executeMemoryAnalysis("first_analysis");
 const runNextMemoryBatch = () => executeMemoryAnalysis("improve_memory");
 
 const IDLE_AGENT_STATUS = "Nenhuma atualização em andamento.";
+const BRAZIL_TIMEZONE = "America/Sao_Paulo";
 
 const ANALYZE_STEPS: AgentStep[] = [
   {
@@ -367,6 +368,7 @@ function formatDateTime(value: string | null | undefined): string {
   return new Date(value).toLocaleString("pt-BR", {
     dateStyle: "short",
     timeStyle: "short",
+    timeZone: BRAZIL_TIMEZONE,
   });
 }
 
@@ -380,7 +382,49 @@ function formatShortDateTime(value: string | null | undefined): string {
     month: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
+    timeZone: BRAZIL_TIMEZONE,
   });
+}
+
+function formatBrazilDateTimeInput(value: string | null | undefined): string {
+  if (!value) {
+    return "";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  const formatter = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: BRAZIL_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  });
+  const parts = formatter.formatToParts(date);
+  const read = (type: Intl.DateTimeFormatPartTypes): string => parts.find((part) => part.type === type)?.value ?? "00";
+  return `${read("year")}-${read("month")}-${read("day")}T${read("hour")}:${read("minute")}`;
+}
+
+function parseBrazilDateTimeInput(value: string): Date {
+  return new Date(`${value}:00-03:00`);
+}
+
+function formatReminderOffsetLabel(minutes: number): string {
+  if (minutes <= 0) {
+    return "No horário";
+  }
+  if (minutes % 1440 === 0) {
+    const days = minutes / 1440;
+    return `${days} dia${days > 1 ? "s" : ""} antes`;
+  }
+  if (minutes % 60 === 0) {
+    const hours = minutes / 60;
+    return `${hours} hora${hours > 1 ? "s" : ""} antes`;
+  }
+  return `${minutes} min antes`;
 }
 
 function formatRelativeTime(value: string | null | undefined): string {
@@ -5497,6 +5541,7 @@ function AgendaTab({
     fim: string;
     status: "firme" | "tentativo";
     contato_origem: string;
+    reminder_offset_minutes: string;
   };
 
   const [filter, setFilter] = useState<"all" | "upcoming" | "firm" | "tentative" | "conflicts">("all");
@@ -5539,25 +5584,13 @@ function AgendaTab({
     { id: "conflicts" as const, label: "Conflitos", count: conflictCount },
   ];
 
-  const toDateTimeLocalValue = (iso: string): string => {
-    const date = new Date(iso);
-    if (Number.isNaN(date.getTime())) {
-      return "";
-    }
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, "0");
-    const day = String(date.getDate()).padStart(2, "0");
-    const hours = String(date.getHours()).padStart(2, "0");
-    const minutes = String(date.getMinutes()).padStart(2, "0");
-    return `${year}-${month}-${day}T${hours}:${minutes}`;
-  };
-
   const buildDraft = (event: AgendaEvent): AgendaEditDraft => ({
     titulo: event.titulo,
-    inicio: toDateTimeLocalValue(event.inicio),
-    fim: toDateTimeLocalValue(event.fim),
+    inicio: formatBrazilDateTimeInput(event.inicio),
+    fim: formatBrazilDateTimeInput(event.fim),
     status: event.status,
     contato_origem: event.contato_origem ?? "",
+    reminder_offset_minutes: String(event.reminder_offset_minutes ?? 0),
   });
 
   const openEdit = (event: AgendaEvent): void => {
@@ -5575,8 +5608,9 @@ function AgendaTab({
   async function handleSave(event: AgendaEvent): Promise<void> {
     const draft = agendaDrafts[event.id] ?? buildDraft(event);
     const titulo = draft.titulo.trim();
-    const inicio = new Date(draft.inicio);
-    const fim = new Date(draft.fim);
+    const inicio = parseBrazilDateTimeInput(draft.inicio);
+    const fim = parseBrazilDateTimeInput(draft.fim);
+    const reminderOffsetMinutes = Number.parseInt(draft.reminder_offset_minutes || "0", 10);
 
     if (!titulo) {
       toast.error("Informe um título para o compromisso.");
@@ -5590,6 +5624,10 @@ function AgendaTab({
       toast.error("O horário final precisa ser depois do início.");
       return;
     }
+    if (Number.isNaN(reminderOffsetMinutes) || reminderOffsetMinutes < 0) {
+      toast.error("A antecedência do lembrete precisa ser um número igual ou maior que zero.");
+      return;
+    }
 
     try {
       await onSaveEvent(event, {
@@ -5598,6 +5636,7 @@ function AgendaTab({
         fim: fim.toISOString(),
         status: draft.status,
         contato_origem: draft.contato_origem.trim() || undefined,
+        reminder_offset_minutes: reminderOffsetMinutes,
       });
       closeEdit();
       toast.success("Compromisso atualizado.");
@@ -5822,6 +5861,27 @@ function AgendaTab({
                         />
                       </label>
                     </div>
+                    <div className="dual-column-grid" style={{ marginTop: 0 }}>
+                      <label>
+                        <span className="support-copy">Antecedência do lembrete em Brasília</span>
+                        <input
+                          className="ac-input"
+                          min="0"
+                          onChange={(editEvent) =>
+                            setAgendaDrafts((current) => ({
+                              ...current,
+                              [event.id]: { ...draft, reminder_offset_minutes: editEvent.target.value },
+                            }))
+                          }
+                          step="1"
+                          type="number"
+                          value={draft.reminder_offset_minutes}
+                        />
+                      </label>
+                      <div className="support-copy" style={{ alignSelf: "end", paddingBottom: "0.75rem" }}>
+                        Horário do formulário: Brasília (UTC-3)
+                      </div>
+                    </div>
                     <div className="hero-actions">
                       <button
                         className="ac-primary-button"
@@ -5847,9 +5907,19 @@ function AgendaTab({
                       ID da mensagem: <code>{event.message_id}</code>
                     </p>
                     <p className="support-copy">
+                      Regra de lembrete: {formatReminderOffsetLabel(event.reminder_offset_minutes)} em horário de Brasília.
+                    </p>
+                    <p className="support-copy">
+                      {event.pre_reminder_at
+                        ? event.pre_reminder_sent_at
+                          ? `Lembrete antecipado enviado em ${formatShortDateTime(event.pre_reminder_sent_at)}.`
+                          : `Lembrete antecipado programado para ${formatShortDateTime(event.pre_reminder_at)}.`
+                        : "Sem lembrete antecipado configurado."}
+                    </p>
+                    <p className="support-copy">
                       {event.reminder_sent_at
-                        ? `Lembrete enviado em ${formatShortDateTime(event.reminder_sent_at)}.`
-                        : "Lembrete ainda pendente."}
+                        ? `Lembrete do horário enviado em ${formatShortDateTime(event.reminder_sent_at)}.`
+                        : "Lembrete do horário ainda pendente."}
                     </p>
                     {event.conflict ? (
                       <div className="danger-box" style={{ marginTop: 12 }}>
