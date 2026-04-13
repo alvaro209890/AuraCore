@@ -330,6 +330,7 @@ class MemoryStatusResponse(BaseModel):
     new_messages_after_first_analysis: int = Field(ge=0)
     current_job: "AnalysisJobResponse | None" = None
     latest_completed_job: "AnalysisJobResponse | None" = None
+    sync_in_progress: bool = False
     can_execute_analysis: bool
 
 

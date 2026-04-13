@@ -4618,7 +4618,8 @@ function MemoryTab({
   const latestCompletedJob = memoryStatus?.latest_completed_job ?? null;
   const canExecuteAnalysis = memoryStatus?.can_execute_analysis ?? false;
   const currentJobIsPending = currentJob?.status === "queued" || currentJob?.status === "running";
-  const hasPendingJob = currentJobIsPending || !!queuedJobId;
+  const autoInitialSyncInProgress = !memoryReady && (memoryStatus?.sync_in_progress ?? false);
+  const hasPendingJob = currentJobIsPending || !!queuedJobId || autoInitialSyncInProgress;
   const latestSyncRun = memoryActivity?.sync_runs[0] ?? null;
   const latestJob = memoryActivity?.jobs[0] ?? latestCompletedJob;
   const latestModelRun = memoryActivity?.model_runs[0] ?? null;
@@ -4644,7 +4645,9 @@ function MemoryTab({
     : pendingNewMessages > 0
       ? `Executar Analise (${formatTokenCount(pendingNewMessages)} novas)`
       : "Aguardando mensagens novas";
-  const blockedReason = currentJobIsPending
+  const blockedReason = autoInitialSyncInProgress
+    ? "O backend ainda está fechando a coleta inicial automática do WhatsApp. A primeira análise será colocada na fila sozinha assim que esse lote for persistido."
+    : currentJobIsPending
     ? currentJob.intent === "first_analysis"
       ? currentJob.status === "queued"
         ? "A primeira analise ja foi colocada na fila automatica pelo backend."

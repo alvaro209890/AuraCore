@@ -405,6 +405,7 @@ class DeepSeekService:
         source_message_count: int,
         partial_analysis_count: int,
         contains_group_messages: bool = False,
+        max_output_tokens: int | None = None,
     ) -> DeepSeekMemoryResult:
         payload = self._build_completion_payload(
             system_prompt=(
@@ -428,7 +429,7 @@ class DeepSeekService:
                 partial_analysis_count=partial_analysis_count,
                 contains_group_messages=contains_group_messages,
             ),
-            max_tokens=self._analysis_max_output_tokens(intent=intent),
+            max_tokens=max_output_tokens or self._analysis_max_output_tokens(intent=intent),
         )
         return await self._request_parsed_completion(
             payload=payload,

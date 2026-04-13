@@ -161,6 +161,7 @@ export type MemoryStatus = {
   new_messages_after_first_analysis: number;
   current_job: AnalysisJob | null;
   latest_completed_job: AnalysisJob | null;
+  sync_in_progress: boolean;
   can_execute_analysis: boolean;
 };
 

@@ -113,7 +113,8 @@ async def _build_records(
     bundle: ServiceBundle,
 ) -> tuple[list[IngestedMessageRecord], int]:
     persona = await run_in_threadpool(store.get_persona, store.default_user_id)
-    allow_audio_transcription = bool(persona.last_analyzed_at)
+    # New accounts may not have a persona row yet; first ingest must still proceed.
+    allow_audio_transcription = bool(persona and persona.last_analyzed_at)
     records: list[IngestedMessageRecord] = []
     skipped_audio_count = 0
     for item in payload.messages:

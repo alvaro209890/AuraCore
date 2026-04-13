@@ -3,6 +3,7 @@ Description=AuraCore Cloudflare Tunnel (user)
 After=network-online.target auracore-backend.service
 Wants=network-online.target
 Requires=auracore-backend.service
+PartOf=auracore-backend.service
 
 [Service]
 Type=simple

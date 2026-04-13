@@ -1342,48 +1342,10 @@ class MemoryAnalysisService:
                 open_questions_context=prompt_context.open_questions_context,
             )
         else:
-            try:
-                deepseek_result = await self._run_analyze_memory_request(
-                    plan=plan,
-                    context=prompt_context,
-                )
-            except DeepSeekError as exc:
-                if not self._should_retry_analyze_memory_with_compact_context(plan=plan, error=exc):
-                    raise
-                compact_context = self._build_compact_analysis_prompt_context(prompt_context)
-                compact_max_output_tokens = self._compact_analysis_max_output_tokens()
-                logger.warning(
-                    "fixed_plan_stage_retry stage=analyze_memory intent=%s reason=compact_context_retry "
-                    "compact_max_output_tokens=%s error=%s",
-                    plan.intent,
-                    compact_max_output_tokens,
-                    str(exc),
-                )
-                self._log_analysis_prompt_context_sizes(plan=plan, context=compact_context, stage="compact_retry")
-                try:
-                    deepseek_result = await self._run_analyze_memory_request(
-                        plan=plan,
-                        context=compact_context,
-                        max_output_tokens=compact_max_output_tokens,
-                    )
-                except DeepSeekError as compact_exc:
-                    if not self._should_retry_analyze_memory_with_compact_context(plan=plan, error=compact_exc):
-                        raise
-                    minimal_context = self._build_minimal_analysis_prompt_context(prompt_context)
-                    minimal_max_output_tokens = self._minimal_analysis_max_output_tokens()
-                    logger.warning(
-                        "fixed_plan_stage_retry stage=analyze_memory intent=%s reason=minimal_context_retry "
-                        "minimal_max_output_tokens=%s error=%s",
-                        plan.intent,
-                        minimal_max_output_tokens,
-                        str(compact_exc),
-                    )
-                    self._log_analysis_prompt_context_sizes(plan=plan, context=minimal_context, stage="minimal_retry")
-                    deepseek_result = await self._run_analyze_memory_request(
-                        plan=plan,
-                        context=minimal_context,
-                        max_output_tokens=minimal_max_output_tokens,
-                    )
+            deepseek_result = await self._run_analysis_request_with_fallbacks(
+                plan=plan,
+                context=prompt_context,
+            )
         logger.info(
             "fixed_plan_stage_done stage=analyze_memory intent=%s projects=%s contacts=%s open_questions=%s",
             plan.intent,
@@ -1565,8 +1527,6 @@ class MemoryAnalysisService:
         plan: FixedAnalysisPlan,
         error: DeepSeekError,
     ) -> bool:
-        if plan.intent != "improve_memory":
-            return False
         detail = str(error).strip().lower()
         return (
             "timeout" in detail
@@ -1686,6 +1646,115 @@ class MemoryAnalysisService:
             return 4200
         return 2200
 
+    async def _run_analysis_request_with_fallbacks(
+        self,
+        *,
+        plan: FixedAnalysisPlan,
+        context: AnalyzeMemoryPromptContext,
+    ) -> DeepSeekMemoryResult:
+        try:
+            return await self._run_analyze_memory_request(
+                plan=plan,
+                context=context,
+            )
+        except DeepSeekError as exc:
+            if not self._should_retry_analyze_memory_with_compact_context(plan=plan, error=exc):
+                raise
+            compact_context = self._build_compact_analysis_prompt_context(context)
+            compact_max_output_tokens = self._compact_analysis_max_output_tokens()
+            logger.warning(
+                "fixed_plan_stage_retry stage=analyze_memory intent=%s reason=compact_context_retry "
+                "compact_max_output_tokens=%s error=%s",
+                plan.intent,
+                compact_max_output_tokens,
+                str(exc),
+            )
+            self._log_analysis_prompt_context_sizes(plan=plan, context=compact_context, stage="compact_retry")
+            try:
+                return await self._run_analyze_memory_request(
+                    plan=plan,
+                    context=compact_context,
+                    max_output_tokens=compact_max_output_tokens,
+                )
+            except DeepSeekError as compact_exc:
+                if not self._should_retry_analyze_memory_with_compact_context(plan=plan, error=compact_exc):
+                    raise
+                minimal_context = self._build_minimal_analysis_prompt_context(context)
+                minimal_max_output_tokens = self._minimal_analysis_max_output_tokens()
+                logger.warning(
+                    "fixed_plan_stage_retry stage=analyze_memory intent=%s reason=minimal_context_retry "
+                    "minimal_max_output_tokens=%s error=%s",
+                    plan.intent,
+                    minimal_max_output_tokens,
+                    str(compact_exc),
+                )
+                self._log_analysis_prompt_context_sizes(plan=plan, context=minimal_context, stage="minimal_retry")
+                return await self._run_analyze_memory_request(
+                    plan=plan,
+                    context=minimal_context,
+                    max_output_tokens=minimal_max_output_tokens,
+                )
+
+    async def _run_first_analysis_synthesis_with_fallbacks(
+        self,
+        *,
+        partial_analyses_block: str,
+        conversation_context: str,
+        current_life_summary: str,
+        prior_analyses_context: str,
+        project_context: str,
+        chat_context: str,
+        open_questions_context: str,
+        window_hours: int,
+        window_start: datetime,
+        window_end: datetime,
+        source_message_count: int,
+        partial_analysis_count: int,
+        contains_group_messages: bool,
+    ) -> DeepSeekMemoryResult:
+        try:
+            return await self.deepseek_service.synthesize_memory_analyses(
+                partial_analyses_block=partial_analyses_block,
+                conversation_context=conversation_context,
+                current_life_summary=current_life_summary,
+                prior_analyses_context=prior_analyses_context,
+                project_context=project_context,
+                chat_context=chat_context,
+                open_questions_context=open_questions_context,
+                intent="first_analysis",
+                window_hours=window_hours,
+                window_start=window_start,
+                window_end=window_end,
+                source_message_count=source_message_count,
+                partial_analysis_count=partial_analysis_count,
+                contains_group_messages=contains_group_messages,
+            )
+        except DeepSeekError as exc:
+            detail = str(exc).strip().lower()
+            if not any(token in detail for token in ("timeout", "timed out", "readtimeout")):
+                raise
+            logger.warning(
+                "first_analysis_synthesis_retry reason=compact_context_retry error=%s",
+                str(exc),
+            )
+            return await self.deepseek_service.synthesize_memory_analyses(
+                partial_analyses_block=self._truncate_context_block(partial_analyses_block, char_budget=2600),
+                conversation_context=self._compact_context_block(conversation_context, char_budget=900, max_lines=10),
+                current_life_summary=self._compact_context_block(current_life_summary, char_budget=700, max_lines=8),
+                prior_analyses_context=self._compact_context_block(prior_analyses_context, char_budget=650, max_lines=8),
+                project_context=self._compact_context_block(project_context, char_budget=700, max_lines=8),
+                chat_context=self._compact_context_block(chat_context, char_budget=260, max_lines=4),
+                open_questions_context=self._compact_context_block(open_questions_context, char_budget=180, max_lines=4),
+                intent="first_analysis",
+                window_hours=window_hours,
+                window_start=window_start,
+                window_end=window_end,
+                source_message_count=source_message_count,
+                partial_analysis_count=partial_analysis_count,
+                contains_group_messages=contains_group_messages,
+                max_output_tokens=self._minimal_analysis_max_output_tokens(),
+            )
+
     def _log_analysis_prompt_context_sizes(
         self,
         *,
@@ -1747,21 +1816,9 @@ class MemoryAnalysisService:
                     open_questions_context=open_questions_context,
                 )
             )
-            return await self.deepseek_service.analyze_memory(
-                transcript=single_chunk_context.transcript,
-                conversation_context=single_chunk_context.conversation_context,
-                people_memory_context=single_chunk_context.people_memory_context,
-                current_life_summary=single_chunk_context.current_life_summary,
-                prior_analyses_context=single_chunk_context.prior_analyses_context,
-                project_context=single_chunk_context.project_context,
-                chat_context=single_chunk_context.chat_context,
-                open_questions_context=single_chunk_context.open_questions_context,
-                intent="first_analysis",
-                window_hours=max(1, ceil((single_chunk.window_end - single_chunk.window_start).total_seconds() / 3600)),
-                window_start=single_chunk.window_start,
-                window_end=single_chunk.window_end,
-                source_message_count=len(single_chunk.source_messages),
-                contains_group_messages=any(self._is_group_message(message) for message in single_chunk.source_messages),
+            return await self._run_analysis_request_with_fallbacks(
+                plan=plan,
+                context=single_chunk_context,
             )
 
         logger.info(
@@ -1796,21 +1853,25 @@ class MemoryAnalysisService:
                 chunk.window_start.isoformat(),
                 chunk.window_end.isoformat(),
             )
-            partial = await self.deepseek_service.analyze_memory(
-                transcript=chunk_context.transcript,
-                conversation_context=chunk_context.conversation_context,
-                people_memory_context=chunk_context.people_memory_context,
-                current_life_summary=chunk_context.current_life_summary,
-                prior_analyses_context=chunk_context.prior_analyses_context,
-                project_context=chunk_context.project_context,
-                chat_context=chunk_context.chat_context,
-                open_questions_context=chunk_context.open_questions_context,
+            chunk_plan = FixedAnalysisPlan(
                 intent="first_analysis",
+                source_messages=chunk.source_messages,
+                transcript=chunk.transcript,
+                conversation_context=chunk.conversation_context,
+                people_memory_context=chunk.people_memory_context,
                 window_hours=max(1, ceil((chunk.window_end - chunk.window_start).total_seconds() / 3600)),
                 window_start=chunk.window_start,
                 window_end=chunk.window_end,
-                source_message_count=len(chunk.source_messages),
-                contains_group_messages=any(self._is_group_message(message) for message in chunk.source_messages),
+                selected_transcript_chars=chunk.selected_transcript_chars,
+                estimated_input_tokens=plan.estimated_input_tokens,
+                estimated_output_tokens=plan.estimated_output_tokens,
+                estimated_reasoning_tokens=plan.estimated_reasoning_tokens,
+                estimated_cost_floor_usd=plan.estimated_cost_floor_usd,
+                estimated_cost_ceiling_usd=plan.estimated_cost_ceiling_usd,
+            )
+            partial = await self._run_analysis_request_with_fallbacks(
+                plan=chunk_plan,
+                context=chunk_context,
             )
             logger.info(
                 "first_analysis_chunk_done chunk=%s/%s projects=%s contacts=%s open_questions=%s",
@@ -1957,7 +2018,7 @@ class MemoryAnalysisService:
                     group_window_start.isoformat(),
                     group_window_end.isoformat(),
                 )
-                synthesized = await self.deepseek_service.synthesize_memory_analyses(
+                synthesized = await self._run_first_analysis_synthesis_with_fallbacks(
                     partial_analyses_block=partial_analyses_block,
                     conversation_context=synthesis_context.conversation_context,
                     current_life_summary=synthesis_context.current_life_summary,
@@ -1965,7 +2026,6 @@ class MemoryAnalysisService:
                     project_context=synthesis_context.project_context,
                     chat_context=synthesis_context.chat_context,
                     open_questions_context=synthesis_context.open_questions_context,
-                    intent="first_analysis",
                     window_hours=max(1, ceil((group_window_end - group_window_start).total_seconds() / 3600)),
                     window_start=group_window_start,
                     window_end=group_window_end,

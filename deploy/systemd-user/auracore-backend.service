@@ -1,7 +1,7 @@
 [Unit]
 Description=AuraCore Backend (user)
 After=network-online.target
-Wants=network-online.target
+Wants=network-online.target auracore-cloudflared.service
 
 [Service]
 Type=simple
