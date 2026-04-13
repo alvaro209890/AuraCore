@@ -1,8 +1,7 @@
 [Unit]
 Description=AuraCore WhatsApp Gateway (user)
 After=network-online.target auracore-backend.service
-Wants=network-online.target
-Requires=auracore-backend.service
+Wants=network-online.target auracore-backend.service
 
 [Service]
 Type=simple
