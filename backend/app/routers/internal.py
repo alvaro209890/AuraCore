@@ -63,6 +63,16 @@ async def ingest_messages(
         bundle,
     )
     save_result = await run_in_threadpool(store.save_ingested_messages, normalized_messages)
+    for message in normalized_messages:
+        try:
+            await bundle.agenda_guardian_service.process_message(message=message)
+        except Exception as exc:
+            logger.warning(
+                "agenda_guardian_processing_failed message_id=%s contact_phone=%s detail=%s",
+                message.message_id,
+                message.contact_phone,
+                str(exc),
+            )
     ignored_count = max(0, len(payload.messages) - len(normalized_messages) - skipped_audio_count) + save_result.ignored_count + skipped_audio_count
     if payload.messages:
         logger.info(

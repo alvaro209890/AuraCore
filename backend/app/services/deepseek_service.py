@@ -92,6 +92,15 @@ class DeepSeekImportantMessagesReviewResult(BaseModel):
     reviews: list[DeepSeekImportantMessageReviewDecision] = Field(default_factory=list)
 
 
+class DeepSeekAgendaExtractionResult(BaseModel):
+    has_schedule_signal: bool = False
+    titulo: str = ""
+    data_inicio: str | None = None
+    data_fim: str | None = None
+    intencao: str = ""
+    confidence: int = Field(default=0, ge=0, le=100)
+
+
 class DeepSeekAssistantSearchPlan(BaseModel):
     needs_retrieval: bool = False
     people_queries: list[str] = Field(default_factory=list)
@@ -167,6 +176,44 @@ class DeepSeekPlanningProfile:
 class DeepSeekService:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+
+    async def extract_agenda_signal(
+        self,
+        *,
+        message_text: str,
+        reference_now: datetime,
+    ) -> DeepSeekAgendaExtractionResult:
+        payload = self._build_completion_payload(
+            system_prompt=(
+                "Voce extrai sinais de agenda do AuraCore. "
+                "Recebera apenas uma mensagem. "
+                "Retorne somente JSON valido. "
+                "Use has_schedule_signal=true apenas quando a mensagem realmente estiver combinando, sugerindo ou confirmando horario/data. "
+                "Preencha data_inicio e data_fim preferencialmente em ISO 8601. "
+                "Em intencao, use apenas confirmado, tentativo ou incerto."
+            ),
+            user_prompt=(
+                f"Horario de referencia: {reference_now.isoformat()}\n"
+                "Analise a mensagem abaixo e retorne exatamente este formato:\n"
+                "{\n"
+                '  "has_schedule_signal": true,\n'
+                '  "titulo": "string",\n'
+                '  "data_inicio": "string|null",\n'
+                '  "data_fim": "string|null",\n'
+                '  "intencao": "confirmado|tentativo|incerto",\n'
+                '  "confidence": 0\n'
+                "}\n"
+                "Mensagem:\n"
+                f"{message_text.strip()}"
+            ),
+            max_tokens=220,
+        )
+        return await self._request_parsed_completion(
+            payload=payload,
+            parser=self._parse_agenda_extraction_result,
+            validator=self._validate_agenda_extraction_result,
+            operation="extract_agenda_signal",
+        )
 
     async def analyze_memory(
         self,
@@ -1518,6 +1565,16 @@ Regras:
             if not item.review_notes.strip():
                 raise DeepSeekError("DeepSeek retornou uma revisao sem review_notes.")
 
+    def _validate_agenda_extraction_result(self, parsed: DeepSeekAgendaExtractionResult) -> None:
+        parsed.titulo = parsed.titulo.strip()
+        parsed.intencao = parsed.intencao.strip().lower()
+        if parsed.intencao not in {"", "confirmado", "tentativo", "incerto"}:
+            parsed.intencao = "incerto"
+        if parsed.data_inicio is not None:
+            parsed.data_inicio = str(parsed.data_inicio).strip() or None
+        if parsed.data_fim is not None:
+            parsed.data_fim = str(parsed.data_fim).strip() or None
+
     def _validate_assistant_search_plan(self, parsed: DeepSeekAssistantSearchPlan) -> None:
         parsed.people_limit = max(0, min(6, parsed.people_limit))
         parsed.important_messages_limit = max(0, min(6, parsed.important_messages_limit))
@@ -1633,6 +1690,21 @@ Regras:
 
         return DeepSeekImportantMessagesReviewResult(
             reviews=self._as_important_message_reviews(raw.get("reviews")),
+        )
+
+    def _parse_agenda_extraction_result(self, content: str) -> DeepSeekAgendaExtractionResult:
+        raw = self._parse_json_dict(
+            content,
+            error_message="DeepSeek retornou JSON invalido na extracao de agenda.",
+            shape_error_message="DeepSeek retornou um payload inesperado na extracao de agenda.",
+        )
+        return DeepSeekAgendaExtractionResult(
+            has_schedule_signal=self._as_bool(raw.get("has_schedule_signal")),
+            titulo=self._as_text(raw.get("titulo")),
+            data_inicio=self._as_optional_text(raw.get("data_inicio")),
+            data_fim=self._as_optional_text(raw.get("data_fim")),
+            intencao=self._as_text(raw.get("intencao")),
+            confidence=self._as_confidence(raw.get("confidence")),
         )
 
     def _parse_assistant_search_plan(self, content: str) -> DeepSeekAssistantSearchPlan:
@@ -1785,11 +1857,27 @@ Regras:
             return value.strip()
         return str(value).strip()
 
+    def _as_optional_text(self, value: Any) -> str | None:
+        text = self._as_text(value)
+        return text or None
+
     def _as_int(self, value: Any) -> int:
         try:
             return int(value)
         except (TypeError, ValueError):
             return 0
+
+    def _as_confidence(self, value: Any) -> int:
+        return max(0, min(100, self._as_int(value)))
+
+    def _as_bool(self, value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return value.strip().lower() in {"true", "1", "yes", "sim"}
+        return bool(value)
 
     def _as_string_list(self, value: Any) -> list[str]:
         if not isinstance(value, list):

@@ -75,6 +75,7 @@ import {
   resetAgent,
   resetObserver,
   sendChatMessageStream,
+  getAgendaEvents,
   updateAgentSettings,
   updateAutomationSettings,
   updateMemoryGroupSelection,
@@ -96,6 +97,7 @@ import {
   type MemorySnapshot,
   type ModelRun,
   type ObserverStatus,
+  type AgendaEvent,
   type WhatsAppAgentMessage,
   type WhatsAppAgentContactMemory,
   type WhatsAppAgentSession,
@@ -120,6 +122,7 @@ type TabId =
   | "memory"
   | "important"
   | "relations"
+  | "agenda"
   | "projects"
   | "chat"
   | "activity"
@@ -201,6 +204,7 @@ const LIVE_REFRESH_INTERVALS: Record<TabId, number> = {
   memory: 16000,
   important: 20000,
   relations: 20000,
+  agenda: 20000,
   projects: 20000,
   chat: 10000,
   activity: 12000,
@@ -242,6 +246,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     title: "Operações",
     items: [
+      { id: "agenda", label: "Agenda", icon: Clock },
       { id: "projects", label: "Projetos", icon: FolderGit2 },
       { id: "chat", label: "Chat Pessoal", icon: MessageSquare },
     ],
@@ -1413,6 +1418,7 @@ export function ConnectionDashboard({
   const [memory, setMemory] = useState<MemoryCurrent | null>(null);
   const [memoryStatus, setMemoryStatus] = useState<MemoryStatus | null>(null);
   const [memoryGroups, setMemoryGroups] = useState<WhatsAppGroupSelection[]>([]);
+  const [agendaEvents, setAgendaEvents] = useState<AgendaEvent[]>([]);
   const [projects, setProjects] = useState<ProjectMemory[]>([]);
   const [relations, setRelations] = useState<PersonRelation[]>([]);
   const [snapshots, setSnapshots] = useState<MemorySnapshot[]>([]);
@@ -1431,6 +1437,7 @@ export function ConnectionDashboard({
   const [memoryGroupsError, setMemoryGroupsError] = useState<string | null>(null);
   const [importantMessagesError, setImportantMessagesError] = useState<string | null>(null);
   const [relationsError, setRelationsError] = useState<string | null>(null);
+  const [agendaError, setAgendaError] = useState<string | null>(null);
   const [chatError, setChatError] = useState<string | null>(null);
   const [messageRefreshError, setMessageRefreshError] = useState<string | null>(null);
   const [memoryActivityError, setMemoryActivityError] = useState<string | null>(null);
@@ -2085,6 +2092,7 @@ export function ConnectionDashboard({
       resolvedActiveTab === "relations" ||
       resolvedActiveTab === "manual"
     ) && shouldRefreshHeavyResource("relations", analysisIsBusy);
+    const shouldRefreshAgenda = resolvedActiveTab === "agenda";
     const shouldRefreshMemoryStatus = (
       resolvedActiveTab === "overview" ||
       resolvedActiveTab === "manual" ||
@@ -2117,6 +2125,7 @@ export function ConnectionDashboard({
         chatWorkspaceResult,
         memoryResult,
         memoryGroupsResult,
+        agendaResult,
         projectsResult,
         relationsResult,
         memoryStatusResult,
@@ -2128,6 +2137,7 @@ export function ConnectionDashboard({
         shouldRefreshChatWorkspace ? getChatWorkspace(activeChatThreadId ?? undefined) : Promise.resolve(null),
         shouldRefreshMemoryCurrent ? getCurrentMemory() : Promise.resolve(null),
         shouldRefreshMemoryGroups ? getMemoryGroups() : Promise.resolve(null),
+        shouldRefreshAgenda ? getAgendaEvents(120, false) : Promise.resolve(null),
         shouldRefreshProjects ? getMemoryProjects() : Promise.resolve(null),
         shouldRefreshRelations ? getMemoryRelations() : Promise.resolve(null),
         shouldRefreshMemoryStatus ? getMemoryStatus() : Promise.resolve(null),
@@ -2171,6 +2181,16 @@ export function ConnectionDashboard({
         markHeavyResourceRefreshed("groups");
       } else if (memoryGroupsResult.status === "rejected" && shouldRefreshMemoryGroups) {
         setMemoryGroupsError(getErrorMessage(memoryGroupsResult.reason));
+      }
+
+      if (agendaResult.status === "fulfilled" && Array.isArray(agendaResult.value)) {
+        const nextAgenda = agendaResult.value;
+        startTransition(() => {
+          setAgendaEvents(nextAgenda);
+          setAgendaError(null);
+        });
+      } else if (agendaResult.status === "rejected" && shouldRefreshAgenda) {
+        setAgendaError(getErrorMessage(agendaResult.reason));
       }
 
       if (projectsResult.status === "fulfilled" && Array.isArray(projectsResult.value)) {
@@ -2440,6 +2460,7 @@ export function ConnectionDashboard({
     const shouldLoadChatWorkspace = activeTab === "chat" || activeTab === "manual";
     const shouldLoadGroups = activeTab === "groups" || activeTab === "manual";
     const shouldLoadRelations = activeTab === "relations" || activeTab === "manual";
+    const shouldLoadAgenda = activeTab === "agenda";
     const shouldLoadSnapshots = activeTab === "overview" || activeTab === "memory" || activeTab === "manual";
     const shouldLoadImportantMessages = activeTab === "important" || activeTab === "manual";
     const shouldLoadAutomation = resolvedActiveTab === "memory" || resolvedActiveTab === "automation" || resolvedActiveTab === "manual" || queuedJobId !== null;
@@ -2451,6 +2472,7 @@ export function ConnectionDashboard({
       chatResult,
       memoryResult,
       groupsResult,
+      agendaResult,
       projectsResult,
       relationsResult,
       memoryStatusResult,
@@ -2464,6 +2486,7 @@ export function ConnectionDashboard({
       shouldLoadChatWorkspace ? getChatWorkspace(activeChatThreadId ?? undefined) : Promise.resolve(null),
       getCurrentMemory(),
       shouldLoadGroups ? getMemoryGroups() : Promise.resolve([]),
+      shouldLoadAgenda ? getAgendaEvents(120, false) : Promise.resolve([]),
       getMemoryProjects(),
       shouldLoadRelations ? getMemoryRelations() : Promise.resolve(null),
       getMemoryStatus(),
@@ -2520,6 +2543,13 @@ export function ConnectionDashboard({
       markHeavyResourceRefreshed("groups");
     } else if (groupsResult.status === "rejected") {
       setMemoryGroupsError(getErrorMessage(groupsResult.reason));
+    }
+
+    if (agendaResult.status === "fulfilled" && Array.isArray(agendaResult.value)) {
+      setAgendaEvents(agendaResult.value);
+      setAgendaError(null);
+    } else if (agendaResult.status === "rejected" && shouldLoadAgenda) {
+      setAgendaError(getErrorMessage(agendaResult.reason));
     }
 
     if (projectsResult.status === "fulfilled" && Array.isArray(projectsResult.value)) {
@@ -3297,6 +3327,14 @@ export function ConnectionDashboard({
                   error={relationsError}
                   onRefresh={() => void hydrateDashboard("manual")}
                   onSaveRelation={saveRelationEdits}
+                />
+              ) : null}
+
+              {resolvedActiveTab === "agenda" ? (
+                <AgendaTab
+                  events={agendaEvents}
+                  error={agendaError}
+                  onRefresh={() => void hydrateDashboard("manual")}
                 />
               ) : null}
 
@@ -5371,6 +5409,201 @@ function RelationsTab({
           Quando você roda a próxima atualização de memória, o modelo cruza mensagens novas com esta base de pessoas. Isso melhora tipo de vínculo, fatos recorrentes, pendências e tom da relação de forma cumulativa.
         </p>
       </Card>
+    </div>
+  );
+}
+
+function AgendaTab({
+  events,
+  error,
+  onRefresh,
+}: {
+  events: AgendaEvent[];
+  error: string | null;
+  onRefresh: () => void;
+}) {
+  const [filter, setFilter] = useState<"all" | "upcoming" | "firm" | "tentative" | "conflicts">("all");
+  const now = Date.now();
+  const sortedEvents = useMemo(
+    () => [...events].sort((left, right) => new Date(left.inicio).getTime() - new Date(right.inicio).getTime()),
+    [events],
+  );
+  const upcomingEvents = useMemo(
+    () => sortedEvents.filter((event) => new Date(event.fim).getTime() >= now),
+    [now, sortedEvents],
+  );
+  const firmCount = events.filter((event) => event.status === "firme").length;
+  const tentativeCount = events.filter((event) => event.status !== "firme").length;
+  const conflictCount = events.filter((event) => event.has_conflict).length;
+  const nextEvent = upcomingEvents[0] ?? null;
+
+  const filteredEvents = useMemo(() => {
+    switch (filter) {
+      case "upcoming":
+        return upcomingEvents;
+      case "firm":
+        return sortedEvents.filter((event) => event.status === "firme");
+      case "tentative":
+        return sortedEvents.filter((event) => event.status !== "firme");
+      case "conflicts":
+        return sortedEvents.filter((event) => event.has_conflict);
+      default:
+        return sortedEvents;
+    }
+  }, [filter, sortedEvents, upcomingEvents]);
+
+  const filterOptions = [
+    { id: "all" as const, label: "Todos", count: sortedEvents.length },
+    { id: "upcoming" as const, label: "Próximos", count: upcomingEvents.length },
+    { id: "firm" as const, label: "Firmes", count: firmCount },
+    { id: "tentative" as const, label: "Tentativos", count: tentativeCount },
+    { id: "conflicts" as const, label: "Conflitos", count: conflictCount },
+  ];
+
+  if (events.length === 0) {
+    return (
+      <div className="page-stack">
+        <Card className="proj-empty-hero">
+          <div className="proj-empty-icon">
+            <Clock size={40} />
+          </div>
+          <h3>Nenhum compromisso detectado ainda</h3>
+          <p>
+            Assim que o Guardião do Tempo encontrar uma combinação de data e horário nas mensagens recebidas pelo Observador,
+            os compromissos aparecem aqui.
+          </p>
+          <div className="hero-actions">
+            <button className="ac-secondary-button" onClick={onRefresh} type="button">
+              <RefreshCw size={15} />
+              Atualizar agenda
+            </button>
+          </div>
+          {error ? <InlineError title="Falha na agenda" message={error} /> : null}
+        </Card>
+      </div>
+    );
+  }
+
+  return (
+    <div className="page-stack">
+      <Card className="projects-hero-card">
+        <div className="projects-hero-copy">
+          <div className="hero-kicker">
+            <Clock size={14} />
+            Guardião do Tempo
+          </div>
+          <h3>Compromissos detectados no WhatsApp</h3>
+          <p>
+            Esta visão concentra os eventos extraídos pelo backend, já com status, contato de origem e marcação de conflito
+            quando houver sobreposição de horário.
+          </p>
+        </div>
+        <div className="projects-hero-metrics">
+          <div className="projects-hero-metric">
+            <span>Total</span>
+            <strong>{events.length}</strong>
+            <small>{upcomingEvents.length} ainda por acontecer</small>
+          </div>
+          <div className="projects-hero-metric">
+            <span>Firmes</span>
+            <strong>{firmCount}</strong>
+            <small>{tentativeCount} tentativos</small>
+          </div>
+          <div className="projects-hero-metric">
+            <span>Conflitos</span>
+            <strong>{conflictCount}</strong>
+            <small>{conflictCount > 0 ? "requerem atenção" : "sem sobreposição agora"}</small>
+          </div>
+          <div className="projects-hero-metric">
+            <span>Próximo</span>
+            <strong>{nextEvent ? formatShortDateTime(nextEvent.inicio) : "Sem próximo"}</strong>
+            <small>{nextEvent ? nextEvent.titulo : "Nenhum compromisso futuro detectado"}</small>
+          </div>
+        </div>
+      </Card>
+
+      <Card>
+        <SectionTitle
+          title="Agenda"
+          icon={Clock}
+          action={
+            <button className="ac-secondary-button" onClick={onRefresh} type="button">
+              <RefreshCw size={14} />
+              Atualizar
+            </button>
+          }
+        />
+        <div className="projects-toolbar">
+          <div className="projects-filter-pills">
+            {filterOptions.map((option) => (
+              <button
+                key={option.id}
+                className={`projects-filter-pill${filter === option.id ? " projects-filter-pill-active" : ""}`}
+                onClick={() => setFilter(option.id)}
+                type="button"
+              >
+                <span>{option.label}</span>
+                <strong>{option.count}</strong>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="project-list-modern">
+          {filteredEvents.map((event) => (
+            <div
+              key={event.id}
+              className={`project-card-modern${event.has_conflict ? " project-card-modern-attention" : ""}`}
+            >
+              <div className="project-card-head">
+                <div>
+                  <strong>{event.titulo}</strong>
+                  <span>
+                    {formatShortDateTime(event.inicio)} até {formatShortDateTime(event.fim)}
+                  </span>
+                </div>
+                <div className="project-card-actions">
+                  <span className={`micro-status micro-status-${event.status === "firme" ? "emerald" : "amber"}`}>
+                    {event.status === "firme" ? "Firme" : "Tentativo"}
+                  </span>
+                  {event.has_conflict ? (
+                    <span className="micro-status micro-status-amber">Conflito</span>
+                  ) : null}
+                </div>
+              </div>
+              <div className="project-summary-stack">
+                <p className="support-copy">
+                  {event.contato_origem ? `Origem: ${event.contato_origem}.` : "Origem não identificada."}
+                </p>
+                <p className="support-copy">
+                  ID da mensagem: <code>{event.message_id}</code>
+                </p>
+                {event.conflict ? (
+                  <div className="danger-box" style={{ marginTop: 12 }}>
+                    <h4>
+                      <AlertCircle size={16} />
+                      Possível conflito
+                    </h4>
+                    <p>
+                      Já existe <strong>{event.conflict.titulo}</strong> em {formatShortDateTime(event.conflict.inicio)} até{" "}
+                      {formatShortDateTime(event.conflict.fim)}.
+                    </p>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {filteredEvents.length === 0 ? (
+          <div className="empty-hint">
+            <Clock size={18} />
+            <p>Nenhum compromisso bate com o filtro atual.</p>
+          </div>
+        ) : null}
+      </Card>
+
+      {error ? <InlineError title="Falha na agenda" message={error} /> : null}
     </div>
   );
 }

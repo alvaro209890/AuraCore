@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import threading
 
 from app.config import Settings
+from app.services.agenda_guardian_service import AgendaGuardianService
 from app.services.account_registry import AccountRecord
 from app.services.assistant_context_service import AssistantContextService
 from app.services.assistant_reply_service import AssistantReplyService
@@ -34,6 +35,7 @@ class ServiceBundle:
     memory_job_service: MemoryJobService
     automation_service: AutomationService
     whatsapp_agent_service: WhatsAppAgentService
+    agenda_guardian_service: AgendaGuardianService
 
 
 class ServiceBundleCache:
@@ -118,6 +120,12 @@ class ServiceBundleCache:
                 observer_gateway=observer_gateway,
                 agent_gateway=agent_gateway,
             )
+            agenda_guardian_service = AgendaGuardianService(
+                settings=scoped_settings,
+                store=store,
+                deepseek_service=deepseek_service,
+                observer_gateway=observer_gateway,
+            )
             bundle = ServiceBundle(
                 account=account,
                 settings=scoped_settings,
@@ -133,6 +141,7 @@ class ServiceBundleCache:
                 memory_job_service=memory_job_service,
                 automation_service=automation_service,
                 whatsapp_agent_service=whatsapp_agent_service,
+                agenda_guardian_service=agenda_guardian_service,
             )
             self._bundles[cache_key] = bundle
             return bundle

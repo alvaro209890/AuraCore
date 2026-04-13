@@ -507,6 +507,34 @@ class ChatWorkspaceResponse(BaseModel):
     session: ChatSessionResponse
 
 
+class AgendaConflictResponse(BaseModel):
+    id: str
+    titulo: str
+    inicio: datetime
+    fim: datetime
+    status: str
+    contato_origem: str | None = None
+    message_id: str
+
+
+class AgendaEventResponse(BaseModel):
+    id: str
+    titulo: str
+    inicio: datetime
+    fim: datetime
+    status: str
+    contato_origem: str | None = None
+    message_id: str
+    has_conflict: bool = False
+    conflict: AgendaConflictResponse | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AgendaEventsListResponse(BaseModel):
+    events: list[AgendaEventResponse] = Field(default_factory=list)
+
+
 class SendChatMessageRequest(BaseModel):
     thread_id: str | None = None
     message_text: str = Field(min_length=1, max_length=4000)

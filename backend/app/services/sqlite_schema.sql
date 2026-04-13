@@ -221,6 +221,24 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 
 CREATE INDEX IF NOT EXISTS chat_messages_thread_created_idx ON chat_messages (thread_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS agenda (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  titulo TEXT NOT NULL,
+  inicio TEXT NOT NULL,
+  fim TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'tentativo',
+  contato_origem TEXT,
+  message_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (user_id, message_id)
+);
+
+CREATE INDEX IF NOT EXISTS agenda_user_inicio_idx ON agenda (user_id, inicio ASC);
+CREATE INDEX IF NOT EXISTS agenda_user_fim_idx ON agenda (user_id, fim ASC);
+CREATE INDEX IF NOT EXISTS agenda_user_status_inicio_idx ON agenda (user_id, status, inicio ASC);
+
 CREATE TABLE IF NOT EXISTS whatsapp_agent_settings (
   user_id TEXT PRIMARY KEY,
   auto_reply_enabled INTEGER NOT NULL DEFAULT 0,

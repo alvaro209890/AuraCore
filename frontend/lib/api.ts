@@ -212,6 +212,30 @@ export type ProjectMemory = {
   updated_at: string;
 };
 
+export type AgendaConflict = {
+  id: string;
+  titulo: string;
+  inicio: string;
+  fim: string;
+  status: string;
+  contato_origem: string | null;
+  message_id: string;
+};
+
+export type AgendaEvent = {
+  id: string;
+  titulo: string;
+  inicio: string;
+  fim: string;
+  status: "firme" | "tentativo";
+  contato_origem: string | null;
+  message_id: string;
+  has_conflict: boolean;
+  conflict: AgendaConflict | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type ProjectAssistantEditResponse = {
   project: ProjectMemory;
   assistant_message: string;
@@ -347,6 +371,10 @@ export type WhatsAppGroupSelectionsListResponse = {
 
 export type ImportantMessagesListResponse = {
   messages: ImportantMessage[];
+};
+
+export type AgendaEventsListResponse = {
+  events: AgendaEvent[];
 };
 
 export type ChatSession = {
@@ -762,6 +790,12 @@ export async function getImportantMessages(limit = 80): Promise<ImportantMessage
     }
     throw error;
   }
+}
+
+export async function getAgendaEvents(limit = 120, upcomingOnly = false): Promise<AgendaEvent[]> {
+  const query = `?limit=${limit}&upcoming_only=${upcomingOnly ? "true" : "false"}`;
+  const response = await request<AgendaEventsListResponse>(`/api/agenda${query}`);
+  return response.events;
 }
 
 export async function getMemoryProjects(): Promise<ProjectMemory[]> {

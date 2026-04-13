@@ -22,3 +22,17 @@ CREATE TABLE IF NOT EXISTS whatsapp_known_groups (
   updated_at TEXT NOT NULL,
   UNIQUE (user_id, chat_jid)
 );
+
+CREATE TABLE IF NOT EXISTS agenda (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  titulo TEXT NOT NULL,
+  inicio TEXT NOT NULL,
+  fim TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'tentativo',
+  contato_origem TEXT,
+  message_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (user_id, message_id)
+);

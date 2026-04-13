@@ -299,6 +299,20 @@ class ChatMessageRecord:
 
 
 @dataclass(slots=True)
+class AgendaEventRecord:
+    id: str
+    user_id: UUID
+    titulo: str
+    inicio: datetime
+    fim: datetime
+    status: str
+    contato_origem: str | None
+    message_id: str
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(slots=True)
 class AutomationSettingsRecord:
     user_id: UUID
     auto_sync_enabled: bool
@@ -2756,6 +2770,111 @@ class SupabaseStore:
             content=content,
             created_at=created_at,
         )
+
+    def get_agenda_event_by_message_id(self, *, user_id: UUID, message_id: str) -> AgendaEventRecord | None:
+        response = (
+            self.client.table("agenda")
+            .select("id,user_id,titulo,inicio,fim,status,contato_origem,message_id,created_at,updated_at")
+            .eq("user_id", str(user_id))
+            .eq("message_id", message_id.strip())
+            .limit(1)
+            .execute()
+        )
+        rows = response.data or []
+        if not rows:
+            return None
+        return self._parse_agenda_event(rows[0], fallback_user_id=user_id)
+
+    def upsert_agenda_event(
+        self,
+        *,
+        user_id: UUID,
+        titulo: str,
+        inicio: datetime,
+        fim: datetime,
+        status: str,
+        contato_origem: str | None,
+        message_id: str,
+    ) -> AgendaEventRecord:
+        existing = self.get_agenda_event_by_message_id(user_id=user_id, message_id=message_id)
+        now = datetime.now(UTC)
+        record = {
+            "id": existing.id if existing else str(uuid4()),
+            "user_id": str(user_id),
+            "titulo": titulo.strip() or "Compromisso",
+            "inicio": inicio.astimezone(UTC).isoformat(),
+            "fim": fim.astimezone(UTC).isoformat(),
+            "status": "firme" if str(status).strip().lower() == "firme" else "tentativo",
+            "contato_origem": self._optional_text(contato_origem),
+            "message_id": message_id.strip(),
+            "created_at": (existing.created_at if existing else now).astimezone(UTC).isoformat(),
+            "updated_at": now.isoformat(),
+        }
+        self.client.table("agenda").upsert(record, on_conflict="user_id,message_id").execute()
+        resolved = self.get_agenda_event_by_message_id(user_id=user_id, message_id=message_id)
+        if resolved is None:
+            raise RuntimeError("Agenda event could not be saved.")
+        return resolved
+
+    def find_agenda_conflicts(
+        self,
+        *,
+        user_id: UUID,
+        inicio: datetime,
+        fim: datetime,
+        exclude_message_id: str | None = None,
+        limit: int = 5,
+    ) -> list[AgendaEventRecord]:
+        sql = """
+            SELECT id,user_id,titulo,inicio,fim,status,contato_origem,message_id,created_at,updated_at
+            FROM agenda
+            WHERE user_id = ?
+              AND inicio < ?
+              AND ? < fim
+        """
+        params: list[Any] = [
+            str(user_id),
+            fim.astimezone(UTC).isoformat(),
+            inicio.astimezone(UTC).isoformat(),
+        ]
+        excluded_message_id = self._optional_text(exclude_message_id)
+        if excluded_message_id:
+            sql += " AND message_id <> ?"
+            params.append(excluded_message_id)
+        sql += " ORDER BY inicio ASC LIMIT ?"
+        params.append(max(1, limit))
+        rows = self.client.fetchall(sql, params)
+        events: list[AgendaEventRecord] = []
+        for row in rows:
+            parsed = self._parse_agenda_event(row, fallback_user_id=user_id)
+            if parsed is not None:
+                events.append(parsed)
+        return events
+
+    def list_agenda_events(
+        self,
+        *,
+        user_id: UUID,
+        limit: int = 120,
+        starts_after: datetime | None = None,
+    ) -> list[AgendaEventRecord]:
+        query = (
+            self.client.table("agenda")
+            .select("id,user_id,titulo,inicio,fim,status,contato_origem,message_id,created_at,updated_at")
+            .eq("user_id", str(user_id))
+            .order("inicio", desc=False)
+            .limit(max(1, limit))
+        )
+        if starts_after is not None:
+            query = query.gte("fim", starts_after.astimezone(UTC).isoformat())
+        response = query.execute()
+        rows = response.data or []
+        events: list[AgendaEventRecord] = []
+        for row in rows:
+            parsed = self._parse_agenda_event(row, fallback_user_id=user_id)
+            if parsed is not None:
+                events.append(parsed)
+        return events
 
     def count_chat_messages(self, thread_id: str) -> int:
         response = (
@@ -6237,6 +6356,28 @@ class SupabaseStore:
             role=role,
             content=content,
             created_at=self._parse_datetime(value.get("created_at")) or datetime.now(UTC),
+        )
+
+    def _parse_agenda_event(self, value: Any, *, fallback_user_id: UUID) -> AgendaEventRecord | None:
+        if not isinstance(value, dict):
+            return None
+        titulo = self._optional_text(value.get("titulo"))
+        inicio = self._parse_datetime(value.get("inicio"))
+        fim = self._parse_datetime(value.get("fim"))
+        message_id = self._optional_text(value.get("message_id"))
+        if not titulo or inicio is None or fim is None or not message_id:
+            return None
+        return AgendaEventRecord(
+            id=str(value.get("id") or ""),
+            user_id=self._parse_uuid(value.get("user_id")) or fallback_user_id,
+            titulo=titulo,
+            inicio=inicio,
+            fim=fim,
+            status="firme" if str(value.get("status") or "").strip().lower() == "firme" else "tentativo",
+            contato_origem=self._optional_text(value.get("contato_origem")),
+            message_id=message_id,
+            created_at=self._parse_datetime(value.get("created_at")) or datetime.now(UTC),
+            updated_at=self._parse_datetime(value.get("updated_at")) or datetime.now(UTC),
         )
 
     def _parse_known_contact(self, value: Any, *, fallback_user_id: UUID) -> KnownContactRecord | None:

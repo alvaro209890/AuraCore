@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.dependencies import get_settings, warm_registered_accounts
+from app.routers.agenda import router as agenda_router
 from app.routers.auth import router as auth_router
 from app.routers.automation import router as automation_router
 from app.routers.chat import router as chat_router
@@ -42,6 +43,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(auth_router)
+app.include_router(agenda_router)
 app.include_router(observer_router)
 app.include_router(global_agent_router)
 app.include_router(memories_router)
