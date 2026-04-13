@@ -339,7 +339,7 @@ CREATE TABLE IF NOT EXISTS automation_settings (
   auto_sync_enabled INTEGER NOT NULL DEFAULT 1,
   auto_analyze_enabled INTEGER NOT NULL DEFAULT 1,
   auto_refine_enabled INTEGER NOT NULL DEFAULT 0,
-  min_new_messages_threshold INTEGER NOT NULL DEFAULT 12,
+  min_new_messages_threshold INTEGER NOT NULL DEFAULT 20,
   stale_hours_threshold INTEGER NOT NULL DEFAULT 24,
   pruned_messages_threshold INTEGER NOT NULL DEFAULT 1,
   default_detail_mode TEXT NOT NULL DEFAULT 'balanced',

@@ -207,6 +207,10 @@ class AutomationService:
             for job in recent_jobs
         )
         has_pending_job = any(job.status in {"queued", "running"} for job in recent_jobs)
+        incremental_threshold = max(
+            self.settings.memory_incremental_min_messages,
+            automation_settings.min_new_messages_threshold,
+        )
 
         action = "skip"
         should_analyze = False
@@ -281,17 +285,51 @@ class AutomationService:
             if force_analysis and has_pending_job:
                 reason_code = "job_already_pending"
                 explanation = "Ja existe uma leitura em andamento ou na fila; a sincronizacao manual nao abriu outro lote em paralelo."
-            else:
+            elif not force_analysis and not automation_settings.auto_analyze_enabled:
+                reason_code = "auto_analyze_disabled"
+                explanation = (
+                    "A automacao de analise esta desligada; o backend registrou o novo lote disponivel, "
+                    "mas nao o enfileirou automaticamente."
+                )
+            elif not force_analysis and daily_cost_usd >= automation_settings.daily_budget_usd:
+                reason_code = "daily_budget_reached"
+                explanation = (
+                    f"O custo estimado acumulado hoje ja chegou a US$ {daily_cost_usd:.4f}, "
+                    "acima do teto automatico configurado."
+                )
+            elif not force_analysis and daily_auto_jobs_count >= automation_settings.max_auto_jobs_per_day:
+                reason_code = "max_auto_jobs_reached"
+                explanation = (
+                    "O limite diario de jobs automaticos ja foi atingido; o novo lote ficou aguardando "
+                    "o proximo ciclo disponivel."
+                )
+            elif not force_analysis and has_pending_auto_job:
+                reason_code = "job_already_pending"
+                explanation = (
+                    "Ja existe um job automatico em andamento ou na fila; o sistema nao empilha "
+                    "outro lote incremental em paralelo."
+                )
+            elif memory_status.pending_new_message_count < incremental_threshold:
                 reason_code = "awaiting_next_batch"
                 explanation = (
                     f"Existem {memory_status.pending_new_message_count} mensagens novas pendentes. "
-                    f"O proximo lote com {selected_message_count} mensagens ficou disponivel, mas agora so pode ser processado manualmente."
+                    f"O backend vai enfileirar a proxima atualizacao automatica quando a conta atingir "
+                    f"{incremental_threshold} mensagens novas."
+                )
+            else:
+                action = "queue"
+                should_analyze = True
+                reason_code = "new_messages_threshold"
+                explanation = (
+                    f"Existem {memory_status.pending_new_message_count} mensagens novas pendentes. "
+                    f"O backend vai atualizar a memoria automaticamente agora e processar um lote economico com "
+                    f"{selected_message_count} mensagens."
                 )
         elif memory_status.has_initial_analysis:
             reason_code = "awaiting_next_batch"
             explanation = (
                 f"Ainda existem {memory_status.pending_new_message_count} mensagens novas pendentes. "
-                f"Depois da primeira analise, os proximos processamentos so acontecem manualmente."
+                f"O proximo lote automatico dispara quando a conta atingir {incremental_threshold} mensagens novas."
             )
 
         decision = self.store.create_automation_decision(

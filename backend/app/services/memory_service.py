@@ -825,7 +825,7 @@ class MemoryAnalysisService:
         return max(6, min(self.settings.memory_incremental_min_messages, self._resolve_incremental_batch_size()))
 
     def _resolve_fixed_plan_char_budget(self, mode: Literal["first_analysis", "incremental_batch"]) -> int:
-        target = 28000 if mode == "first_analysis" else 14000
+        target = 18000 if mode == "first_analysis" else 9000
         return min(self.settings.memory_analysis_max_chars, target)
 
     def _resolve_bootstrap_bucket_targets(
@@ -1572,13 +1572,13 @@ class MemoryAnalysisService:
     ) -> AnalyzeMemoryPromptContext:
         return AnalyzeMemoryPromptContext(
             transcript=context.transcript,
-            conversation_context=self._compact_context_block(context.conversation_context, char_budget=2200, max_lines=22),
-            people_memory_context=self._compact_context_block(context.people_memory_context, char_budget=1800, max_lines=22),
-            current_life_summary=self._compact_context_block(context.current_life_summary, char_budget=1500, max_lines=16),
-            prior_analyses_context=self._compact_context_block(context.prior_analyses_context, char_budget=2000, max_lines=22),
-            project_context=self._compact_context_block(context.project_context, char_budget=1800, max_lines=20),
-            chat_context=self._compact_context_block(context.chat_context, char_budget=900, max_lines=10),
-            open_questions_context=self._compact_context_block(context.open_questions_context, char_budget=480, max_lines=8),
+            conversation_context=self._compact_context_block(context.conversation_context, char_budget=1500, max_lines=16),
+            people_memory_context=self._compact_context_block(context.people_memory_context, char_budget=1200, max_lines=14),
+            current_life_summary=self._compact_context_block(context.current_life_summary, char_budget=1000, max_lines=10),
+            prior_analyses_context=self._compact_context_block(context.prior_analyses_context, char_budget=1200, max_lines=12),
+            project_context=self._compact_context_block(context.project_context, char_budget=1200, max_lines=12),
+            chat_context=self._compact_context_block(context.chat_context, char_budget=360, max_lines=5),
+            open_questions_context=self._compact_context_block(context.open_questions_context, char_budget=220, max_lines=4),
         )
 
     def _compact_context_block(
@@ -1638,13 +1638,13 @@ class MemoryAnalysisService:
 
     def _compact_analysis_max_output_tokens(self) -> int:
         if "reasoner" in self.settings.deepseek_model.strip().lower():
-            return 7000
-        return 2400
+            return 3200
+        return 1600
 
     def _minimal_analysis_max_output_tokens(self) -> int:
         if "reasoner" in self.settings.deepseek_model.strip().lower():
-            return 4200
-        return 2200
+            return 2200
+        return 1200
 
     async def _run_analysis_request_with_fallbacks(
         self,
@@ -1906,7 +1906,7 @@ class MemoryAnalysisService:
             return []
 
         chunk_size = max(8, self.settings.memory_first_analysis_chunk_size)
-        char_budget = max(1500, min(self.settings.memory_first_analysis_chunk_char_budget, self.settings.memory_analysis_max_chars))
+        char_budget = max(1500, min(self.settings.memory_first_analysis_chunk_char_budget, 4200, self.settings.memory_analysis_max_chars))
         ordered_messages = sorted(messages, key=lambda message: message.timestamp)
         chunks: list[FirstAnalysisChunk] = []
 
@@ -2074,7 +2074,7 @@ class MemoryAnalysisService:
     ) -> str:
         sections: list[str] = []
         current_size = 0
-        char_budget = min(max(2400, self.settings.memory_analysis_max_chars // 3), 7000)
+        char_budget = min(max(1800, self.settings.memory_analysis_max_chars // 4), 4200)
         for index, node in enumerate(nodes, start=1):
             result = node.result
             project_lines = [

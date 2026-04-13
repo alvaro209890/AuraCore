@@ -464,7 +464,7 @@ create table if not exists public.automation_settings (
   auto_sync_enabled boolean not null default true,
   auto_analyze_enabled boolean not null default true,
   auto_refine_enabled boolean not null default false,
-  min_new_messages_threshold integer not null default 12,
+  min_new_messages_threshold integer not null default 20,
   stale_hours_threshold integer not null default 24,
   pruned_messages_threshold integer not null default 1,
   default_detail_mode text not null default 'balanced',

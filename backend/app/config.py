@@ -61,7 +61,7 @@ class Settings(BaseSettings):
     groq_timeout_seconds: float = Field(45.0, alias="GROQ_TIMEOUT_SECONDS")
     memory_analysis_max_messages: int = Field(160, alias="MEMORY_ANALYSIS_MAX_MESSAGES")
     memory_first_analysis_max_messages: int = Field(120, alias="MEMORY_FIRST_ANALYSIS_MAX_MESSAGES")
-    memory_incremental_min_messages: int = Field(12, alias="MEMORY_INCREMENTAL_MIN_MESSAGES")
+    memory_incremental_min_messages: int = Field(20, alias="MEMORY_INCREMENTAL_MIN_MESSAGES")
     memory_incremental_batch_size: int = Field(18, alias="MEMORY_INCREMENTAL_BATCH_SIZE")
     memory_analysis_max_chars: int = Field(36000, alias="MEMORY_ANALYSIS_MAX_CHARS")
     memory_analysis_max_window_hours: int = Field(168, alias="MEMORY_ANALYSIS_MAX_WINDOW_HOURS")

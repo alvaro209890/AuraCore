@@ -293,7 +293,7 @@ class DeepSeekService:
                 recent_window_summary=recent_window_summary,
                 conversation_context=conversation_context,
             ),
-            max_tokens=5000 if self._is_reasoning_model() else 2400,
+            max_tokens=2600 if self._is_reasoning_model() else 1400,
         )
         return await self._request_parsed_completion(
             payload=payload,
@@ -350,7 +350,7 @@ class DeepSeekService:
                 current_life_summary=current_life_summary,
                 project_context=project_context,
             ),
-            max_tokens=4000 if self._is_reasoning_model() else 2200,
+            max_tokens=1800 if self._is_reasoning_model() else 1000,
         )
         allowed_ids = set(allowed_message_ids)
         return await self._request_parsed_completion(
@@ -378,7 +378,7 @@ class DeepSeekService:
                 current_life_summary=current_life_summary,
                 project_context=project_context,
             ),
-            max_tokens=5000 if self._is_reasoning_model() else 2600,
+            max_tokens=2400 if self._is_reasoning_model() else 1200,
         )
         allowed_ids = set(allowed_message_ids)
         return await self._request_parsed_completion(
@@ -1544,12 +1544,12 @@ Regras:
     def _analysis_max_output_tokens(self, *, intent: str = "improve_memory") -> int:
         if self._is_reasoning_model():
             if intent == "first_analysis":
-                return 14000
-            return 12000
-        return 5000
+                return 7000
+            return 5000
+        return 2800
 
     def _refinement_max_output_tokens(self) -> int:
-        return 8000 if self._is_reasoning_model() else 3500
+        return 4000 if self._is_reasoning_model() else 1800
 
     def _parse_result(self, content: str) -> DeepSeekMemoryResult:
         raw = self._parse_json_dict(

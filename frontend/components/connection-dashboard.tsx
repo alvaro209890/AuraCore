@@ -602,7 +602,7 @@ function automationStatusPlaceholder(status: MemoryActivity | null) {
       auto_sync_enabled: false,
       auto_analyze_enabled: false,
       auto_refine_enabled: false,
-      min_new_messages_threshold: 1,
+      min_new_messages_threshold: 20,
       stale_hours_threshold: 1,
       pruned_messages_threshold: 0,
       default_detail_mode: "balanced",
