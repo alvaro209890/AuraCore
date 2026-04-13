@@ -2897,6 +2897,32 @@ class SupabaseStore:
                 events.append(parsed)
         return events
 
+    def find_latest_upcoming_agenda_event_for_contact(
+        self,
+        *,
+        user_id: UUID,
+        contato_origem: str,
+        now: datetime | None = None,
+    ) -> AgendaEventRecord | None:
+        contact_name = self._optional_text(contato_origem)
+        if not contact_name:
+            return None
+        current_time = (now or datetime.now(UTC)).astimezone(UTC).isoformat()
+        sql = """
+            SELECT id,user_id,titulo,inicio,fim,status,contato_origem,message_id,
+                   reminder_offset_minutes,pre_reminder_sent_at,reminder_sent_at,created_at,updated_at
+            FROM agenda
+            WHERE user_id = ?
+              AND lower(trim(contato_origem)) = lower(trim(?))
+              AND fim >= ?
+            ORDER BY updated_at DESC, inicio ASC
+            LIMIT 1
+        """
+        rows = self.client.fetchall(sql, (str(user_id), contact_name, current_time))
+        if not rows:
+            return None
+        return self._parse_agenda_event(rows[0], fallback_user_id=user_id)
+
     def get_agenda_event(self, *, user_id: UUID, event_id: str) -> AgendaEventRecord | None:
         response = (
             self.client.table("agenda")

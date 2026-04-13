@@ -52,6 +52,7 @@ class AgendaProcessingResult:
     conflict_event: AgendaEventRecord | None = None
     alert_sent: bool = False
     reminder_offset_minutes: int = 0
+    updated_existing_event: bool = False
     skipped_reason: str | None = None
 
 
@@ -121,8 +122,9 @@ class AgendaGuardianService:
 
     async def process_due_reminders(self) -> None:
         async with self._reminder_lock:
-            now = datetime.now(UTC)
-            due_before = now + timedelta(seconds=REMINDER_LOOKAHEAD_SECONDS)
+            now_brasilia = datetime.now(DEFAULT_TIMEZONE)
+            now = now_brasilia.astimezone(UTC)
+            due_before = (now_brasilia + timedelta(seconds=REMINDER_LOOKAHEAD_SECONDS)).astimezone(UTC)
             stale_cutoff = now - timedelta(hours=STALE_REMINDER_SUPPRESSION_HOURS)
             due_pre_events = self.store.list_due_agenda_pre_reminders(
                 user_id=self.settings.default_user_id,
@@ -201,9 +203,26 @@ class AgendaGuardianService:
             return AgendaProcessingResult(skipped_reason="duplicate_message")
 
         normalized_text = " ".join(message_text.split()).strip()
+        reminder_offset_minutes = self._extract_reminder_offset_minutes(normalized_text)
         if not normalized_text:
             return AgendaProcessingResult(skipped_reason="empty_text")
         if not self._has_schedule_signal(normalized_text):
+            if reminder_offset_minutes > 0:
+                updated_event = self._apply_follow_up_reminder_instruction(
+                    user_id=user_id,
+                    contact_name=contact_name,
+                    reminder_offset_minutes=reminder_offset_minutes,
+                )
+                if updated_event is not None:
+                    await self._log_debug(
+                        f"[Guardião do Tempo] Antecedência atualizada para '{updated_event.titulo}': {reminder_offset_minutes} minuto(s) antes em horário de Brasília."
+                    )
+                    return AgendaProcessingResult(
+                        detected=True,
+                        saved_event=updated_event,
+                        reminder_offset_minutes=reminder_offset_minutes,
+                        updated_existing_event=True,
+                    )
             return AgendaProcessingResult(skipped_reason="no_schedule_signal")
 
         await self._log_debug(
@@ -224,7 +243,6 @@ class AgendaGuardianService:
             return AgendaProcessingResult(skipped_reason="no_structured_schedule")
 
         resolved_status = self._resolve_status(extraction=extraction, source_text=normalized_text)
-        reminder_offset_minutes = self._extract_reminder_offset_minutes(normalized_text)
         inicio = self._normalize_datetime(extraction.data_inicio, reference=occurred_at)
         if inicio is None:
             await self._log_debug("[Guardião do Tempo] Extração retornou data_inicio inválida.")
@@ -522,6 +540,27 @@ class AgendaGuardianService:
             return max(0, int(value))
         except ValueError:
             return 0
+
+    def _apply_follow_up_reminder_instruction(
+        self,
+        *,
+        user_id: UUID,
+        contact_name: str,
+        reminder_offset_minutes: int,
+    ) -> AgendaEventRecord | None:
+        target_event = self.store.find_latest_upcoming_agenda_event_for_contact(
+            user_id=user_id,
+            contato_origem=contact_name,
+            now=datetime.now(UTC),
+        )
+        if target_event is None:
+            return None
+        return self.store.update_agenda_event(
+            user_id=user_id,
+            event_id=target_event.id,
+            reminder_offset_minutes=reminder_offset_minutes,
+            reset_reminder=True,
+        )
 
     def format_reminder_rule(self, event: AgendaEventRecord) -> str:
         if event.reminder_offset_minutes > 0:

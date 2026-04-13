@@ -562,20 +562,42 @@ class WhatsAppAgentService:
             return "Recebi a mensagem. Tive sinal de agenda, mas não consegui consolidar o compromisso com segurança."
 
         event = outcome.saved_event
-        status_label = "como firme" if event.status == "firme" else "como tentativo"
+        status_label = "Firme" if event.status == "firme" else "Tentativo"
         event_time = self.agenda_guardian_service.format_local_datetime(event.inicio)
         reminder_rule = self.agenda_guardian_service.format_reminder_rule(event)
+        origin_label = event.contato_origem or "não identificada"
+
+        if outcome.updated_existing_event:
+            return (
+                "*Lembrete atualizado na agenda*\n\n"
+                f"*{event.titulo}*\n"
+                f"• Quando: {event_time}\n"
+                f"• Status: {status_label}\n"
+                f"• Lembretes: {reminder_rule}\n"
+                f"• Origem: {origin_label}\n\n"
+                "Se quiser, eu também posso ajustar o horário ou a duração."
+            )
         if outcome.conflict_event is not None:
             conflict_time = self.agenda_guardian_service.format_local_datetime(outcome.conflict_event.inicio)
             return (
-                f"Anotei na agenda '{event.titulo}' para {event_time}, {status_label}. "
-                f"Lembretes: {reminder_rule}. "
-                f"Também encontrei conflito com '{outcome.conflict_event.titulo}' no mesmo horário ({conflict_time}). "
-                "Se quiser, depois eu ajusto com você."
+                "*Compromisso salvo com atenção de conflito*\n\n"
+                f"*{event.titulo}*\n"
+                f"• Quando: {event_time}\n"
+                f"• Status: {status_label}\n"
+                f"• Lembretes: {reminder_rule}\n"
+                f"• Origem: {origin_label}\n\n"
+                "*Atenção*\n"
+                f"Já existe \"{outcome.conflict_event.titulo}\" em {conflict_time}.\n\n"
+                "Se quiser, eu posso te ajudar a reorganizar esse horário."
             )
         return (
-            f"Anotei na agenda '{event.titulo}' para {event_time}, {status_label}. "
-            f"Lembretes: {reminder_rule}."
+            "*Compromisso salvo na agenda*\n\n"
+            f"*{event.titulo}*\n"
+            f"• Quando: {event_time}\n"
+            f"• Status: {status_label}\n"
+            f"• Lembretes: {reminder_rule}\n"
+            f"• Origem: {origin_label}\n\n"
+            "Se quiser, eu também posso ajustar antecedência, horário ou duração."
         )
 
     async def _learn_from_inbound_message(
