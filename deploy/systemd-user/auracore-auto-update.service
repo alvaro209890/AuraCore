@@ -5,5 +5,5 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/acer/Downloads/AuraCore
-ExecStart=/bin/bash /home/acer/Downloads/AuraCore/scripts/auto-update.sh
+WorkingDirectory=__AURACORE_ROOT__
+ExecStart=/bin/bash -lc 'exec "__AURACORE_ROOT__/scripts/auto-update.sh"'

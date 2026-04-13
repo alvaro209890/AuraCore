@@ -6,8 +6,8 @@ Requires=auracore-backend.service
 
 [Service]
 Type=simple
-WorkingDirectory=/home/acer/Downloads/AuraCore
-ExecStart=/usr/local/bin/cloudflared --config /home/acer/.cloudflared/config.yml tunnel run
+WorkingDirectory=__AURACORE_ROOT__
+ExecStart=/usr/bin/cloudflared --config %h/.cloudflared/auracore-config.yml tunnel run --token-file %h/.cloudflared/auracore-local-api.token
 Restart=always
 RestartSec=5
 

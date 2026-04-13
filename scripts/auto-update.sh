@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-ROOT_DIR="/home/acer/Downloads/AuraCore"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_DIR="${ROOT_DIR}/.local-run"
 LOCK_FILE="${RUN_DIR}/auto-update.lock"
 BRANCH="${AURACORE_UPDATE_BRANCH:-main}"

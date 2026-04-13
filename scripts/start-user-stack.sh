@@ -2,8 +2,9 @@
 
 set -euo pipefail
 
-ROOT_DIR="/home/acer/Downloads/AuraCore"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_DIR="${ROOT_DIR}/.local-run"
+CLOUDFLARED_TOKEN_FILE="${HOME}/.cloudflared/auracore-local-api.token"
 
 mkdir -p "${RUN_DIR}"
 
@@ -52,4 +53,9 @@ wait_for_health "http://127.0.0.1:8000/health" "backend"
 start_process "gateway" "cd '${ROOT_DIR}' && exec /bin/bash '${ROOT_DIR}/scripts/run-gateway-prod.sh'"
 wait_for_health "http://127.0.0.1:10001/health" "gateway"
 
-start_process "cloudflared" "exec /usr/local/bin/cloudflared --config '${HOME}/.cloudflared/config.yml' tunnel run"
+if [[ ! -f "${CLOUDFLARED_TOKEN_FILE}" ]]; then
+  echo "arquivo de token do cloudflared ausente: ${CLOUDFLARED_TOKEN_FILE}" >&2
+  exit 1
+fi
+
+start_process "cloudflared" "exec /usr/bin/cloudflared --config '${HOME}/.cloudflared/auracore-config.yml' tunnel run --token-file '${CLOUDFLARED_TOKEN_FILE}'"

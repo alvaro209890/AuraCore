@@ -5,9 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/acer/Downloads/AuraCore/backend
-EnvironmentFile=-/home/acer/Downloads/AuraCore/backend/.env
-ExecStart=/bin/bash /home/acer/Downloads/AuraCore/scripts/run-backend-prod.sh
+WorkingDirectory=__AURACORE_ROOT__/backend
+EnvironmentFile=-__AURACORE_ROOT__/backend/.env
+ExecStart=/bin/bash -lc 'exec "__AURACORE_ROOT__/scripts/run-backend-prod.sh"'
 Restart=always
 RestartSec=5
 
