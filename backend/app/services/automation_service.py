@@ -31,6 +31,7 @@ DecisionReasonCode = Literal[
     "first_analysis_more_signal",
     "awaiting_first_analysis",
     "batch_ready",
+    "backlog_drain",
     "awaiting_next_batch",
     "pruned_messages",
     "new_messages_threshold",
@@ -887,23 +888,97 @@ class AutomationService:
             error_text=None,
             created_at=datetime.now(UTC),
         )
-        self._schedule_follow_up_evaluation_if_needed()
+        self._schedule_follow_up_evaluation_if_needed(job=job)
         return outcome
 
-    def _schedule_follow_up_evaluation_if_needed(self) -> None:
+    def _schedule_follow_up_evaluation_if_needed(self, *, job: AnalysisJobRecord) -> None:
         try:
             status = self.memory_service.get_memory_status()
         except Exception:
             logger.exception("follow_up_memory_status_failed")
             return
 
-        if not status.has_initial_analysis or not status.can_run_next_batch:
+        if not status.has_initial_analysis or status.pending_new_message_count <= 0:
+            return
+
+        recent_jobs = self.store.list_analysis_jobs(user_id=self.settings.default_user_id, limit=20)
+        has_pending_job = any(pending_job.status in {"queued", "running"} for pending_job in recent_jobs)
+        if has_pending_job:
+            return
+
+        if job.intent == "improve_memory":
+            logger.info(
+                "follow_up_analysis_queueing_drain pending=%s batch_size=%s",
+                status.pending_new_message_count,
+                status.incremental_batch_size,
+            )
+            self._queue_follow_up_incremental_job(
+                pending_message_count=status.pending_new_message_count,
+                trigger_source=job.trigger_source,
+            )
+            self._schedule_tick()
+            return
+
+        if not status.can_run_next_batch:
             return
 
         logger.info(
-            "follow_up_analysis_waiting_manual pending=%s min_batch=%s",
+            "follow_up_analysis_queueing pending=%s min_batch=%s",
             status.pending_new_message_count,
             status.incremental_min_messages,
+        )
+        self._queue_follow_up_incremental_job(
+            pending_message_count=status.pending_new_message_count,
+            trigger_source=job.trigger_source,
+        )
+        self._schedule_tick()
+
+    def _queue_follow_up_incremental_job(
+        self,
+        *,
+        pending_message_count: int,
+        trigger_source: str,
+    ) -> AnalysisJobRecord:
+        plan = self.memory_service.plan_next_batch()
+        created_at = datetime.now(UTC)
+        decision = self.store.create_automation_decision(
+            user_id=self.settings.default_user_id,
+            sync_run_id=None,
+            intent="improve_memory",
+            action="queue",
+            reason_code="backlog_drain",
+            score=100,
+            should_analyze=True,
+            available_message_count=max(0, pending_message_count),
+            selected_message_count=len(plan.source_messages),
+            new_message_count=max(0, pending_message_count),
+            replaced_message_count=0,
+            estimated_total_tokens=plan.estimated_input_tokens + plan.estimated_output_tokens,
+            estimated_cost_ceiling_usd=plan.estimated_cost_ceiling_usd,
+            explanation=(
+                f"Ainda restam {pending_message_count} mensagens novas pendentes depois do lote anterior. "
+                f"O backend vai continuar a melhoria da memoria automaticamente em mais um lote de "
+                f"{len(plan.source_messages)} mensagens."
+            ),
+            created_at=created_at,
+        )
+        return self.store.create_analysis_job(
+            user_id=self.settings.default_user_id,
+            intent=plan.intent,
+            status="queued",
+            trigger_source=trigger_source,
+            decision_id=decision.id,
+            sync_run_id=None,
+            target_message_count=len(plan.source_messages),
+            max_lookback_hours=0,
+            detail_mode="balanced",
+            selected_message_count=len(plan.source_messages),
+            selected_transcript_chars=plan.selected_transcript_chars,
+            estimated_input_tokens=plan.estimated_input_tokens,
+            estimated_output_tokens=plan.estimated_output_tokens,
+            estimated_cost_floor_usd=plan.estimated_cost_floor_usd,
+            estimated_cost_ceiling_usd=plan.estimated_cost_ceiling_usd,
+            created_at=created_at,
         )
 
     def _finalize_observer_cutoff_if_needed(self, job: AnalysisJobRecord) -> None:

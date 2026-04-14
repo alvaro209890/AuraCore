@@ -33,9 +33,9 @@ services:
       - key: MEMORY_FIRST_ANALYSIS_MAX_MESSAGES
         value: "120"
       - key: MEMORY_INCREMENTAL_MIN_MESSAGES
-        value: "12"
+        value: "20"
       - key: MEMORY_INCREMENTAL_BATCH_SIZE
-        value: "18"
+        value: "20"
       - key: MEMORY_ANALYSIS_MAX_CHARS
         value: "36000"
       - key: MEMORY_ANALYSIS_MAX_WINDOW_HOURS
