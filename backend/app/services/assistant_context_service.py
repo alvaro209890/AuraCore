@@ -153,7 +153,7 @@ class AssistantContextService:
                 if light_touch
                 else self._compact_context_block(
                     self._build_persona_context(persona),
-                    char_budget=1100 if targeted_context else 1600,
+                    char_budget=950 if targeted_context else 1300,
                     max_lines=14,
                 )
             ),
@@ -162,7 +162,7 @@ class AssistantContextService:
                 if light_touch
                 else self._compact_context_block(
                     self._render_snapshot_context(snapshots),
-                    char_budget=900 if targeted_context else 1300,
+                    char_budget=760 if targeted_context else 1050,
                     max_lines=12,
                 )
             ),
@@ -171,7 +171,7 @@ class AssistantContextService:
                 if light_touch
                 else self._compact_context_block(
                     self._build_project_context(projects),
-                    char_budget=1400 if targeted_context else 2200,
+                    char_budget=1150 if targeted_context else 1750,
                     max_lines=18,
                 )
             ),
@@ -180,7 +180,7 @@ class AssistantContextService:
                 if light_touch
                 else self._compact_context_block(
                     self._build_chat_context(recent_messages),
-                    char_budget=900 if targeted_context else 1400,
+                    char_budget=760 if targeted_context else 1100,
                     max_lines=12,
                 )
             ),

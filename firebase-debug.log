@@ -1,0 +1,125 @@
+[debug] [2026-04-14T17:32:04.003Z] ----------------------------------------------------------------------
+[debug] [2026-04-14T17:32:04.006Z] Command:       /home/server/.nvm/versions/node/v20.20.0/bin/node /home/server/.nvm/versions/node/v20.20.0/bin/firebase deploy --only hosting:app
+[debug] [2026-04-14T17:32:04.007Z] CLI Version:   15.14.0
+[debug] [2026-04-14T17:32:04.007Z] Platform:      linux
+[debug] [2026-04-14T17:32:04.007Z] Node Version:  v20.20.0
+[debug] [2026-04-14T17:32:04.007Z] Time:          Tue Apr 14 2026 14:32:04 GMT-0300 (Brasilia Standard Time)
+[debug] [2026-04-14T17:32:04.008Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2026-04-14T17:32:05.243Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-04-14T17:32:05.245Z] > authorizing via signed-in user (alvarocanaisgames@gmail.com)
+[debug] [2026-04-14T17:32:05.245Z] [iam] checking project auracore-82bf2 for permissions ["firebase.projects.get","firebasehosting.sites.update"]
+[debug] [2026-04-14T17:32:05.247Z] Checked if tokens are valid: true, expires at: 1776190915632
+[debug] [2026-04-14T17:32:05.247Z] Checked if tokens are valid: true, expires at: 1776190915632
+[debug] [2026-04-14T17:32:05.248Z] >>> [apiv2][query] POST https://cloudresourcemanager.googleapis.com/v1/projects/auracore-82bf2:testIamPermissions [none]
+[debug] [2026-04-14T17:32:05.249Z] >>> [apiv2][(partial)header] POST https://cloudresourcemanager.googleapis.com/v1/projects/auracore-82bf2:testIamPermissions  x-goog-user-project=auracore-82bf2
+[debug] [2026-04-14T17:32:05.249Z] >>> [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/auracore-82bf2:testIamPermissions {"permissions":["firebase.projects.get","firebasehosting.sites.update"]}
+[debug] [2026-04-14T17:32:06.319Z] <<< [apiv2][status] POST https://cloudresourcemanager.googleapis.com/v1/projects/auracore-82bf2:testIamPermissions 200
+[debug] [2026-04-14T17:32:06.320Z] <<< [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/auracore-82bf2:testIamPermissions {"permissions":["firebase.projects.get","firebasehosting.sites.update"]}
+[debug] [2026-04-14T17:32:06.321Z] Checked if tokens are valid: true, expires at: 1776190915632
+[debug] [2026-04-14T17:32:06.321Z] Checked if tokens are valid: true, expires at: 1776190915632
+[debug] [2026-04-14T17:32:06.322Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/projects/auracore-82bf2 [none]
+[debug] [2026-04-14T17:32:06.781Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/projects/auracore-82bf2 200
+[debug] [2026-04-14T17:32:06.782Z] <<< [apiv2][body] GET https://firebase.googleapis.com/v1beta1/projects/auracore-82bf2 {"projectId":"auracore-82bf2","projectNumber":"70223634292","displayName":"AuraCore","name":"projects/auracore-82bf2","resources":{"hostingSite":"auracore-82bf2"},"state":"ACTIVE","etag":"1_3d872177-b988-4ac5-8e4f-ad20a3672e02"}
+[info] 
+[info] === Deploying to 'auracore-82bf2'...
+[info] 
+[info] i  deploying hosting 
+[debug] [2026-04-14T17:32:06.794Z] Checked if tokens are valid: true, expires at: 1776190915632
+[debug] [2026-04-14T17:32:06.795Z] Checked if tokens are valid: true, expires at: 1776190915632
+[debug] [2026-04-14T17:32:06.795Z] >>> [apiv2][query] POST https://firebasehosting.googleapis.com/v1beta1/projects/-/sites/auracore-82bf2/versions [none]
+[debug] [2026-04-14T17:32:06.795Z] >>> [apiv2][body] POST https://firebasehosting.googleapis.com/v1beta1/projects/-/sites/auracore-82bf2/versions {"status":"CREATED","labels":{"deployment-tool":"cli-firebase"}}
+[debug] [2026-04-14T17:32:08.555Z] <<< [apiv2][status] POST https://firebasehosting.googleapis.com/v1beta1/projects/-/sites/auracore-82bf2/versions 200
+[debug] [2026-04-14T17:32:08.555Z] <<< [apiv2][body] POST https://firebasehosting.googleapis.com/v1beta1/projects/-/sites/auracore-82bf2/versions {"name":"projects/70223634292/sites/auracore-82bf2/versions/b465230e87ed9c03","status":"CREATED","config":{},"labels":{"deployment-tool":"cli-firebase"}}
+[info] i  hosting[auracore-82bf2]: beginning deploy... 
+[info] i  hosting[auracore-82bf2]: found 22 files in frontend/out 
+[debug] [2026-04-14T17:32:08.589Z] [hosting] uploading with 200 concurrency
+[debug] [2026-04-14T17:32:08.630Z] Checked if tokens are valid: true, expires at: 1776190915632
+[debug] [2026-04-14T17:32:08.630Z] Checked if tokens are valid: true, expires at: 1776190915632
+[debug] [2026-04-14T17:32:08.632Z] [hosting] hash cache [ZnJvbnRlbmQvb3V0] stored for 22 files
+[debug] [2026-04-14T17:32:08.632Z] [hosting][hash queue][FINAL] {"max":35,"min":21,"avg":25.954545454545453,"active":0,"complete":22,"success":22,"errored":0,"retried":0,"total":22,"elapsed":41}
+[debug] [2026-04-14T17:32:08.632Z] >>> [apiv2][query] POST https://firebasehosting.googleapis.com/v1beta1/projects/70223634292/sites/auracore-82bf2/versions/b465230e87ed9c03:populateFiles [none]
+[debug] [2026-04-14T17:32:08.632Z] >>> [apiv2][body] POST https://firebasehosting.googleapis.com/v1beta1/projects/70223634292/sites/auracore-82bf2/versions/b465230e87ed9c03:populateFiles {"files":{"/index.html":"4f7b90d10c5f661285ee2bf0085708d3cbbaf012c555e03f36577e3614ebd791","/index.txt":"f7337e447934348671cbf4af4a3c780d3f0bb6b3ff5a719f6ba5cb395e5836c7","/404.html":"6bff7b8b360743b3f410268179f55612ad7a8a2abee94abea4d3de772023f3a8","/_next/static/chunks/webpack-bf4d195f597e7c85.js":"7b140cba6fdbb93296c5572d941ac612c296a6b7efce02856deba6b41341908a","/_next/static/chunks/main-app-6616ace3d5dae883.js":"435605742bfb958f30e1aa8e24f1211a45b7cab8861ac101323f5fdc0b7c0144","/favicon.svg":"019f4797455106ba2bb56c211b8ea3d4d4afe0d549b529c1c4d998a2ea90cc68","/_next/static/chunks/906.3d0842f672bcb98a.js":"0fa914133d851944c0931f0cd4339bb704c01e625db060a1929aec2274724676","/_next/static/chunks/pages/_app-da15c11dea942c36.js":"9712c92035fc84aef98564eeee270742b264bb5434e66fd4aa73a96e925a105a","/_next/static/chunks/pages/_error-cc3f077a18ea1793.js":"78dba8ecaa6c5e36e0fc2573204024822957fc82a43501460c66063e6d4a2241","/_next/static/chunks/app/layout-38b1975b0192bbc5.js":"97876595b87515f012bc42c492351546825a0acdf00359a38b407acf7032b569","/_next/static/chunks/app/_not-found/page-4599342688d31853.js":"c9272a86fa458ddfeae54c58aa07a03719cbc5dcea2d61dc39e6667d4169a80d","/_next/static/-gelkXgjp4nT44aczfbfx/_buildManifest.js":"3ccf9a88152c800931e5205fce4aa83a68c748e740e8936c67c4f021123eb4e5","/_next/static/-gelkXgjp4nT44aczfbfx/_ssgManifest.js":"d8d8790f4e673a23bec506f00699bed8a258ac0e4965bb1ca8598172cfc0ec97","/_next/static/chunks/4ea34a6d-c516f6a12567c77c.js":"48c2af766af44dcbef492d1cc631b0fc1f304b20d46516210cbc24006d21d5fc","/_next/static/css/dfe39605aa2083c3.css":"364e6c98b4f7e3dee188aad6be2a305929e08cd1dc5c848cdafe94c4a33c576a","/_next/static/chunks/332-9f5898bdd45ccf5d.js":"7b1a16e3759230e822d228169bea63b19891f2be354916d865f966ac5d9c23bf","/_next/static/chunks/polyfills-42372ed130431b0a.js":"45b36f93bb08c52e360d14b0e8449c88770aa8cf5d59bff1c76cbe6e198fe7c5","/_next/static/chunks/main-af5f21640a61e3f5.js":"3079611292949f93ceabf75cedd1de32bac5499f55f684d0e111cf5cdba90238","/_next/static/chunks/4bd1b696-736b011f554b59a9.js":"43eb92ccb5c679f3fa0b6085f20603049156dcf4d1f40934f7e48602e1ed0090","/_next/static/chunks/app/page-d8611ef004c4812c.js":"e99515c34d55e5880a0c69d9666e3117792f491115f43a8b0986aa5284634217","/_next/static/chunks/684-6a95c2d8323e84b7.js":"f001739ac6f276fdff0bd180921154060ce6d5bbb6abc71773297b8ded150f7f","/_next/static/chunks/framework-859199dea06580b0.js":"18fcc1af97bc557c827f2165331e3ead601b4c813ffc10d5a3064188afc0bf01"}}
+[debug] [2026-04-14T17:32:09.384Z] <<< [apiv2][status] POST https://firebasehosting.googleapis.com/v1beta1/projects/70223634292/sites/auracore-82bf2/versions/b465230e87ed9c03:populateFiles 200
+[debug] [2026-04-14T17:32:09.384Z] <<< [apiv2][body] POST https://firebasehosting.googleapis.com/v1beta1/projects/70223634292/sites/auracore-82bf2/versions/b465230e87ed9c03:populateFiles {"uploadRequiredHashes":["f7337e447934348671cbf4af4a3c780d3f0bb6b3ff5a719f6ba5cb395e5836c7","6bff7b8b360743b3f410268179f55612ad7a8a2abee94abea4d3de772023f3a8","e99515c34d55e5880a0c69d9666e3117792f491115f43a8b0986aa5284634217","4f7b90d10c5f661285ee2bf0085708d3cbbaf012c555e03f36577e3614ebd791"],"uploadUrl":"https://upload-firebasehosting.googleapis.com/upload/sites/auracore-82bf2/versions/b465230e87ed9c03/files"}
+[debug] [2026-04-14T17:32:09.385Z] Checked if tokens are valid: true, expires at: 1776190915632
+[debug] [2026-04-14T17:32:09.385Z] Checked if tokens are valid: true, expires at: 1776190915632
+[debug] [2026-04-14T17:32:09.386Z] Checked if tokens are valid: true, expires at: 1776190915632
+[debug] [2026-04-14T17:32:09.386Z] Checked if tokens are valid: true, expires at: 1776190915632
+[debug] [2026-04-14T17:32:09.386Z] Checked if tokens are valid: true, expires at: 1776190915632
+[debug] [2026-04-14T17:32:09.386Z] Checked if tokens are valid: true, expires at: 1776190915632
+[debug] [2026-04-14T17:32:09.387Z] Checked if tokens are valid: true, expires at: 1776190915632
+[debug] [2026-04-14T17:32:09.387Z] Checked if tokens are valid: true, expires at: 1776190915632
+[debug] [2026-04-14T17:32:09.387Z] >>> [apiv2][query] POST https://upload-firebasehosting.googleapis.com/upload/sites/auracore-82bf2/versions/b465230e87ed9c03/files/f7337e447934348671cbf4af4a3c780d3f0bb6b3ff5a719f6ba5cb395e5836c7 [none]
+[debug] [2026-04-14T17:32:09.387Z] >>> [apiv2][body] POST https://upload-firebasehosting.googleapis.com/upload/sites/auracore-82bf2/versions/b465230e87ed9c03/files/f7337e447934348671cbf4af4a3c780d3f0bb6b3ff5a719f6ba5cb395e5836c7 [stream]
+[debug] [2026-04-14T17:32:09.390Z] >>> [apiv2][query] POST https://upload-firebasehosting.googleapis.com/upload/sites/auracore-82bf2/versions/b465230e87ed9c03/files/6bff7b8b360743b3f410268179f55612ad7a8a2abee94abea4d3de772023f3a8 [none]
+[debug] [2026-04-14T17:32:09.390Z] >>> [apiv2][body] POST https://upload-firebasehosting.googleapis.com/upload/sites/auracore-82bf2/versions/b465230e87ed9c03/files/6bff7b8b360743b3f410268179f55612ad7a8a2abee94abea4d3de772023f3a8 [stream]
+[debug] [2026-04-14T17:32:09.392Z] >>> [apiv2][query] POST https://upload-firebasehosting.googleapis.com/upload/sites/auracore-82bf2/versions/b465230e87ed9c03/files/e99515c34d55e5880a0c69d9666e3117792f491115f43a8b0986aa5284634217 [none]
+[debug] [2026-04-14T17:32:09.392Z] >>> [apiv2][body] POST https://upload-firebasehosting.googleapis.com/upload/sites/auracore-82bf2/versions/b465230e87ed9c03/files/e99515c34d55e5880a0c69d9666e3117792f491115f43a8b0986aa5284634217 [stream]
+[debug] [2026-04-14T17:32:09.394Z] >>> [apiv2][query] POST https://upload-firebasehosting.googleapis.com/upload/sites/auracore-82bf2/versions/b465230e87ed9c03/files/4f7b90d10c5f661285ee2bf0085708d3cbbaf012c555e03f36577e3614ebd791 [none]
+[debug] [2026-04-14T17:32:09.394Z] >>> [apiv2][body] POST https://upload-firebasehosting.googleapis.com/upload/sites/auracore-82bf2/versions/b465230e87ed9c03/files/4f7b90d10c5f661285ee2bf0085708d3cbbaf012c555e03f36577e3614ebd791 [stream]
+[debug] [2026-04-14T17:32:09.395Z] [hosting][populate queue][FINAL] {"max":757,"min":757,"avg":757,"active":0,"complete":1,"success":1,"errored":0,"retried":0,"total":1,"elapsed":765}
+[debug] [2026-04-14T17:32:09.396Z] [hosting] uploads queued: 4
+[info] i  hosting: uploading new files [0/4] (0%) 
+[debug] [2026-04-14T17:32:10.714Z] <<< [apiv2][status] POST https://upload-firebasehosting.googleapis.com/upload/sites/auracore-82bf2/versions/b465230e87ed9c03/files/6bff7b8b360743b3f410268179f55612ad7a8a2abee94abea4d3de772023f3a8 200
+[debug] [2026-04-14T17:32:10.715Z] <<< [apiv2][body] POST https://upload-firebasehosting.googleapis.com/upload/sites/auracore-82bf2/versions/b465230e87ed9c03/files/6bff7b8b360743b3f410268179f55612ad7a8a2abee94abea4d3de772023f3a8 [stream]
+[debug] [2026-04-14T17:32:10.755Z] <<< [apiv2][status] POST https://upload-firebasehosting.googleapis.com/upload/sites/auracore-82bf2/versions/b465230e87ed9c03/files/f7337e447934348671cbf4af4a3c780d3f0bb6b3ff5a719f6ba5cb395e5836c7 200
+[debug] [2026-04-14T17:32:10.756Z] <<< [apiv2][body] POST https://upload-firebasehosting.googleapis.com/upload/sites/auracore-82bf2/versions/b465230e87ed9c03/files/f7337e447934348671cbf4af4a3c780d3f0bb6b3ff5a719f6ba5cb395e5836c7 [stream]
+[debug] [2026-04-14T17:32:10.851Z] <<< [apiv2][status] POST https://upload-firebasehosting.googleapis.com/upload/sites/auracore-82bf2/versions/b465230e87ed9c03/files/e99515c34d55e5880a0c69d9666e3117792f491115f43a8b0986aa5284634217 200
+[debug] [2026-04-14T17:32:10.851Z] <<< [apiv2][body] POST https://upload-firebasehosting.googleapis.com/upload/sites/auracore-82bf2/versions/b465230e87ed9c03/files/e99515c34d55e5880a0c69d9666e3117792f491115f43a8b0986aa5284634217 [stream]
+[debug] [2026-04-14T17:32:11.011Z] <<< [apiv2][status] POST https://upload-firebasehosting.googleapis.com/upload/sites/auracore-82bf2/versions/b465230e87ed9c03/files/4f7b90d10c5f661285ee2bf0085708d3cbbaf012c555e03f36577e3614ebd791 200
+[debug] [2026-04-14T17:32:11.011Z] <<< [apiv2][body] POST https://upload-firebasehosting.googleapis.com/upload/sites/auracore-82bf2/versions/b465230e87ed9c03/files/4f7b90d10c5f661285ee2bf0085708d3cbbaf012c555e03f36577e3614ebd791 [stream]
+[debug] [2026-04-14T17:32:11.011Z] [hosting][upload queue][FINAL] {"max":1624,"min":1330,"avg":1447.5,"active":0,"complete":4,"success":4,"errored":0,"retried":0,"total":4,"elapsed":1626}
+[info] i  hosting: upload complete 
+[info] ✔  hosting[auracore-82bf2]: file upload complete 
+[debug] [2026-04-14T17:32:11.013Z] [hosting] deploy completed after 2453ms
+[debug] [2026-04-14T17:32:11.014Z] [
+  {
+    "config": {
+      "target": "app",
+      "public": "frontend/out",
+      "ignore": [
+        "firebase.json",
+        "**/.*",
+        "**/node_modules/**"
+      ],
+      "cleanUrls": true,
+      "headers": [
+        {
+          "source": "**/*.@(js|css)",
+          "headers": [
+            {
+              "key": "Cache-Control",
+              "value": "public,max-age=31536000,immutable"
+            }
+          ]
+        }
+      ],
+      "site": "auracore-82bf2"
+    },
+    "version": "projects/70223634292/sites/auracore-82bf2/versions/b465230e87ed9c03"
+  }
+]
+[info] i  hosting[auracore-82bf2]: finalizing version... 
+[debug] [2026-04-14T17:32:11.017Z] Checked if tokens are valid: true, expires at: 1776190915632
+[debug] [2026-04-14T17:32:11.017Z] Checked if tokens are valid: true, expires at: 1776190915632
+[debug] [2026-04-14T17:32:11.019Z] >>> [apiv2][query] PATCH https://firebasehosting.googleapis.com/v1beta1/projects/-/sites/auracore-82bf2/versions/b465230e87ed9c03 updateMask=status%2Cconfig
+[debug] [2026-04-14T17:32:11.019Z] >>> [apiv2][body] PATCH https://firebasehosting.googleapis.com/v1beta1/projects/-/sites/auracore-82bf2/versions/b465230e87ed9c03 {"status":"FINALIZED","config":{"headers":[{"glob":"**/*.@(js|css)","headers":{"Cache-Control":"public,max-age=31536000,immutable"}}],"cleanUrls":true}}
+[debug] [2026-04-14T17:32:11.674Z] <<< [apiv2][status] PATCH https://firebasehosting.googleapis.com/v1beta1/projects/-/sites/auracore-82bf2/versions/b465230e87ed9c03 200
+[debug] [2026-04-14T17:32:11.675Z] <<< [apiv2][body] PATCH https://firebasehosting.googleapis.com/v1beta1/projects/-/sites/auracore-82bf2/versions/b465230e87ed9c03 {"name":"projects/70223634292/sites/auracore-82bf2/versions/b465230e87ed9c03","status":"FINALIZED","config":{"headers":[{"headers":{"Cache-Control":"public,max-age=31536000,immutable"},"glob":"**/*.@(js|css)"}],"cleanUrls":true},"labels":{"deployment-tool":"cli-firebase"},"createTime":"2026-04-14T17:32:07.925902Z","createUser":{"email":"alvarocanaisgames@gmail.com"},"finalizeTime":"2026-04-14T17:32:11.506982Z","finalizeUser":{"email":"alvarocanaisgames@gmail.com"}}
+[debug] [2026-04-14T17:32:11.675Z] [hosting] finalized version for auracore-82bf2:[object Object]
+[info] ✔  hosting[auracore-82bf2]: version finalized 
+[info] i  hosting[auracore-82bf2]: releasing new version... 
+[debug] [2026-04-14T17:32:11.676Z] Checked if tokens are valid: true, expires at: 1776190915632
+[debug] [2026-04-14T17:32:11.676Z] Checked if tokens are valid: true, expires at: 1776190915632
+[debug] [2026-04-14T17:32:11.677Z] >>> [apiv2][query] POST https://firebasehosting.googleapis.com/v1beta1/projects/-/sites/auracore-82bf2/channels/live/releases versionName=projects%2F70223634292%2Fsites%2Fauracore-82bf2%2Fversions%2Fb465230e87ed9c03
+[debug] [2026-04-14T17:32:11.677Z] >>> [apiv2][body] POST https://firebasehosting.googleapis.com/v1beta1/projects/-/sites/auracore-82bf2/channels/live/releases {}
+[debug] [2026-04-14T17:32:12.390Z] <<< [apiv2][status] POST https://firebasehosting.googleapis.com/v1beta1/projects/-/sites/auracore-82bf2/channels/live/releases 200
+[debug] [2026-04-14T17:32:12.391Z] <<< [apiv2][body] POST https://firebasehosting.googleapis.com/v1beta1/projects/-/sites/auracore-82bf2/channels/live/releases {"name":"projects/70223634292/sites/auracore-82bf2/channels/live/releases/1776187931561000","version":{"name":"projects/70223634292/sites/auracore-82bf2/versions/b465230e87ed9c03","status":"FINALIZED","config":{"headers":[{"headers":{"Cache-Control":"public,max-age=31536000,immutable"},"glob":"**/*.@(js|css)"}],"cleanUrls":true},"labels":{"deployment-tool":"cli-firebase"},"createTime":"2026-04-14T17:32:07.925902Z","createUser":{"email":"alvarocanaisgames@gmail.com","imageUrl":"https://lh3.googleusercontent.com/a/ACg8ocIXC_W5VuHy_ZIpPTwK17neNWT9KtTYkViOZpNzGfjaACg-jH-_"},"finalizeTime":"2026-04-14T17:32:11.506982Z","finalizeUser":{"email":"alvarocanaisgames@gmail.com","imageUrl":"https://lh3.googleusercontent.com/a/ACg8ocIXC_W5VuHy_ZIpPTwK17neNWT9KtTYkViOZpNzGfjaACg-jH-_"}},"type":"DEPLOY","releaseTime":"2026-04-14T17:32:11.561Z","releaseUser":{"email":"alvarocanaisgames@gmail.com","imageUrl":"https://lh3.googleusercontent.com/a/ACg8ocIXC_W5VuHy_ZIpPTwK17neNWT9KtTYkViOZpNzGfjaACg-jH-_"}}
+[debug] [2026-04-14T17:32:12.391Z] [hosting] release: {"name":"projects/70223634292/sites/auracore-82bf2/channels/live/releases/1776187931561000","version":{"name":"projects/70223634292/sites/auracore-82bf2/versions/b465230e87ed9c03","status":"FINALIZED","config":{"headers":[{"headers":{"Cache-Control":"public,max-age=31536000,immutable"},"glob":"**/*.@(js|css)"}],"cleanUrls":true},"labels":{"deployment-tool":"cli-firebase"},"createTime":"2026-04-14T17:32:07.925902Z","createUser":{"email":"alvarocanaisgames@gmail.com","imageUrl":"https://lh3.googleusercontent.com/a/ACg8ocIXC_W5VuHy_ZIpPTwK17neNWT9KtTYkViOZpNzGfjaACg-jH-_"},"finalizeTime":"2026-04-14T17:32:11.506982Z","finalizeUser":{"email":"alvarocanaisgames@gmail.com","imageUrl":"https://lh3.googleusercontent.com/a/ACg8ocIXC_W5VuHy_ZIpPTwK17neNWT9KtTYkViOZpNzGfjaACg-jH-_"}},"type":"DEPLOY","releaseTime":"2026-04-14T17:32:11.561Z","releaseUser":{"email":"alvarocanaisgames@gmail.com","imageUrl":"https://lh3.googleusercontent.com/a/ACg8ocIXC_W5VuHy_ZIpPTwK17neNWT9KtTYkViOZpNzGfjaACg-jH-_"}}
+[info] ✔  hosting[auracore-82bf2]: release complete 
+[info] 
+[info] ✔  Deploy complete! 
+[info] 
+[info] Project Console: https://console.firebase.google.com/project/auracore-82bf2/overview
+[info] Hosting URL: https://auracore-82bf2.web.app

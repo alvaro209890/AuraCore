@@ -420,6 +420,13 @@ function formatReminderOffsetLabel(minutes: number): string {
   return `${minutes} min antes`;
 }
 
+function formatAgendaReminderRule(event: AgendaEvent): string {
+  if (!event.reminder_eligible) {
+    return event.reminder_block_reason ?? "Sem lembrete automático";
+  }
+  return `${formatReminderOffsetLabel(event.reminder_offset_minutes)} em horário de Brasília.`;
+}
+
 function formatRelativeTime(value: string | null | undefined): string {
   if (!value) {
     return "Sem atividade";
@@ -5804,19 +5811,23 @@ function AgendaTab({
                       ID da mensagem: <code>{event.message_id}</code>
                     </p>
                     <p className="support-copy">
-                      Regra de lembrete: {formatReminderOffsetLabel(event.reminder_offset_minutes)} em horário de Brasília.
+                      Regra de lembrete: {formatAgendaReminderRule(event)}
                     </p>
                     <p className="support-copy">
                       {event.pre_reminder_at
                         ? event.pre_reminder_sent_at
                           ? `Lembrete antecipado enviado em ${formatShortDateTime(event.pre_reminder_sent_at)}.`
                           : `Lembrete antecipado programado para ${formatShortDateTime(event.pre_reminder_at)}.`
-                        : "Sem lembrete antecipado configurado."}
+                        : event.reminder_eligible
+                          ? "Sem lembrete antecipado configurado."
+                          : "Lembretes automáticos desativados para este evento."}
                     </p>
                     <p className="support-copy">
                       {event.reminder_sent_at
                         ? `Lembrete do horário enviado em ${formatShortDateTime(event.reminder_sent_at)}.`
-                        : "Lembrete do horário ainda pendente."}
+                        : event.reminder_eligible
+                          ? "Lembrete do horário ainda pendente."
+                          : "Evento não elegível para lembrete no horário."}
                     </p>
                     {event.conflict ? (
                       <div className="danger-box" style={{ marginTop: 12 }}>

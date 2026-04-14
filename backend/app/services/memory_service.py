@@ -2782,37 +2782,37 @@ class MemoryAnalysisService:
 
         sections: list[str] = []
         current_size = 0
-        char_budget = min(max(1200, self.settings.memory_analysis_snapshot_context_chars // 3), 2600)
+        char_budget = min(max(900, self.settings.memory_analysis_snapshot_context_chars // 4), 2000)
 
         for snapshot in reversed(snapshots):
             lines = [
                 f"- Analise de {snapshot.window_hours}h em {snapshot.created_at.astimezone(UTC).strftime('%Y-%m-%d %H:%M UTC')}",
-                f"  Resumo da janela: {self._summarize_message_text(snapshot.window_summary, 220)}",
+                f"  Resumo da janela: {self._summarize_message_text(snapshot.window_summary, 180)}",
             ]
             if snapshot.key_learnings:
                 lines.append(
                     "  Aprendizados: "
-                    + "; ".join(self._summarize_list_items(snapshot.key_learnings, item_limit=3, item_chars=100))
+                    + "; ".join(self._summarize_list_items(snapshot.key_learnings, item_limit=2, item_chars=84))
                 )
             if snapshot.people_and_relationships:
                 lines.append(
                     "  Pessoas e relacoes: "
-                    + "; ".join(self._summarize_list_items(snapshot.people_and_relationships, item_limit=3, item_chars=100))
+                    + "; ".join(self._summarize_list_items(snapshot.people_and_relationships, item_limit=2, item_chars=84))
                 )
             if snapshot.routine_signals:
                 lines.append(
                     "  Rotina: "
-                    + "; ".join(self._summarize_list_items(snapshot.routine_signals, item_limit=3, item_chars=100))
+                    + "; ".join(self._summarize_list_items(snapshot.routine_signals, item_limit=2, item_chars=84))
                 )
             if snapshot.preferences:
                 lines.append(
                     "  Preferencias: "
-                    + "; ".join(self._summarize_list_items(snapshot.preferences, item_limit=3, item_chars=100))
+                    + "; ".join(self._summarize_list_items(snapshot.preferences, item_limit=2, item_chars=84))
                 )
             if snapshot.open_questions:
                 lines.append(
                     "  Lacunas abertas: "
-                    + "; ".join(self._summarize_list_items(snapshot.open_questions, item_limit=3, item_chars=100))
+                    + "; ".join(self._summarize_list_items(snapshot.open_questions, item_limit=2, item_chars=84))
                 )
 
             section = "\n".join(lines)
@@ -2830,30 +2830,30 @@ class MemoryAnalysisService:
 
         sections: list[str] = []
         current_size = 0
-        char_budget = min(max(1400, self.settings.memory_analysis_snapshot_context_chars // 3), 2600)
+        char_budget = min(max(1100, self.settings.memory_analysis_snapshot_context_chars // 4), 2200)
 
         for project in projects:
             lines = [
                 f"- Projeto: {project.project_name}",
-                f"  Resumo: {self._summarize_message_text(project.summary, 220)}",
+                f"  Resumo: {self._summarize_message_text(project.summary, 180)}",
             ]
             if project.status:
-                lines.append(f"  Status: {self._summarize_message_text(project.status, 80)}")
+                lines.append(f"  Status: {self._summarize_message_text(project.status, 70)}")
             if project.what_is_being_built:
                 lines.append(
-                    f"  O que esta sendo desenvolvido: {self._summarize_message_text(project.what_is_being_built, 160)}"
+                    f"  O que esta sendo desenvolvido: {self._summarize_message_text(project.what_is_being_built, 120)}"
                 )
             if project.built_for:
-                lines.append(f"  Para quem: {self._summarize_message_text(project.built_for, 120)}")
+                lines.append(f"  Para quem: {self._summarize_message_text(project.built_for, 90)}")
             if project.next_steps:
                 lines.append(
                     "  Proximos passos: "
-                    + "; ".join(self._summarize_list_items(project.next_steps, item_limit=3, item_chars=90))
+                    + "; ".join(self._summarize_list_items(project.next_steps, item_limit=2, item_chars=76))
                 )
             if project.evidence:
                 lines.append(
                     "  Evidencias: "
-                    + "; ".join(self._summarize_list_items(project.evidence, item_limit=3, item_chars=90))
+                    + "; ".join(self._summarize_list_items(project.evidence, item_limit=2, item_chars=76))
                 )
             if project.completion_source == "manual" and project.manual_completed_at is not None:
                 lines.append(
@@ -2861,7 +2861,7 @@ class MemoryAnalysisService:
                 )
                 if project.manual_completion_notes.strip():
                     lines.append(
-                        f"  Observacao manual: {self._summarize_message_text(project.manual_completion_notes.strip(), 140)}"
+                        f"  Observacao manual: {self._summarize_message_text(project.manual_completion_notes.strip(), 110)}"
                     )
 
             section = "\n".join(lines)
@@ -2880,8 +2880,8 @@ class MemoryAnalysisService:
 
         sections: list[str] = []
         current_size = 0
-        char_budget = min(max(1000, self.settings.memory_analysis_snapshot_context_chars // 4), 1600)
-        per_thread_limit = max(1, min(self.settings.chat_max_history_messages, 6))
+        char_budget = min(max(800, self.settings.memory_analysis_snapshot_context_chars // 5), 1300)
+        per_thread_limit = max(1, min(self.settings.chat_max_history_messages, 5))
 
         owner_phone = self.store.get_whatsapp_session_owner_phone(
             session_id=f"{self.settings.default_user_id}:observer"
@@ -2919,11 +2919,11 @@ class MemoryAnalysisService:
 
         sections: list[str] = []
         current_size = 0
-        char_budget = min(max(900, self.settings.memory_analysis_snapshot_context_chars // 4), 1600)
+        char_budget = min(max(720, self.settings.memory_analysis_snapshot_context_chars // 5), 1300)
 
         for message in messages:
             role = "Dono" if message.role == "user" else "AuraCore"
-            line = f"- {role}: {self._summarize_message_text(message.content, 220)}"
+            line = f"- {role}: {self._summarize_message_text(message.content, 180)}"
             projected_size = current_size + len(line) + 1
             if sections and projected_size > char_budget:
                 break
@@ -2938,14 +2938,14 @@ class MemoryAnalysisService:
 
         sections: list[str] = []
         current_size = 0
-        char_budget = min(max(900, self.settings.memory_analysis_snapshot_context_chars // 4), 1600)
+        char_budget = min(max(720, self.settings.memory_analysis_snapshot_context_chars // 5), 1300)
 
         for message in messages:
             content = " ".join(message.content.split()).strip()
             if not content:
                 continue
             role = "Dono" if message.role == "user" or message.direction == "inbound" else "Orion"
-            line = f"- {role} (WhatsApp): {self._summarize_message_text(content, 220)}"
+            line = f"- {role} (WhatsApp): {self._summarize_message_text(content, 180)}"
             projected_size = current_size + len(line) + 1
             if sections and projected_size > char_budget:
                 break
@@ -3045,7 +3045,7 @@ class MemoryAnalysisService:
         memory_by_key = {memory.person_key: memory for memory in memories}
         sections: list[str] = []
         current_size = 0
-        char_budget = min(max(1400, self.settings.memory_analysis_snapshot_context_chars // 2), 2800)
+        char_budget = min(max(1100, self.settings.memory_analysis_snapshot_context_chars // 3), 2200)
 
         for person_key, grouped in grouped_messages.items():
             memory = memory_by_key.get(person_key)
@@ -3065,23 +3065,23 @@ class MemoryAnalysisService:
             if memory.relationship_type:
                 lines.append(f"  Tipo de relacao: {memory.relationship_type}")
             if memory.profile_summary:
-                lines.append(f"  Quem e: {self._summarize_message_text(memory.profile_summary, 180)}")
+                lines.append(f"  Quem e: {self._summarize_message_text(memory.profile_summary, 140)}")
             if memory.relationship_summary:
-                lines.append(f"  Relacao com o dono: {self._summarize_message_text(memory.relationship_summary, 180)}")
+                lines.append(f"  Relacao com o dono: {self._summarize_message_text(memory.relationship_summary, 140)}")
             if memory.salient_facts:
                 lines.append(
                     "  Fatos marcantes: "
-                    + "; ".join(self._summarize_list_items(memory.salient_facts, item_limit=4, item_chars=90))
+                    + "; ".join(self._summarize_list_items(memory.salient_facts, item_limit=3, item_chars=72))
                 )
             if memory.open_loops:
                 lines.append(
                     "  Pendencias abertas: "
-                    + "; ".join(self._summarize_list_items(memory.open_loops, item_limit=4, item_chars=90))
+                    + "; ".join(self._summarize_list_items(memory.open_loops, item_limit=3, item_chars=72))
                 )
             if memory.recent_topics:
                 lines.append(
                     "  Topicos recentes: "
-                    + "; ".join(self._summarize_list_items(memory.recent_topics, item_limit=4, item_chars=90))
+                    + "; ".join(self._summarize_list_items(memory.recent_topics, item_limit=3, item_chars=72))
                 )
 
             section = "\n".join(lines)
@@ -3146,9 +3146,9 @@ class MemoryAnalysisService:
 
         sections: list[str] = []
         current_size = 0
-        char_budget = min(max(1500, self.settings.memory_analysis_snapshot_context_chars // 2), 3000)
+        char_budget = min(max(1200, self.settings.memory_analysis_snapshot_context_chars // 3), 2400)
 
-        for group in ordered_groups[:12]:
+        for group in ordered_groups[:8]:
             total_messages = int(group["inbound_count"]) + int(group["outbound_count"])
             lines = [
                 f"- conversation_key: {group['conversation_key']}",
@@ -3353,9 +3353,9 @@ class MemoryAnalysisService:
 
     def _resolve_char_budget(self, detail_mode: Literal["light", "balanced", "deep"]) -> int:
         presets = {
-            "light": 10000,
-            "balanced": 18000,
-            "deep": 30000,
+            "light": 8500,
+            "balanced": 14500,
+            "deep": 22500,
         }
         return min(self.settings.memory_analysis_max_chars, presets[detail_mode])
 
@@ -3373,15 +3373,15 @@ class MemoryAnalysisService:
         }[detail_mode]
         transcript_chars = min(char_budget, selected_message_count * average_chars_per_message)
         context_chars = {
-            "light": 6200,
-            "balanced": 9200,
-            "deep": 13200,
+            "light": 5000,
+            "balanced": 7600,
+            "deep": 10200,
         }[detail_mode]
         estimated_input_tokens = max(600, round((transcript_chars + context_chars) / 4))
         estimated_output_tokens = {
-            "light": 700,
-            "balanced": 920,
-            "deep": 1180,
+            "light": 620,
+            "balanced": 820,
+            "deep": 1040,
         }[detail_mode]
         return estimated_input_tokens, estimated_output_tokens, estimated_input_tokens + estimated_output_tokens
 

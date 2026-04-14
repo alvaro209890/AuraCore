@@ -35,6 +35,23 @@ EVENT_KEYWORD_REGEX = re.compile(
     r"visita|compromisso|entrevista|aula|almo[cç]o|caf[eé]|demo|demonstra[cç][aã]o)\b",
     re.IGNORECASE,
 )
+EXPLICIT_SCHEDULING_INTENT_REGEX = re.compile(
+    r"\b(?:"
+    r"agenda(?:r|do|da)?|marc(?:ar|a|ado|ada)|"
+    r"remarc(?:ar|a|ado|ada)|reagend(?:ar|a|ado|ada)|"
+    r"cancel(?:ar|a|ado|ada)|desmarc(?:ar|a|ado|ada)|"
+    r"lembra(?:r|do)?|lembrete|avisa(?:r)?|"
+    r"reuni[aã]o|consulta|entrevista|compromisso|call|demo|aula|encontro|visita"
+    r")\b",
+    re.IGNORECASE,
+)
+TIME_ONLY_CONTEXT_REGEX = re.compile(
+    r"\b(?:tenho|tem|t[eê]m|vou ter|preciso ir|preciso estar|come[cç]a|inicia|e[áa]|ser[aá])\b",
+    re.IGNORECASE,
+)
+AGENDA_HIGH_CONFIDENCE_THRESHOLD = 72
+AGENDA_CLARIFY_CONFIDENCE_THRESHOLD = 45
+GENERIC_TITLES = {"compromisso", "evento", "agenda", "horario", "horário"}
 CONFIRMED_REGEX = re.compile(r"\b(?:fechado|confirmado|confirmada|bora|combinado|marcado|certo)\b", re.IGNORECASE)
 TENTATIVE_REGEX = re.compile(r"\b(?:talvez|vou tentar|tentar|se der|acho que|possivelmente)\b", re.IGNORECASE)
 CANCEL_ACTION_REGEX = re.compile(
@@ -140,6 +157,8 @@ class AgendaProcessingResult:
     alert_sent: bool = False
     reminder_offset_minutes: int = 0
     updated_existing_event: bool = False
+    clarification_needed: bool = False
+    clarification_reply: str | None = None
     skipped_reason: str | None = None
 
 
@@ -233,6 +252,16 @@ class AgendaGuardianService:
             for event in due_pre_events:
                 if event.pre_reminder_sent_at is not None or event.reminder_offset_minutes <= 0:
                     continue
+                if event.status != "firme":
+                    self.store.mark_agenda_event_pre_reminded(
+                        user_id=self.settings.default_user_id,
+                        event_id=event.id,
+                        reminded_at=now,
+                    )
+                    await self._log_debug(
+                        f"[Guardião do Tempo] Lembrete antecipado suprimido para '{event.titulo}' porque o evento esta tentativo."
+                    )
+                    continue
                 if event.inicio <= now:
                     self.store.mark_agenda_event_pre_reminded(
                         user_id=self.settings.default_user_id,
@@ -257,6 +286,16 @@ class AgendaGuardianService:
             )
             for event in due_events:
                 if event.reminder_sent_at is not None:
+                    continue
+                if event.status != "firme":
+                    self.store.mark_agenda_event_reminded(
+                        user_id=self.settings.default_user_id,
+                        event_id=event.id,
+                        reminded_at=now,
+                    )
+                    await self._log_debug(
+                        f"[Guardião do Tempo] Lembrete no horario suprimido para '{event.titulo}' porque o evento esta tentativo."
+                    )
                     continue
                 if event.inicio < stale_cutoff:
                     self.store.mark_agenda_event_reminded(
@@ -330,6 +369,7 @@ class AgendaGuardianService:
                 updated_event = self._apply_follow_up_reminder_instruction(
                     user_id=user_id,
                     contact_name=contact_name,
+                    source_text=normalized_text,
                     reminder_offset_minutes=reminder_offset_minutes,
                 )
                 if updated_event is not None:
@@ -343,6 +383,12 @@ class AgendaGuardianService:
                         reminder_offset_minutes=reminder_offset_minutes,
                         updated_existing_event=True,
                     )
+            if DATE_SIGNAL_REGEX.search(normalized_text):
+                return self._clarification_result(
+                    action="clarify",
+                    reason="no_explicit_schedule_intent",
+                    source_text=normalized_text,
+                )
             return AgendaProcessingResult(action=action, skipped_reason="no_schedule_signal")
 
         await self._log_debug(
@@ -359,27 +405,70 @@ class AgendaGuardianService:
             logger.warning("agenda_extraction_failed message_id=%s detail=%s", message_id, str(exc))
             return AgendaProcessingResult(skipped_reason="extract_failed")
 
-        if not extraction.has_schedule_signal or not extraction.data_inicio:
-            return AgendaProcessingResult(action=action, skipped_reason="no_structured_schedule")
+        resolved_action = extraction.action if extraction.action != "none" else action
+        if extraction.action == "clarify":
+            return self._clarification_result(
+                action="clarify",
+                reason="model_requires_clarification",
+                source_text=normalized_text,
+            )
+
+        if not extraction.has_schedule_signal:
+            if DATE_SIGNAL_REGEX.search(normalized_text):
+                return self._clarification_result(
+                    action="clarify",
+                    reason="time_without_schedule_commitment",
+                    source_text=normalized_text,
+                )
+            return AgendaProcessingResult(action=resolved_action, skipped_reason="no_structured_schedule")
+
+        if resolved_action in {"create", "reschedule"} and not extraction.data_inicio:
+            return self._clarification_result(
+                action="clarify",
+                reason="missing_start_time",
+                source_text=normalized_text,
+            )
 
         resolved_status = self._resolve_status(extraction=extraction, source_text=normalized_text)
         inicio = self._normalize_datetime(extraction.data_inicio, reference=occurred_at)
         if inicio is None:
             await self._log_debug("[Guardião do Tempo] Extração retornou data_inicio inválida.")
-            return AgendaProcessingResult(action=action, skipped_reason="invalid_start")
+            return self._clarification_result(
+                action="clarify",
+                reason="invalid_start",
+                source_text=normalized_text,
+            )
+        if inicio <= occurred_at.astimezone(UTC) - timedelta(minutes=5):
+            return AgendaProcessingResult(action=resolved_action, skipped_reason="past_start")
         fim = self._normalize_datetime(extraction.data_fim, reference=occurred_at)
         if fim is None or fim <= inicio:
             duration_minutes = self._extract_duration_minutes(normalized_text)
             fim = inicio + timedelta(minutes=duration_minutes) if duration_minutes > 0 else inicio + DEFAULT_EVENT_DURATION
 
-        if self._should_require_clarification(extraction=extraction, source_text=normalized_text):
+        if self._should_require_clarification(extraction=extraction, source_text=normalized_text, action=resolved_action):
             await self._log_debug(
-                "[Guardião do Tempo] Sinal de agenda rejeitado por baixa confiança e contexto insuficiente."
+                "[Guardião do Tempo] Sinal de agenda bloqueado por ambiguidade ou baixa confianca."
             )
-            return AgendaProcessingResult(action=action, skipped_reason="low_confidence")
+            return self._clarification_result(
+                action="clarify",
+                reason="low_confidence_or_ambiguous",
+                source_text=normalized_text,
+            )
 
         titulo = extraction.titulo.strip() if extraction.titulo.strip() else self._fallback_title(normalized_text)
-        is_update = action == "reschedule" and target_event is not None and not NEW_EVENT_HINT_REGEX.search(normalized_text)
+        if self._is_generic_title(titulo):
+            return self._clarification_result(
+                action="clarify",
+                reason="generic_title",
+                source_text=normalized_text,
+            )
+        is_update = resolved_action == "reschedule" and target_event is not None and not NEW_EVENT_HINT_REGEX.search(normalized_text)
+        if resolved_action in {"cancel", "reschedule", "update_reminder"} and target_event is None:
+            return self._clarification_result(
+                action="clarify",
+                reason="target_event_not_resolved",
+                source_text=normalized_text,
+            )
         if is_update:
             titulo = self._resolve_updated_title(
                 extracted_title=titulo,
@@ -412,7 +501,7 @@ class AgendaGuardianService:
                 reset_reminder=True,
             )
             if saved_event is None:
-                return AgendaProcessingResult(action=action, skipped_reason="update_failed")
+                return AgendaProcessingResult(action=resolved_action, skipped_reason="update_failed")
         else:
             saved_event = self.store.upsert_agenda_event(
                 user_id=user_id,
@@ -452,7 +541,12 @@ class AgendaGuardianService:
         )
 
     def _has_schedule_signal(self, text: str) -> bool:
-        return bool(DATE_SIGNAL_REGEX.search(text))
+        compact = " ".join((text or "").split()).strip()
+        if not compact:
+            return False
+        has_date_signal = bool(DATE_SIGNAL_REGEX.search(compact))
+        has_explicit_intent = bool(EXPLICIT_SCHEDULING_INTENT_REGEX.search(compact))
+        return has_date_signal and has_explicit_intent
 
     def _resolve_status(self, *, extraction: DeepSeekAgendaExtractionResult, source_text: str) -> str:
         extracted_intention = (extraction.intencao or "").strip().lower()
@@ -483,16 +577,24 @@ class AgendaGuardianService:
         *,
         extraction: DeepSeekAgendaExtractionResult,
         source_text: str,
+        action: str,
     ) -> bool:
         confidence = int(extraction.confidence or 0)
-        if confidence >= 45:
+        explicit_intent = bool(EXPLICIT_SCHEDULING_INTENT_REGEX.search(source_text))
+        if action == "update_reminder" and confidence >= AGENDA_HIGH_CONFIDENCE_THRESHOLD and explicit_intent:
             return False
-        if EVENT_KEYWORD_REGEX.search(source_text):
+        if action in {"cancel", "reschedule"} and confidence >= AGENDA_HIGH_CONFIDENCE_THRESHOLD and explicit_intent:
             return False
-        if CONFIRMED_REGEX.search(source_text) or TENTATIVE_REGEX.search(source_text):
+        if extraction.is_explicit_user_intent and explicit_intent and confidence >= AGENDA_HIGH_CONFIDENCE_THRESHOLD:
             return False
+        if confidence < AGENDA_CLARIFY_CONFIDENCE_THRESHOLD:
+            return True
+        if not extraction.is_explicit_user_intent:
+            return True
+        if DATE_SIGNAL_REGEX.search(source_text) and not explicit_intent and TIME_ONLY_CONTEXT_REGEX.search(source_text):
+            return True
         extracted_title = (extraction.titulo or "").strip()
-        return len(extracted_title) < 4
+        return len(extracted_title) < 4 or self._is_generic_title(extracted_title)
 
     def _normalize_datetime(self, raw_value: str | None, *, reference: datetime) -> datetime | None:
         value = (raw_value or "").strip()
@@ -998,14 +1100,15 @@ class AgendaGuardianService:
         *,
         user_id: UUID,
         contact_name: str,
+        source_text: str,
         reminder_offset_minutes: int,
     ) -> AgendaEventRecord | None:
-        target_event = self.store.find_latest_upcoming_agenda_event_for_contact(
+        target_event = self._resolve_target_event(
             user_id=user_id,
-            contato_origem=contact_name,
-            now=datetime.now(UTC),
+            contact_name=contact_name,
+            message_text=source_text,
         )
-        if target_event is None:
+        if target_event is None or self._score_event_match(message_tokens=self._extract_title_tokens(source_text), event=target_event) <= 0:
             return None
         return self.store.update_agenda_event(
             user_id=user_id,
@@ -1038,11 +1141,17 @@ class AgendaGuardianService:
         ]
         best_event = latest
         best_score = self._score_event_match(message_tokens=message_tokens, event=latest)
+        tie = False
         for event in candidate_events:
             score = self._score_event_match(message_tokens=message_tokens, event=event)
             if score > best_score:
                 best_event = event
                 best_score = score
+                tie = False
+            elif score > 0 and score == best_score and event.id != best_event.id:
+                tie = True
+        if best_score <= 0 or tie:
+            return None
         return best_event
 
     def _resolve_updated_title(
@@ -1078,9 +1187,48 @@ class AgendaGuardianService:
         if not title_tokens or not message_tokens:
             return 0
         overlap = title_tokens & message_tokens
-        return len(overlap)
+        score = len(overlap) * 10
+        time_match = re.search(r"\b(?:[àa]s?\s*)?(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\b", " ".join(message_tokens))
+        if time_match:
+            hour = int(time_match.group("hour"))
+            minute = int(time_match.group("minute") or 0)
+            localized = event.inicio.astimezone(DEFAULT_TIMEZONE)
+            if localized.hour == hour and localized.minute == minute:
+                score += 6
+        return score
+
+    def _is_generic_title(self, title: str) -> bool:
+        normalized = " ".join((title or "").split()).strip().casefold()
+        if not normalized:
+            return True
+        if normalized in GENERIC_TITLES:
+            return True
+        tokens = self._extract_title_tokens(normalized)
+        return len(tokens) <= 1 and normalized in {"consulta", "reuniao", "reunião", "aula", "call"}
+
+    def _clarification_result(self, *, action: str, reason: str, source_text: str) -> AgendaProcessingResult:
+        return AgendaProcessingResult(
+            detected=True,
+            action=action,
+            clarification_needed=True,
+            clarification_reply=self._build_clarification_reply(source_text=source_text),
+            skipped_reason=reason,
+        )
+
+    def _build_clarification_reply(self, *, source_text: str) -> str:
+        if DATE_SIGNAL_REGEX.search(source_text):
+            return (
+                "Vi um horário possível nessa mensagem, mas ainda não ficou claro se você quer que eu salve isso na agenda. "
+                "Se quiser, me confirme com algo como: 'marque na agenda amanhã às 19:15' e, se puder, diga também o título."
+            )
+        return (
+            "Entendi que isso pode envolver agenda, mas ainda faltam detalhes para eu salvar com segurança. "
+            "Me diga o compromisso, a data e o horário de forma explícita."
+        )
 
     def format_reminder_rule(self, event: AgendaEventRecord) -> str:
+        if event.status != "firme":
+            return "Sem lembrete automatico para evento tentativo"
         if event.reminder_offset_minutes > 0:
             pre_time = event.inicio - timedelta(minutes=event.reminder_offset_minutes)
             return (

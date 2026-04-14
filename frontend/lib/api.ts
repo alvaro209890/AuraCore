@@ -233,6 +233,8 @@ export type AgendaEvent = {
   has_conflict: boolean;
   conflict: AgendaConflict | null;
   reminder_offset_minutes: number;
+  reminder_eligible: boolean;
+  reminder_block_reason: string | null;
   pre_reminder_at: string | null;
   pre_reminder_sent_at: string | null;
   reminder_sent_at: string | null;

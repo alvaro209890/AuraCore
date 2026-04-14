@@ -46,6 +46,8 @@ async def list_agenda_events(
                 has_conflict=conflict is not None,
                 conflict=conflict,
                 reminder_offset_minutes=event.reminder_offset_minutes,
+                reminder_eligible=event.status == "firme",
+                reminder_block_reason=None if event.status == "firme" else "Eventos tentativos nao disparam lembretes automáticos.",
                 pre_reminder_at=_resolve_pre_reminder_at(event),
                 pre_reminder_sent_at=event.pre_reminder_sent_at,
                 reminder_sent_at=event.reminder_sent_at,
@@ -95,6 +97,8 @@ async def update_agenda_event(
         has_conflict=conflict is not None,
         conflict=conflict,
         reminder_offset_minutes=updated.reminder_offset_minutes,
+        reminder_eligible=updated.status == "firme",
+        reminder_block_reason=None if updated.status == "firme" else "Eventos tentativos nao disparam lembretes automáticos.",
         pre_reminder_at=_resolve_pre_reminder_at(updated),
         pre_reminder_sent_at=updated.pre_reminder_sent_at,
         reminder_sent_at=updated.reminder_sent_at,
@@ -138,6 +142,6 @@ def _resolve_first_conflict(*, store: SupabaseStore, event: AgendaEventRecord) -
 
 
 def _resolve_pre_reminder_at(event: AgendaEventRecord) -> datetime | None:
-    if event.reminder_offset_minutes <= 0:
+    if event.status != "firme" or event.reminder_offset_minutes <= 0:
         return None
     return event.inicio - timedelta(minutes=event.reminder_offset_minutes)

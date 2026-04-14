@@ -605,6 +605,10 @@ class WhatsAppAgentService:
             )
 
     def _build_agenda_confirmation_reply(self, outcome: AgendaProcessingResult) -> str:
+        if outcome.clarification_needed:
+            return outcome.clarification_reply or (
+                "Encontrei um possível compromisso, mas ainda preciso que você confirme a intenção, a data e o horário para salvar com segurança."
+            )
         if outcome.saved_event is None:
             return "Recebi a mensagem. Tive sinal de agenda, mas não consegui consolidar o compromisso com segurança."
 

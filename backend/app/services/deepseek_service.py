@@ -73,12 +73,15 @@ class DeepSeekContactMemoryRefinementResult(BaseModel):
 
 
 class DeepSeekAgendaExtractionResult(BaseModel):
+    action: str = "none"
     has_schedule_signal: bool = False
+    is_explicit_user_intent: bool = False
     titulo: str = ""
     data_inicio: str | None = None
     data_fim: str | None = None
     intencao: str = ""
     confidence: int = Field(default=0, ge=0, le=100)
+    missing_fields: list[str] = Field(default_factory=list)
 
 
 class DeepSeekAgendaConflictResolutionResult(BaseModel):
@@ -170,30 +173,48 @@ class DeepSeekService:
         message_text: str,
         reference_now: datetime,
     ) -> DeepSeekAgendaExtractionResult:
+        user_prompt = (
+            f"Horario de referencia: {reference_now.isoformat()}\n"
+            "Analise a mensagem abaixo e retorne exatamente este formato:\n"
+            "{\n"
+            '  "action": "create|reschedule|cancel|update_reminder|none|clarify",\n'
+            '  "has_schedule_signal": true,\n'
+            '  "is_explicit_user_intent": false,\n'
+            '  "titulo": "string",\n'
+            '  "data_inicio": "string|null",\n'
+            '  "data_fim": "string|null",\n'
+            '  "intencao": "confirmado|tentativo|incerto",\n'
+            '  "confidence": 0,\n'
+            '  "missing_fields": ["string"]\n'
+            "}\n"
+            "Marque action=clarify quando houver horario ou compromisso plausivel, mas faltar intencao explicita ou dados suficientes para salvar com seguranca.\n"
+            "Marque action=none quando a mensagem nao for sobre agenda.\n"
+            "Mensagem:\n"
+            f"{message_text.strip()}"
+        )
         payload = self._build_completion_payload(
             system_prompt=(
                 "Voce extrai sinais de agenda do AuraCore. "
                 "Recebera apenas uma mensagem. "
                 "Retorne somente JSON valido. "
-                "Use has_schedule_signal=true apenas quando a mensagem realmente estiver combinando, sugerindo ou confirmando horario/data. "
+                "Classifique com conservadorismo. "
+                "Use has_schedule_signal=true apenas quando a mensagem realmente estiver marcando, remarcando, cancelando, pedindo lembrete ou confirmando um compromisso. "
+                "Nao trate mencoes informativas de horario como compromisso automatico. "
                 "Preencha data_inicio e data_fim preferencialmente em ISO 8601. "
-                "Em intencao, use apenas confirmado, tentativo ou incerto."
+                "Em intencao, use apenas confirmado, tentativo ou incerto. "
+                "Em action, use apenas create, reschedule, cancel, update_reminder, none ou clarify."
             ),
-            user_prompt=(
-                f"Horario de referencia: {reference_now.isoformat()}\n"
-                "Analise a mensagem abaixo e retorne exatamente este formato:\n"
-                "{\n"
-                '  "has_schedule_signal": true,\n'
-                '  "titulo": "string",\n'
-                '  "data_inicio": "string|null",\n'
-                '  "data_fim": "string|null",\n'
-                '  "intencao": "confirmado|tentativo|incerto",\n'
-                '  "confidence": 0\n'
-                "}\n"
-                "Mensagem:\n"
-                f"{message_text.strip()}"
+            user_prompt=user_prompt,
+            max_tokens=self._adaptive_max_tokens(
+                user_prompt,
+                ceiling_reasoning=180,
+                ceiling_standard=140,
+                floor_reasoning=140,
+                floor_standard=110,
+                chars_per_step=240,
+                step_tokens=10,
+                max_steps=4,
             ),
-            max_tokens=220,
         )
         return await self._request_parsed_completion(
             payload=payload,
@@ -208,6 +229,18 @@ class DeepSeekService:
         message_text: str,
         conflict_context: str,
     ) -> DeepSeekAgendaConflictResolutionResult:
+        user_prompt = (
+            "Contexto do conflito:\n"
+            f"{conflict_context.strip()}\n\n"
+            "Mensagem do usuario:\n"
+            f"{message_text.strip()}\n\n"
+            "Retorne exatamente este formato:\n"
+            "{\n"
+            '  "decision": "keep_new_cancel_existing|keep_existing_cancel_new|keep_both|clarify",\n'
+            '  "explanation": "string",\n'
+            '  "confidence": 0\n'
+            "}"
+        )
         payload = self._build_completion_payload(
             system_prompt=(
                 "Voce interpreta a resposta do usuario a um alerta de conflito de agenda. "
@@ -217,19 +250,17 @@ class DeepSeekService:
                 "manter o antigo e cancelar o novo, manter ambos, ou se ainda precisa de esclarecimento. "
                 "Se a mensagem for ambigua, use clarify."
             ),
-            user_prompt=(
-                "Contexto do conflito:\n"
-                f"{conflict_context.strip()}\n\n"
-                "Mensagem do usuario:\n"
-                f"{message_text.strip()}\n\n"
-                "Retorne exatamente este formato:\n"
-                "{\n"
-                '  "decision": "keep_new_cancel_existing|keep_existing_cancel_new|keep_both|clarify",\n'
-                '  "explanation": "string",\n'
-                '  "confidence": 0\n'
-                "}"
+            user_prompt=user_prompt,
+            max_tokens=self._adaptive_max_tokens(
+                user_prompt,
+                ceiling_reasoning=160,
+                ceiling_standard=120,
+                floor_reasoning=120,
+                floor_standard=90,
+                chars_per_step=320,
+                step_tokens=12,
+                max_steps=4,
             ),
-            max_tokens=180,
         )
         return await self._request_parsed_completion(
             payload=payload,
@@ -321,18 +352,28 @@ class DeepSeekService:
         project_context: str,
         contact_memories_block: str,
     ) -> DeepSeekContactMemoryRefinementResult:
+        user_prompt = self._build_contact_refinement_prompt(
+            current_life_summary=current_life_summary,
+            project_context=project_context,
+            contact_memories_block=contact_memories_block,
+        )
         payload = self._build_completion_payload(
             system_prompt=(
                 "Voce revisa perfis de contatos salvos no AuraCore para alinha-los a nova fase da vida do dono. "
                 "Retorne apenas JSON valido. Nao mude o person_key. Atualize os resumos de perfil e relacao, e remova "
                 "fatos marcantes, pendencias ou topicos que perderam completamente a relevancia para o contexto atual do dono."
             ),
-            user_prompt=self._build_contact_refinement_prompt(
-                current_life_summary=current_life_summary,
-                project_context=project_context,
-                contact_memories_block=contact_memories_block,
+            user_prompt=user_prompt,
+            max_tokens=self._adaptive_max_tokens(
+                user_prompt,
+                ceiling_reasoning=4200,
+                ceiling_standard=2200,
+                floor_reasoning=2200,
+                floor_standard=1200,
+                chars_per_step=1800,
+                step_tokens=260,
+                max_steps=6,
             ),
-            max_tokens=6000 if self._is_reasoning_model() else 3000,
         )
 
         return await self._request_parsed_completion(
@@ -351,20 +392,30 @@ class DeepSeekService:
         recent_window_summary: str,
         conversation_context: str,
     ) -> DeepSeekProjectMergeResult:
+        user_prompt = self._build_project_merge_prompt(
+            current_life_summary=current_life_summary,
+            current_project_context=current_project_context,
+            candidate_projects_block=candidate_projects_block,
+            recent_window_summary=recent_window_summary,
+            conversation_context=conversation_context,
+        )
         payload = self._build_completion_payload(
             system_prompt=(
                 "Voce reconcilia projetos ativos do AuraCore. Sua funcao e combinar os projetos ja salvos "
                 "com novos sinais vindos da analise recente e devolver uma lista canonica, curta e sem duplicatas. "
                 "Retorne apenas JSON valido."
             ),
-            user_prompt=self._build_project_merge_prompt(
-                current_life_summary=current_life_summary,
-                current_project_context=current_project_context,
-                candidate_projects_block=candidate_projects_block,
-                recent_window_summary=recent_window_summary,
-                conversation_context=conversation_context,
+            user_prompt=user_prompt,
+            max_tokens=self._adaptive_max_tokens(
+                user_prompt,
+                ceiling_reasoning=2000,
+                ceiling_standard=1100,
+                floor_reasoning=1000,
+                floor_standard=600,
+                chars_per_step=1200,
+                step_tokens=180,
+                max_steps=4,
             ),
-            max_tokens=2600 if self._is_reasoning_model() else 1400,
         )
         return await self._request_parsed_completion(
             payload=payload,
@@ -381,19 +432,29 @@ class DeepSeekService:
         target_project_block: str,
         instruction: str,
     ) -> DeepSeekProjectEditResult:
+        user_prompt = self._build_project_edit_prompt(
+            current_life_summary=current_life_summary,
+            current_project_context=current_project_context,
+            target_project_block=target_project_block,
+            instruction=instruction,
+        )
         payload = self._build_completion_payload(
             system_prompt=(
                 "Voce edita um unico projeto do AuraCore a partir de uma instrucao do usuario. "
                 "Sua funcao e reescrever somente esse projeto com clareza, sem inventar fatos fora do que ja esta no projeto "
                 "ou explicitamente pedido na instrucao. Retorne apenas JSON valido."
             ),
-            user_prompt=self._build_project_edit_prompt(
-                current_life_summary=current_life_summary,
-                current_project_context=current_project_context,
-                target_project_block=target_project_block,
-                instruction=instruction,
+            user_prompt=user_prompt,
+            max_tokens=self._adaptive_max_tokens(
+                user_prompt,
+                ceiling_reasoning=2200,
+                ceiling_standard=1200,
+                floor_reasoning=1000,
+                floor_standard=700,
+                chars_per_step=1200,
+                step_tokens=180,
+                max_steps=5,
             ),
-            max_tokens=3200 if self._is_reasoning_model() else 1800,
         )
         return await self._request_parsed_completion(
             payload=payload,
@@ -467,6 +528,18 @@ class DeepSeekService:
         recent_messages_label: str = "Historico recente desta conversa",
         additional_rules: list[str] | None = None,
     ) -> str:
+        user_prompt = self._build_reply_prompt(
+            user_message=user_message,
+            current_life_summary=current_life_summary,
+            recent_snapshots_context=recent_snapshots_context,
+            recent_projects_context=recent_projects_context,
+            recent_chat_context=recent_chat_context,
+            interaction_mode=interaction_mode,
+            context_hint=context_hint,
+            priority_context=priority_context,
+            recent_messages_label=recent_messages_label,
+            additional_rules=additional_rules or [],
+        )
         payload = self._build_text_completion_payload(
             system_prompt=(
                 "Seu nome e Orion. Voce e a IA pessoal do dono desta conta. "
@@ -477,19 +550,17 @@ class DeepSeekService:
                 "Se faltar contexto, admita. Nao transforme cumprimentos simples em relatorio nem puxe fatos antigos sem necessidade. "
                 "Antes de assumir promessa, prazo, resposta em nome do dono ou dado sensivel, peca confirmacao."
             ),
-            user_prompt=self._build_reply_prompt(
-                user_message=user_message,
-                current_life_summary=current_life_summary,
-                recent_snapshots_context=recent_snapshots_context,
-                recent_projects_context=recent_projects_context,
-                recent_chat_context=recent_chat_context,
-                interaction_mode=interaction_mode,
-                context_hint=context_hint,
-                priority_context=priority_context,
-                recent_messages_label=recent_messages_label,
-                additional_rules=additional_rules or [],
+            user_prompt=user_prompt,
+            max_tokens=self._adaptive_max_tokens(
+                user_prompt,
+                ceiling_reasoning=720,
+                ceiling_standard=460,
+                floor_reasoning=320,
+                floor_standard=220,
+                chars_per_step=1200,
+                step_tokens=90,
+                max_steps=4,
             ),
-            max_tokens=900 if self._is_reasoning_model() else 600,
         )
         return await self._request_text_completion(payload=payload, operation="assistant_reply")
 
@@ -500,6 +571,11 @@ class DeepSeekService:
         channel: str,
         has_contact_memory: bool = False,
     ) -> DeepSeekAssistantSearchPlan:
+        user_prompt = (
+            f"Canal: {channel}\n"
+            f"Memoria propria do contato disponivel: {'sim' if has_contact_memory else 'nao'}\n"
+            f"Mensagem do dono:\n{user_message.strip()}"
+        )
         payload = self._build_completion_payload(
             system_prompt=(
                 "Voce decide qual contexto adicional deve ser recuperado para responder melhor uma mensagem do dono. "
@@ -513,12 +589,17 @@ class DeepSeekService:
                 "acao delicada ou resposta em nome do dono. "
                 "should_include_contact_memory so deve ser true se isso puder melhorar de fato uma conversa do WhatsApp."
             ),
-            user_prompt=(
-                f"Canal: {channel}\n"
-                f"Memoria propria do contato disponivel: {'sim' if has_contact_memory else 'nao'}\n"
-                f"Mensagem do dono:\n{user_message.strip()}"
+            user_prompt=user_prompt,
+            max_tokens=self._adaptive_max_tokens(
+                user_prompt,
+                ceiling_reasoning=420,
+                ceiling_standard=240,
+                floor_reasoning=220,
+                floor_standard=140,
+                chars_per_step=700,
+                step_tokens=50,
+                max_steps=4,
             ),
-            max_tokens=800 if self._is_reasoning_model() else 420,
         )
         return await self._request_parsed_completion(
             payload=payload,
@@ -533,6 +614,12 @@ class DeepSeekService:
         user_message: str,
         existing_memory_context: str = "",
     ) -> DeepSeekAgentMemoryDecision:
+        user_prompt = (
+            "Memoria atual deste contato no agente:\n"
+            f"{existing_memory_context.strip() or '(sem memoria propria ainda)'}\n\n"
+            "Nova mensagem do dono:\n"
+            f"{user_message.strip()}"
+        )
         payload = self._build_completion_payload(
             system_prompt=(
                 "Voce extrai memoria duravel a partir de uma mensagem enviada pelo proprio dono ao assistente no WhatsApp. "
@@ -543,13 +630,17 @@ class DeepSeekService:
                 "preferences, objectives, durable_facts, constraints, recurring_instructions e explanation. "
                 "Se nada for duravel, retorne should_update=false e listas vazias."
             ),
-            user_prompt=(
-                "Memoria atual deste contato no agente:\n"
-                f"{existing_memory_context.strip() or '(sem memoria propria ainda)'}\n\n"
-                "Nova mensagem do dono:\n"
-                f"{user_message.strip()}"
+            user_prompt=user_prompt,
+            max_tokens=self._adaptive_max_tokens(
+                user_prompt,
+                ceiling_reasoning=560,
+                ceiling_standard=320,
+                floor_reasoning=260,
+                floor_standard=180,
+                chars_per_step=700,
+                step_tokens=60,
+                max_steps=5,
             ),
-            max_tokens=1000 if self._is_reasoning_model() else 500,
         )
         return await self._request_parsed_completion(
             payload=payload,
@@ -1421,6 +1512,9 @@ Regras:
             person.relationship_type = self._normalize_relationship_type(person.relationship_type)
 
     def _validate_agenda_extraction_result(self, parsed: DeepSeekAgendaExtractionResult) -> None:
+        parsed.action = parsed.action.strip().lower()
+        if parsed.action not in {"create", "reschedule", "cancel", "update_reminder", "none", "clarify"}:
+            parsed.action = "none"
         parsed.titulo = parsed.titulo.strip()
         parsed.intencao = parsed.intencao.strip().lower()
         if parsed.intencao not in {"", "confirmado", "tentativo", "incerto"}:
@@ -1429,6 +1523,7 @@ Regras:
             parsed.data_inicio = str(parsed.data_inicio).strip() or None
         if parsed.data_fim is not None:
             parsed.data_fim = str(parsed.data_fim).strip() or None
+        parsed.missing_fields = [str(item).strip().lower() for item in parsed.missing_fields if str(item).strip()]
 
     def _validate_agenda_conflict_resolution_result(self, parsed: DeepSeekAgendaConflictResolutionResult) -> None:
         parsed.decision = parsed.decision.strip().lower()
@@ -1466,12 +1561,33 @@ Regras:
     def _analysis_max_output_tokens(self, *, intent: str = "improve_memory") -> int:
         if self._is_reasoning_model(self.settings.deepseek_memory_model):
             if intent == "first_analysis":
-                return 7000
-            return 5000
-        return 2800
+                return 5600
+            return 3800
+        return 2200
 
     def _refinement_max_output_tokens(self) -> int:
-        return 4000 if self._is_reasoning_model() else 1800
+        return 3200 if self._is_reasoning_model() else 1500
+
+    def _adaptive_max_tokens(
+        self,
+        prompt_text: str,
+        *,
+        ceiling_reasoning: int,
+        ceiling_standard: int,
+        floor_reasoning: int,
+        floor_standard: int,
+        chars_per_step: int = 900,
+        step_tokens: int = 80,
+        max_steps: int = 4,
+        model_name: str | None = None,
+    ) -> int:
+        normalized_prompt = " ".join(str(prompt_text or "").split()).strip()
+        prompt_chars = len(normalized_prompt)
+        steps = min(max(0, max_steps), max(0, prompt_chars) // max(1, chars_per_step))
+        if self._is_reasoning_model(model_name):
+            return min(ceiling_reasoning, floor_reasoning + (steps * step_tokens))
+        standard_step_tokens = max(12, step_tokens // 2)
+        return min(ceiling_standard, floor_standard + (steps * standard_step_tokens))
 
     def _preview_text(self, value: str, *, max_chars: int = 900) -> str:
         normalized = " ".join(str(value or "").split()).strip()
@@ -1549,12 +1665,15 @@ Regras:
             shape_error_message="DeepSeek retornou um payload inesperado na extracao de agenda.",
         )
         return DeepSeekAgendaExtractionResult(
+            action=self._as_text(raw.get("action")),
             has_schedule_signal=self._as_bool(raw.get("has_schedule_signal")),
+            is_explicit_user_intent=self._as_bool(raw.get("is_explicit_user_intent")),
             titulo=self._as_text(raw.get("titulo")),
             data_inicio=self._as_optional_text(raw.get("data_inicio")),
             data_fim=self._as_optional_text(raw.get("data_fim")),
             intencao=self._as_text(raw.get("intencao")),
             confidence=self._as_confidence(raw.get("confidence")),
+            missing_fields=self._as_string_list(raw.get("missing_fields")),
         )
 
     def _parse_agenda_conflict_resolution_result(self, content: str) -> DeepSeekAgendaConflictResolutionResult:

@@ -509,6 +509,8 @@ class AgendaEventResponse(BaseModel):
     has_conflict: bool = False
     conflict: AgendaConflictResponse | None = None
     reminder_offset_minutes: int = Field(default=0, ge=0)
+    reminder_eligible: bool = True
+    reminder_block_reason: str | None = None
     pre_reminder_at: datetime | None = None
     pre_reminder_sent_at: datetime | None = None
     reminder_sent_at: datetime | None = None
