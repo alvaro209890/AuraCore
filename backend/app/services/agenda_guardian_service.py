@@ -9,7 +9,11 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from app.config import Settings
-from app.services.deepseek_service import DeepSeekAgendaExtractionResult, DeepSeekService
+from app.services.deepseek_service import (
+    DeepSeekAgendaConflictResolutionResult,
+    DeepSeekAgendaExtractionResult,
+    DeepSeekService,
+)
 from app.services.observer_gateway import ObserverGatewayService, WhatsAppAgentGatewayService
 from app.services.supabase_store import AgendaEventRecord, IngestedMessageRecord, SupabaseStore
 
@@ -53,6 +57,18 @@ class AgendaProcessingResult:
     alert_sent: bool = False
     reminder_offset_minutes: int = 0
     updated_existing_event: bool = False
+    skipped_reason: str | None = None
+
+
+@dataclass(slots=True)
+class AgendaConflictResolutionOutcome:
+    handled: bool = False
+    applied: bool = False
+    decision: str = "clarify"
+    assistant_reply: str | None = None
+    pending_alert_message_id: str | None = None
+    new_event: AgendaEventRecord | None = None
+    existing_event: AgendaEventRecord | None = None
     skipped_reason: str | None = None
 
 
@@ -356,19 +372,27 @@ class AgendaGuardianService:
         )
 
     async def _send_conflict_alert(self, *, new_event: AgendaEventRecord, existing_event: AgendaEventRecord) -> bool:
-        owner_target = await self._resolve_owner_chat_target(preferred_channel="observer")
+        owner_target = await self._resolve_owner_chat_target(preferred_channel="agent")
         if not owner_target:
             await self._log_debug("[Guardião do Tempo] Conflito detectado, mas o número conectado não foi localizado.")
             return False
         message_text = (
-            "⚠️ AuraCore: Possível Conflito detectado!\n"
-            f"Álvaro, você está combinando '{new_event.titulo}' para {self._format_local(new_event.inicio)}, "
-            f"mas já possui '{existing_event.titulo}' agendado para este mesmo horário.\n"
-            "Deseja sugerir outro horário ou manter ambos?"
+            "⚠️ AuraCore: conflito de agenda identificado.\n"
+            f"O compromisso '{new_event.titulo}' para {self._format_local(new_event.inicio)} "
+            f"se sobrepõe a '{existing_event.titulo}', já marcado para este horário.\n"
+            "Revise os horários e me diga se quer manter, ajustar ou descartar um deles."
         )
         try:
-            await self.observer_gateway.send_text_message(chat_jid=owner_target, message_text=message_text)
-            await self._log_debug("[Guardião do Tempo] Alerta de conflito enviado ao WhatsApp do dono.")
+            send_result = await self.agent_gateway.send_text_message(chat_jid=owner_target, message_text=message_text)
+            await self._record_conflict_alert_message(
+                owner_target=owner_target,
+                message_text=message_text,
+                sent_at=send_result.timestamp or datetime.now(UTC),
+                whatsapp_message_id=send_result.message_id,
+                new_event=new_event,
+                existing_event=existing_event,
+            )
+            await self._log_debug("[Guardião do Tempo] Alerta de conflito enviado pelo agente ao usuário.")
             return True
         except Exception as exc:
             await self._log_debug(f"[Guardião do Tempo] Falha ao enviar alerta: {str(exc)}")
@@ -379,6 +403,251 @@ class AgendaGuardianService:
                 str(exc),
             )
             return False
+
+    async def _record_conflict_alert_message(
+        self,
+        *,
+        owner_target: str,
+        message_text: str,
+        sent_at: datetime,
+        whatsapp_message_id: str | None,
+        new_event: AgendaEventRecord,
+        existing_event: AgendaEventRecord,
+    ) -> None:
+        owner_phone = self._normalize_chat_target(owner_target)
+        if not owner_phone:
+            return
+        thread = self.store.get_or_create_whatsapp_agent_thread(
+            user_id=self.settings.default_user_id,
+            contact_phone=owner_phone,
+            chat_jid=owner_target,
+            contact_name="Usuario",
+            created_at=sent_at,
+        )
+        session, _ = self.store.resolve_whatsapp_agent_session(
+            user_id=self.settings.default_user_id,
+            thread_id=thread.id,
+            contact_phone=thread.contact_phone,
+            chat_jid=thread.chat_jid,
+            activity_at=sent_at,
+            idle_timeout_minutes=60,
+        )
+        self.store.append_whatsapp_agent_message(
+            user_id=self.settings.default_user_id,
+            thread_id=thread.id,
+            direction="outbound",
+            role="assistant",
+            session_id=session.id,
+            content=message_text,
+            message_timestamp=sent_at,
+            contact_phone=thread.contact_phone,
+            chat_jid=thread.chat_jid,
+            whatsapp_message_id=whatsapp_message_id,
+            processing_status="sent",
+            learning_status="not_applicable",
+            send_status="sent" if whatsapp_message_id else None,
+            metadata={
+                "generated_by": "agenda_conflict_guardian",
+                "agenda_conflict_pending": True,
+                "agenda_conflict_new_event_id": new_event.id,
+                "agenda_conflict_existing_event_id": existing_event.id,
+                "agenda_conflict_sent_at": sent_at.isoformat(),
+            },
+            created_at=sent_at,
+        )
+
+    async def resolve_conflict_reply(
+        self,
+        *,
+        user_id: UUID,
+        contact_phone: str,
+        message_id: str,
+        message_text: str,
+        occurred_at: datetime,
+    ) -> AgendaConflictResolutionOutcome:
+        pending_alert = self.store.find_latest_pending_agenda_conflict_alert(
+            user_id=user_id,
+            contact_phone=contact_phone,
+        )
+        if pending_alert is None:
+            return AgendaConflictResolutionOutcome(handled=False, skipped_reason="no_pending_conflict")
+
+        metadata = pending_alert.metadata if isinstance(pending_alert.metadata, dict) else {}
+        new_event_id = self._optional_text(metadata.get("agenda_conflict_new_event_id"))
+        existing_event_id = self._optional_text(metadata.get("agenda_conflict_existing_event_id"))
+        if not new_event_id or not existing_event_id:
+            self.store.update_whatsapp_agent_message(
+                message_id=pending_alert.id,
+                metadata={
+                    **metadata,
+                    "agenda_conflict_pending": False,
+                    "agenda_conflict_resolved_at": occurred_at.astimezone(UTC).isoformat(),
+                    "agenda_conflict_resolution": "clarify",
+                    "agenda_conflict_resolution_message_id": message_id,
+                    "agenda_conflict_resolution_text": message_text,
+                    "agenda_conflict_resolution_explanation": "Missing conflict context in stored alert.",
+                    "agenda_conflict_resolution_state": "missing_context",
+                },
+            )
+            return AgendaConflictResolutionOutcome(
+                handled=True,
+                decision="clarify",
+                assistant_reply=(
+                    "Entendi a resposta, mas perdi o contexto do conflito anterior. "
+                    "Pode me dizer qual compromisso eu devo manter e qual devo remover?"
+                ),
+                pending_alert_message_id=pending_alert.id,
+                skipped_reason="missing_context",
+            )
+
+        new_event = self.store.get_agenda_event(user_id=user_id, event_id=new_event_id)
+        existing_event = self.store.get_agenda_event(user_id=user_id, event_id=existing_event_id)
+        if new_event is None or existing_event is None:
+            self.store.update_whatsapp_agent_message(
+                message_id=pending_alert.id,
+                metadata={
+                    **metadata,
+                    "agenda_conflict_pending": False,
+                    "agenda_conflict_resolved_at": occurred_at.astimezone(UTC).isoformat(),
+                    "agenda_conflict_resolution": "clarify",
+                    "agenda_conflict_resolution_message_id": message_id,
+                    "agenda_conflict_resolution_text": message_text,
+                    "agenda_conflict_resolution_explanation": "One of the conflict events is no longer available.",
+                    "agenda_conflict_resolution_state": "stale_context",
+                },
+            )
+            return AgendaConflictResolutionOutcome(
+                handled=True,
+                decision="clarify",
+                assistant_reply=(
+                    "Encontrei a resposta, mas um dos compromissos do conflito não está mais disponível. "
+                    "Se quiser, posso revisar a agenda novamente."
+                ),
+                pending_alert_message_id=pending_alert.id,
+                skipped_reason="stale_context",
+            )
+
+        conflict_context = self._build_conflict_context(
+            new_event=new_event,
+            existing_event=existing_event,
+        )
+        try:
+            resolution = await self.deepseek_service.extract_agenda_conflict_resolution(
+                message_text=message_text,
+                conflict_context=conflict_context,
+            )
+        except Exception as exc:
+            logger.warning("agenda_conflict_resolution_failed message_id=%s detail=%s", message_id, str(exc))
+            resolution = DeepSeekAgendaConflictResolutionResult(
+                decision="clarify",
+                explanation="",
+                confidence=0,
+            )
+
+        applied = False
+        reply: str
+        decision = resolution.decision
+
+        if decision == "keep_new_cancel_existing":
+            deleted = self.store.delete_agenda_event(user_id=user_id, event_id=existing_event.id)
+            if deleted:
+                applied = True
+            updated_new = self.store.update_agenda_event(
+                user_id=user_id,
+                event_id=new_event.id,
+                status="firme",
+                reset_reminder=True,
+            )
+            if updated_new is not None:
+                new_event = updated_new
+                applied = True
+            reply = (
+                f"Perfeito. Vou manter '{new_event.titulo}' e remover '{existing_event.titulo}' da agenda."
+                if applied
+                else "Entendi a decisão, mas não consegui aplicar a alteração na agenda. Vou revisar o conflito."
+            )
+        elif decision == "keep_existing_cancel_new":
+            deleted = self.store.delete_agenda_event(user_id=user_id, event_id=new_event.id)
+            if deleted:
+                applied = True
+            updated_existing = self.store.update_agenda_event(
+                user_id=user_id,
+                event_id=existing_event.id,
+                status="firme",
+                reset_reminder=True,
+            )
+            if updated_existing is not None:
+                existing_event = updated_existing
+                applied = True
+            reply = (
+                f"Perfeito. Vou manter '{existing_event.titulo}' e remover '{new_event.titulo}' da agenda."
+                if applied
+                else "Entendi a decisão, mas não consegui aplicar a alteração na agenda. Vou revisar o conflito."
+            )
+        elif decision == "keep_both":
+            updated_new = self.store.update_agenda_event(
+                user_id=user_id,
+                event_id=new_event.id,
+                status="firme",
+                reset_reminder=True,
+            )
+            if updated_new is not None:
+                new_event = updated_new
+                applied = True
+            reply = (
+                f"Entendido. Vou manter '{new_event.titulo}' e '{existing_event.titulo}' na agenda."
+                if applied
+                else "Entendi que você quer manter os dois compromissos, mas não consegui ajustar a agenda agora."
+            )
+        else:
+            reply = (
+                "Ainda não ficou totalmente claro qual compromisso devo manter. "
+                f"Hoje tenho '{new_event.titulo}' e '{existing_event.titulo}' em conflito. "
+                "Me diga qual deles devo preservar."
+            )
+
+        metadata_update = {
+            **metadata,
+            "agenda_conflict_resolution": decision,
+            "agenda_conflict_resolution_message_id": message_id,
+            "agenda_conflict_resolution_text": message_text,
+            "agenda_conflict_resolution_explanation": resolution.explanation,
+        }
+        if applied or decision != "clarify":
+            metadata_update["agenda_conflict_pending"] = False
+            metadata_update["agenda_conflict_resolved_at"] = occurred_at.astimezone(UTC).isoformat()
+        else:
+            metadata_update["agenda_conflict_pending"] = True
+            metadata_update["agenda_conflict_last_clarify_at"] = occurred_at.astimezone(UTC).isoformat()
+
+        self.store.update_whatsapp_agent_message(
+            message_id=pending_alert.id,
+            metadata=metadata_update,
+        )
+
+        return AgendaConflictResolutionOutcome(
+            handled=True,
+            applied=applied,
+            decision=decision,
+            assistant_reply=reply,
+            pending_alert_message_id=pending_alert.id,
+            new_event=new_event,
+            existing_event=existing_event,
+        )
+
+    def _build_conflict_context(self, *, new_event: AgendaEventRecord, existing_event: AgendaEventRecord) -> str:
+        return (
+            "Novo compromisso:\n"
+            f"- titulo: {new_event.titulo}\n"
+            f"- inicio: {self._format_local(new_event.inicio)}\n"
+            f"- fim: {self._format_local(new_event.fim)}\n"
+            f"- status: {new_event.status}\n\n"
+            "Compromisso em conflito:\n"
+            f"- titulo: {existing_event.titulo}\n"
+            f"- inicio: {self._format_local(existing_event.inicio)}\n"
+            f"- fim: {self._format_local(existing_event.fim)}\n"
+            f"- status: {existing_event.status}"
+        )
 
     async def _send_due_reminder(self, *, event: AgendaEventRecord, phase: str) -> bool:
         owner_target = await self._resolve_owner_chat_target(preferred_channel="agent")

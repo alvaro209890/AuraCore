@@ -4236,7 +4236,26 @@ function AgentTab({
 }) {
   const autoReplyEnabled = settings?.auto_reply_enabled ?? false;
   const replyScopeLabel = status?.reply_scope === "all_direct_contacts" ? "Todos os contatos diretos" : "Escopo legado";
+  const [threadSearch, setThreadSearch] = useState("");
+  const deferredThreadSearch = useDeferredValue(threadSearch);
+  const normalizedThreadSearch = deferredThreadSearch.trim().toLowerCase();
   const activeThread = threads.find((thread) => thread.id === activeThreadId) ?? threads[0] ?? null;
+  const visibleThreads = useMemo(() => {
+    if (!normalizedThreadSearch) {
+      return threads;
+    }
+    return threads.filter((thread) => {
+      const haystack = [
+        thread.contact_name,
+        thread.contact_phone ?? "",
+        thread.chat_jid ?? "",
+        thread.last_message_preview ?? "",
+      ]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(normalizedThreadSearch);
+    });
+  }, [normalizedThreadSearch, threads]);
   const sessionStartedLabel = activeSession?.started_at ? formatDateTime(activeSession.started_at) : "Sem sessao ativa";
   const sessionLastActivityLabel = activeSession?.last_activity_at ? formatDateTime(activeSession.last_activity_at) : "Sem atividade";
   const connectedNumber = status?.owner_number ?? "Aguardando leitura";
@@ -4247,6 +4266,8 @@ function AgentTab({
     ? contactMemory.profile_summary.trim()
     : "Sem resumo duravel salvo ainda para este contato. Quando o dono repetir preferencias, objetivos ou restricoes, o agente passa a consolidar isso aqui.";
   const activeThreadLastTouch = activeThread?.session_last_activity_at ?? activeThread?.last_message_at ?? null;
+  const activeThreadsCount = threads.filter((thread) => thread.status === "active").length;
+  const totalMessagesCount = messages.length;
   const memoryHighlights = [
     ...(contactMemory?.preferences ?? []),
     ...(contactMemory?.objectives ?? []),
@@ -4261,12 +4282,19 @@ function AgentTab({
         <div className="agent-command-copy">
           <div className="agent-command-kicker">
             <span className={`agent-state-pill${status?.connected ? " agent-state-live" : ""}`}>{connectionModeLabel}</span>
-            <span className="agent-state-note">Canal de atendimento separado do observador</span>
+            <span className="agent-state-note">Canal ativo separado do observador</span>
           </div>
           <h2>WhatsApp Agente</h2>
           <p className="lead-copy">
-            O numero secundario responde pelo proprio canal do agente e atende qualquer conversa direta individual recebida nele.
+            O numero secundario responde no proprio canal, com estado, memoria e historico isolados. O painel abaixo foi
+            desenhado para operar rapido no desktop e continuar legivel no celular.
           </p>
+          <div className="agent-hero-pills">
+            <span className="agent-hero-pill">Sessao: {activeSession ? "aberta" : "aguardando"}</span>
+            <span className="agent-hero-pill">Threads: {threads.length}</span>
+            <span className="agent-hero-pill">Ativas: {activeThreadsCount}</span>
+            <span className="agent-hero-pill">Mensagens: {totalMessagesCount}</span>
+          </div>
           <div className="agent-command-actions">
             <button className="ac-primary-button" onClick={onConnect} disabled={isConnecting || viewState === "connected"} type="button">
               <RefreshCw size={15} className={isConnecting ? "spin" : ""} />
@@ -4345,7 +4373,8 @@ function AgentTab({
 
             <div className="agent-connection-details">
               <p className="support-copy">
-                O observador continua cuidando de memoria e ingestao. Este painel existe so para operar o canal ativo do agente sem misturar os dois papeis.
+                O observador continua cuidando de memoria e ingestao. Este painel existe so para operar o canal ativo do
+                agente sem misturar os dois papeis.
               </p>
               <div className="agent-status-grid">
                 <StatusLine label="Gateway" value={status?.gateway_ready ? "Baileys online" : "Indisponivel"} tone="emerald" />
@@ -4403,18 +4432,33 @@ function AgentTab({
 
       <div className="agent-inbox-grid">
         <Card className="agent-list-card">
-          <div className="agent-list-header">
+          <div className="agent-list-header agent-list-header-stack">
             <SectionTitle title="Conversas recentes" icon={MessageSquare} />
-            <span>{threads.length} ativas</span>
+            <span>{visibleThreads.length} de {threads.length}</span>
+          </div>
+          <div className="agent-thread-search">
+            <Search size={14} />
+            <input
+              className="ac-input"
+              onChange={(event) => setThreadSearch(event.target.value)}
+              placeholder="Buscar por nome, telefone ou trecho"
+              value={threadSearch}
+              type="search"
+            />
           </div>
           {threads.length === 0 ? (
             <div className="empty-hint">
               <Bot size={18} />
               <p>Nenhuma conversa registrada ainda.</p>
             </div>
+          ) : visibleThreads.length === 0 ? (
+            <div className="empty-hint">
+              <Search size={18} />
+              <p>Nenhum contato bate com a busca atual.</p>
+            </div>
           ) : (
             <div className="agent-thread-list">
-              {threads.map((thread) => (
+              {visibleThreads.map((thread) => (
                 <button
                   key={thread.id}
                   className={`agent-thread-row${thread.id === activeThread?.id ? " agent-thread-row-active" : ""}`}

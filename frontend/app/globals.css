@@ -1509,8 +1509,11 @@ textarea {
   grid-template-columns: minmax(0, 1.2fr) minmax(340px, 0.95fr);
   align-items: start;
   padding: 30px;
-  border-radius: 24px;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.05), rgba(10, 14, 24, 0.2));
+  border-radius: 28px;
+  background:
+    radial-gradient(circle at top right, rgba(59, 130, 246, 0.16), transparent 30%),
+    radial-gradient(circle at bottom left, rgba(45, 212, 191, 0.11), transparent 26%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.06), rgba(10, 14, 24, 0.24));
   backdrop-filter: blur(16px) saturate(160%);
   -webkit-backdrop-filter: blur(16px) saturate(160%);
   border: 1px solid rgba(255, 255, 255, 0.1);
@@ -1541,9 +1544,29 @@ textarea {
 
 .agent-command-copy h2 {
   margin: 0;
-  font-size: clamp(1.65rem, 2.8vw, 2.4rem);
+  font-size: clamp(1.8rem, 3vw, 2.65rem);
   line-height: 1.05;
   letter-spacing: -0.03em;
+}
+
+.agent-hero-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.agent-hero-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(59, 130, 246, 0.18);
+  background: rgba(8, 14, 26, 0.56);
+  color: rgba(240, 246, 252, 0.84);
+  font-size: 0.8rem;
+  letter-spacing: 0.01em;
+  backdrop-filter: blur(12px);
 }
 
 .agent-command-kicker {
@@ -1777,6 +1800,32 @@ textarea {
   min-height: 0;
 }
 
+.agent-list-header-stack {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.agent-thread-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(59, 130, 246, 0.16);
+  background: rgba(8, 14, 26, 0.58);
+}
+
+.agent-thread-search .ac-input {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  min-width: 0;
+}
+
+.agent-thread-search .ac-input:focus {
+  box-shadow: none;
+}
+
 .agent-thread-main {
   min-width: 0;
 }
@@ -1799,7 +1848,7 @@ textarea {
 .agent-thread-list,
 .agent-message-stack {
   min-height: 0;
-  max-height: 620px;
+  max-height: 640px;
   overflow: auto;
   padding-right: 4px;
   padding-bottom: 4px;
@@ -1809,6 +1858,13 @@ textarea {
   align-items: flex-start;
   padding: 16px 18px;
   border-radius: 18px;
+  transition: transform 180ms ease, border-color 180ms ease, background 180ms ease, box-shadow 180ms ease;
+}
+
+.agent-thread-row:hover {
+  transform: translateY(-2px);
+  border-color: rgba(59, 130, 246, 0.35);
+  box-shadow: 0 14px 30px rgba(59, 130, 246, 0.08);
 }
 
 .agent-detail-meta {
@@ -1841,6 +1897,7 @@ textarea {
 
 .agent-message-bubble {
   padding: 16px 18px;
+  border-radius: 18px;
 }
 
 .agent-message-assistant {
@@ -1898,6 +1955,10 @@ textarea {
   .agent-command-actions > button {
     width: 100%;
   }
+
+  .agent-thread-search {
+    width: 100%;
+  }
 }
 
 @media (max-width: 720px) {
@@ -1915,6 +1976,19 @@ textarea {
 
   .agent-thread-row {
     padding: 14px;
+  }
+
+  .agent-hero-pills {
+    gap: 8px;
+  }
+
+  .agent-hero-pill {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .agent-thread-search {
+    padding: 9px 11px;
   }
 }
 

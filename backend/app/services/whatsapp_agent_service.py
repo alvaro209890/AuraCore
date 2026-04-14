@@ -314,6 +314,53 @@ class WhatsAppAgentService:
         if learning_outcome.memory is not None:
             contact_memory = learning_outcome.memory
 
+        reply_started = perf_counter()
+        conflict_resolution_outcome = None
+        if owner_self_message:
+            conflict_resolution_outcome = await self.agenda_guardian_service.resolve_conflict_reply(
+                user_id=self.settings.default_user_id,
+                contact_phone=contact_phone,
+                message_id=payload.message_id,
+                message_text=normalized_text,
+                occurred_at=payload.timestamp,
+            )
+
+        if conflict_resolution_outcome is not None and conflict_resolution_outcome.handled:
+            if not settings_record.auto_reply_enabled:
+                self.store.update_whatsapp_agent_message(
+                    message_id=inbound_message.id,
+                    processing_status=(
+                        "agenda_conflict_resolved_no_reply"
+                        if conflict_resolution_outcome.applied
+                        else "agenda_conflict_needs_clarification_no_reply"
+                    ),
+                )
+                return WhatsAppAgentInboundMessageResponse(
+                    action=(
+                        "agenda_conflict_resolved_no_reply"
+                        if conflict_resolution_outcome.applied
+                        else "agenda_conflict_needs_clarification_no_reply"
+                    ),
+                    thread_id=thread.id,
+                    inbound_message_id=inbound_message.id,
+                )
+
+            assistant_reply = conflict_resolution_outcome.assistant_reply or (
+                "Entendi a resposta, mas ainda preciso de uma confirmação mais clara para aplicar a mudança."
+            )
+            return await self._send_outbound_reply(
+                payload=payload,
+                inbound_message=inbound_message,
+                thread=thread,
+                session=session,
+                contact_phone=contact_phone,
+                delivery_chat_jid=delivery_chat_jid,
+                assistant_reply=assistant_reply,
+                response_latency_ms=int((perf_counter() - reply_started) * 1000),
+                reply_model_run_id=None,
+                generated_by="agenda_conflict_resolver",
+            )
+
         agenda_outcome = await self.agenda_guardian_service.process_agent_message(
             user_id=self.settings.default_user_id,
             message_id=payload.message_id,
@@ -333,13 +380,13 @@ class WhatsAppAgentService:
                 inbound_message_id=inbound_message.id,
             )
 
+        reply_started = perf_counter()
         prior_messages = self.store.list_whatsapp_agent_session_messages(
             session_id=session.id,
             limit=max(1, self.settings.chat_max_history_messages),
         )
         prior_messages = [message for message in prior_messages if message.id != inbound_message.id]
 
-        reply_started = perf_counter()
         assistant_reply: str | None = None
         reply_error_text: str | None = None
         reply_model_run_id: str | None = None

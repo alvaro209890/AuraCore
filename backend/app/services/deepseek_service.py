@@ -101,6 +101,17 @@ class DeepSeekAgendaExtractionResult(BaseModel):
     confidence: int = Field(default=0, ge=0, le=100)
 
 
+class DeepSeekAgendaConflictResolutionResult(BaseModel):
+    decision: Literal[
+        "keep_new_cancel_existing",
+        "keep_existing_cancel_new",
+        "keep_both",
+        "clarify",
+    ] = "clarify"
+    explanation: str = ""
+    confidence: int = Field(default=0, ge=0, le=100)
+
+
 class DeepSeekAssistantSearchPlan(BaseModel):
     needs_retrieval: bool = False
     people_queries: list[str] = Field(default_factory=list)
@@ -213,6 +224,42 @@ class DeepSeekService:
             parser=self._parse_agenda_extraction_result,
             validator=self._validate_agenda_extraction_result,
             operation="extract_agenda_signal",
+        )
+
+    async def extract_agenda_conflict_resolution(
+        self,
+        *,
+        message_text: str,
+        conflict_context: str,
+    ) -> DeepSeekAgendaConflictResolutionResult:
+        payload = self._build_completion_payload(
+            system_prompt=(
+                "Voce interpreta a resposta do usuario a um alerta de conflito de agenda. "
+                "Recebera a mensagem do usuario e o contexto do conflito. "
+                "Retorne somente JSON valido. "
+                "Identifique se o usuario quer manter o compromisso novo e cancelar o antigo, "
+                "manter o antigo e cancelar o novo, manter ambos, ou se ainda precisa de esclarecimento. "
+                "Se a mensagem for ambigua, use clarify."
+            ),
+            user_prompt=(
+                "Contexto do conflito:\n"
+                f"{conflict_context.strip()}\n\n"
+                "Mensagem do usuario:\n"
+                f"{message_text.strip()}\n\n"
+                "Retorne exatamente este formato:\n"
+                "{\n"
+                '  "decision": "keep_new_cancel_existing|keep_existing_cancel_new|keep_both|clarify",\n'
+                '  "explanation": "string",\n'
+                '  "confidence": 0\n'
+                "}"
+            ),
+            max_tokens=180,
+        )
+        return await self._request_parsed_completion(
+            payload=payload,
+            parser=self._parse_agenda_conflict_resolution_result,
+            validator=self._validate_agenda_conflict_resolution_result,
+            operation="extract_agenda_conflict_resolution",
         )
 
     async def analyze_memory(
@@ -1575,6 +1622,17 @@ Regras:
         if parsed.data_fim is not None:
             parsed.data_fim = str(parsed.data_fim).strip() or None
 
+    def _validate_agenda_conflict_resolution_result(self, parsed: DeepSeekAgendaConflictResolutionResult) -> None:
+        parsed.decision = parsed.decision.strip().lower()
+        if parsed.decision not in {
+            "keep_new_cancel_existing",
+            "keep_existing_cancel_new",
+            "keep_both",
+            "clarify",
+        }:
+            parsed.decision = "clarify"
+        parsed.explanation = parsed.explanation.strip()
+
     def _validate_assistant_search_plan(self, parsed: DeepSeekAssistantSearchPlan) -> None:
         parsed.people_limit = max(0, min(6, parsed.people_limit))
         parsed.important_messages_limit = max(0, min(6, parsed.important_messages_limit))
@@ -1704,6 +1762,18 @@ Regras:
             data_inicio=self._as_optional_text(raw.get("data_inicio")),
             data_fim=self._as_optional_text(raw.get("data_fim")),
             intencao=self._as_text(raw.get("intencao")),
+            confidence=self._as_confidence(raw.get("confidence")),
+        )
+
+    def _parse_agenda_conflict_resolution_result(self, content: str) -> DeepSeekAgendaConflictResolutionResult:
+        raw = self._parse_json_dict(
+            content,
+            error_message="DeepSeek retornou JSON invalido na resolucao de conflito de agenda.",
+            shape_error_message="DeepSeek retornou um payload inesperado na resolucao de conflito de agenda.",
+        )
+        return DeepSeekAgendaConflictResolutionResult(
+            decision=self._as_text(raw.get("decision")),
+            explanation=self._as_text(raw.get("explanation")),
             confidence=self._as_confidence(raw.get("confidence")),
         )
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import json
 import logging
 from pathlib import Path
@@ -3974,6 +3974,35 @@ class SupabaseStore:
             if parsed is not None and parsed.content.strip():
                 messages.append(parsed)
         return messages
+
+    def find_latest_pending_agenda_conflict_alert(
+        self,
+        *,
+        user_id: UUID,
+        contact_phone: str,
+        max_age_hours: int = 72,
+    ) -> WhatsAppAgentMessageRecord | None:
+        normalized_phone = self.normalize_contact_phone(contact_phone)
+        if not normalized_phone:
+            return None
+        messages = self.list_whatsapp_agent_messages_for_contact(
+            user_id=user_id,
+            contact_phone=normalized_phone,
+            limit=40,
+        )
+        now = datetime.now(UTC)
+        for message in reversed(messages):
+            if message.direction != "outbound" or message.role != "assistant":
+                continue
+            metadata = message.metadata if isinstance(message.metadata, dict) else {}
+            if not metadata.get("agenda_conflict_pending"):
+                continue
+            sent_at_raw = metadata.get("agenda_conflict_sent_at")
+            sent_at = self._parse_datetime(sent_at_raw) if isinstance(sent_at_raw, str) else None
+            if sent_at is not None and now - sent_at > timedelta(hours=max(1, max_age_hours)):
+                continue
+            return message
+        return None
 
     def list_whatsapp_agent_session_messages(self, *, session_id: str, limit: int = 40) -> list[WhatsAppAgentMessageRecord]:
         try:
