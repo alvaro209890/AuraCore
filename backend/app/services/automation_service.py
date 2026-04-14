@@ -670,9 +670,10 @@ class AutomationService:
         )
         return max(MINIMUM_STALE_ANALYSIS_JOB_THRESHOLD, timeout_based_threshold)
 
-    def _recover_stale_pending_jobs(self) -> None:
+    def _recover_stale_pending_jobs(self) -> int:
         now = datetime.now(UTC)
         threshold = self._analysis_job_stale_threshold()
+        recovered_jobs = 0
         for job in self.store.list_analysis_jobs(user_id=self.settings.default_user_id, limit=20):
             if job.status not in {"queued", "running"}:
                 continue
@@ -688,9 +689,14 @@ class AutomationService:
                 ),
                 finished_at=now,
             )
+            recovered_jobs += 1
             logger.warning("stale_analysis_job_recovered job_id=%s intent=%s", job.id, job.intent)
+        return recovered_jobs
 
     async def get_status_snapshot(self) -> AutomationStatusSnapshot:
+        recovered_jobs = self._recover_stale_pending_jobs()
+        if recovered_jobs > 0:
+            self._schedule_tick()
         await self.settle_sync_runs()
         settings = self.store.get_automation_settings(self.settings.default_user_id)
         sync_runs = self.store.list_whatsapp_sync_runs(user_id=self.settings.default_user_id, limit=8)

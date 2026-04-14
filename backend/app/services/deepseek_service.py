@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import re
@@ -1695,11 +1696,14 @@ Regras:
         shape_error_message: str,
     ) -> dict[str, Any]:
         normalized_content = self._normalize_json_content(content)
-
-        try:
-            raw = json.loads(normalized_content)
-        except json.JSONDecodeError as exc:
-            raise DeepSeekError(error_message) from exc
+        raw = self._load_json_object(normalized_content)
+        if raw is None:
+            repaired_content = self._repair_json_like_content(normalized_content)
+            raw = self._load_json_object(repaired_content)
+        if raw is None:
+            raw = self._parse_python_like_mapping(normalized_content)
+        if raw is None:
+            raise DeepSeekError(error_message)
 
         if not isinstance(raw, dict):
             raise DeepSeekError(shape_error_message)
@@ -1721,6 +1725,52 @@ Regras:
 
         normalized_content = re.sub(r",(\s*[}\]])", r"\1", normalized_content)
         return normalized_content.strip()
+
+    def _load_json_object(self, content: str) -> Any | None:
+        if not content:
+            return None
+        try:
+            raw = json.loads(content)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(raw, str):
+            nested = self._normalize_json_content(raw)
+            if nested and nested != content:
+                return self._load_json_object(nested)
+        return raw
+
+    def _repair_json_like_content(self, content: str) -> str:
+        repaired = str(content or "").strip()
+        if not repaired:
+            return repaired
+
+        replacements = {
+            "\u201c": '"',
+            "\u201d": '"',
+            "\u2018": "'",
+            "\u2019": "'",
+            "\u00a0": " ",
+        }
+        for source, target in replacements.items():
+            repaired = repaired.replace(source, target)
+
+        repaired = re.sub(r"^\s*//.*$", "", repaired, flags=re.MULTILINE)
+        repaired = re.sub(r"/\*.*?\*/", "", repaired, flags=re.DOTALL)
+        repaired = re.sub(r",(\s*[}\]])", r"\1", repaired)
+        return repaired.strip()
+
+    def _parse_python_like_mapping(self, content: str) -> dict[str, Any] | None:
+        candidate = self._repair_json_like_content(content)
+        if not candidate:
+            return None
+        candidate = re.sub(r"\btrue\b", "True", candidate, flags=re.IGNORECASE)
+        candidate = re.sub(r"\bfalse\b", "False", candidate, flags=re.IGNORECASE)
+        candidate = re.sub(r"\bnull\b", "None", candidate, flags=re.IGNORECASE)
+        try:
+            raw = ast.literal_eval(candidate)
+        except (SyntaxError, ValueError):
+            return None
+        return raw if isinstance(raw, dict) else None
 
     def _as_text(self, value: Any) -> str:
         if value is None:
