@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     firebase_service_account_path: str | None = Field(default=None, alias="FIREBASE_SERVICE_ACCOUNT_PATH")
     deepseek_api_key: str | None = Field(default=None, alias="DEEPSEEK_API_KEY")
     deepseek_model: str = Field("deepseek-chat", alias="DEEPSEEK_MODEL")
+    deepseek_memory_model: str = Field("deepseek-chat", alias="DEEPSEEK_MEMORY_MODEL")
     deepseek_api_base_url: str = Field("https://api.deepseek.com", alias="DEEPSEEK_API_BASE_URL")
     deepseek_timeout_seconds: float = Field(60.0, alias="DEEPSEEK_TIMEOUT_SECONDS")
     groq_api_key: str | None = Field(default=None, alias="GROQ_API_KEY")

@@ -2357,18 +2357,23 @@ export function ConnectionDashboard({
       );
     }
 
-    const latestJob = memoryActivity.jobs[0] ?? null;
-    if (latestJob) {
-      const signature = `${latestJob.id}:${latestJob.status}`;
+    const pendingJob = resolvePendingAnalysisJob({
+      currentJob: memoryStatus?.current_job ?? null,
+      activity: memoryActivity,
+      queuedJobId,
+    });
+    const observedJob = pendingJob ?? memoryActivity.jobs[0] ?? null;
+    if (observedJob) {
+      const signature = `${observedJob.id}:${observedJob.status}`;
       if (signature !== lastObservedJobRef.current) {
         lastObservedJobRef.current = signature;
         pushAgentLog(
-          latestJob.status === "failed" ? "error" : latestJob.status === "succeeded" ? "success" : "info",
-          latestJob.status === "failed"
-            ? `${getIntentTitle(latestJob.intent as AgentIntent)} falhou. ${latestJob.error_text || "Sem detalhe persistido."}`
-            : latestJob.status === "succeeded"
-              ? `${getIntentTitle(latestJob.intent as AgentIntent)} terminou com ${latestJob.selected_message_count} mensagens processadas.`
-              : `${getIntentTitle(latestJob.intent as AgentIntent)} está ${latestJob.status} no backend.`,
+          observedJob.status === "failed" ? "error" : observedJob.status === "succeeded" ? "success" : "info",
+          observedJob.status === "failed"
+            ? `${getIntentTitle(observedJob.intent as AgentIntent)} falhou. ${observedJob.error_text || "Sem detalhe persistido."}`
+            : observedJob.status === "succeeded"
+              ? `${getIntentTitle(observedJob.intent as AgentIntent)} terminou com ${observedJob.selected_message_count} mensagens processadas.`
+              : `${getIntentTitle(observedJob.intent as AgentIntent)} está ${observedJob.status} no backend.`,
         );
       }
     }
@@ -2383,7 +2388,7 @@ export function ConnectionDashboard({
           : `${latestModelRun.provider} falhou em ${latestModelRun.run_type}. ${latestModelRun.error_text || "Sem detalhe persistido."}`,
       );
     }
-  }, [memoryActivity]);
+  }, [memoryActivity, memoryStatus?.current_job, queuedJobId]);
 
   function applyChatWorkspace(workspace: ChatWorkspace): void {
     setChatThreads(workspace.threads);
@@ -4648,15 +4653,19 @@ function MemoryTab({
   const currentJobIsPending = currentJob?.status === "queued" || currentJob?.status === "running";
   const autoInitialSyncInProgress = !memoryReady && (memoryStatus?.sync_in_progress ?? false);
   const hasPendingJob = currentJobIsPending || !!queuedJobId || autoInitialSyncInProgress;
+  const displayedJob = resolvePendingAnalysisJob({
+    currentJob,
+    activity: memoryActivity,
+    queuedJobId,
+  }) ?? memoryActivity?.jobs[0] ?? latestCompletedJob;
   const latestSyncRun = memoryActivity?.sync_runs[0] ?? null;
-  const latestJob = memoryActivity?.jobs[0] ?? latestCompletedJob;
   const latestModelRun = memoryActivity?.model_runs[0] ?? null;
   const latestSnapshotCoverageTone = getSnapshotCoverageTone(latestSnapshot);
   const traceItems = buildActivityTrace({
     agentState,
     latestSyncRun,
     latestDecision: null,
-    latestJob,
+    latestJob: displayedJob,
     latestModelRun,
   }).slice(0, 4);
   const displayedLogs = logs.slice(0, 8);
@@ -7012,6 +7021,9 @@ function ActivityTab({
   const latestDecision = automationStatus?.decisions[0] ?? null;
   const latestSyncRun = automationStatus?.sync_runs[0] ?? null;
   const latestJob = automationStatus?.jobs[0] ?? null;
+  const displayedJob = latestJob && (latestJob.status === "queued" || latestJob.status === "running")
+    ? latestJob
+    : latestJob;
   const latestModelRun = automationStatus?.model_runs[0] ?? null;
   const hasPendingDatabaseWork = Boolean(
     agentState.running ||
@@ -7033,10 +7045,10 @@ function ActivityTab({
         agentState,
         latestSyncRun,
         latestDecision,
-        latestJob,
+        latestJob: displayedJob,
         latestModelRun,
       }),
-    [agentState, latestDecision, latestJob, latestModelRun, latestSyncRun],
+    [agentState, displayedJob, latestDecision, latestModelRun, latestSyncRun],
   );
   const displayedLogs = logs.slice(0, 18);
   const hasSavedDeepSeekThought = Boolean(latestDecision?.explanation?.trim());
@@ -7122,8 +7134,8 @@ function ActivityTab({
           <div className="activity-insight-grid">
             <MemorySignalCard
               label="Ação atual"
-              value={latestJob ? getIntentTitle(latestJob.intent as AgentIntent) : getIntentTitle(resolvedIntent)}
-              meta={latestJob ? `${latestJob.status} via ${latestJob.trigger_source}` : memoryReady ? "Memória base já existe" : "Ainda sem base consolidada"}
+              value={displayedJob ? getIntentTitle(displayedJob.intent as AgentIntent) : getIntentTitle(resolvedIntent)}
+              meta={displayedJob ? `${displayedJob.status} via ${displayedJob.trigger_source}` : memoryReady ? "Memória base já existe" : "Ainda sem base consolidada"}
               accent
             />
             <MemorySignalCard
@@ -7186,10 +7198,10 @@ function ActivityTab({
             />
             <MemorySignalCard
               label="Último processamento"
-              value={latestJob ? latestJob.status : "..."}
+              value={displayedJob ? displayedJob.status : "..."}
               meta={
-                latestJob
-                  ? `${getIntentTitle(latestJob.intent as AgentIntent)} • ${formatShortDateTime(latestJob.created_at)}`
+                displayedJob
+                  ? `${getIntentTitle(displayedJob.intent as AgentIntent)} • ${formatShortDateTime(displayedJob.created_at)}`
                   : "Sem processamento registrado ainda"
               }
               tone="indigo"
@@ -7295,7 +7307,7 @@ function ActivityTab({
             <div className="activity-lab-metrics">
               <div className="activity-lab-metric">
                 <span>Estado atual</span>
-                <strong>{agentState.running ? "Processando lote" : latestJob?.status ?? "Sem execucao"}</strong>
+                <strong>{agentState.running ? "Processando lote" : displayedJob?.status ?? "Sem execucao"}</strong>
                 <small>{agentState.running ? agentState.status : "Ultimo estado conhecido do pipeline"}</small>
               </div>
               <div className="activity-lab-metric">

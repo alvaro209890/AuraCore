@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 import logging
 from math import ceil
+import re
 from typing import Literal
 from uuid import uuid4
 
@@ -1488,13 +1489,13 @@ class MemoryAnalysisService:
     ) -> AnalyzeMemoryPromptContext:
         return AnalyzeMemoryPromptContext(
             transcript=context.transcript,
-            conversation_context=self._compact_context_block(context.conversation_context, char_budget=1200, max_lines=12),
-            people_memory_context=self._compact_context_block(context.people_memory_context, char_budget=1000, max_lines=12),
-            current_life_summary=self._compact_context_block(context.current_life_summary, char_budget=1100, max_lines=12),
-            prior_analyses_context=self._compact_context_block(context.prior_analyses_context, char_budget=1500, max_lines=16),
-            project_context=self._compact_context_block(context.project_context, char_budget=1200, max_lines=14),
-            chat_context=self._compact_context_block(context.chat_context, char_budget=900, max_lines=10),
-            open_questions_context=self._compact_context_block(context.open_questions_context, char_budget=500, max_lines=8),
+            conversation_context=self._compact_context_block(context.conversation_context, char_budget=700, max_lines=8),
+            people_memory_context=self._compact_context_block(context.people_memory_context, char_budget=520, max_lines=7),
+            current_life_summary=self._compact_context_block(context.current_life_summary, char_budget=680, max_lines=8),
+            prior_analyses_context=self._compact_context_block(context.prior_analyses_context, char_budget=780, max_lines=9),
+            project_context=self._compact_context_block(context.project_context, char_budget=620, max_lines=8),
+            chat_context=self._compact_context_block(context.chat_context, char_budget=320, max_lines=4),
+            open_questions_context=self._compact_context_block(context.open_questions_context, char_budget=220, max_lines=4),
         )
 
     def _build_minimal_analysis_prompt_context(
@@ -1503,13 +1504,13 @@ class MemoryAnalysisService:
     ) -> AnalyzeMemoryPromptContext:
         return AnalyzeMemoryPromptContext(
             transcript=context.transcript,
-            conversation_context=self._compact_context_block(context.conversation_context, char_budget=320, max_lines=5),
-            people_memory_context=self._compact_context_block(context.people_memory_context, char_budget=260, max_lines=4),
-            current_life_summary=self._compact_context_block(context.current_life_summary, char_budget=560, max_lines=6),
-            prior_analyses_context=self._compact_context_block(context.prior_analyses_context, char_budget=420, max_lines=5),
-            project_context=self._compact_context_block(context.project_context, char_budget=360, max_lines=5),
-            chat_context=self._compact_context_block(context.chat_context, char_budget=160, max_lines=3),
-            open_questions_context=self._compact_context_block(context.open_questions_context, char_budget=160, max_lines=4),
+            conversation_context=self._compact_context_block(context.conversation_context, char_budget=220, max_lines=3),
+            people_memory_context=self._compact_context_block(context.people_memory_context, char_budget=180, max_lines=3),
+            current_life_summary=self._compact_context_block(context.current_life_summary, char_budget=260, max_lines=4),
+            prior_analyses_context=self._compact_context_block(context.prior_analyses_context, char_budget=220, max_lines=3),
+            project_context=self._compact_context_block(context.project_context, char_budget=200, max_lines=3),
+            chat_context=self._compact_context_block(context.chat_context, char_budget=120, max_lines=2),
+            open_questions_context=self._compact_context_block(context.open_questions_context, char_budget=120, max_lines=2),
         )
 
     def _build_default_analysis_prompt_context(
@@ -1518,13 +1519,13 @@ class MemoryAnalysisService:
     ) -> AnalyzeMemoryPromptContext:
         return AnalyzeMemoryPromptContext(
             transcript=context.transcript,
-            conversation_context=self._compact_context_block(context.conversation_context, char_budget=1500, max_lines=16),
-            people_memory_context=self._compact_context_block(context.people_memory_context, char_budget=1200, max_lines=14),
-            current_life_summary=self._compact_context_block(context.current_life_summary, char_budget=1000, max_lines=10),
-            prior_analyses_context=self._compact_context_block(context.prior_analyses_context, char_budget=1200, max_lines=12),
-            project_context=self._compact_context_block(context.project_context, char_budget=1200, max_lines=12),
-            chat_context=self._compact_context_block(context.chat_context, char_budget=360, max_lines=5),
-            open_questions_context=self._compact_context_block(context.open_questions_context, char_budget=220, max_lines=4),
+            conversation_context=self._compact_context_block(context.conversation_context, char_budget=900, max_lines=10),
+            people_memory_context=self._compact_context_block(context.people_memory_context, char_budget=720, max_lines=9),
+            current_life_summary=self._compact_context_block(context.current_life_summary, char_budget=800, max_lines=8),
+            prior_analyses_context=self._compact_context_block(context.prior_analyses_context, char_budget=900, max_lines=10),
+            project_context=self._compact_context_block(context.project_context, char_budget=760, max_lines=9),
+            chat_context=self._compact_context_block(context.chat_context, char_budget=240, max_lines=4),
+            open_questions_context=self._compact_context_block(context.open_questions_context, char_budget=180, max_lines=3),
         )
 
     def _compact_context_block(
@@ -1583,14 +1584,73 @@ class MemoryAnalysisService:
         return "\n".join(kept) + "\n[contexto reduzido automaticamente]"
 
     def _compact_analysis_max_output_tokens(self) -> int:
-        if "reasoner" in self.settings.deepseek_model.strip().lower():
-            return 3200
-        return 1600
+        if "reasoner" in self.settings.deepseek_memory_model.strip().lower():
+            return 2600
+        return 1800
 
     def _minimal_analysis_max_output_tokens(self) -> int:
-        if "reasoner" in self.settings.deepseek_model.strip().lower():
-            return 2200
+        if "reasoner" in self.settings.deepseek_memory_model.strip().lower():
+            return 1800
+        return 1400
+
+    def _reduced_window_analysis_max_output_tokens(self) -> int:
+        if "reasoner" in self.settings.deepseek_memory_model.strip().lower():
+            return 1600
         return 1200
+
+    def _should_retry_analyze_memory_with_reduced_window(
+        self,
+        *,
+        plan: FixedAnalysisPlan,
+        error: DeepSeekError,
+    ) -> bool:
+        return (
+            plan.intent == "improve_memory"
+            and len(plan.source_messages) > 8
+            and self._should_retry_analyze_memory_with_compact_context(plan=plan, error=error)
+        )
+
+    def _build_reduced_window_retry_plan(
+        self,
+        *,
+        plan: FixedAnalysisPlan,
+    ) -> FixedAnalysisPlan | None:
+        if len(plan.source_messages) <= 8:
+            return None
+
+        reduced_message_count = max(8, min(12, len(plan.source_messages) // 2))
+        reduced_char_budget = max(1600, min(3200, plan.selected_transcript_chars // 2))
+        transcript, reduced_messages = self._build_transcript(
+            plan.source_messages,
+            max_messages=reduced_message_count,
+            char_budget=reduced_char_budget,
+        )
+        if not transcript.strip() or len(reduced_messages) >= len(plan.source_messages):
+            return None
+
+        reduced_window_start = reduced_messages[0].timestamp
+        reduced_window_end = reduced_messages[-1].timestamp
+        reduced_window_hours = max(
+            1,
+            ceil(max(0.0, (reduced_window_end - reduced_window_start).total_seconds()) / 3600),
+        )
+        scale = max(0.35, len(reduced_messages) / max(1, len(plan.source_messages)))
+        return FixedAnalysisPlan(
+            intent=plan.intent,
+            source_messages=reduced_messages,
+            transcript=transcript,
+            conversation_context=self._build_conversation_context(reduced_messages),
+            people_memory_context=self._build_people_memory_context(reduced_messages),
+            window_hours=reduced_window_hours,
+            window_start=reduced_window_start,
+            window_end=reduced_window_end,
+            selected_transcript_chars=len(transcript),
+            estimated_input_tokens=max(200, round(plan.estimated_input_tokens * scale)),
+            estimated_output_tokens=max(200, round(plan.estimated_output_tokens * scale)),
+            estimated_reasoning_tokens=max(0, round(plan.estimated_reasoning_tokens * scale)),
+            estimated_cost_floor_usd=round(plan.estimated_cost_floor_usd * scale, 6),
+            estimated_cost_ceiling_usd=round(plan.estimated_cost_ceiling_usd * scale, 6),
+        )
 
     async def _run_analysis_request_with_fallbacks(
         self,
@@ -1635,11 +1695,50 @@ class MemoryAnalysisService:
                     str(compact_exc),
                 )
                 self._log_analysis_prompt_context_sizes(plan=plan, context=minimal_context, stage="minimal_retry")
-                return await self._run_analyze_memory_request(
-                    plan=plan,
-                    context=minimal_context,
-                    max_output_tokens=minimal_max_output_tokens,
-                )
+                try:
+                    return await self._run_analyze_memory_request(
+                        plan=plan,
+                        context=minimal_context,
+                        max_output_tokens=minimal_max_output_tokens,
+                    )
+                except DeepSeekError as minimal_exc:
+                    if not self._should_retry_analyze_memory_with_reduced_window(plan=plan, error=minimal_exc):
+                        raise
+                    reduced_plan = self._build_reduced_window_retry_plan(plan=plan)
+                    if reduced_plan is None:
+                        raise
+                    reduced_context = self._build_minimal_analysis_prompt_context(
+                        AnalyzeMemoryPromptContext(
+                            transcript=reduced_plan.transcript,
+                            conversation_context=reduced_plan.conversation_context,
+                            people_memory_context=reduced_plan.people_memory_context,
+                            current_life_summary=context.current_life_summary,
+                            prior_analyses_context=context.prior_analyses_context,
+                            project_context=context.project_context,
+                            chat_context=context.chat_context,
+                            open_questions_context=context.open_questions_context,
+                        )
+                    )
+                    reduced_max_output_tokens = self._reduced_window_analysis_max_output_tokens()
+                    logger.warning(
+                        "fixed_plan_stage_retry stage=analyze_memory intent=%s reason=reduced_window_retry "
+                        "message_count=%s transcript_chars=%s reduced_max_output_tokens=%s error=%s",
+                        reduced_plan.intent,
+                        len(reduced_plan.source_messages),
+                        reduced_plan.selected_transcript_chars,
+                        reduced_max_output_tokens,
+                        str(minimal_exc),
+                    )
+                    self._log_analysis_prompt_context_sizes(
+                        plan=reduced_plan,
+                        context=reduced_context,
+                        stage="reduced_window_retry",
+                    )
+                    return await self._run_analyze_memory_request(
+                        plan=reduced_plan,
+                        context=reduced_context,
+                        max_output_tokens=reduced_max_output_tokens,
+                    )
 
     async def _run_first_analysis_synthesis_with_fallbacks(
         self,

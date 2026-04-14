@@ -275,6 +275,7 @@ class DeepSeekService:
             system_prompt=prompt_preview.system_prompt,
             user_prompt=prompt_preview.user_prompt,
             max_tokens=max_output_tokens or self._analysis_max_output_tokens(intent=intent),
+            model_name=self.settings.deepseek_memory_model,
         )
 
         return await self._request_parsed_completion(
@@ -441,6 +442,7 @@ class DeepSeekService:
                 contains_group_messages=contains_group_messages,
             ),
             max_tokens=max_output_tokens or self._analysis_max_output_tokens(intent=intent),
+            model_name=self.settings.deepseek_memory_model,
         )
         return await self._request_parsed_completion(
             payload=payload,
@@ -637,10 +639,11 @@ class DeepSeekService:
         )
 
     def get_planning_profile(self, *, intent: str = "improve_memory") -> DeepSeekPlanningProfile:
+        planning_model = self.settings.deepseek_memory_model
         output_reserve_tokens = self._analysis_max_output_tokens(intent=intent)
-        if self._is_reasoning_model():
+        if self._is_reasoning_model(planning_model):
             return DeepSeekPlanningProfile(
-                model_name=self.settings.deepseek_model,
+                model_name=planning_model,
                 context_limit_floor_tokens=64000,
                 context_limit_ceiling_tokens=128000,
                 default_output_tokens=32000,
@@ -661,7 +664,7 @@ class DeepSeekService:
             )
 
         return DeepSeekPlanningProfile(
-            model_name=self.settings.deepseek_model,
+            model_name=planning_model,
             context_limit_floor_tokens=64000,
             context_limit_ceiling_tokens=128000,
             default_output_tokens=4000,
@@ -1162,9 +1165,10 @@ Regras:
         system_prompt: str,
         user_prompt: str,
         max_tokens: int,
+        model_name: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
-            "model": self.settings.deepseek_model,
+            "model": (model_name or self.settings.deepseek_model).strip() or self.settings.deepseek_model,
             "response_format": {"type": "json_object"},
             "max_tokens": max_tokens,
             "messages": [
@@ -1178,7 +1182,7 @@ Regras:
                 },
             ],
         }
-        if not self._is_reasoning_model():
+        if not self._is_reasoning_model(str(payload.get("model") or "")):
             payload["temperature"] = 0.2
         return payload
 
@@ -1217,7 +1221,8 @@ Regras:
     ) -> ParsedResultT:
         self._ensure_configured()
         last_error: DeepSeekError | None = None
-        logger.info("deepseek_operation_start operation=%s model=%s", operation, self.settings.deepseek_model)
+        model_name = str(payload.get("model") or self.settings.deepseek_model)
+        logger.info("deepseek_operation_start operation=%s model=%s", operation, model_name)
         for attempt in range(1, 3):
             data = await self._post_completion(payload, operation=operation, attempt=attempt)
             try:
@@ -1229,10 +1234,12 @@ Regras:
             except DeepSeekError as exc:
                 last_error = exc
                 logger.warning(
-                    "deepseek_operation_invalid_response operation=%s attempt=%s detail=%s",
+                    "deepseek_operation_invalid_response operation=%s attempt=%s model=%s detail=%s raw_preview=%s",
                     operation,
                     attempt,
+                    model_name,
                     str(exc),
+                    self._preview_text(content if "content" in locals() else json.dumps(data, ensure_ascii=True)),
                 )
         raise last_error or DeepSeekError("DeepSeek returned an invalid structured response.")
 
@@ -1244,7 +1251,8 @@ Regras:
     ) -> str:
         self._ensure_configured()
         last_error: DeepSeekError | None = None
-        logger.info("deepseek_operation_start operation=%s model=%s", operation, self.settings.deepseek_model)
+        model_name = str(payload.get("model") or self.settings.deepseek_model)
+        logger.info("deepseek_operation_start operation=%s model=%s", operation, model_name)
         for attempt in range(1, 3):
             data = await self._post_completion(payload, operation=operation, attempt=attempt)
             try:
@@ -1256,10 +1264,12 @@ Regras:
             except DeepSeekError as exc:
                 last_error = exc
                 logger.warning(
-                    "deepseek_operation_invalid_response operation=%s attempt=%s detail=%s",
+                    "deepseek_operation_invalid_response operation=%s attempt=%s model=%s detail=%s raw_preview=%s",
                     operation,
                     attempt,
+                    model_name,
                     str(exc),
+                    self._preview_text(content if "content" in locals() else json.dumps(data, ensure_ascii=True)),
                 )
         raise last_error or DeepSeekError("DeepSeek returned an invalid text response.")
 
@@ -1290,11 +1300,12 @@ Regras:
             pool=min(10.0, self.settings.deepseek_timeout_seconds),
         )
         hard_timeout_seconds = self.settings.deepseek_timeout_seconds + 5.0
+        model_name = str(payload.get("model") or self.settings.deepseek_model)
         logger.info(
             "deepseek_request_start operation=%s attempt=%s model=%s timeout_seconds=%s system_prompt_chars=%s user_prompt_chars=%s",
             operation,
             attempt,
-            self.settings.deepseek_model,
+            model_name,
             self.settings.deepseek_timeout_seconds,
             system_prompt_chars,
             user_prompt_chars,
@@ -1446,11 +1457,12 @@ Regras:
         parsed.constraints = parsed.constraints[:12]
         parsed.recurring_instructions = parsed.recurring_instructions[:12]
 
-    def _is_reasoning_model(self) -> bool:
-        return "reasoner" in self.settings.deepseek_model.strip().lower()
+    def _is_reasoning_model(self, model_name: str | None = None) -> bool:
+        resolved_model = (model_name or self.settings.deepseek_model).strip().lower()
+        return "reasoner" in resolved_model
 
     def _analysis_max_output_tokens(self, *, intent: str = "improve_memory") -> int:
-        if self._is_reasoning_model():
+        if self._is_reasoning_model(self.settings.deepseek_memory_model):
             if intent == "first_analysis":
                 return 7000
             return 5000
@@ -1458,6 +1470,12 @@ Regras:
 
     def _refinement_max_output_tokens(self) -> int:
         return 4000 if self._is_reasoning_model() else 1800
+
+    def _preview_text(self, value: str, *, max_chars: int = 900) -> str:
+        normalized = " ".join(str(value or "").split()).strip()
+        if len(normalized) <= max_chars:
+            return normalized
+        return normalized[: max_chars - 3] + "..."
 
     def _parse_result(self, content: str) -> DeepSeekMemoryResult:
         raw = self._parse_json_dict(

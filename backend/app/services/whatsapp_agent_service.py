@@ -614,7 +614,25 @@ class WhatsAppAgentService:
         reminder_rule = self.agenda_guardian_service.format_reminder_rule(event)
         origin_label = event.contato_origem or "não identificada"
 
+        if outcome.action == "cancel":
+            return (
+                "*Compromisso removido da agenda*\n\n"
+                f"*{event.titulo}*\n"
+                f"• Horário anterior: {event_time}\n"
+                f"• Origem: {origin_label}\n\n"
+                "Se quiser, eu posso marcar outro horário no lugar."
+            )
         if outcome.updated_existing_event:
+            if outcome.action == "reschedule":
+                return (
+                    "*Compromisso reagendado*\n\n"
+                    f"*{event.titulo}*\n"
+                    f"• Novo horário: {event_time}\n"
+                    f"• Status: {status_label}\n"
+                    f"• Lembretes: {reminder_rule}\n"
+                    f"• Origem: {origin_label}\n\n"
+                    "Se quiser, eu também posso ajustar a duração ou a antecedência."
+                )
             return (
                 "*Lembrete atualizado na agenda*\n\n"
                 f"*{event.titulo}*\n"
