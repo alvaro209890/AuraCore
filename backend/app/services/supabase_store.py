@@ -6041,8 +6041,8 @@ class SupabaseStore:
             "default_detail_mode": "balanced",
             "default_target_message_count": min(120, self.message_retention_max_rows),
             "default_lookback_hours": 72,
-            "daily_budget_usd": 0.25,
-            "max_auto_jobs_per_day": 4,
+            "daily_budget_usd": 5.0,
+            "max_auto_jobs_per_day": 100,
             "updated_at": updated_at.isoformat(),
         }
 
@@ -6781,8 +6781,8 @@ class SupabaseStore:
             default_detail_mode=self._normalize_detail_mode(self._optional_text(value.get("default_detail_mode")) or "balanced"),
             default_target_message_count=self._parse_int(value.get("default_target_message_count")) or min(120, self.message_retention_max_rows),
             default_lookback_hours=self._parse_int(value.get("default_lookback_hours")) or 72,
-            daily_budget_usd=self._parse_float(value.get("daily_budget_usd")) or 0.25,
-            max_auto_jobs_per_day=self._parse_int(value.get("max_auto_jobs_per_day")) or 4,
+            daily_budget_usd=self._parse_float(value.get("daily_budget_usd")) or 5.0,
+            max_auto_jobs_per_day=self._parse_int(value.get("max_auto_jobs_per_day")) or 100,
             updated_at=self._parse_datetime(value.get("updated_at")) or datetime.now(UTC),
         )
 

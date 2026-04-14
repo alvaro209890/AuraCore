@@ -935,32 +935,7 @@ export async function refineMemory(): Promise<RefineMemoryResponse> {
 }
 
 export async function getAutomationStatus(): Promise<AutomationStatus> {
-  const activity = await request<MemoryActivity>("/api/memories/activity");
-  return {
-    settings: activity.settings ?? {
-      user_id: "",
-      auto_sync_enabled: false,
-      auto_analyze_enabled: false,
-      auto_refine_enabled: false,
-      min_new_messages_threshold: 20,
-      stale_hours_threshold: 1,
-      pruned_messages_threshold: 0,
-      default_detail_mode: "balanced",
-      default_target_message_count: 120,
-      default_lookback_hours: 72,
-      daily_budget_usd: 0,
-      max_auto_jobs_per_day: 1,
-      updated_at: new Date(0).toISOString(),
-    },
-    sync_runs: activity.sync_runs,
-    decisions: activity.decisions ?? [],
-    jobs: activity.jobs,
-    model_runs: activity.model_runs,
-    daily_cost_usd: 0,
-    daily_auto_jobs_count: activity.daily_auto_jobs_count ?? 0,
-    queued_jobs_count: activity.queued_jobs_count ?? activity.jobs.filter((job) => job.status === "queued").length,
-    running_job_id: activity.running_job_id,
-  };
+  return request<AutomationStatus>("/api/automation/status");
 }
 
 export async function updateAutomationSettings(input: Partial<AutomationSettings>): Promise<AutomationSettings> {
@@ -971,7 +946,9 @@ export async function updateAutomationSettings(input: Partial<AutomationSettings
 }
 
 export async function runAutomationTick(): Promise<AutomationStatus> {
-  return getAutomationStatus();
+  return request<AutomationStatus>("/api/automation/tick", {
+    method: "POST",
+  });
 }
 
 export async function getChatSession(threadId?: string): Promise<ChatSession> {

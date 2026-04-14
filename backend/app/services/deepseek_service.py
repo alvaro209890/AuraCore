@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 import logging
@@ -1693,10 +1694,7 @@ Regras:
         error_message: str,
         shape_error_message: str,
     ) -> dict[str, Any]:
-        normalized_content = content.strip()
-        if normalized_content.startswith("```"):
-            normalized_content = normalized_content.strip("`")
-            normalized_content = normalized_content.replace("json", "", 1).strip()
+        normalized_content = self._normalize_json_content(content)
 
         try:
             raw = json.loads(normalized_content)
@@ -1706,6 +1704,23 @@ Regras:
         if not isinstance(raw, dict):
             raise DeepSeekError(shape_error_message)
         return raw
+
+    def _normalize_json_content(self, content: str) -> str:
+        normalized_content = str(content or "").strip()
+        if not normalized_content:
+            return normalized_content
+
+        fence_match = re.search(r"```(?:json)?\s*(.*?)```", normalized_content, flags=re.IGNORECASE | re.DOTALL)
+        if fence_match:
+            normalized_content = fence_match.group(1).strip()
+
+        first_brace = normalized_content.find("{")
+        last_brace = normalized_content.rfind("}")
+        if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+            normalized_content = normalized_content[first_brace : last_brace + 1]
+
+        normalized_content = re.sub(r",(\s*[}\]])", r"\1", normalized_content)
+        return normalized_content.strip()
 
     def _as_text(self, value: Any) -> str:
         if value is None:

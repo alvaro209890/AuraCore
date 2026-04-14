@@ -61,6 +61,7 @@ import {
   deleteMemoryProject,
   getAgentStatus,
   getAgentWorkspace,
+  getAutomationStatus,
   getChatWorkspace,
   getCurrentMemory,
   getMemoryActivity,
@@ -257,7 +258,6 @@ const NAV_GROUPS: NavGroup[] = [
 ];
 
 const NAV_ITEMS: NavItem[] = NAV_GROUPS.flatMap((g) => g.items);
-const getAutomationStatus = getMemoryActivity;
 const runFirstMemoryAnalysis = () => executeMemoryAnalysis("first_analysis");
 const runNextMemoryBatch = () => executeMemoryAnalysis("improve_memory");
 
@@ -551,34 +551,6 @@ function buildPersistedActivityLogs(status: MemoryActivity | null): AgentLog[] {
   return [...syncLogs, ...jobLogs, ...modelLogs].sort((left, right) => (
     new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
   ));
-}
-
-function automationStatusPlaceholder(status: MemoryActivity | null) {
-  if (!status) {
-    return null;
-  }
-  return {
-    ...status,
-    decisions: status.decisions ?? [],
-    queued_jobs_count: status.queued_jobs_count ?? status.jobs.filter((job) => job.status === "queued").length,
-    daily_auto_jobs_count: status.daily_auto_jobs_count ?? 0,
-    daily_cost_usd: 0,
-    settings: status.settings ?? {
-      user_id: "",
-      auto_sync_enabled: false,
-      auto_analyze_enabled: false,
-      auto_refine_enabled: false,
-      min_new_messages_threshold: 20,
-      stale_hours_threshold: 1,
-      pruned_messages_threshold: 0,
-      default_detail_mode: "balanced",
-      default_target_message_count: 120,
-      default_lookback_hours: 72,
-      daily_budget_usd: 0,
-      max_auto_jobs_per_day: 1,
-      updated_at: new Date(0).toISOString(),
-    },
-  };
 }
 
 function getActivityToneLabel(tone: ActivityTraceItem["tone"]): string {
@@ -1418,17 +1390,11 @@ export function ConnectionDashboard({
   const [agentLogs, setAgentLogs] = useState<AgentLog[]>([
     makeLog("info", "Painel iniciado. Aguardando a próxima leitura ou refinamento."),
   ]);
-
-  const automationStatus = automationStatusPlaceholder(memoryActivity);
-  const setAutomationStatus = setMemoryActivity as unknown as React.Dispatch<React.SetStateAction<any>>;
-  const automationError = memoryActivityError;
-  const setAutomationError = setMemoryActivityError;
-  const automationDraft = null;
-  const setAutomationDraft = (() => undefined) as React.Dispatch<React.SetStateAction<any>>;
-  const isSavingAutomation = false;
-  const isTickingAutomation = false;
-  const setIsSavingAutomation = (_: boolean) => undefined;
-  const setIsTickingAutomation = (_: boolean) => undefined;
+  const [automationStatus, setAutomationStatus] = useState<AutomationStatus | null>(null);
+  const [automationError, setAutomationError] = useState<string | null>(null);
+  const [automationDraft, setAutomationDraft] = useState<AutomationDraft>(null);
+  const [isSavingAutomation, setIsSavingAutomation] = useState(false);
+  const [isTickingAutomation, setIsTickingAutomation] = useState(false);
 
   const liveRefreshIntervalMs = useMemo(() => getLiveRefreshInterval(activeTab), [activeTab]);
   const lastQrRefreshAtRef = useRef<number | null>(null);
@@ -4647,8 +4613,17 @@ function MemoryTab({
   const structuralPreferences = memory?.structural_preferences ?? [];
   const structuralOpenQuestions = memory?.structural_open_questions ?? [];
   const pendingNewMessages = memoryStatus?.new_messages_after_first_analysis ?? 0;
-  const currentJob = memoryStatus?.current_job ?? null;
-  const latestCompletedJob = memoryStatus?.latest_completed_job ?? null;
+  const automationPendingJob =
+    automationStatus?.jobs.find((job) => (
+      (job.status === "queued" || job.status === "running")
+      && (job.intent === "first_analysis" || job.intent === "improve_memory")
+    )) ?? null;
+  const latestAutomationDecision = automationStatus?.decisions[0] ?? null;
+  const currentJob = memoryStatus?.current_job ?? automationPendingJob ?? null;
+  const latestCompletedJob =
+    memoryStatus?.latest_completed_job
+    ?? automationStatus?.jobs.find((job) => job.status === "succeeded" || job.status === "failed")
+    ?? null;
   const canExecuteAnalysis = memoryStatus?.can_execute_analysis ?? false;
   const currentJobIsPending = currentJob?.status === "queued" || currentJob?.status === "running";
   const autoInitialSyncInProgress = !memoryReady && (memoryStatus?.sync_in_progress ?? false);
@@ -4682,21 +4657,41 @@ function MemoryTab({
     : pendingNewMessages > 0
       ? `Executar Analise (${formatTokenCount(pendingNewMessages)} novas)`
       : "Aguardando mensagens novas";
+  const automaticJobNotice = currentJobIsPending && currentJob?.trigger_source === "automation"
+    ? currentJob.status === "queued"
+      ? currentJob.intent === "first_analysis"
+        ? "A primeira análise automática já está na fila do backend."
+        : "A atualização automática já está na fila do backend."
+      : currentJob.intent === "first_analysis"
+        ? "A primeira análise automática está em andamento agora."
+        : "A análise automática está em andamento agora."
+    : null;
+  const latestAutomationNotice = !automaticJobNotice && latestAutomationDecision
+    ? latestAutomationDecision.explanation
+    : null;
   const blockedReason = autoInitialSyncInProgress
     ? "O backend ainda está fechando a coleta inicial automática do WhatsApp. A primeira análise será colocada na fila sozinha assim que esse lote for persistido."
     : currentJobIsPending
     ? currentJob.intent === "first_analysis"
       ? currentJob.status === "queued"
-        ? "A primeira analise ja foi colocada na fila automatica pelo backend."
-        : "A primeira analise ja foi iniciada automaticamente pelo backend usando o lote inicial do WhatsApp."
+        ? currentJob.trigger_source === "automation"
+          ? "A primeira analise ja foi colocada na fila automatica pelo backend."
+          : "A primeira analise ja foi colocada na fila."
+        : currentJob.trigger_source === "automation"
+          ? "A primeira analise ja foi iniciada automaticamente pelo backend usando o lote inicial do WhatsApp."
+          : "A primeira analise ja esta em andamento."
       : currentJob.status === "queued"
-        ? "Ja existe uma atualizacao de memoria na fila."
-        : "Ja existe uma atualizacao de memoria em andamento."
+        ? currentJob.trigger_source === "automation"
+          ? "Ja existe uma atualizacao automatica de memoria na fila."
+          : "Ja existe uma atualizacao de memoria na fila."
+        : currentJob.trigger_source === "automation"
+          ? "Ja existe uma atualizacao automatica de memoria em andamento."
+          : "Ja existe uma atualizacao de memoria em andamento."
     : !canExecuteAnalysis
       ? !memoryReady
         ? "Ainda nao ha mensagens textuais novas disponiveis para criar a base inicial."
         : pendingNewMessages > 0
-          ? "Ainda nao ha sinal suficiente para rodar o proximo lote manual."
+          ? latestAutomationNotice ?? "Ainda nao ha sinal suficiente para rodar o proximo lote manual."
           : "Ainda nao ha mensagens novas pendentes para atualizar a memoria."
       : null;
 
@@ -4791,6 +4786,7 @@ function MemoryTab({
                   <p className="support-copy">
                     A primeira analise mistura recencia, diversidade de contatos e mensagens do proprio dono para montar uma base inicial menos enviesada.
                   </p>
+                  {automaticJobNotice ? <p className="support-copy">{automaticJobNotice}</p> : null}
                   <button
                     className="ac-success-button"
                     onClick={onInitialAnalysis}
@@ -4815,6 +4811,7 @@ function MemoryTab({
                   <p className="support-copy">
                     O refinamento incremental reaproveita a memória já salva e processa apenas o lote novo pendente.
                   </p>
+                  {automaticJobNotice ? <p className="support-copy">{automaticJobNotice}</p> : null}
                   <button
                     className="ac-primary-button"
                     onClick={onImproveMemory}
@@ -4824,8 +4821,12 @@ function MemoryTab({
                     <Sparkles size={15} />
                     {currentJobIsPending
                       ? currentJob.status === "queued"
-                        ? "Atualizacao na fila..."
-                        : "Atualizacao em andamento..."
+                        ? currentJob.trigger_source === "automation"
+                          ? "Analise automatica na fila..."
+                          : "Atualizacao na fila..."
+                        : currentJob.trigger_source === "automation"
+                          ? "Analise automatica em andamento..."
+                          : "Atualizacao em andamento..."
                       : agentState.running && agentState.intent === "improve_memory"
                         ? "Processando..."
                         : !!queuedJobId

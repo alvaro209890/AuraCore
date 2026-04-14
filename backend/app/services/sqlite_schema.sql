@@ -343,8 +343,8 @@ CREATE TABLE IF NOT EXISTS automation_settings (
   default_detail_mode TEXT NOT NULL DEFAULT 'balanced',
   default_target_message_count INTEGER NOT NULL DEFAULT 120,
   default_lookback_hours INTEGER NOT NULL DEFAULT 72,
-  daily_budget_usd REAL NOT NULL DEFAULT 0.25,
-  max_auto_jobs_per_day INTEGER NOT NULL DEFAULT 4,
+  daily_budget_usd REAL NOT NULL DEFAULT 5.0,
+  max_auto_jobs_per_day INTEGER NOT NULL DEFAULT 100,
   updated_at TEXT NOT NULL
 );
 
