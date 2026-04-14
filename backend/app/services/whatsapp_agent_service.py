@@ -198,9 +198,9 @@ class WhatsAppAgentService:
         normalized_text = raw_text
         if transcript_text:
             if normalized_text and transcript_text.casefold() != normalized_text.casefold():
-                normalized_text = f"{normalized_text}\n\n{transcript_text}".strip()
+                normalized_text = f"{normalized_text}\n\n[Transcricao de audio] {transcript_text}".strip()
             else:
-                normalized_text = transcript_text
+                normalized_text = f"[Audio transcrito] {transcript_text}"
 
         if not normalized_text:
             return WhatsAppAgentInboundMessageResponse(action="ignored_empty")

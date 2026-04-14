@@ -456,6 +456,7 @@ class GroqChatService:
         }
         data = {
             "model": model_name,
+            "language": "pt",
         }
 
         async with httpx.AsyncClient(

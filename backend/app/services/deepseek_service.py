@@ -571,6 +571,17 @@ class DeepSeekService:
                 "voce e Orion, a IA pessoal criada para ajudar esta pessoa. Nao entre em detalhes "
                 "tecnicos salvo se perguntado."
                 "\n\n"
+                "Proatividade: quando o contexto permitir, faca sugestoes breves e acionaveis. "
+                "Se o dono mencionou um projeto ativo e a mensagem tem relacao, conecte os pontos. "
+                "Se houver um compromisso na agenda relacionado, mencione de forma natural. "
+                "Se algo importante ficou pendente e o assunto ressurgiu, lembre de leve. "
+                "Nao transforme proatividade em monologo — 1 frase de sugestao ja basta."
+                "\n\n"
+                "Inteligencia emocional: perceba o tom emocional da mensagem — frustracao, "
+                "ansiedade, entusiasmo, cansaco — e ajuste sua resposta acorde. Ofereça suporte "
+                "quando o dono estiver sob pressao, celebre conquistas quando houver progresso, "
+                "e seja direto quando o dono parecer objetivo e apressado."
+                "\n\n"
                 "Limites: nunca fale sobre sistema, banco de dados, modelos, prompts, analises, "
                 "memoria artificial ou bastidores tecnicos. Antes de assumir promessa, prazo, "
                 "resposta em nome do dono ou dado sensivel, peca confirmacao. "
@@ -579,13 +590,13 @@ class DeepSeekService:
             user_prompt=user_prompt,
             max_tokens=self._adaptive_max_tokens(
                 user_prompt,
-                ceiling_reasoning=1200,
-                ceiling_standard=900,
+                ceiling_reasoning=1500,
+                ceiling_standard=1100,
                 floor_reasoning=500,
                 floor_standard=400,
-                chars_per_step=1200,
-                step_tokens=90,
-                max_steps=4,
+                chars_per_step=1000,
+                step_tokens=100,
+                max_steps=5,
             ),
         )
         return await self._request_text_completion(payload=payload, operation="assistant_reply")
@@ -657,11 +668,13 @@ class DeepSeekService:
                 "Responda EXCLUSIVAMENTE em JSON valido com as chaves: should_update, profile_summary, preferred_tone, "
                 "preferences, objectives, durable_facts, constraints, recurring_instructions, "
                 "mood_signals, implied_urgency, mentioned_relationships, implied_tasks, writing_style_hints e explanation. "
-                "mood_signals: sinais de humor/estado emocional (ex: 'apressado', 'frustrado com X', 'animado com Y') "
-                "implied_urgency: nivel de urgencia detectado ('nenhuma', 'moderada', 'alta') com breve justificativa "
-                "mentioned_relationships: nomes ou papeis de terceiros mencionados na mensagem "
-                "implied_tasks: tarefas ou acoes que o dono parece esperar que sejam feitas "
-                "writing_style_hints: pistas sobre como o dono escreve (formal, direto, usa abreviacoes, emocional) "
+                "mood_signals: sinais de humor/estado emocional (ex: 'apressado', 'frustrado com X', 'animado com Y'). "
+                "Detecte tambem dinamica relacional: se o dono confia nesse contato, se cobra, se delega, se e casual. "
+                "Observe se o dono muda de tom com este contato especifico — isso informa como responder no futuro. "
+                "implied_urgency: nivel de urgencia detectado ('nenhuma', 'moderada', 'alta') com breve justificativa. "
+                "mentioned_relationships: nomes ou papeis de terceiros mencionados na mensagem. "
+                "implied_tasks: tarefas ou acoes que o dono parece esperar que sejam feitas. "
+                "writing_style_hints: pistas sobre como o dono escreve (formal, direto, usa abreviacoes, emocional). "
                 "Se nada for duravel, retorne should_update=false e listas vazias."
             ),
             user_prompt=user_prompt,
@@ -721,6 +734,17 @@ class DeepSeekService:
                     " Esta e a primeira analise salva do dono. Prefira cobertura ampla e conservadora: "
                     "menos conviccao, menos projetos, menos inferencias psicologicas e mais lacunas explicitas."
                     if is_first_analysis
+                    else ""
+                )
+                + (
+                    "\n\nDiretrizes avancadas de analise: "
+                    "Detecte padroes comportamentais — como o dono reage sob pressao, se tende a delegar ou executar, "
+                    "se prefere decisoes rapidas ou refletidas. Identifique estilos de comunicacao — direto, detalhista, "
+                    "visual, pragmatico. Observe sinais emocionais — frustracao, entusiasmo, ceticismo, urgencia — "
+                    "e como eles influenciam decisoes. Mapeie preferencias operacionais — horarios de trabalho, "
+                    "ferramentas favoritas, aversoes recorrentes, tolerancia a riscos. Infira prioridades implicitas "
+                    "pelo que o dono repete, ignora, cobra com mais frequencia ou trata com mais cuidado."
+                    if not is_first_analysis
                     else ""
                 )
             ),
@@ -955,6 +979,12 @@ Regras:
 - Em contact_memories, mantenha no maximo 6 fatos, 5 pendencias e 5 topicos por pessoa.
 - Nao mencione que voce e uma IA.
 - Nao inclua markdown fences.
+- Observe como o dono se comunica com cada contato — formalidade, carinho, cobrancas, paciencia — e registre isso em relationship_summary.
+- Detecte emocoes implícitas nas mensagens do dono e como elas moldam decisoes. Frustracao com burocracia, entusiasmo com ideias novas, impaciencia com atrasos — tudo isso informa como um assistente deve responder no futuro.
+- Note padroes de repeticao: o que o dono cobra, o que esquece, o que delega, o que faz sozinho. Isso revela prioridades reais vs declaradas.
+- Identifique assuntos ou contatos que o dono evita, adia ou menciona de forma evasiva — isso e tao informativo quanto o que ele aborda diretamente.
+- Diferencie entre "o dono disse X uma vez" e "o dono consistentemente age como se X fosse verdade". Prefira padroes consistentes nas listas de sinais.
+- Se o dono demonstra mudanca de comportamento ou prioridade entre esta janela e as anteriores, destaque isso em key_learnings.
 {bootstrap_rules if is_first_analysis else ""}
 """.strip()
 
@@ -1009,6 +1039,10 @@ Regras:
 - Se algo estiver fraco ou pouco sustentado, enfraqueça ou remova em vez de inventar complemento.
 - Em active_projects, mantenha so projetos realmente importantes e atuais.
 - Sempre preencha, quando possivel, o que esta sendo desenvolvido e para quem cada projeto e direcionado.
+- Faca cross-validacao entre snapshots: o que aparece consistente em 2+ analises e sinal forte — o que aparece em apenas 1 pode ser ruido ou contexto momentaneo.
+- Padroes recorrentes merecem mais peso no resumo final; sinais isolados merecem ceticismo ou mencao como hipotese.
+- Se um projeto sumiu de snapshots recentes, considere que pode estar concluido ou abandonado — atualize o status acorde.
+- Se o dono mudou de comportamento entre snapshots (nova rotina, prioridade diferente, contato mais frequente com alguem), destaque isso.
 - Nao inclua markdown fences.
 """.strip()
 
@@ -1603,7 +1637,7 @@ Regras:
             if intent == "first_analysis":
                 return 5600
             return 3800
-        return 2200
+        return 2800
 
     def _refinement_max_output_tokens(self) -> int:
         return 3200 if self._is_reasoning_model() else 1500
@@ -1859,6 +1893,11 @@ Regras:
 - Evite hiperfoco em um unico tema so porque ele apareceu na memoria.
 - Seja conciso mas completo — entregue o que e necessario sem enrolacao.
 - NUNCA mencione palavras como "memoria", "banco de dados", "contexto", "IA", "modelo", "sistema", "prompt" ou qualquer referencia a seus bastidores tecnicos.
+- Quando o dono parecer sob pressao ou frustrado, priorize empatia e solucao rapida antes de detalhes.
+- Quando o dono demonstrar entusiasmo ou progresso, reconheça brevemente — isso fortalece a relacao.
+- Se houver algo pendente relevante e nao resolvido que se conecta ao assunto atual, mencione de forma sutil (1 frase).
+- Proatividade comeco: se voce tiver uma sugestao util, coloque-a no final como opcao, nao como imposicao.
+- Se o dono estiver pedindo algo que conflita com algo que ele mesmo disse antes, aponte de forma gentil: "nao tinha ficado X antes? quer que eu ajuste?".
 - Nao use markdown fences.
 {extra_rules}
 """.strip()

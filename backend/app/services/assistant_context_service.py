@@ -128,6 +128,10 @@ class AssistantContextService:
             "Quando perguntarem seu nome, quem voce e ou qual sua funcao, responda isso diretamente e com naturalidade. Nao troque isso por uma saudacao generica.",
             "Se o pedido envolver compromisso, prazo, promessa, envio de dado sensivel, instrucoes em nome do dono ou qualquer decisao delicada, confirme antes de assumir isso como resolvido.",
             "Seu estilo deve ser de um assistente altamente competente: calmo, preciso, discreto, pratico e levemente proativo, sem soar teatral.",
+            "Quando o dono parecer sob pressao, priorize empatia e solucao rapida. Quando demonstrar entusiasmo, reconheca brevemente.",
+            "Se souber de algo pendente relevante para o assunto atual, mencione de forma sutil (1 frase) — nao transforme em lista de cobrancas.",
+            "Se o dono pedir algo que conflita com o que ele mesmo disse antes, aponte de forma gentil.",
+            "Proatividade: se tiver uma sugestao util, coloque no final como opcao, nao como imposicao.",
             *[rule.strip() for rule in (additional_rules or []) if isinstance(rule, str) and rule.strip()],
         ]
         if plan.requires_confirmation:
@@ -153,8 +157,8 @@ class AssistantContextService:
                 if light_touch
                 else self._compact_context_block(
                     self._build_persona_context(persona),
-                    char_budget=1200 if targeted_context else 1800,
-                    max_lines=18,
+                    char_budget=1400 if targeted_context else 2000,
+                    max_lines=20,
                 )
             ),
             recent_snapshots_context=(
@@ -162,8 +166,8 @@ class AssistantContextService:
                 if light_touch
                 else self._compact_context_block(
                     self._render_snapshot_context(snapshots),
-                    char_budget=1000 if targeted_context else 1500,
-                    max_lines=16,
+                    char_budget=1200 if targeted_context else 1700,
+                    max_lines=18,
                 )
             ),
             recent_projects_context=(
@@ -171,8 +175,8 @@ class AssistantContextService:
                 if light_touch
                 else self._compact_context_block(
                     self._build_project_context(projects),
-                    char_budget=1400 if targeted_context else 2200,
-                    max_lines=22,
+                    char_budget=1600 if targeted_context else 2500,
+                    max_lines=24,
                 )
             ),
             recent_chat_context=(
@@ -180,8 +184,8 @@ class AssistantContextService:
                 if light_touch
                 else self._compact_context_block(
                     self._build_chat_context(recent_messages),
-                    char_budget=1000 if targeted_context else 1600,
-                    max_lines=16,
+                    char_budget=1200 if targeted_context else 1800,
+                    max_lines=18,
                 )
             ),
             interaction_mode=interaction_mode,
@@ -471,26 +475,26 @@ class AssistantContextService:
     def _build_persona_context(self, persona: PersonaRecord) -> str:
         sections: list[str] = []
         if persona.life_summary.strip():
-            sections.append(self._summarize_text(persona.life_summary.strip(), 720))
+            sections.append(self._summarize_text(persona.life_summary.strip(), 900))
         if persona.structural_strengths:
             sections.append(
                 "Forcas recorrentes:\n- "
-                + "\n- ".join(self._summarize_items(persona.structural_strengths, item_limit=4, item_chars=120))
+                + "\n- ".join(self._summarize_items(persona.structural_strengths, item_limit=5, item_chars=140))
             )
         if persona.structural_routines:
             sections.append(
                 "Rotina recorrente:\n- "
-                + "\n- ".join(self._summarize_items(persona.structural_routines, item_limit=4, item_chars=120))
+                + "\n- ".join(self._summarize_items(persona.structural_routines, item_limit=5, item_chars=140))
             )
         if persona.structural_preferences:
             sections.append(
                 "Preferencias operacionais:\n- "
-                + "\n- ".join(self._summarize_items(persona.structural_preferences, item_limit=4, item_chars=120))
+                + "\n- ".join(self._summarize_items(persona.structural_preferences, item_limit=5, item_chars=140))
             )
         if persona.structural_open_questions:
             sections.append(
                 "Lacunas ainda abertas:\n- "
-                + "\n- ".join(self._summarize_items(persona.structural_open_questions, item_limit=4, item_chars=120))
+                + "\n- ".join(self._summarize_items(persona.structural_open_questions, item_limit=5, item_chars=140))
             )
         return "\n\n".join(section for section in sections if section).strip()
 
@@ -500,12 +504,12 @@ class AssistantContextService:
 
         parts: list[str] = []
         current_size = 0
-        char_budget = min(max(900, self.settings.context_max_chars // 4), 1600)
+        char_budget = min(max(1000, self.settings.context_max_chars // 4), 1800)
 
         for snapshot in snapshots:
             lines = [
                 f"- Snapshot de {snapshot.window_hours}h em {snapshot.created_at.astimezone(UTC).strftime('%d/%m %H:%M UTC')}",
-                f"  Resumo: {self._summarize_text(snapshot.window_summary, 220)}",
+                f"  Resumo: {self._summarize_text(snapshot.window_summary, 240)}",
             ]
             if snapshot.key_learnings:
                 lines.append(
@@ -527,12 +531,12 @@ class AssistantContextService:
 
         parts: list[str] = []
         current_size = 0
-        char_budget = min(max(1200, self.settings.context_max_chars // 3), 2600)
+        char_budget = min(max(1400, self.settings.context_max_chars // 3), 2800)
 
         for project in projects:
             lines = [
                 f"- {project.project_name}",
-                f"  Resumo: {self._summarize_text(project.summary, 220)}",
+                f"  Resumo: {self._summarize_text(project.summary, 250)}",
             ]
             if project.status:
                 lines.append(f"  Status: {self._summarize_text(project.status, 80)}")
@@ -567,13 +571,13 @@ class AssistantContextService:
 
         parts: list[str] = []
         current_size = 0
-        char_budget = min(max(900, self.settings.context_max_chars // 4), 1600)
+        char_budget = min(max(1000, self.settings.context_max_chars // 4), 1800)
 
         for message in reversed(messages):
             role_label = "Dono" if message.role == "user" else "Orion"
             line = (
                 f"[{message.created_at.astimezone(UTC).strftime('%Y-%m-%d %H:%M UTC')}] "
-                f"{role_label}: {self._summarize_text(message.content, 240)}"
+                f"{role_label}: {self._summarize_text(message.content, 280)}"
             )
             projected = current_size + len(line) + 1
             if parts and projected > char_budget:
