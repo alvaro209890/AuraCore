@@ -91,6 +91,7 @@ async def ingest_messages(
         ignored_count=ignored_count,
         timestamps=[message.timestamp for message in normalized_messages],
     )
+    automation_service.schedule_live_backlog_check()
     automation_service.schedule_sync_settle()
     return IngestMessagesResponse(accepted_count=save_result.saved_count, ignored_count=ignored_count)
 

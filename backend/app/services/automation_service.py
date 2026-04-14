@@ -114,6 +114,9 @@ class AutomationService:
             activity_at=now,
         )
 
+    def schedule_live_backlog_check(self) -> None:
+        self._schedule_tick()
+
     def schedule_sync_settle(self, *, delay_seconds: float = 13.0) -> None:
         proposed_deadline = datetime.now(UTC) + timedelta(seconds=delay_seconds)
         if self._scheduled_settle_task is not None and not self._scheduled_settle_task.done():
@@ -938,10 +941,20 @@ class AutomationService:
         if has_pending_job:
             return
 
-        if not status.has_initial_analysis and status.pending_new_message_count >= status.first_analysis_limit:
+        if not status.has_initial_analysis:
+            if status.pending_new_message_count < status.first_analysis_limit:
+                return
             logger.info(
                 "automation_live_backlog_ready pending=%s limit=%s action=evaluate_first_analysis",
                 status.pending_new_message_count,
                 status.first_analysis_limit,
             )
             await self.evaluate_and_schedule(trigger_source="automation")
+            return
+
+        logger.info(
+            "automation_live_backlog_ready pending=%s threshold=%s action=evaluate_incremental_analysis",
+            status.pending_new_message_count,
+            status.incremental_min_messages,
+        )
+        await self.evaluate_and_schedule(trigger_source="automation")
