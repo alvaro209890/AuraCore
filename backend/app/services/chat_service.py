@@ -9,7 +9,6 @@ from app.services.assistant_reply_service import AssistantReplyService
 from app.services.supabase_store import (
     ChatMessageRecord,
     ChatThreadRecord,
-    ImportantMessageRecord,
     MemorySnapshotRecord,
     PersonMemoryRecord,
     PersonaRecord,
@@ -355,17 +354,5 @@ class ChatAssistantService:
             if p.profile_summary: lines.append(f"  Quem e: {p.profile_summary}")
             if p.relationship_summary: lines.append(f"  Relacao: {p.relationship_summary}")
             if p.salient_facts: lines.append(f"  Fatos: {'; '.join(p.salient_facts[:4])}")
-            blocks.append("\n".join(lines))
-        return "\n\n".join(blocks)
-
-    def _format_search_vault(self, messages: list[ImportantMessageRecord]) -> str:
-        blocks = []
-        for m in messages:
-            date_str = m.message_timestamp.astimezone(UTC).strftime('%d/%m/%Y')
-            lines = [
-                f"- Mensagem de {m.contact_name} em {date_str}:",
-                f"  Conteudo: {m.message_text}",
-                f"  Por que e importante: {m.importance_reason}"
-            ]
             blocks.append("\n".join(lines))
         return "\n\n".join(blocks)

@@ -68,7 +68,6 @@ import {
   getMemoryLiveSummary,
   getMemoryProjects,
   getMemoryRelations,
-  getImportantMessages,
   getMemoryStatus,
   getMemorySnapshots,
   getObserverStatus,
@@ -91,7 +90,6 @@ import {
   type ChatMessage,
   type ChatThread,
   type ChatWorkspace,
-  type ImportantMessage,
   type MemoryActivity,
   type MemoryCurrent,
   type MemoryLiveSummary,
@@ -123,7 +121,6 @@ type TabId =
   | "agent"
   | "groups"
   | "memory"
-  | "important"
   | "relations"
   | "agenda"
   | "projects"
@@ -191,7 +188,7 @@ type NavItem = {
   icon: LucideIcon;
 };
 
-type HeavyLiveResourceKey = "groups" | "projects" | "snapshots" | "important" | "relations";
+type HeavyLiveResourceKey = "groups" | "projects" | "snapshots" | "relations";
 
 const CONNECTING_STATUS_POLL_INTERVAL_MS = 3200;
 const LIVE_STATUS_POLL_INTERVAL_MS = 9000;
@@ -205,7 +202,6 @@ const LIVE_REFRESH_INTERVALS: Record<TabId, number> = {
   agent: 9000,
   groups: 18000,
   memory: 16000,
-  important: 20000,
   relations: 20000,
   agenda: 20000,
   projects: 20000,
@@ -219,14 +215,12 @@ const HEAVY_RESOURCE_REFRESH_MIN_INTERVAL_MS: Record<HeavyLiveResourceKey, numbe
   groups: 18000,
   projects: 22000,
   snapshots: 22000,
-  important: 24000,
   relations: 22000,
 };
 const BUSY_HEAVY_RESOURCE_REFRESH_MIN_INTERVAL_MS: Record<HeavyLiveResourceKey, number> = {
   groups: 12000,
   projects: 12000,
   snapshots: 12000,
-  important: 14000,
   relations: 12000,
 };
 const NAV_GROUPS: NavGroup[] = [
@@ -242,7 +236,6 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "observer", label: "Observador", icon: Eye },
       { id: "groups", label: "Grupos", icon: Users },
       { id: "memory", label: "Memória", icon: Database },
-      { id: "important", label: "Importantes", icon: Archive },
       { id: "relations", label: "Relações", icon: User },
     ],
   },
@@ -467,85 +460,6 @@ function formatHoursLabel(hours: number): string {
     return `${hours / 24}d`;
   }
   return `${hours}h`;
-}
-
-function formatImportantCategory(category: string): string {
-  switch (category) {
-    case "credential":
-      return "Credencial";
-    case "access":
-      return "Acesso";
-    case "project":
-      return "Projeto";
-    case "money":
-      return "Dinheiro";
-    case "client":
-      return "Cliente";
-    case "deadline":
-      return "Prazo";
-    case "document":
-      return "Documento";
-    case "risk":
-      return "Risco";
-    default:
-      return "Importante";
-  }
-}
-
-function normalizeImportantCategory(category: string): string {
-  return (category || "other").trim().toLowerCase();
-}
-
-function getImportantCategoryFamily(category: string): "access" | "operation" | "attention" | "other" {
-  switch (normalizeImportantCategory(category)) {
-    case "credential":
-    case "access":
-      return "access";
-    case "project":
-    case "client":
-    case "money":
-    case "document":
-      return "operation";
-    case "deadline":
-    case "risk":
-      return "attention";
-    default:
-      return "other";
-  }
-}
-
-function getImportantCategoryFamilyLabel(category: string): string {
-  switch (getImportantCategoryFamily(category)) {
-    case "access":
-      return "Acessos";
-    case "operation":
-      return "Operação";
-    case "attention":
-      return "Atenção";
-    default:
-      return "Diversos";
-  }
-}
-
-function getImportantConfidenceBand(confidence: number): "high" | "medium" | "low" {
-  if (confidence >= 85) {
-    return "high";
-  }
-  if (confidence >= 65) {
-    return "medium";
-  }
-  return "low";
-}
-
-function getImportantConfidenceLabel(confidence: number): string {
-  switch (getImportantConfidenceBand(confidence)) {
-    case "high":
-      return "Sinal forte";
-    case "medium":
-      return "Sinal médio";
-    default:
-      return "Pedir revisão";
-  }
 }
 
 function formatTokenCount(value: number): string {
@@ -896,7 +810,7 @@ function buildActivityTrace(args: {
       id: `trace-model-${latestModelRun.id}`,
       title: "Execucao do motor",
       detail: latestModelRun.success
-        ? "O processamento principal terminou e devolveu atualizacoes para memoria, projetos e cofre importante."
+        ? "O processamento principal terminou e devolveu atualizacoes para memoria e projetos."
         : latestModelRun.error_text || "A execucao mais recente falhou antes de consolidar a resposta final.",
       timestamp: latestModelRun.created_at,
       tone: latestModelRun.success ? "success" : "error",
@@ -1306,7 +1220,7 @@ function SegmentedControl({
 }
 
 // ── Smart context builder ──────────────────────────────────────────────────────
-// Scores important messages, projects, snapshots and memory by relevance to the
+// Scores projects, snapshots and memory by relevance to the
 // user's question. Picks the best items across all sources while keeping the
 // payload short and focused.
 // Does not include raw WhatsApp messages.
@@ -1348,7 +1262,6 @@ function scoreByKeywords(text: string, keywords: string[]): number {
 
 function buildSmartContextHint(
   userQuestion: string,
-  importantMsgs: ImportantMessage[],
   allProjects: ProjectMemory[],
   allSnapshots: MemorySnapshot[],
   currentMemory: MemoryCurrent | null,
@@ -1367,18 +1280,7 @@ function buildSmartContextHint(
     return true;
   };
 
-  // 1) Score important messages
-  const scoredMessages = importantMsgs.map((m) => ({
-    item: m,
-    score: scoreByKeywords(
-      `${m.category} ${m.contact_name} ${m.message_text} ${m.importance_reason}`,
-      keywords,
-    ),
-  }));
-  scoredMessages.sort((a, b) => b.score - a.score);
-  const relevantMessages = scoredMessages.filter((s) => s.score > 0).slice(0, 4);
-
-  // 2) Score projects
+  // 1) Score projects
   const scoredProjects = allProjects.map((p) => ({
     item: p,
     score: scoreByKeywords(
@@ -1389,7 +1291,7 @@ function buildSmartContextHint(
   scoredProjects.sort((a, b) => b.score - a.score);
   const relevantProjects = scoredProjects.filter((s) => s.score > 0).slice(0, 3);
 
-  // 3) Score snapshot learnings, relationships, routines
+  // 2) Score snapshot learnings, relationships, routines
   type ScoredInsight = { text: string; source: string; score: number };
   const scoredInsights: ScoredInsight[] = [];
   for (const snap of allSnapshots.slice(0, 5)) {
@@ -1406,19 +1308,12 @@ function buildSmartContextHint(
   scoredInsights.sort((a, b) => b.score - a.score);
   const relevantInsights = scoredInsights.filter((s) => s.score > 0).slice(0, 4);
 
-  // 4) Check if life summary is relevant
+  // 3) Check if life summary is relevant
   const memoryScore = currentMemory?.life_summary
     ? scoreByKeywords(currentMemory.life_summary, keywords)
     : 0;
 
   // Assemble — most relevant first
-  if (relevantMessages.length > 0) {
-    addPart("Mensagens importantes relacionadas ao pedido:");
-    for (const { item: m } of relevantMessages) {
-      if (!addPart(`- [${m.category}] ${m.contact_name || "?"}: ${truncateText(m.message_text, 100)}`)) break;
-    }
-  }
-
   if (relevantProjects.length > 0) {
     addPart("Projetos relevantes:");
     for (const { item: p } of relevantProjects) {
@@ -1469,7 +1364,6 @@ export function ConnectionDashboard({
   const [projects, setProjects] = useState<ProjectMemory[]>([]);
   const [relations, setRelations] = useState<PersonRelation[]>([]);
   const [snapshots, setSnapshots] = useState<MemorySnapshot[]>([]);
-  const [importantMessages, setImportantMessages] = useState<ImportantMessage[]>([]);
   const [chatThreads, setChatThreads] = useState<ChatThread[]>([]);
   const [activeChatThreadId, setActiveChatThreadId] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -1482,7 +1376,6 @@ export function ConnectionDashboard({
   const [agentMessagesError, setAgentMessagesError] = useState<string | null>(null);
   const [memoryError, setMemoryError] = useState<string | null>(null);
   const [memoryGroupsError, setMemoryGroupsError] = useState<string | null>(null);
-  const [importantMessagesError, setImportantMessagesError] = useState<string | null>(null);
   const [relationsError, setRelationsError] = useState<string | null>(null);
   const [agendaError, setAgendaError] = useState<string | null>(null);
   const [agendaActionError, setAgendaActionError] = useState<string | null>(null);
@@ -1554,7 +1447,6 @@ export function ConnectionDashboard({
     groups: 0,
     projects: 0,
     snapshots: 0,
-    important: 0,
     relations: 0,
   });
   const pollStatusRef = useRef<((announceTransition?: boolean) => Promise<void>) | null>(null);
@@ -1678,14 +1570,13 @@ export function ConnectionDashboard({
   }
 
   async function refreshMemoryArtifactsAfterJob(): Promise<void> {
-    const [memoryResult, projectsResult, relationsResult, memoryStatusResult, snapshotsResult, importantMessagesResult, memoryActivityResult, groupsResult] =
+    const [memoryResult, projectsResult, relationsResult, memoryStatusResult, snapshotsResult, memoryActivityResult, groupsResult] =
       await Promise.allSettled([
         getCurrentMemory(),
         getMemoryProjects(),
         getMemoryRelations(),
         getMemoryStatus(),
         getMemorySnapshots(6),
-        getImportantMessages(80),
         getMemoryActivity(),
         getMemoryGroups(),
       ]);
@@ -1709,10 +1600,6 @@ export function ConnectionDashboard({
       if (snapshotsResult.status === "fulfilled") {
         setSnapshots(snapshotsResult.value);
         markHeavyResourceRefreshed("snapshots");
-      }
-      if (importantMessagesResult.status === "fulfilled") {
-        setImportantMessages(importantMessagesResult.value);
-        markHeavyResourceRefreshed("important");
       }
       if (memoryActivityResult.status === "fulfilled") {
         setMemoryActivity(memoryActivityResult.value);
@@ -1743,21 +1630,19 @@ export function ConnectionDashboard({
 
       const shouldRefreshMemoryCore = previousSummary.memory_signature !== nextSummary.memory_signature;
       const shouldRefreshActivity = previousSummary.activity_signature !== nextSummary.activity_signature;
-      const shouldRefreshImportant = previousSummary.important_signature !== nextSummary.important_signature;
       const shouldRefreshProjects = previousSummary.projects_signature !== nextSummary.projects_signature;
       const shouldRefreshRelations = previousSummary.relations_signature !== nextSummary.relations_signature;
 
-      if (!shouldRefreshMemoryCore && !shouldRefreshActivity && !shouldRefreshImportant && !shouldRefreshProjects && !shouldRefreshRelations) {
+      if (!shouldRefreshMemoryCore && !shouldRefreshActivity && !shouldRefreshProjects && !shouldRefreshRelations) {
         return;
       }
 
-      const [memoryResult, memoryStatusResult, snapshotsResult, memoryActivityResult, importantMessagesResult, projectsResult, relationsResult] =
+      const [memoryResult, memoryStatusResult, snapshotsResult, memoryActivityResult, projectsResult, relationsResult] =
         await Promise.allSettled([
           shouldRefreshMemoryCore ? getCurrentMemory() : Promise.resolve(null),
           shouldRefreshMemoryCore ? getMemoryStatus() : Promise.resolve(null),
           shouldRefreshMemoryCore ? getMemorySnapshots(6) : Promise.resolve(null),
           shouldRefreshActivity ? getMemoryActivity() : Promise.resolve(null),
-          shouldRefreshImportant ? getImportantMessages(80) : Promise.resolve(null),
           shouldRefreshProjects ? getMemoryProjects() : Promise.resolve(null),
           shouldRefreshRelations ? getMemoryRelations() : Promise.resolve(null),
         ]);
@@ -1778,11 +1663,6 @@ export function ConnectionDashboard({
           setMemoryActivity(memoryActivityResult.value);
           setMemoryActivityError(null);
           syncQueuedJobFromAutomationSnapshot(memoryActivityResult.value);
-        }
-        if (importantMessagesResult.status === "fulfilled" && importantMessagesResult.value) {
-          setImportantMessages(importantMessagesResult.value);
-          setImportantMessagesError(null);
-          markHeavyResourceRefreshed("important");
         }
         if (projectsResult.status === "fulfilled" && projectsResult.value) {
           setProjects(projectsResult.value);
@@ -2203,10 +2083,6 @@ export function ConnectionDashboard({
       resolvedActiveTab === "manual" ||
       (resolvedActiveTab === "overview" && analysisIsBusy)
     ) && shouldRefreshHeavyResource("snapshots", analysisIsBusy);
-    const shouldRefreshImportantMessages = (
-      resolvedActiveTab === "manual" ||
-      resolvedActiveTab === "important"
-    ) && shouldRefreshHeavyResource("important", analysisIsBusy);
     const shouldRefreshAutomation = !isTickingAutomation && (
       resolvedActiveTab === "manual" ||
       resolvedActiveTab === "memory" ||
@@ -2228,7 +2104,6 @@ export function ConnectionDashboard({
         relationsResult,
         memoryStatusResult,
         snapshotsResult,
-        importantMessagesResult,
         automationResult,
       ] = await Promise.allSettled([
         shouldRefreshAgentWorkspace ? getAgentWorkspace(activeAgentThreadId ?? undefined) : Promise.resolve(null),
@@ -2240,7 +2115,6 @@ export function ConnectionDashboard({
         shouldRefreshRelations ? getMemoryRelations() : Promise.resolve(null),
         shouldRefreshMemoryStatus ? getMemoryStatus() : Promise.resolve(null),
         shouldRefreshSnapshots ? getMemorySnapshots(resolvedActiveTab === "overview" ? 1 : 6) : Promise.resolve(null),
-        shouldRefreshImportantMessages ? getImportantMessages(80) : Promise.resolve(null),
         shouldRefreshAutomation ? getAutomationStatus() : Promise.resolve(null),
       ]);
 
@@ -2323,17 +2197,6 @@ export function ConnectionDashboard({
           setSnapshots(nextSnapshots);
         });
         markHeavyResourceRefreshed("snapshots");
-      }
-
-      if (importantMessagesResult.status === "fulfilled" && importantMessagesResult.value) {
-        const nextImportantMessages = importantMessagesResult.value;
-        startTransition(() => {
-          setImportantMessages(nextImportantMessages);
-          setImportantMessagesError(null);
-        });
-        markHeavyResourceRefreshed("important");
-      } else if (importantMessagesResult.status === "rejected" && shouldRefreshImportantMessages) {
-        setImportantMessagesError(getErrorMessage(importantMessagesResult.reason));
       }
 
       if (automationResult.status === "fulfilled" && automationResult.value) {
@@ -2560,7 +2423,6 @@ export function ConnectionDashboard({
     const shouldLoadRelations = activeTab === "relations" || activeTab === "manual";
     const shouldLoadAgenda = activeTab === "agenda";
     const shouldLoadSnapshots = activeTab === "overview" || activeTab === "memory" || activeTab === "manual";
-    const shouldLoadImportantMessages = activeTab === "important" || activeTab === "manual";
     const shouldLoadAutomation = resolvedActiveTab === "memory" || resolvedActiveTab === "automation" || resolvedActiveTab === "manual" || queuedJobId !== null;
 
     const [
@@ -2575,7 +2437,6 @@ export function ConnectionDashboard({
       relationsResult,
       memoryStatusResult,
       snapshotsResult,
-      importantMessagesResult,
       automationResult,
     ] = await Promise.allSettled([
       getObserverStatus(false),
@@ -2589,7 +2450,6 @@ export function ConnectionDashboard({
       shouldLoadRelations ? getMemoryRelations() : Promise.resolve(null),
       getMemoryStatus(),
       shouldLoadSnapshots ? getMemorySnapshots(activeTab === "overview" ? 1 : 6) : Promise.resolve([]),
-      shouldLoadImportantMessages ? getImportantMessages(80) : Promise.resolve([]),
       shouldLoadAutomation ? getAutomationStatus() : Promise.resolve(null),
     ]);
 
@@ -2670,14 +2530,6 @@ export function ConnectionDashboard({
     if (snapshotsResult.status === "fulfilled" && snapshotsResult.value) {
       setSnapshots(snapshotsResult.value);
       markHeavyResourceRefreshed("snapshots");
-    }
-
-    if (importantMessagesResult.status === "fulfilled" && importantMessagesResult.value) {
-      setImportantMessages(importantMessagesResult.value);
-      setImportantMessagesError(null);
-      markHeavyResourceRefreshed("important");
-    } else if (importantMessagesResult.status === "rejected") {
-      setImportantMessagesError(getErrorMessage(importantMessagesResult.reason));
     }
 
     if (automationResult.status === "fulfilled" && automationResult.value) {
@@ -3138,7 +2990,7 @@ export function ConnectionDashboard({
     setChatDraft("");
 
     // ── Smart context builder: scores all knowledge sources by relevance to the user's question ──
-    const contextHint = buildSmartContextHint(normalized, importantMessages, projects, snapshots, memory);
+    const contextHint = buildSmartContextHint(normalized, projects, snapshots, memory);
 
     // Optimistically add user message to the list
     const tempUserMsg: ChatMessage = {
@@ -3411,14 +3263,6 @@ export function ConnectionDashboard({
                 />
               ) : null}
 
-              {resolvedActiveTab === "important" ? (
-                <ImportantMessagesTab
-                  messages={importantMessages}
-                  error={importantMessagesError}
-                  onRefresh={() => void hydrateDashboard("manual")}
-                />
-              ) : null}
-
               {resolvedActiveTab === "relations" ? (
                 <RelationsTab
                   relations={relations}
@@ -3497,7 +3341,6 @@ export function ConnectionDashboard({
                   memory={memory}
                   projects={projects}
                   snapshots={snapshots}
-                  importantMessages={importantMessages}
                   chatThreads={chatThreads}
                   chatMessages={chatMessages}
                   automationStatus={automationStatus}
@@ -6914,388 +6757,6 @@ function ProjectsTab({
   );
 }
 
-function ImportantMessagesTab({
-  messages,
-  error,
-  onRefresh,
-}: {
-  messages: ImportantMessage[];
-  error: string | null;
-  onRefresh: () => void;
-}) {
-  const [importantSubTab, setImportantSubTab] = useState<"overview" | "access" | "operation" | "attention">("overview");
-  const [search, setSearch] = useState("");
-  const deferredSearch = useDeferredValue(search);
-  const normalizedSearch = deferredSearch.trim().toLowerCase();
-  const credentialCount = messages.filter((message) => getImportantCategoryFamily(message.category) === "access").length;
-  const operationCount = messages.filter((message) => getImportantCategoryFamily(message.category) === "operation").length;
-  const attentionCount = messages.filter((message) => getImportantCategoryFamily(message.category) === "attention").length;
-  const strongSignalsCount = messages.filter((message) => getImportantConfidenceBand(message.confidence) === "high").length;
-  const needsReviewCount = messages.filter((message) => !message.last_reviewed_at || message.confidence < 65).length;
-  const lastReviewedAt = messages
-    .map((message) => message.last_reviewed_at)
-    .filter((value): value is string => Boolean(value))
-    .sort((left, right) => new Date(right).getTime() - new Date(left).getTime())[0] ?? null;
-  const importantSubTabs = [
-    { id: "overview" as const, label: "Painel", count: messages.length, icon: Archive },
-    { id: "access" as const, label: "Acessos", count: credentialCount, icon: LockKeyhole },
-    { id: "operation" as const, label: "Operação", count: operationCount, icon: FolderGit2 },
-    { id: "attention" as const, label: "Atenção", count: attentionCount, icon: AlertCircle },
-  ];
-  const filteredMessages = useMemo(
-    () =>
-      messages.filter((message) => {
-        const family = getImportantCategoryFamily(message.category);
-        const matchesTab =
-          importantSubTab === "overview"
-            ? true
-            : importantSubTab === "access"
-              ? family === "access"
-              : importantSubTab === "operation"
-                ? family === "operation"
-                : family === "attention";
-        if (!matchesTab) {
-          return false;
-        }
-        if (!normalizedSearch) {
-          return true;
-        }
-        const haystack = [
-          message.contact_name,
-          message.contact_phone ?? "",
-          message.message_text,
-          message.importance_reason,
-          formatImportantCategory(message.category),
-          getImportantCategoryFamilyLabel(message.category),
-          message.review_notes ?? "",
-        ].join(" ").toLowerCase();
-        return haystack.includes(normalizedSearch);
-      }),
-    [importantSubTab, messages, normalizedSearch],
-  );
-  const groupedMessages = useMemo(() => {
-    const groups = new Map<string, ImportantMessage[]>();
-    for (const message of filteredMessages) {
-      const key = formatImportantCategory(message.category);
-      const current = groups.get(key) ?? [];
-      current.push(message);
-      groups.set(key, current);
-    }
-    return Array.from(groups.entries()).sort((left, right) => right[1].length - left[1].length);
-  }, [filteredMessages]);
-  const latestMessages = useMemo(
-    () => [...messages].sort((left, right) => new Date(right.saved_at).getTime() - new Date(left.saved_at).getTime()).slice(0, 3),
-    [messages],
-  );
-  const strongestMessages = useMemo(
-    () => [...messages].sort((left, right) => right.confidence - left.confidence).slice(0, 3),
-    [messages],
-  );
-  const reviewQueue = useMemo(
-    () =>
-      [...messages]
-        .filter((message) => !message.last_reviewed_at || getImportantConfidenceBand(message.confidence) === "low")
-        .sort((left, right) => new Date(right.saved_at).getTime() - new Date(left.saved_at).getTime())
-        .slice(0, 4),
-    [messages],
-  );
-
-  return (
-    <div className="page-stack">
-      <Card className="important-shell-card">
-        <div className="important-shell-head">
-          <div>
-            <div className="hero-kicker">
-              <Archive size={14} />
-              Cofre operacional
-            </div>
-            <h3>As mensagens importantes agora ficam separadas por frente de uso.</h3>
-            <p className="support-copy">
-              O painel abaixo divide o cofre entre acessos, operação e atenção crítica. Assim fica mais fácil localizar o que é sensível, o que sustenta trabalho e o que exige revisão rápida.
-            </p>
-          </div>
-          <div className="important-shell-actions">
-            <label className="relation-search-shell important-search-shell">
-              <Search size={16} />
-              <input
-                className="ac-input relation-search-input"
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="Buscar por contato, conteúdo, motivo ou categoria..."
-                type="text"
-                value={search}
-              />
-            </label>
-            <button className="ac-secondary-button" onClick={onRefresh} type="button">
-              <RefreshCw size={14} />
-              Atualizar
-            </button>
-          </div>
-        </div>
-
-        <div className="important-shell-tabs">
-          {importantSubTabs.map((tab) => {
-            const Icon = tab.icon;
-            return (
-              <button
-                key={tab.id}
-                className={`activity-subtab${importantSubTab === tab.id ? " activity-subtab-active" : ""}`}
-                onClick={() => setImportantSubTab(tab.id)}
-                type="button"
-              >
-                <Icon size={14} />
-                {tab.label}
-                <strong>{tab.count}</strong>
-              </button>
-            );
-          })}
-        </div>
-
-        <div className="important-top-grid">
-          <ModernStatCard
-            label="Ativas Agora"
-            value={String(messages.length)}
-            meta="Itens ainda úteis para memória futura"
-            icon={Archive}
-            tone="emerald"
-          />
-          <ModernStatCard
-            label="Acessos"
-            value={String(credentialCount)}
-            meta="Logins, senhas e dados de acesso"
-            icon={LockKeyhole}
-            tone="amber"
-          />
-          <ModernStatCard
-            label="Operação"
-            value={String(operationCount)}
-            meta="Projeto, cliente, documento e dinheiro"
-            icon={FolderGit2}
-            tone="indigo"
-          />
-          <ModernStatCard
-            label="Fila de Revisão"
-            value={String(needsReviewCount)}
-            meta={lastReviewedAt ? `Última revisão ${formatRelativeTime(lastReviewedAt)}` : "Ainda sem revisão diária"}
-            icon={AlertCircle}
-            tone="zinc"
-          />
-        </div>
-      </Card>
-
-      {messages.length === 0 ? (
-        <Card>
-          <div className="empty-hint">
-            <Archive size={18} />
-            <p>Nenhuma mensagem importante ativa ainda. Assim que a primeira análise ou o próximo lote concluir, o cofre começa a ser preenchido.</p>
-          </div>
-        </Card>
-      ) : importantSubTab === "overview" ? (
-        <>
-          <div className="important-overview-grid">
-            <Card className="important-overview-card">
-              <SectionTitle title="Sinal Forte" icon={BarChart3} />
-              <p className="support-copy">
-                Os itens abaixo tendem a ser os melhores candidatos para reuso futuro em contexto, operação e decisão.
-              </p>
-              <div className="important-list">
-                {strongestMessages.map((message) => (
-                  <CompactImportantCard key={message.id} message={message} type="signal" />
-                ))}
-              </div>
-            </Card>
-
-            <Card className="important-overview-card">
-              <SectionTitle title="Revisar Primeiro" icon={Clock} />
-              <p className="support-copy">
-                Entram aqui mensagens ainda sem revisão automática ou com confiança mais baixa.
-              </p>
-              <div className="important-list">
-                {reviewQueue.length > 0 ? reviewQueue.map((message) => (
-                  <CompactImportantCard key={message.id} message={message} type="review" />
-                )) : (
-                  <div className="empty-hint">
-                    <CheckCircle2 size={18} />
-                    <p>Nenhum item fraco na fila agora.</p>
-                  </div>
-                )}
-              </div>
-            </Card>
-          </div>
-
-          <Card>
-            <SectionTitle title="Entradas Mais Recentes" icon={Sparkles} />
-            <div className="important-list">
-              {latestMessages.map((message) => (
-                <CompactImportantCard key={message.id} message={message} type="signal" />
-              ))}
-            </div>
-          </Card>
-        </>
-      ) : (
-        groupedMessages.length > 0 ? (
-          groupedMessages.map(([groupLabel, groupMessages]) => (
-            <Card key={groupLabel}>
-              <SectionTitle title={`${groupLabel} (${groupMessages.length})`} icon={Archive} />
-              <div className="important-list">
-                {groupMessages.map((message) => (
-                  <CompactImportantCard key={message.id} message={message} type="signal" />
-                ))}
-              </div>
-            </Card>
-          ))
-        ) : (
-          <Card>
-            <div className="empty-hint">
-              <Search size={18} />
-              <p>Nenhuma mensagem bateu com a busca atual nessa subaba.</p>
-            </div>
-          </Card>
-        )
-      )}
-
-      {error ? <InlineError title="Falha nas mensagens importantes" message={error} /> : null}
-      {messages.length > 0 ? (
-        <Card>
-          <SectionTitle title="Sinal Forte" icon={BarChart3} />
-          <p className="support-copy">
-            Há {strongSignalsCount} item(ns) com confiança acima de 80. Eles costumam ser os melhores candidatos para
-            reaproveitamento futuro em rotinas, projetos, acessos e dinheiro.
-          </p>
-        </Card>
-      ) : null}
-    </div>
-  );
-}
-
-function ImportantMessageCard({ message }: { message: ImportantMessage }) {
-  const [isExpanded, setIsExpanded] = useState(false);
-
-  return (
-    <Card
-      className={`important-card-collapsible ${isExpanded ? "important-card-expanded" : ""}`}
-      onClick={() => setIsExpanded(!isExpanded)}
-    >
-      <div className="important-card-head">
-        <div className="important-card-main-info">
-          <div className="important-badges">
-            <span className={`important-category-pill important-category-${message.category}`}>
-              {formatImportantCategory(message.category)}
-            </span>
-            <span className="micro-badge">{getImportantCategoryFamilyLabel(message.category)}</span>
-            <span className="micro-badge">{message.confidence}/100</span>
-          </div>
-          <h3>{message.contact_name || message.contact_phone || "Contato"}</h3>
-          {!isExpanded && (
-            <p className="important-message-preview">
-              {truncateText(message.message_text, 120)}
-            </p>
-          )}
-        </div>
-        <div className="important-card-right">
-          <div className="important-card-meta">
-            <div className="important-date-group">
-              <span>{formatRelativeTime(message.saved_at)}</span>
-            </div>
-            <div className={`expand-icon-wrap ${isExpanded ? "expand-icon-active" : ""}`}>
-              <ChevronDown size={18} />
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {isExpanded && (
-        <div className="important-card-expanded-content">
-          <div className="important-expanded-body">
-            <div className="important-expanded-section">
-              <div className="important-body-label">
-                <MessageSquare size={14} />
-                Conteúdo Original
-              </div>
-              <p className="important-message-text">{message.message_text}</p>
-            </div>
-
-            <div className="important-review-stack">
-              <MiniPanel
-                title="Por Que Foi Salva"
-                tone="emerald"
-                icon={Sparkles}
-                content={message.importance_reason}
-              />
-              <MiniPanel
-                title="Estado da Revisão"
-                tone={getImportantConfidenceBand(message.confidence) === "low" ? "amber" : "emerald"}
-                icon={Clock}
-                content={
-                  message.last_reviewed_at
-                    ? `Revisada em ${formatShortDateTime(message.last_reviewed_at)}. ${message.review_notes ?? "Mantida no cofre ativo."}`
-                    : "Ainda aguardando a primeira revisão diária automática."
-                }
-              />
-            </div>
-          </div>
-          <div className="important-card-timestamp-footer">
-            <Clock size={12} />
-            <span>Mensagem de {formatShortDateTime(message.message_timestamp)}</span>
-          </div>
-        </div>
-      )}
-    </Card>
-  );
-}
-
-function CompactImportantCard({ message, type }: { message: ImportantMessage, type?: "signal" | "review" }) {
-  const [isExpanded, setIsExpanded] = useState(false);
-
-  return (
-    <Card
-      className={`important-card-collapsible important-compact-card ${isExpanded ? "important-card-expanded" : ""}`}
-      onClick={() => setIsExpanded(!isExpanded)}
-    >
-      <div className="important-compact-head">
-        <div className="important-compact-main">
-          <span>{type === "review" ? getImportantConfidenceLabel(message.confidence) : formatImportantCategory(message.category)}</span>
-          <strong>{message.contact_name || message.contact_phone || "Contato"}</strong>
-          {!isExpanded && <p>{truncateText(type === "review" ? message.message_text : message.importance_reason, 90)}</p>}
-        </div>
-        <div className="important-compact-right">
-          <div className="important-compact-meta">
-            {type === "review" ? formatImportantCategory(message.category) : `${message.confidence}/100`}
-          </div>
-          <div className="important-compact-date">{formatRelativeTime(message.saved_at)}</div>
-          <div className={`expand-icon-wrap ${isExpanded ? "expand-icon-active" : ""}`} style={{ width: 24, height: 24 }}>
-            <ChevronDown size={14} />
-          </div>
-        </div>
-      </div>
-
-      {isExpanded && (
-        <div className="important-compact-expanded-body">
-          <div className="important-expanded-section">
-            <div className="important-body-label">
-              <MessageSquare size={12} />
-              Conteúdo Original
-            </div>
-            <p className="important-message-text">{message.message_text}</p>
-          </div>
-          <div className="important-expanded-section">
-            <div className="important-body-label">
-              <Sparkles size={12} />
-              Raciocínio da IA
-            </div>
-            <p className="support-copy" style={{ fontSize: "0.85rem", margin: 0 }}>
-              {message.importance_reason}
-            </p>
-          </div>
-          <div className="important-card-timestamp-footer">
-            <Clock size={10} />
-            <span>Mensagem de {formatShortDateTime(message.message_timestamp)}</span>
-          </div>
-        </div>
-      )}
-    </Card>
-  );
-}
-
 function ChatTab({
   chatThreads,
   activeChatThread,
@@ -8122,7 +7583,6 @@ function ManualTab({
   memory,
   projects,
   snapshots,
-  importantMessages,
   chatThreads,
   chatMessages,
   automationStatus,
@@ -8131,7 +7591,6 @@ function ManualTab({
   memory: MemoryCurrent | null;
   projects: ProjectMemory[];
   snapshots: MemorySnapshot[];
-  importantMessages: ImportantMessage[];
   chatThreads: ChatThread[];
   chatMessages: ChatMessage[];
   automationStatus: AutomationStatus | null;
@@ -8140,7 +7599,6 @@ function ManualTab({
   const latestSnapshot = snapshots[0] ?? null;
   const memoryReady = Boolean(memory?.last_analyzed_at);
   const projectCount = projects.length;
-  const importantCount = importantMessages.length;
   const threadCount = chatThreads.length;
   const manualTabs = [
     "Visao Geral",
@@ -8161,7 +7619,7 @@ function ManualTab({
           <h3>O AuraCore e um operador de contexto pessoal em cima do WhatsApp.</h3>
           <p>
             Ele conecta o observador, filtra conversas uteis, consolida memoria do dono, salva memoria por
-            pessoa, identifica mensagens importantes, organiza projetos e ainda oferece um chat pessoal que responde usando
+            pessoa, organiza projetos e ainda oferece um chat pessoal que responde usando
             esse contexto inteiro. Grupos so entram depois da base inicial e apenas quando voce ativa na aba Grupos.
           </p>
         </div>
@@ -8182,7 +7640,7 @@ function ManualTab({
           />
           <ModernStatCard
             label="Memorias por pessoa"
-            value={String(projectCount > 0 || importantCount > 0 || snapshots.length > 0 ? "Ativas" : "Vazias")}
+            value={String(projectCount > 0 || snapshots.length > 0 ? "Ativas" : "Vazias")}
             meta="Atualizadas progressivamente por contato"
             icon={User}
             tone="amber"
@@ -8220,8 +7678,8 @@ function ManualTab({
             <SectionTitle title="Como Ler Este Produto" icon={Brain} />
             <div className="manual-grid">
               <div className="manual-list">
-                <p>O site e dividido em duas camadas. A primeira e operacional: conectar o WhatsApp, ler mensagens, acompanhar a fila e ver os jobs. A segunda e cognitiva: consolidar memoria, mapear projetos, salvar sinais importantes e conversar com contexto.</p>
-                <p>O Observador cuida da entrada. A Memoria cuida da consolidacao. Importantes e Projetos guardam o que merece sobreviver. O Chat usa tudo isso para responder. Atividade mostra o que o backend fez ou esta fazendo.</p>
+                <p>O site e dividido em duas camadas. A primeira e operacional: conectar o WhatsApp, ler mensagens, acompanhar a fila e ver os jobs. A segunda e cognitiva: consolidar memoria, mapear projetos e conversar com contexto.</p>
+                <p>O Observador cuida da entrada. A Memoria cuida da consolidacao. Projetos guardam o que merece sobreviver. O Chat usa tudo isso para responder. Atividade mostra o que o backend fez ou esta fazendo.</p>
               </div>
               <div className="manual-list">
                 <p>Para o usuario final, a ideia e simples: conectar, fazer a primeira analise, puxar mensagens novas quando quiser e rodar a analise manual para manter o contexto vivo.</p>
@@ -8237,7 +7695,6 @@ function ManualTab({
               <ManualInfoCard title="Observador" text="Ponto de entrada do WhatsApp. Mostra QR, estado da instancia, sessao e a saude da captura." icon={Eye} tone="emerald" />
               <ManualInfoCard title="Grupos" text="Lista os grupos vistos no historico sincronizado. Todos nascem desativados e so entram na memoria incremental quando voce ativa." icon={Users} tone="amber" />
               <ManualInfoCard title="Memoria" text="Aqui nasce e evolui a memoria central. Primeira analise, lotes economicos de mensagens novas, estado da fila e resumo do dono." icon={Database} tone="indigo" />
-              <ManualInfoCard title="Importantes" text="Cofre de fatos duraveis: acessos, valores, clientes, prazos, riscos e sinais operacionais reaproveitaveis." icon={Archive} tone="amber" />
               <ManualInfoCard title="Projetos" text="Organiza frentes reais detectadas nas conversas, com resumo, status, evidencias e proximos passos." icon={FolderGit2} tone="emerald" />
               <ManualInfoCard title="Chat Pessoal" text="Thread por assunto usando a memoria central. Bom para separar estrategia, rotina, vendas, produto e operacao." icon={MessageSquare} tone="indigo" />
               <ManualInfoCard title="Atividade" text="Mostra o pipeline trabalhando: logs, lotes, trilha de execucao e o melhor raciocinio operacional salvo." icon={Activity} tone="emerald" />
@@ -8257,8 +7714,8 @@ function ManualTab({
               <ManualStep title="3. Criar a memoria base" text="A primeira analise e manual e usa uma selecao balanceada das mensagens diretas mais relevantes e recentes." icon={Database} tone="amber" />
               <ManualStep title="4. Atualizar por contato" text="Durante as analises, o sistema tenta entender com quem e cada conversa e atualiza memorias separadas por pessoa." icon={User} tone="indigo" />
               <ManualStep title="5. Processar em lotes" text="Depois da base inicial, o backend passa a trabalhar em lotes economicos de mensagens novas." icon={RefreshCw} tone="emerald" />
-              <ManualStep title="6. Salvar o que dura" text="O processamento atualiza resumo do dono, snapshots, projetos, e itens duraveis." icon={Archive} tone="amber" />
-              <ManualStep title="7. Reutilizar no chat" text="O chat pessoal consome a memoria consolidada, projetos, contexto da thread e sinais importantes." icon={MessageSquare} tone="indigo" />
+              <ManualStep title="6. Salvar o que dura" text="O processamento atualiza resumo do dono, snapshots e projetos." icon={FolderGit2} tone="amber" />
+              <ManualStep title="7. Reutilizar no chat" text="O chat pessoal consome a memoria consolidada, projetos e contexto da thread." icon={MessageSquare} tone="indigo" />
             </div>
           </Card>
 
@@ -8267,7 +7724,7 @@ function ManualTab({
             <div className="manual-grid">
               <ManualInfoCard title="Puxar Novas Mensagens" text="Forca uma releitura das conversas recentes e atualiza a fila operacional no banco." icon={RefreshCw} tone="indigo" />
               <ManualInfoCard title="Primeira Analise" text="Cria a base inicial da memoria quando o sistema ainda nao conhece bem o dono." icon={Play} tone="emerald" />
-              <ManualInfoCard title="Executar Analise" text="Usa as mensagens pendentes mais a memoria ja salva para atualizar resumo, importantes e projetos de forma incremental." icon={Sparkles} tone="indigo" />
+              <ManualInfoCard title="Executar Analise" text="Usa as mensagens pendentes mais a memoria ja salva para atualizar resumo e projetos de forma incremental." icon={Sparkles} tone="indigo" />
               <ManualInfoCard title="Nova Conversa" text="Abre uma thread nova no chat sem perder a memoria central nem o restante do historico salvo." icon={Plus} tone="amber" />
               <ManualInfoCard title="Rodar Tick" text="Executa o ciclo da automacao manualmente: fecha syncs, registra decisoes e tenta processar a fila." icon={Zap} tone="emerald" />
             </div>
@@ -8308,7 +7765,6 @@ function ManualTab({
               <ManualInfoCard title="persona & snapshots" text="Resumo principal do dono e historico consolidado." icon={Fingerprint} tone="emerald" />
               <ManualInfoCard title="person_memories" text="Memoria separada por contato ou participante progressivamente." icon={User} tone="amber" />
               <ManualInfoCard title="project_memories" text="Projetos, frentes, entregas com base nas conversas." icon={FolderGit2} tone="indigo" />
-              <ManualInfoCard title="important_messages" text="Cofre de itens duraveis como acessos, valores." icon={Archive} tone="amber" />
               <ManualInfoCard title="chat_threads" text="Threads do chat pessoal para separar contextos." icon={MessageSquare} tone="zinc" />
               <ManualInfoCard title="Logs do motor" text="Auditoria operacional sincronizada, processada e executada." icon={Activity} tone="emerald" />
               <ManualInfoCard title="wa_sessions" text="Estado de sessao e chaves locais." icon={Eye} tone="zinc" />
@@ -8354,16 +7810,6 @@ function ManualTab({
                 }
                 icon={latestSnapshot ? Fingerprint : Brain}
                 tone={latestSnapshot ? "emerald" : "zinc"}
-              />
-              <ManualInfoCard
-                title="Mensagens Importantes"
-                text={
-                  importantCount > 0
-                    ? `${importantCount} item(ns) ativos no cofre, atualizados pelas execucoes manuais de analise.`
-                    : "Nenhuma mensagem importante ativa ainda."
-                }
-                icon={Archive}
-                tone={importantCount > 0 ? "amber" : "zinc"}
               />
               <ManualInfoCard
                 title="Projetos e Threads"

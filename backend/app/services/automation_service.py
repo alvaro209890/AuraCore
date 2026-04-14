@@ -6,7 +6,6 @@ from datetime import UTC, datetime, timedelta
 import logging
 from time import perf_counter
 from typing import Literal
-from zoneinfo import ZoneInfo
 
 from app.config import Settings
 from app.services.memory_service import (
@@ -75,7 +74,6 @@ class AutomationService:
         self.settings = settings
         self.store = store
         self.memory_service = memory_service
-        self._important_messages_timezone = ZoneInfo("America/Sao_Paulo")
         self._tick_lock = asyncio.Lock()
         self._scheduled_tick_task: asyncio.Task[AnalysisJobRecord | None] | None = None
         self._scheduled_settle_task: asyncio.Task[None] | None = None
@@ -612,7 +610,6 @@ class AutomationService:
     async def tick(self) -> AnalysisJobRecord | None:
         async with self._tick_lock:
             self._recover_stale_pending_jobs()
-            await self._maybe_review_important_messages()
             finalized_runs = await self.settle_sync_runs()
             if not finalized_runs:
                 await self._maybe_schedule_analysis_from_live_backlog()
@@ -778,7 +775,6 @@ class AutomationService:
             finished_at=datetime.now(UTC),
         )
         self.store.save_analysis_job_messages(job_id=job.id, message_ids=outcome.source_message_ids)
-        important_saved_count = outcome.important_messages_saved_count
         if outcome.source_message_ids:
             processed_at = datetime.now(UTC)
             marked_count = self.store.mark_messages_processed(
@@ -790,11 +786,10 @@ class AutomationService:
                 self.store.delete_messages_by_ids(message_ids=outcome.source_message_ids)
         self._finalize_observer_cutoff_if_needed(job)
         logger.info(
-            "analysis_job_done job_id=%s intent=%s selected=%s important_saved=%s",
+            "analysis_job_done job_id=%s intent=%s selected=%s",
             job.id,
             job.intent,
             len(outcome.source_message_ids),
-            important_saved_count,
         )
         self.store.create_model_run(
             user_id=self.settings.default_user_id,
@@ -858,7 +853,6 @@ class AutomationService:
             finished_at=datetime.now(UTC),
         )
         self.store.save_analysis_job_messages(job_id=job.id, message_ids=outcome.source_message_ids)
-        important_saved_count = outcome.important_messages_saved_count
         if outcome.source_message_ids:
             processed_at = datetime.now(UTC)
             marked_count = self.store.mark_messages_processed(
@@ -870,11 +864,10 @@ class AutomationService:
                 self.store.delete_messages_by_ids(message_ids=outcome.source_message_ids)
         self._finalize_observer_cutoff_if_needed(job)
         logger.info(
-            "fixed_analysis_job_done job_id=%s intent=%s selected=%s important_saved=%s",
+            "fixed_analysis_job_done job_id=%s intent=%s selected=%s",
             job.id,
             job.intent,
             len(outcome.source_message_ids),
-            important_saved_count,
         )
         self.store.create_model_run(
             user_id=self.settings.default_user_id,
@@ -952,53 +945,3 @@ class AutomationService:
                 status.first_analysis_limit,
             )
             await self.evaluate_and_schedule(trigger_source="automation")
-
-    async def _maybe_review_important_messages(self) -> None:
-        local_now = datetime.now(self._important_messages_timezone)
-        review_cutoff_local = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
-        review_cutoff = review_cutoff_local.astimezone(UTC)
-
-        start_clock = perf_counter()
-        try:
-            outcome = await self.memory_service.review_important_messages(
-                reviewed_before=review_cutoff,
-                limit=120,
-            )
-        except Exception as error:
-            latency_ms = round((perf_counter() - start_clock) * 1000)
-            self.store.create_model_run(
-                user_id=self.settings.default_user_id,
-                job_id=None,
-                provider="deepseek",
-                model_name=self.settings.deepseek_model,
-                run_type="important_message_review",
-                success=False,
-                latency_ms=latency_ms,
-                input_tokens=None,
-                output_tokens=None,
-                reasoning_tokens=None,
-                estimated_cost_usd=None,
-                error_text=str(error),
-                created_at=datetime.now(UTC),
-            )
-            return
-
-        if outcome.reviewed_count == 0:
-            return
-
-        latency_ms = round((perf_counter() - start_clock) * 1000)
-        self.store.create_model_run(
-            user_id=self.settings.default_user_id,
-            job_id=None,
-            provider="deepseek",
-            model_name=self.settings.deepseek_model,
-            run_type="important_message_review",
-            success=True,
-            latency_ms=latency_ms,
-            input_tokens=None,
-            output_tokens=None,
-            reasoning_tokens=None,
-            estimated_cost_usd=None,
-            error_text=None,
-            created_at=outcome.reviewed_at or datetime.now(UTC),
-        )

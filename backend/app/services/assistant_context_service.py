@@ -10,7 +10,6 @@ from typing import Literal, Sequence
 from app.config import Settings
 from app.services.deepseek_service import DeepSeekAssistantSearchPlan, DeepSeekService
 from app.services.supabase_store import (
-    ImportantMessageRecord,
     MemorySnapshotRecord,
     PersonMemoryRecord,
     PersonaRecord,
@@ -137,11 +136,10 @@ class AssistantContextService:
             )
 
         logger.info(
-            "assistant_context_resolved channel=%s interaction_mode=%s people=%s important=%s projects=%s snapshots=%s include_open_questions=%s include_contact_memory=%s requires_confirmation=%s",
+            "assistant_context_resolved channel=%s interaction_mode=%s people=%s projects=%s snapshots=%s include_open_questions=%s include_contact_memory=%s requires_confirmation=%s",
             channel,
             interaction_mode,
             len(plan.people_queries),
-            len(plan.important_message_queries),
             len(plan.project_queries),
             len(plan.snapshot_queries),
             plan.should_include_open_questions,
@@ -224,11 +222,9 @@ class AssistantContextService:
         return DeepSeekAssistantSearchPlan(
             needs_retrieval=False,
             people_queries=[],
-            important_message_queries=[],
             project_queries=[],
             snapshot_queries=[],
             people_limit=0,
-            important_messages_limit=0,
             projects_limit=0,
             snapshots_limit=0,
             should_include_open_questions=False,
@@ -261,14 +257,6 @@ class AssistantContextService:
             ranked_projects = self._rank_projects(projects, queries=plan.project_queries, limit=plan.projects_limit)
             if ranked_projects:
                 sections.append("Projetos relevantes:\n" + self._format_search_projects(ranked_projects))
-
-        if plan.important_message_queries and plan.important_messages_limit > 0:
-            ranked_messages = self._rank_important_messages(
-                queries=plan.important_message_queries,
-                limit=plan.important_messages_limit,
-            )
-            if ranked_messages:
-                sections.append("Mensagens importantes relevantes:\n" + self._format_search_vault(ranked_messages))
 
         if plan.snapshot_queries and plan.snapshots_limit > 0:
             ranked_snapshots = self._rank_snapshots(
@@ -328,27 +316,6 @@ class AssistantContextService:
         )
         return [snapshot for snapshot in ranked[: max(1, limit)] if self._score_snapshot(snapshot, queries=queries) > 0]
 
-    def _rank_important_messages(
-        self,
-        *,
-        queries: Sequence[str],
-        limit: int,
-    ) -> list[ImportantMessageRecord]:
-        candidates = self.store.search_important_messages(
-            self.settings.default_user_id,
-            list(queries),
-            limit=max(10, limit * 4),
-        )
-        if not candidates:
-            candidates = self.store.list_important_messages(self.settings.default_user_id, limit=max(12, limit * 3))
-
-        ranked = sorted(
-            candidates,
-            key=lambda message: self._score_important_message(message, queries=queries),
-            reverse=True,
-        )
-        return [message for message in ranked[: max(1, limit)] if self._score_important_message(message, queries=queries) > 0]
-
     def _score_person(self, person: PersonMemoryRecord, *, queries: Sequence[str]) -> float:
         haystack = " ".join(
             [
@@ -396,14 +363,6 @@ class AssistantContextService:
         score += self._recency_score(snapshot.created_at, half_life_days=45)
         return score
 
-    def _score_important_message(self, message: ImportantMessageRecord, *, queries: Sequence[str]) -> float:
-        haystack = " ".join([message.contact_name, message.message_text, message.importance_reason, message.category])
-        relevance = self._score_text_block(haystack, queries)
-        recency = self._recency_score(message.message_timestamp, half_life_days=120)
-        durability = self._durability_score(message)
-        confidence = max(0.0, min(1.0, float(message.confidence) / 100.0)) * 2.5
-        return relevance + recency + durability + confidence
-
     def _score_text_block(self, text: str, queries: Sequence[str]) -> float:
         normalized_text = text.casefold()
         total = 0.0
@@ -421,28 +380,6 @@ class AssistantContextService:
     def _recency_score(self, timestamp: datetime, *, half_life_days: int) -> float:
         age_days = max(0.0, (datetime.now(UTC) - timestamp.astimezone(UTC)).total_seconds() / 86400)
         return 4.0 * math.exp(-age_days / max(1, half_life_days))
-
-    def _durability_score(self, message: ImportantMessageRecord) -> float:
-        category = (message.category or "").casefold()
-        reason = (message.importance_reason or "").casefold()
-        durable_markers = (
-            "prefer",
-            "restri",
-            "objetiv",
-            "contrat",
-            "prazo",
-            "cliente",
-            "acesso",
-            "valor",
-            "acordo",
-            "relacion",
-            "identidade",
-            "perfil",
-            "pagamento",
-        )
-        if any(marker in category or marker in reason for marker in durable_markers):
-            return 3.0
-        return 1.0
 
     def _format_open_questions(
         self,
@@ -739,17 +676,5 @@ class AssistantContextService:
                 lines.append(f"  Aprendizados: {'; '.join(snapshot.key_learnings[:4])}")
             if snapshot.open_questions:
                 lines.append(f"  Lacunas: {'; '.join(snapshot.open_questions[:3])}")
-            blocks.append("\n".join(lines))
-        return "\n\n".join(blocks)
-
-    def _format_search_vault(self, messages: Sequence[ImportantMessageRecord]) -> str:
-        blocks: list[str] = []
-        for message in messages:
-            date_str = message.message_timestamp.astimezone(UTC).strftime("%d/%m/%Y")
-            lines = [
-                f"- Mensagem de {message.contact_name} em {date_str}:",
-                f"  Conteudo: {message.message_text}",
-                f"  Por que e importante: {message.importance_reason}",
-            ]
             blocks.append("\n".join(lines))
         return "\n\n".join(blocks)

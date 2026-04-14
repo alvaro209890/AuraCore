@@ -18,8 +18,6 @@ from app.schemas import (
     AnalysisJobResponse,
     AnalyzeMemoryRequest,
     AnalyzeMemoryResponse,
-    ImportantMessageResponse,
-    ImportantMessagesListResponse,
     MemoryActivityResponse,
     MemoryAnalysisPreviewResponse,
     MemoryCurrentResponse,
@@ -45,7 +43,6 @@ from app.services.memory_service import MemoryAnalysisService
 from app.services.observer_gateway import ObserverGatewayService, WhatsAppAgentGatewayService
 from app.services.supabase_store import (
     AnalysisJobRecord,
-    ImportantMessageRecord,
     KnownGroupRecord,
     MemorySnapshotRecord,
     ModelRunRecord,
@@ -103,23 +100,17 @@ async def get_memory_live_summary(
     memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
     memory_job_service: MemoryJobService = Depends(get_memory_job_service),
 ) -> MemoryLiveSummaryResponse:
-    memory_status, snapshots, important_messages, projects, relations = await asyncio.gather(
+    memory_status, snapshots, projects, relations = await asyncio.gather(
         run_in_threadpool(memory_service.get_memory_status),
         run_in_threadpool(memory_service.list_snapshots, limit=1),
-        run_in_threadpool(memory_service.list_important_messages, limit=80),
         run_in_threadpool(memory_service.list_projects, limit=8),
         run_in_threadpool(memory_service.list_relations, limit=80),
     )
     activity = await memory_job_service.get_activity_snapshot()
     current_job, latest_completed_job = _resolve_job_refs(activity.jobs)
     latest_snapshot = snapshots[0] if snapshots else None
-    latest_important = important_messages[0] if important_messages else None
     latest_project = projects[0] if projects else None
     latest_relation = relations[0] if relations else None
-    latest_reviewed_at = max(
-        (message.last_reviewed_at for message in important_messages if message.last_reviewed_at is not None),
-        default=None,
-    )
 
     return MemoryLiveSummaryResponse(
         generated_at=datetime.now(UTC),
@@ -131,9 +122,6 @@ async def get_memory_live_summary(
         latest_completed_job_status=latest_completed_job.status if latest_completed_job else None,
         latest_snapshot_id=latest_snapshot.id if latest_snapshot else None,
         latest_snapshot_created_at=latest_snapshot.created_at if latest_snapshot else None,
-        latest_important_id=latest_important.id if latest_important else None,
-        latest_important_saved_at=latest_important.saved_at if latest_important else None,
-        latest_important_reviewed_at=latest_reviewed_at,
         latest_project_id=latest_project.id if latest_project else None,
         latest_project_updated_at=latest_project.updated_at if latest_project else None,
         latest_relation_id=latest_relation.id if latest_relation else None,
@@ -159,12 +147,6 @@ async def get_memory_live_summary(
             activity.model_runs[0].id if activity.model_runs else None,
             activity.model_runs[0].success if activity.model_runs else None,
         ),
-        important_signature=_build_live_signature(
-            len(important_messages),
-            latest_important.id if latest_important else None,
-            latest_important.saved_at if latest_important else None,
-            latest_reviewed_at,
-        ),
         projects_signature=_build_live_signature(
             len(projects),
             latest_project.id if latest_project else None,
@@ -185,15 +167,6 @@ async def get_memory_snapshots(
 ) -> MemorySnapshotsListResponse:
     snapshots = memory_service.list_snapshots(limit=limit)
     return MemorySnapshotsListResponse(snapshots=[_to_snapshot_response(snapshot) for snapshot in snapshots])
-
-
-@router.get("/important", response_model=ImportantMessagesListResponse)
-async def get_important_messages(
-    limit: int = Query(default=80, ge=1, le=200),
-    memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
-) -> ImportantMessagesListResponse:
-    messages = memory_service.list_important_messages(limit=limit)
-    return ImportantMessagesListResponse(messages=[_to_important_message_response(message) for message in messages])
 
 
 @router.post("/execute", response_model=AnalyzeMemoryResponse)
@@ -619,27 +592,6 @@ def _to_group_selection_response(
         last_message_at=last_message_at,
         message_count=message_count,
         pending_message_count=pending_message_count,
-    )
-
-
-def _to_important_message_response(message: ImportantMessageRecord) -> ImportantMessageResponse:
-    direction = "outbound" if message.direction == "outbound" else "inbound"
-    return ImportantMessageResponse(
-        id=message.id,
-        source_message_id=message.source_message_id,
-        contact_name=message.contact_name,
-        contact_phone=message.contact_phone,
-        direction=direction,
-        message_text=message.message_text,
-        message_timestamp=message.message_timestamp,
-        category=message.category,
-        importance_reason=message.importance_reason,
-        confidence=message.confidence,
-        status=message.status,
-        review_notes=message.review_notes,
-        saved_at=message.saved_at,
-        last_reviewed_at=message.last_reviewed_at,
-        discarded_at=message.discarded_at,
     )
 
 

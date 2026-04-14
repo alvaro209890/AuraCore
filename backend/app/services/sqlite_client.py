@@ -34,9 +34,7 @@ JSON_COLUMNS = {
     "value",
 }
 
-AUTO_ID_COLUMNS = {
-    "important_messages": "id",
-}
+AUTO_ID_COLUMNS = {}
 
 
 @dataclass(slots=True)

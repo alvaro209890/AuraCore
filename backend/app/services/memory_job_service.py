@@ -294,9 +294,8 @@ class MemoryJobService:
                 created_at=finished_at,
             )
             logger.info(
-                "manual_memory_job_done job_id=%s intent=%s selected=%s important_saved=%s",
+                "manual_memory_job_done job_id=%s intent=%s selected=%s",
                 job_id,
                 plan.intent,
                 len(final_message_ids),
-                outcome.important_messages_saved_count,
             )

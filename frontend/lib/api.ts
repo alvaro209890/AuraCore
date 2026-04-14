@@ -273,24 +273,6 @@ export type PersonRelation = {
   updated_at: string;
 };
 
-export type ImportantMessage = {
-  id: string;
-  source_message_id: string;
-  contact_name: string;
-  contact_phone: string | null;
-  direction: "inbound" | "outbound";
-  message_text: string;
-  message_timestamp: string;
-  category: string;
-  importance_reason: string;
-  confidence: number;
-  status: string;
-  review_notes: string | null;
-  saved_at: string;
-  last_reviewed_at: string | null;
-  discarded_at: string | null;
-};
-
 export type MemoryAnalysisDetailMode = "light" | "balanced" | "deep";
 
 export type MemoryAnalysisPreview = {
@@ -380,10 +362,6 @@ export type MemorySnapshotsListResponse = {
 
 export type WhatsAppGroupSelectionsListResponse = {
   groups: WhatsAppGroupSelection[];
-};
-
-export type ImportantMessagesListResponse = {
-  messages: ImportantMessage[];
 };
 
 export type AgendaEventsListResponse = {
@@ -540,16 +518,12 @@ export type MemoryLiveSummary = {
   latest_completed_job_status: string | null;
   latest_snapshot_id: string | null;
   latest_snapshot_created_at: string | null;
-  latest_important_id: string | null;
-  latest_important_saved_at: string | null;
-  latest_important_reviewed_at: string | null;
   latest_project_id: string | null;
   latest_project_updated_at: string | null;
   latest_relation_id: string | null;
   latest_relation_updated_at: string | null;
   memory_signature: string;
   activity_signature: string;
-  important_signature: string;
   projects_signature: string;
   relations_signature: string;
 };
@@ -790,19 +764,6 @@ export async function getMemoryLiveSummary(): Promise<MemoryLiveSummary> {
 export async function getMemorySnapshots(limit = 20): Promise<MemorySnapshot[]> {
   const response = await request<MemorySnapshotsListResponse>(`/api/memories/snapshots?limit=${limit}`);
   return response.snapshots;
-}
-
-export async function getImportantMessages(limit = 80): Promise<ImportantMessage[]> {
-  try {
-    const response = await request<ImportantMessagesListResponse>(`/api/memories/important?limit=${limit}`);
-    return response.messages;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (/status 404|not found/i.test(message)) {
-      return [];
-    }
-    throw error;
-  }
 }
 
 export async function getAgendaEvents(limit = 120, upcomingOnly = false): Promise<AgendaEvent[]> {

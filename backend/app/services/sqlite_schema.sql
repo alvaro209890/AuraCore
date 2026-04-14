@@ -175,29 +175,6 @@ CREATE TABLE IF NOT EXISTS project_memories (
 
 CREATE INDEX IF NOT EXISTS project_memories_user_last_seen_idx ON project_memories (user_id, last_seen_at DESC);
 
-CREATE TABLE IF NOT EXISTS important_messages (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL,
-  source_message_id TEXT NOT NULL,
-  contact_name TEXT NOT NULL DEFAULT '',
-  contact_phone TEXT,
-  direction TEXT NOT NULL DEFAULT 'inbound',
-  message_text TEXT NOT NULL,
-  message_timestamp TEXT NOT NULL,
-  category TEXT NOT NULL DEFAULT 'other',
-  importance_reason TEXT NOT NULL DEFAULT '',
-  confidence INTEGER NOT NULL DEFAULT 0,
-  status TEXT NOT NULL DEFAULT 'active',
-  review_notes TEXT,
-  saved_at TEXT NOT NULL,
-  last_reviewed_at TEXT,
-  discarded_at TEXT,
-  UNIQUE (user_id, source_message_id)
-);
-
-CREATE INDEX IF NOT EXISTS important_messages_user_status_timestamp_idx ON important_messages (user_id, status, message_timestamp DESC);
-CREATE INDEX IF NOT EXISTS important_messages_user_review_idx ON important_messages (user_id, last_reviewed_at ASC);
-
 CREATE TABLE IF NOT EXISTS chat_threads (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,

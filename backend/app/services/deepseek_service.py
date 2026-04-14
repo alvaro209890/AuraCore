@@ -70,28 +70,6 @@ class DeepSeekContactMemoryRefinementResult(BaseModel):
     contact_memories: list[DeepSeekPersonMemory] = Field(default_factory=list)
 
 
-class DeepSeekImportantMessageCandidate(BaseModel):
-    message_id: str
-    category: str
-    importance_reason: str
-    confidence: int = Field(default=0, ge=0, le=100)
-
-
-class DeepSeekImportantMessagesResult(BaseModel):
-    important_messages: list[DeepSeekImportantMessageCandidate] = Field(default_factory=list)
-
-
-class DeepSeekImportantMessageReviewDecision(BaseModel):
-    source_message_id: str
-    decision: Literal["keep", "discard"] = "keep"
-    review_notes: str
-    confidence: int = Field(default=0, ge=0, le=100)
-
-
-class DeepSeekImportantMessagesReviewResult(BaseModel):
-    reviews: list[DeepSeekImportantMessageReviewDecision] = Field(default_factory=list)
-
-
 class DeepSeekAgendaExtractionResult(BaseModel):
     has_schedule_signal: bool = False
     titulo: str = ""
@@ -115,11 +93,9 @@ class DeepSeekAgendaConflictResolutionResult(BaseModel):
 class DeepSeekAssistantSearchPlan(BaseModel):
     needs_retrieval: bool = False
     people_queries: list[str] = Field(default_factory=list)
-    important_message_queries: list[str] = Field(default_factory=list)
     project_queries: list[str] = Field(default_factory=list)
     snapshot_queries: list[str] = Field(default_factory=list)
     people_limit: int = 0
-    important_messages_limit: int = 0
     projects_limit: int = 0
     snapshots_limit: int = 0
     should_include_open_questions: bool = False
@@ -132,11 +108,9 @@ class DeepSeekAssistantSearchPlan(BaseModel):
         return cls(
             needs_retrieval=False,
             people_queries=[],
-            important_message_queries=[],
             project_queries=[],
             snapshot_queries=[],
             people_limit=0,
-            important_messages_limit=0,
             projects_limit=0,
             snapshots_limit=0,
             should_include_open_questions=False,
@@ -425,63 +399,6 @@ class DeepSeekService:
             operation="edit_project_memory",
         )
 
-    async def extract_important_messages(
-        self,
-        *,
-        messages_block: str,
-        allowed_message_ids: list[str],
-        current_life_summary: str,
-        project_context: str,
-    ) -> DeepSeekImportantMessagesResult:
-        payload = self._build_completion_payload(
-            system_prompt=(
-                "Voce e o classificador de memoria duravel do AuraCore. Sua funcao e escolher apenas mensagens "
-                "que merecem sair da fila operacional curta e entrar em um cofre de referencia futura. "
-                "Retorne apenas JSON valido. Seja conservador: prefira perder algo marginal a salvar ruido."
-            ),
-            user_prompt=self._build_important_messages_prompt(
-                messages_block=messages_block,
-                current_life_summary=current_life_summary,
-                project_context=project_context,
-            ),
-            max_tokens=1800 if self._is_reasoning_model() else 1000,
-        )
-        allowed_ids = set(allowed_message_ids)
-        return await self._request_parsed_completion(
-            payload=payload,
-            parser=self._parse_important_messages_result,
-            validator=lambda parsed: self._validate_important_messages_result(parsed, allowed_message_ids=allowed_ids),
-            operation="extract_important_messages",
-        )
-
-    async def review_important_messages(
-        self,
-        *,
-        important_messages_block: str,
-        allowed_message_ids: list[str],
-        current_life_summary: str,
-        project_context: str,
-    ) -> DeepSeekImportantMessagesReviewResult:
-        payload = self._build_completion_payload(
-            system_prompt=(
-                "Voce revisa o cofre de mensagens importantes do AuraCore. Sua funcao e decidir o que continua "
-                "util para consultas futuras e o que ja virou ruido, sem inventar fatos. Retorne apenas JSON valido."
-            ),
-            user_prompt=self._build_important_messages_review_prompt(
-                important_messages_block=important_messages_block,
-                current_life_summary=current_life_summary,
-                project_context=project_context,
-            ),
-            max_tokens=2400 if self._is_reasoning_model() else 1200,
-        )
-        allowed_ids = set(allowed_message_ids)
-        return await self._request_parsed_completion(
-            payload=payload,
-            parser=self._parse_important_messages_review_result,
-            validator=lambda parsed: self._validate_important_messages_review_result(parsed, allowed_message_ids=allowed_ids),
-            operation="review_important_messages",
-        )
-
     async def synthesize_memory_analyses(
         self,
         *,
@@ -583,8 +500,8 @@ class DeepSeekService:
             system_prompt=(
                 "Voce decide qual contexto adicional deve ser recuperado para responder melhor uma mensagem do dono. "
                 "Responda EXCLUSIVAMENTE em JSON valido com as chaves: "
-                "needs_retrieval, people_queries, important_message_queries, project_queries, snapshot_queries, "
-                "people_limit, important_messages_limit, projects_limit, snapshots_limit, "
+                "needs_retrieval, people_queries, project_queries, snapshot_queries, "
+                "people_limit, projects_limit, snapshots_limit, "
                 "should_include_open_questions, should_include_contact_memory, requires_confirmation e explanation. "
                 "Use no maximo 3 consultas por categoria e limites pequenos. "
                 "needs_retrieval deve ser false para cumprimentos simples ou quando o contexto atual ja basta. "
@@ -1223,102 +1140,6 @@ Regras:
 - Nao inclua markdown fences.
 """.strip()
 
-    def _build_important_messages_prompt(
-        self,
-        *,
-        messages_block: str,
-        current_life_summary: str,
-        project_context: str,
-    ) -> str:
-        return f"""
-Selecione apenas as mensagens que precisam entrar em uma tabela separada de memoria duravel.
-
-Resumo consolidado atual:
-{current_life_summary.strip() or "(memoria consolidada ainda vazia)"}
-
-Projetos atuais:
-{project_context.strip() or "(nenhum projeto consolidado ainda)"}
-
-Mensagens candidatas:
-{messages_block.strip() or "(nenhuma mensagem disponivel)"}
-
-Categorias permitidas:
-- credential
-- access
-- project
-- money
-- client
-- deadline
-- document
-- risk
-- other
-
-Retorne um JSON com exatamente este formato:
-{{
-  "important_messages": [
-    {{
-      "message_id": "string",
-      "category": "credential|access|project|money|client|deadline|document|risk|other",
-      "importance_reason": "string",
-      "confidence": 0
-    }}
-  ]
-}}
-
-Regras:
-- Selecione somente mensagens com valor futuro reutilizavel.
-- Sao importantes: senhas, logins, acessos, chaves, dados de projeto, clientes, dinheiro, cobrancas, valores, prazos, contratos, compromissos relevantes, riscos operacionais e fatos centrais de trabalho.
-- Nao salve conversa casual, cumprimento, piada, pequenas confirmacoes, combinados ja triviais ou ruido.
-- Codigos temporarios, OTPs e recados que vencem rapido tendem a nao ser memoria duravel; descarte salvo forte justificativa.
-- importance_reason deve dizer por que essa mensagem merece sobreviver ao lote operacional curto.
-- confidence deve ir de 0 a 100.
-- Nao repita message_id.
-- Se nada merecer ser salvo, retorne important_messages vazio.
-- Nao inclua markdown fences.
-""".strip()
-
-    def _build_important_messages_review_prompt(
-        self,
-        *,
-        important_messages_block: str,
-        current_life_summary: str,
-        project_context: str,
-    ) -> str:
-        return f"""
-Revise o cofre de mensagens importantes abaixo e decida o que continua util.
-
-Resumo consolidado atual:
-{current_life_summary.strip() or "(memoria consolidada ainda vazia)"}
-
-Projetos atuais:
-{project_context.strip() or "(nenhum projeto consolidado ainda)"}
-
-Mensagens importantes ativas:
-{important_messages_block.strip() or "(nenhuma mensagem importante ativa)"}
-
-Retorne um JSON com exatamente este formato:
-{{
-  "reviews": [
-    {{
-      "source_message_id": "string",
-      "decision": "keep|discard",
-      "review_notes": "string",
-      "confidence": 0
-    }}
-  ]
-}}
-
-Regras:
-- keep quando a mensagem ainda tiver valor operacional ou historico reutilizavel.
-- discard quando a informacao ja estiver obsoleta, resolvida, vencida, substituida, duplicada ou sem valor futuro claro.
-- Senhas, acessos e configuracoes permanentes podem continuar uteis; codigos temporarios e combinados pontuais costumam ser descartados.
-- Projetos e dinheiro devem ficar se ainda ajudam a entender compromissos, contexto de trabalho, clientes, valores ou riscos.
-- review_notes deve explicar a decisao de forma curta e objetiva.
-- confidence deve ir de 0 a 100.
-- Cubra todos os IDs relevantes; se estiver em duvida, prefira keep.
-- Nao inclua markdown fences.
-""".strip()
-
     def _extract_content(self, payload: dict[str, Any]) -> str:
         choices = payload.get("choices")
         if not isinstance(choices, list) or not choices:
@@ -1586,32 +1407,6 @@ Regras:
                 raise DeepSeekError("DeepSeek retornou um contato refinado sem profile_summary.")
             person.relationship_type = self._normalize_relationship_type(person.relationship_type)
 
-    def _validate_important_messages_result(
-        self,
-        parsed: DeepSeekImportantMessagesResult,
-        *,
-        allowed_message_ids: set[str],
-    ) -> None:
-        for item in parsed.important_messages:
-            if item.message_id not in allowed_message_ids:
-                raise DeepSeekError("DeepSeek retornou um message_id fora da selecao enviada.")
-            if not item.category.strip():
-                raise DeepSeekError("DeepSeek retornou uma mensagem importante sem categoria.")
-            if not item.importance_reason.strip():
-                raise DeepSeekError("DeepSeek retornou uma mensagem importante sem justificativa.")
-
-    def _validate_important_messages_review_result(
-        self,
-        parsed: DeepSeekImportantMessagesReviewResult,
-        *,
-        allowed_message_ids: set[str],
-    ) -> None:
-        for item in parsed.reviews:
-            if item.source_message_id not in allowed_message_ids:
-                raise DeepSeekError("DeepSeek retornou um source_message_id invalido na revisao.")
-            if not item.review_notes.strip():
-                raise DeepSeekError("DeepSeek retornou uma revisao sem review_notes.")
-
     def _validate_agenda_extraction_result(self, parsed: DeepSeekAgendaExtractionResult) -> None:
         parsed.titulo = parsed.titulo.strip()
         parsed.intencao = parsed.intencao.strip().lower()
@@ -1635,11 +1430,9 @@ Regras:
 
     def _validate_assistant_search_plan(self, parsed: DeepSeekAssistantSearchPlan) -> None:
         parsed.people_limit = max(0, min(6, parsed.people_limit))
-        parsed.important_messages_limit = max(0, min(6, parsed.important_messages_limit))
         parsed.projects_limit = max(0, min(6, parsed.projects_limit))
         parsed.snapshots_limit = max(0, min(6, parsed.snapshots_limit))
         parsed.people_queries = parsed.people_queries[:3]
-        parsed.important_message_queries = parsed.important_message_queries[:3]
         parsed.project_queries = parsed.project_queries[:3]
         parsed.snapshot_queries = parsed.snapshot_queries[:3]
 
@@ -1729,27 +1522,6 @@ Regras:
             contact_memories=self._as_person_memories(raw.get("contact_memories")),
         )
 
-    def _parse_important_messages_result(self, content: str) -> DeepSeekImportantMessagesResult:
-        raw = self._parse_json_dict(
-            content,
-            error_message="DeepSeek retornou JSON invalido na selecao de mensagens importantes.",
-            shape_error_message="DeepSeek retornou um payload inesperado na selecao de mensagens importantes.",
-        )
-        return DeepSeekImportantMessagesResult(
-            important_messages=self._as_important_messages(raw.get("important_messages")),
-        )
-
-    def _parse_important_messages_review_result(self, content: str) -> DeepSeekImportantMessagesReviewResult:
-        raw = self._parse_json_dict(
-            content,
-            error_message="DeepSeek retornou JSON invalido na revisao das mensagens importantes.",
-            shape_error_message="DeepSeek retornou um payload inesperado na revisao das mensagens importantes.",
-        )
-
-        return DeepSeekImportantMessagesReviewResult(
-            reviews=self._as_important_message_reviews(raw.get("reviews")),
-        )
-
     def _parse_agenda_extraction_result(self, content: str) -> DeepSeekAgendaExtractionResult:
         raw = self._parse_json_dict(
             content,
@@ -1792,18 +1564,15 @@ Regras:
             return max(0, min(6, resolved))
 
         people_queries = self._as_string_list(raw.get("people_queries"))[:3]
-        important_queries = self._as_string_list(raw.get("important_message_queries"))[:3]
         project_queries = self._as_string_list(raw.get("project_queries"))[:3]
         snapshot_queries = self._as_string_list(raw.get("snapshot_queries"))[:3]
 
         return DeepSeekAssistantSearchPlan(
             needs_retrieval=bool(raw.get("needs_retrieval")),
             people_queries=people_queries,
-            important_message_queries=important_queries,
             project_queries=project_queries,
             snapshot_queries=snapshot_queries,
             people_limit=_limit(raw.get("people_limit"), 2 if people_queries else 0),
-            important_messages_limit=_limit(raw.get("important_messages_limit"), 3 if important_queries else 0),
             projects_limit=_limit(raw.get("projects_limit"), 2 if project_queries else 0),
             snapshots_limit=_limit(raw.get("snapshots_limit"), 2 if snapshot_queries else 0),
             should_include_open_questions=bool(raw.get("should_include_open_questions")),
@@ -2028,53 +1797,6 @@ Regras:
         }
         return normalized if normalized in allowed else "unknown"
 
-    def _as_important_messages(self, value: Any) -> list[DeepSeekImportantMessageCandidate]:
-        if not isinstance(value, list):
-            return []
-
-        items: list[DeepSeekImportantMessageCandidate] = []
-        seen_ids: set[str] = set()
-        for item in value:
-            if not isinstance(item, dict):
-                continue
-            message_id = self._as_text(item.get("message_id"))
-            if not message_id or message_id in seen_ids:
-                continue
-            candidate = DeepSeekImportantMessageCandidate(
-                message_id=message_id,
-                category=self._normalize_importance_category(self._as_text(item.get("category"))),
-                importance_reason=self._as_text(item.get("importance_reason")),
-                confidence=max(0, min(100, self._as_int(item.get("confidence")))),
-            )
-            if candidate.category and candidate.importance_reason:
-                items.append(candidate)
-                seen_ids.add(message_id)
-        return items[:32]
-
-    def _as_important_message_reviews(self, value: Any) -> list[DeepSeekImportantMessageReviewDecision]:
-        if not isinstance(value, list):
-            return []
-
-        items: list[DeepSeekImportantMessageReviewDecision] = []
-        seen_ids: set[str] = set()
-        for item in value:
-            if not isinstance(item, dict):
-                continue
-            source_message_id = self._as_text(item.get("source_message_id"))
-            if not source_message_id or source_message_id in seen_ids:
-                continue
-            decision_text = self._as_text(item.get("decision")).lower()
-            decision: Literal["keep", "discard"] = "discard" if decision_text == "discard" else "keep"
-            review = DeepSeekImportantMessageReviewDecision(
-                source_message_id=source_message_id,
-                decision=decision,
-                review_notes=self._as_text(item.get("review_notes")),
-                confidence=max(0, min(100, self._as_int(item.get("confidence")))),
-            )
-            if review.review_notes:
-                items.append(review)
-                seen_ids.add(source_message_id)
-        return items[:80]
 
     def _normalize_importance_category(self, value: str) -> str:
         normalized = value.strip().lower()

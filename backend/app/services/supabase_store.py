@@ -5981,7 +5981,6 @@ class SupabaseStore:
             DELETE FROM whatsapp_agent_settings;
             DELETE FROM chat_messages;
             DELETE FROM chat_threads;
-            DELETE FROM important_messages;
             DELETE FROM person_memory_snapshots;
             DELETE FROM person_memories;
             DELETE FROM project_memories;
