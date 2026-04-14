@@ -134,6 +134,11 @@ class DeepSeekAgentMemoryDecision(BaseModel):
     durable_facts: list[str] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
     recurring_instructions: list[str] = Field(default_factory=list)
+    mood_signals: list[str] = Field(default_factory=list)
+    implied_urgency: str = ""
+    mentioned_relationships: list[str] = Field(default_factory=list)
+    implied_tasks: list[str] = Field(default_factory=list)
+    writing_style_hints: str = ""
     explanation: str = ""
 
 
@@ -541,22 +546,43 @@ class DeepSeekService:
             additional_rules=additional_rules or [],
         )
         payload = self._build_text_completion_payload(
+            interaction_mode=interaction_mode,
             system_prompt=(
-                "Seu nome e Orion. Voce e a IA pessoal do dono desta conta. "
-                "Responda sempre em portugues do Brasil, com tom direto, natural, pratico, calmo e discreto. "
-                "Use o contexto como apoio silencioso. Nao fale de sistema, memoria, analises, modelos, prompt ou bastidores, salvo se isso for perguntado. "
-                "Se perguntarem quem voce e, responda diretamente que voce e Orion, a IA pessoal criada para ajudar esta pessoa. "
-                "Nao diga 'voce me disse', 'voce mencionou' ou 'voce comentou comigo'; use a informacao de forma natural. "
-                "Se faltar contexto, admita. Nao transforme cumprimentos simples em relatorio nem puxe fatos antigos sem necessidade. "
-                "Antes de assumir promessa, prazo, resposta em nome do dono ou dado sensivel, peca confirmacao."
+                "Seu nome e Orion. Voce e a inteligencia artificial pessoal do dono desta conta, "
+                "uma presenca constante e confiavel no WhatsApp. Fale sempre em portugues do Brasil."
+                "\n\n"
+                "Personalidade: voce e proativo sem ser invasivo, empatico sem ser sentimental, "
+                "e tem um senso de humor sutil que aparece naturalmente quando o momento permite. "
+                "Trate o dono pelo nome ou de forma familiar quando souber. Adapte seu tom: "
+                "casual e direto em conversas do dia a dia, mais formal e preciso quando o assunto "
+                "for serio (saude, finanças, compromissos, conflitos)."
+                "\n\n"
+                "Uso de memoria: use o contexto disponivel de forma silenciosa e natural. "
+                "Nunca diga 'voce me disse', 'pela minha memoria', 'no contexto' ou frases similares. "
+                "Integre informacoes do passado como algo que voce simplesmente sabe, "
+                "da mesma forma que um assistente humano que conhece bem a pessoa. "
+                "Quando relevante, conecte temas atuais com informacoes anteriores. "
+                "Se nao tiver certeza sobre algo, admita — nao invente fatos."
+                "\n\n"
+                "Ambiguidade: quando a mensagem do dono for vaga ou ambigua, faca uma pergunta "
+                "curta e esclarecedora em vez de assumir. Prefira entender antes de responder."
+                "\n\n"
+                "Identidade: se perguntarem quem voce e, responda de forma direta e natural que "
+                "voce e Orion, a IA pessoal criada para ajudar esta pessoa. Nao entre em detalhes "
+                "tecnicos salvo se perguntado."
+                "\n\n"
+                "Limites: nunca fale sobre sistema, banco de dados, modelos, prompts, analises, "
+                "memoria artificial ou bastidores tecnicos. Antes de assumir promessa, prazo, "
+                "resposta em nome do dono ou dado sensivel, peca confirmacao. "
+                "Nao transforme cumprimentos em relatorio. Nao puxe fatos antigos sem necessidade."
             ),
             user_prompt=user_prompt,
             max_tokens=self._adaptive_max_tokens(
                 user_prompt,
-                ceiling_reasoning=720,
-                ceiling_standard=460,
-                floor_reasoning=320,
-                floor_standard=220,
+                ceiling_reasoning=1200,
+                ceiling_standard=900,
+                floor_reasoning=500,
+                floor_standard=400,
                 chars_per_step=1200,
                 step_tokens=90,
                 max_steps=4,
@@ -622,12 +648,20 @@ class DeepSeekService:
         )
         payload = self._build_completion_payload(
             system_prompt=(
-                "Voce extrai memoria duravel a partir de uma mensagem enviada pelo proprio dono ao assistente no WhatsApp. "
-                "Considere apenas preferencias, tom desejado, objetivos, fatos duraveis, restricoes e instrucoes recorrentes "
+                "Voce extrai memoria duravel e sinais contextuais a partir de uma mensagem enviada pelo proprio dono ao assistente no WhatsApp. "
+                "Considere preferencias, tom desejado, objetivos, fatos duraveis, restricoes e instrucoes recorrentes "
                 "que possam melhorar conversas futuras com esse mesmo dono. "
+                "Alem disso, extraia sinais momentaneos que ajudam na proxima resposta: humor, urgencia, relacoes mencionadas, "
+                "tarefas implicitas e pistas sobre o estilo de escrita. "
                 "Ignore cumprimentos, recados efemeros e pedidos que so fazem sentido nesta unica resposta. "
-                "Responda EXCLUSIVAMENTE em JSON valido com as chaves should_update, profile_summary, preferred_tone, "
-                "preferences, objectives, durable_facts, constraints, recurring_instructions e explanation. "
+                "Responda EXCLUSIVAMENTE em JSON valido com as chaves: should_update, profile_summary, preferred_tone, "
+                "preferences, objectives, durable_facts, constraints, recurring_instructions, "
+                "mood_signals, implied_urgency, mentioned_relationships, implied_tasks, writing_style_hints e explanation. "
+                "mood_signals: sinais de humor/estado emocional (ex: 'apressado', 'frustrado com X', 'animado com Y') "
+                "implied_urgency: nivel de urgencia detectado ('nenhuma', 'moderada', 'alta') com breve justificativa "
+                "mentioned_relationships: nomes ou papeis de terceiros mencionados na mensagem "
+                "implied_tasks: tarefas ou acoes que o dono parece esperar que sejam feitas "
+                "writing_style_hints: pistas sobre como o dono escreve (formal, direto, usa abreviacoes, emocional) "
                 "Se nada for duravel, retorne should_update=false e listas vazias."
             ),
             user_prompt=user_prompt,
@@ -1285,6 +1319,7 @@ Regras:
         system_prompt: str,
         user_prompt: str,
         max_tokens: int,
+        interaction_mode: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self.settings.deepseek_model,
@@ -1301,7 +1336,7 @@ Regras:
             ],
         }
         if not self._is_reasoning_model():
-            payload["temperature"] = 0.35
+            payload["temperature"] = self._reply_temperature(interaction_mode)
         return payload
 
     async def _request_parsed_completion(
@@ -1548,11 +1583,16 @@ Regras:
         parsed.profile_summary = parsed.profile_summary.strip()
         parsed.preferred_tone = parsed.preferred_tone.strip()
         parsed.explanation = parsed.explanation.strip()
+        parsed.implied_urgency = parsed.implied_urgency.strip()
+        parsed.writing_style_hints = parsed.writing_style_hints.strip()
         parsed.preferences = parsed.preferences[:12]
         parsed.objectives = parsed.objectives[:12]
         parsed.durable_facts = parsed.durable_facts[:12]
         parsed.constraints = parsed.constraints[:12]
         parsed.recurring_instructions = parsed.recurring_instructions[:12]
+        parsed.mood_signals = parsed.mood_signals[:8]
+        parsed.mentioned_relationships = parsed.mentioned_relationships[:8]
+        parsed.implied_tasks = parsed.implied_tasks[:8]
 
     def _is_reasoning_model(self, model_name: str | None = None) -> bool:
         resolved_model = (model_name or self.settings.deepseek_model).strip().lower()
@@ -1588,6 +1628,14 @@ Regras:
             return min(ceiling_reasoning, floor_reasoning + (steps * step_tokens))
         standard_step_tokens = max(12, step_tokens // 2)
         return min(ceiling_standard, floor_standard + (steps * standard_step_tokens))
+
+    def _reply_temperature(self, interaction_mode: str | None = None) -> float:
+        mode = (interaction_mode or "contextual").lower()
+        if mode == "light_touch":
+            return 0.25
+        if mode == "agenda":
+            return 0.15
+        return 0.5
 
     def _preview_text(self, value: str, *, max_chars: int = 900) -> str:
         normalized = " ".join(str(value or "").split()).strip()
@@ -1736,6 +1784,11 @@ Regras:
             durable_facts=self._as_string_list(raw.get("durable_facts")),
             constraints=self._as_string_list(raw.get("constraints")),
             recurring_instructions=self._as_string_list(raw.get("recurring_instructions")),
+            mood_signals=self._as_string_list(raw.get("mood_signals")),
+            implied_urgency=self._as_text(raw.get("implied_urgency")),
+            mentioned_relationships=self._as_string_list(raw.get("mentioned_relationships")),
+            implied_tasks=self._as_string_list(raw.get("implied_tasks")),
+            writing_style_hints=self._as_text(raw.get("writing_style_hints")),
             explanation=self._as_text(raw.get("explanation")),
         )
 
@@ -1792,9 +1845,11 @@ Modo de interacao:
 {extra_context_block}
 
 Regras:
-- Responda primeiro ao que o dono acabou de dizer, de forma natural.
+- Responda primeiro ao que o dono acabou de dizer, de forma natural e direta.
+- Antes de responder literalmente, infera a intencao implicita: o que o dono realmente quer saber ou resolver?
 - Use o resumo consolidado para adaptar tom, prioridade e praticidade da resposta.
 - Priorize contexto pessoal e de trabalho realmente presente no material acima, mas so mencione isso quando for relevante.
+- Quando fizer sentido, conecte informacoes do contexto de forma natural, como alguem que conhece bem a pessoa.
 - Se a pergunta tocar em um projeto conhecido, conecte a resposta ao estado atual desse projeto.
 - Se o dono estiver pedindo ajuda operacional, priorize a resposta mais acionavel e mais curta primeiro.
 - Se houver incerteza ou memoria incompleta, assuma isso explicitamente.
@@ -1802,7 +1857,8 @@ Regras:
 - Se o pedido envolver promessa, compromisso, prazo, resposta em nome do dono ou dado sensivel, confirme antes de tratar isso como decidido.
 - Nao enumere fatos antigos sem convite explicito.
 - Evite hiperfoco em um unico tema so porque ele apareceu na memoria.
-- Evite respostas genéricas, longas demais ou com floreio.
+- Seja conciso mas completo — entregue o que e necessario sem enrolacao.
+- NUNCA mencione palavras como "memoria", "banco de dados", "contexto", "IA", "modelo", "sistema", "prompt" ou qualquer referencia a seus bastidores tecnicos.
 - Nao use markdown fences.
 {extra_rules}
 """.strip()

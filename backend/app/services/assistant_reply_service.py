@@ -9,9 +9,9 @@ from app.services.assistant_context_service import (
     AssistantConversationTurn,
 )
 from app.services.deepseek_service import DeepSeekService
-from app.services.supabase_store import ChatMessageRecord, SupabaseStore, WhatsAppAgentMessageRecord
+from app.services.supabase_store import SupabaseStore, WhatsAppAgentMessageRecord
 
-ConversationRecord = ChatMessageRecord | WhatsAppAgentMessageRecord | AssistantConversationTurn
+ConversationRecord = WhatsAppAgentMessageRecord | AssistantConversationTurn
 
 
 class AssistantReplyService:

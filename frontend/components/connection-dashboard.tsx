@@ -48,8 +48,6 @@ import {
 } from "lucide-react";
 
 import {
-  createChatThread,
-  deleteChatThread,
   connectAgent,
   connectObserver,
   clearSavedDatabase,
@@ -62,7 +60,6 @@ import {
   getAgentStatus,
   getAgentWorkspace,
   getAutomationStatus,
-  getChatWorkspace,
   getCurrentMemory,
   getMemoryActivity,
   getMemoryGroups,
@@ -75,7 +72,6 @@ import {
   refreshObserverMessages,
   resetAgent,
   resetObserver,
-  sendChatMessageStream,
   getAgendaEvents,
   updateAgentSettings,
   updateAgendaEvent,
@@ -88,9 +84,6 @@ import {
   type AnalysisJob,
   type AutomationStatus,
   type AutomationDecision,
-  type ChatMessage,
-  type ChatThread,
-  type ChatWorkspace,
   type MemoryActivity,
   type MemoryCurrent,
   type MemoryLiveSummary,
@@ -125,7 +118,6 @@ type TabId =
   | "relations"
   | "agenda"
   | "projects"
-  | "chat"
   | "activity"
   | "automation"
   | "manual"
@@ -206,7 +198,6 @@ const LIVE_REFRESH_INTERVALS: Record<TabId, number> = {
   relations: 20000,
   agenda: 20000,
   projects: 20000,
-  chat: 10000,
   activity: 12000,
   automation: 12000,
   manual: 20000,
@@ -245,7 +236,6 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { id: "agenda", label: "Agenda", icon: Clock },
       { id: "projects", label: "Projetos", icon: FolderGit2 },
-      { id: "chat", label: "Chat Pessoal", icon: MessageSquare },
     ],
   },
   {
@@ -282,11 +272,6 @@ const ANALYZE_STEPS: AgentStep[] = [
   },
   {
     threshold: 56,
-    label: "Lendo o chat pessoal",
-    detail: "Usando o que o dono já revelou para reforçar objetivos, preocupações e preferências.",
-  },
-  {
-    threshold: 78,
     label: "Consolidando memoria",
     detail: "Transformando sinais dispersos em um perfil mais util e mais fiel ao dono.",
   },
@@ -514,7 +499,7 @@ function buildActivityThinking(args: {
 
   if (hasMemory) {
     lines.push(
-      `Hoje a base consolidada cruza ${snapshotsCount} snapshots, ${projectsCount} projetos e o historico do chat pessoal para manter continuidade entre leituras.`,
+      `Hoje a base consolidada cruza ${snapshotsCount} snapshots, ${projectsCount} projetos e o historico do WhatsApp para manter continuidade entre leituras.`,
     );
   } else {
     lines.push("Como ainda nao existe base consolidada, a primeira leitura se apoia principalmente nas mensagens diretas mais recentes para montar a base inicial.");
@@ -900,7 +885,7 @@ function resolveOverviewNextAction(args: {
   title: string;
   detail: string;
   buttonLabel: string;
-  target: "observer" | "memory" | "chat" | "activity";
+  target: "observer" | "memory" | "manual" | "activity";
   tone: "emerald" | "amber" | "indigo" | "zinc";
   badge: string;
 } {
@@ -965,10 +950,10 @@ function resolveOverviewNextAction(args: {
 
   if (latestSnapshot) {
     return {
-      title: "Usar a base no chat pessoal",
-      detail: "Nao ha lote pendente agora. O melhor proximo passo e explorar a memoria consolidada no chat ou acompanhar a atividade ate o proximo sync.",
-      buttonLabel: "Abrir Chat",
-      target: "chat",
+      title: "Explorar a memoria consolidada",
+      detail: "Nao ha lote pendente agora. O melhor proximo passo e revisar a memoria no Manual ou acompanhar a atividade ate o proximo sync.",
+      buttonLabel: "Abrir Manual",
+      target: "manual",
       tone: "emerald",
       badge: "estavel",
     };
@@ -1343,12 +1328,7 @@ export function ConnectionDashboard({
   const [projects, setProjects] = useState<ProjectMemory[]>([]);
   const [relations, setRelations] = useState<PersonRelation[]>([]);
   const [snapshots, setSnapshots] = useState<MemorySnapshot[]>([]);
-  const [chatThreads, setChatThreads] = useState<ChatThread[]>([]);
-  const [activeChatThreadId, setActiveChatThreadId] = useState<string | null>(null);
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [chatThreadTitle, setChatThreadTitle] = useState("Conversa principal");
   const [memoryActivity, setMemoryActivity] = useState<MemoryActivity | null>(null);
-  const [chatDraft, setChatDraft] = useState("");
   const [queuedJobId, setQueuedJobId] = useState<string | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [agentConnectionError, setAgentConnectionError] = useState<string | null>(null);
@@ -1358,7 +1338,6 @@ export function ConnectionDashboard({
   const [relationsError, setRelationsError] = useState<string | null>(null);
   const [agendaError, setAgendaError] = useState<string | null>(null);
   const [agendaActionError, setAgendaActionError] = useState<string | null>(null);
-  const [chatError, setChatError] = useState<string | null>(null);
   const [messageRefreshError, setMessageRefreshError] = useState<string | null>(null);
   const [memoryActivityError, setMemoryActivityError] = useState<string | null>(null);
   const [isHydrating, setIsHydrating] = useState(true);
@@ -1369,11 +1348,6 @@ export function ConnectionDashboard({
   const [isAgentSaving, setIsAgentSaving] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isRefreshingMessages, setIsRefreshingMessages] = useState(false);
-  const [isSendingChat, setIsSendingChat] = useState(false);
-  const [streamingText, setStreamingText] = useState<string | null>(null);
-  const [isLoadingChatThread, setIsLoadingChatThread] = useState(false);
-  const [isCreatingChatThread, setIsCreatingChatThread] = useState(false);
-  const [deletingChatThreadIds, setDeletingChatThreadIds] = useState<string[]>([]);
   const [isClearingDatabase, setIsClearingDatabase] = useState(false);
   const [savingGroupJids, setSavingGroupJids] = useState<string[]>([]);
   const [savingProjectKeys, setSavingProjectKeys] = useState<string[]>([]);
@@ -1407,7 +1381,6 @@ export function ConnectionDashboard({
   const lastQrRefreshAtRef = useRef<number | null>(null);
   const lastAgentQrRefreshAtRef = useRef<number | null>(null);
   const lastAttentionRefreshAtRef = useRef<number | null>(null);
-  const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const observerStatusInFlightRef = useRef(false);
   const agentStatusInFlightRef = useRef(false);
   const dashboardRefreshInFlightRef = useRef(false);
@@ -1488,10 +1461,6 @@ export function ConnectionDashboard({
     };
   }, [agentState, currentMemoryJob, memoryActivity, memoryIsEstablished, queuedJobId]);
   const analysisIsBusy = memoryJobIsPending || queuedJobId !== null || displayAgentState.running;
-  const activeChatThread = useMemo(
-    () => chatThreads.find((thread) => thread.id === activeChatThreadId) ?? chatThreads[0] ?? null,
-    [activeChatThreadId, chatThreads],
-  );
 
   const statusLabel = useMemo(() => {
     if (!status) {
@@ -2024,10 +1993,6 @@ export function ConnectionDashboard({
       return;
     }
 
-    const shouldRefreshChatWorkspace = (
-      activeTab === "manual" ||
-      activeTab === "chat"
-    ) && !isLoadingChatThread && !isCreatingChatThread && !isSendingChat && streamingText === null;
     const shouldRefreshAgentWorkspace = false;
     const shouldRefreshMemoryCurrent = (
       resolvedActiveTab === "overview" ||
@@ -2069,7 +2034,6 @@ export function ConnectionDashboard({
     try {
       const [
         agentWorkspaceResult,
-        chatWorkspaceResult,
         memoryResult,
         memoryGroupsResult,
         agendaResult,
@@ -2080,7 +2044,6 @@ export function ConnectionDashboard({
         automationResult,
       ] = await Promise.allSettled([
         shouldRefreshAgentWorkspace ? getAgentWorkspace(activeAgentThreadId ?? undefined) : Promise.resolve(null),
-        shouldRefreshChatWorkspace ? getChatWorkspace(activeChatThreadId ?? undefined) : Promise.resolve(null),
         shouldRefreshMemoryCurrent ? getCurrentMemory() : Promise.resolve(null),
         shouldRefreshMemoryGroups ? getMemoryGroups() : Promise.resolve(null),
         shouldRefreshAgenda ? getAgendaEvents(120, false) : Promise.resolve(null),
@@ -2098,15 +2061,6 @@ export function ConnectionDashboard({
         });
       } else if (agentWorkspaceResult.status === "rejected" && shouldRefreshAgentWorkspace) {
         setAgentConnectionError(getErrorMessage(agentWorkspaceResult.reason));
-      }
-
-      if (chatWorkspaceResult.status === "fulfilled" && chatWorkspaceResult.value) {
-        const nextChatWorkspace = chatWorkspaceResult.value;
-        startTransition(() => {
-          applyChatWorkspace(nextChatWorkspace);
-        });
-      } else if (chatWorkspaceResult.status === "rejected" && shouldRefreshChatWorkspace) {
-        setChatError(getErrorMessage(chatWorkspaceResult.reason));
       }
 
       if (memoryResult.status === "fulfilled" && memoryResult.value) {
@@ -2229,7 +2183,7 @@ export function ConnectionDashboard({
     }
 
     void refreshLiveDataRef.current?.();
-  }, [activeAgentThreadId, activeChatThreadId, activeTab, isHydrating]);
+  }, [activeAgentThreadId, activeTab, isHydrating]);
 
   useEffect(() => {
     if (isHydrating) {
@@ -2308,13 +2262,6 @@ export function ConnectionDashboard({
   }, [isHydrating]);
 
   useEffect(() => {
-    if (!chatScrollRef.current) {
-      return;
-    }
-    chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
-  }, [chatMessages, activeTab]);
-
-  useEffect(() => {
     if (!memoryActivity) {
       return;
     }
@@ -2363,17 +2310,6 @@ export function ConnectionDashboard({
     }
   }, [memoryActivity, memoryStatus?.current_job, queuedJobId]);
 
-  function applyChatWorkspace(workspace: ChatWorkspace): void {
-    setChatThreads(workspace.threads);
-    setActiveChatThreadId(workspace.active_thread_id);
-    setChatThreadTitle(workspace.session.title);
-    setChatMessages(workspace.session.messages);
-    setProjects(workspace.session.projects);
-    setMemory(workspace.session.current);
-    setChatError(null);
-    setMemoryError(null);
-  }
-
   function applyAgentWorkspace(workspace: WhatsAppAgentWorkspace): void {
     setAgentStatus(workspace.status);
     setAgentSettings(workspace.settings);
@@ -2396,7 +2332,6 @@ export function ConnectionDashboard({
     }
 
     const shouldLoadAgentWorkspace = false;
-    const shouldLoadChatWorkspace = activeTab === "chat" || activeTab === "manual";
     const shouldLoadGroups = activeTab === "groups" || activeTab === "manual";
     const shouldLoadRelations = activeTab === "relations" || activeTab === "manual";
     const shouldLoadAgenda = activeTab === "agenda";
@@ -2407,7 +2342,6 @@ export function ConnectionDashboard({
       statusResult,
       agentStatusResult,
       agentWorkspaceResult,
-      chatResult,
       memoryResult,
       groupsResult,
       agendaResult,
@@ -2420,7 +2354,6 @@ export function ConnectionDashboard({
       getObserverStatus(false),
       Promise.resolve(null),
       shouldLoadAgentWorkspace ? getAgentWorkspace(activeAgentThreadId ?? undefined) : Promise.resolve(null),
-      shouldLoadChatWorkspace ? getChatWorkspace(activeChatThreadId ?? undefined) : Promise.resolve(null),
       getCurrentMemory(),
       shouldLoadGroups ? getMemoryGroups() : Promise.resolve([]),
       shouldLoadAgenda ? getAgendaEvents(120, false) : Promise.resolve([]),
@@ -2459,18 +2392,9 @@ export function ConnectionDashboard({
       setAgentViewState("error");
     }
 
-    if (chatResult.status === "fulfilled" && chatResult.value) {
-      applyChatWorkspace(chatResult.value);
-    } else if (chatResult.status === "rejected") {
-      const message = getErrorMessage(chatResult.reason);
-      setChatError(message);
-    }
-
     if (memoryResult.status === "fulfilled") {
       setMemory(memoryResult.value);
       setMemoryError(null);
-    } else if (!shouldLoadChatWorkspace) {
-      setMemoryError(getErrorMessage(memoryResult.reason));
     }
 
     if (groupsResult.status === "fulfilled" && Array.isArray(groupsResult.value)) {
@@ -2596,7 +2520,7 @@ export function ConnectionDashboard({
       "info",
       intent === "first_analysis"
         ? "Primeira analise iniciada. O agente vai criar a base inicial do dono usando mensagens diretas recentes."
-        : "Atualizacao incremental iniciada. O agente vai combinar mensagens novas com snapshots, projetos e chat pessoal.",
+        : "Atualizacao incremental iniciada. O agente vai combinar mensagens novas com snapshots e projetos.",
     );
   }
 
@@ -2860,7 +2784,7 @@ export function ConnectionDashboard({
     }
 
     const confirmed = window.confirm(
-      "Isso vai apagar TODOS os dados salvos no banco de dados local, incluindo memoria, mensagens, snapshots, chat, sessoes e configuracoes persistidas. Deseja continuar?",
+      "Isso vai apagar TODOS os dados salvos no banco de dados local, incluindo memoria, mensagens, snapshots, sessoes e configuracoes persistidas. Deseja continuar?",
     );
     if (!confirmed) {
       return;
@@ -2892,112 +2816,6 @@ export function ConnectionDashboard({
     }
   }
 
-  async function openChatThread(threadId: string): Promise<void> {
-    if (!threadId || threadId === activeChatThreadId) {
-      return;
-    }
-
-    setIsLoadingChatThread(true);
-    setChatError(null);
-    try {
-      const workspace = await getChatWorkspace(threadId);
-      applyChatWorkspace(workspace);
-      setActiveTab("chat");
-    } catch (error) {
-      setChatError(getErrorMessage(error));
-      setActiveTab("chat");
-    } finally {
-      setIsLoadingChatThread(false);
-    }
-  }
-
-  async function startNewChatThread(): Promise<void> {
-    setIsCreatingChatThread(true);
-    setChatError(null);
-    try {
-      const workspace = await createChatThread();
-      applyChatWorkspace(workspace);
-      setChatDraft("");
-      setActiveTab("chat");
-      pushAgentLog("info", "Nova thread criada. O contexto da memória continua disponível nessa conversa.");
-    } catch (error) {
-      setChatError(getErrorMessage(error));
-      setActiveTab("chat");
-    } finally {
-      setIsCreatingChatThread(false);
-    }
-  }
-
-  async function removeChatThread(thread: ChatThread): Promise<void> {
-    if (!thread.can_delete || deletingChatThreadIds.includes(thread.id)) {
-      return;
-    }
-
-    const confirmed = window.confirm(`Excluir a conversa "${thread.title}"? Isso também apaga as mensagens dela no banco local.`);
-    if (!confirmed) {
-      return;
-    }
-
-    setDeletingChatThreadIds((previous) => [...previous, thread.id]);
-    setChatError(null);
-    try {
-      const workspace = await deleteChatThread(thread.id);
-      applyChatWorkspace(workspace);
-      setChatDraft("");
-      setActiveTab("chat");
-      pushAgentLog("success", `Conversa pessoal excluída: ${thread.title}. Os registros também saíram do banco local.`);
-    } catch (error) {
-      const message = getErrorMessage(error);
-      setChatError(message);
-      setActiveTab("chat");
-      pushAgentLog("error", `Falha ao excluir a conversa pessoal: ${message}`);
-    } finally {
-      setDeletingChatThreadIds((previous) => previous.filter((id) => id !== thread.id));
-    }
-  }
-
-  async function submitChatMessage(): Promise<void> {
-    const normalized = chatDraft.trim();
-    if (!normalized) {
-      setChatError("Escreva uma mensagem para enviar.");
-      return;
-    }
-
-    setIsSendingChat(true);
-    setChatError(null);
-    setChatDraft("");
-
-    // ── Smart context builder: scores all knowledge sources by relevance to the user's question ──
-    const contextHint = buildSmartContextHint(normalized, projects, snapshots, memory);
-
-    // Optimistically add user message to the list
-    const tempUserMsg: ChatMessage = {
-      id: `temp-${Date.now()}`,
-      role: "user",
-      content: normalized,
-      created_at: new Date().toISOString(),
-    };
-    setChatMessages((prev) => [...prev, tempUserMsg]);
-    setStreamingText("");
-
-    try {
-      for await (const event of sendChatMessageStream(normalized, activeChatThreadId ?? undefined, contextHint)) {
-        if (event.type === "token") {
-          setStreamingText((prev) => (prev ?? "") + event.content);
-        } else if (event.type === "done") {
-          setStreamingText(null);
-          applyChatWorkspace(event.workspace);
-          pushAgentLog("info", "Nova conversa salva no chat. Esse contexto entra nas próximas leituras da memória.");
-        }
-      }
-    } catch (error) {
-      setStreamingText(null);
-      setChatError(getErrorMessage(error));
-      setActiveTab("chat");
-    } finally {
-      setIsSendingChat(false);
-    }
-  }
 
   async function refreshAgentWorkspace(threadId?: string): Promise<void> {
     try {
@@ -3176,7 +2994,7 @@ export function ConnectionDashboard({
           {isHydrating ? (
             <Card className="ac-loading-card">
               <SectionTitle title="Carregando AuraCore" icon={RefreshCw} />
-              <p>Buscando status do observador, perfil atual, relações, snapshots, projetos e histórico do chat.</p>
+              <p>Buscando status do observador, perfil atual, relações, snapshots e projetos.</p>
             </Card>
           ) : (
             <>
@@ -3192,7 +3010,6 @@ export function ConnectionDashboard({
                   insightMetrics={insightMetrics}
                   onGoToObserver={() => setActiveTab("observer")}
                   onGoToMemory={() => setActiveTab("memory")}
-                  onGoToChat={() => setActiveTab("chat")}
                 />
               ) : null}
 
@@ -3278,28 +3095,6 @@ export function ConnectionDashboard({
                 />
               ) : null}
 
-              {resolvedActiveTab === "chat" ? (
-                <ChatTab
-                  chatThreads={chatThreads}
-                  activeChatThread={activeChatThread}
-                  chatMessages={chatMessages}
-                  chatDraft={chatDraft}
-                  chatError={chatError}
-                  streamingText={streamingText}
-                  isSendingChat={isSendingChat}
-                  isLoadingChatThread={isLoadingChatThread}
-                  isCreatingChatThread={isCreatingChatThread}
-                  deletingChatThreadIds={deletingChatThreadIds}
-                  chatScrollRef={chatScrollRef}
-                  onChatDraftChange={setChatDraft}
-                  onSelectThread={(threadId) => void openChatThread(threadId)}
-                  onCreateThread={() => void startNewChatThread()}
-                  onDeleteThread={(thread) => void removeChatThread(thread)}
-                  onApplyPrompt={setChatDraft}
-                  onSubmit={() => void submitChatMessage()}
-                />
-              ) : null}
-
               {resolvedActiveTab === "automation" ? (
                 <AutomationTab
                   automationStatus={automationStatus}
@@ -3319,8 +3114,6 @@ export function ConnectionDashboard({
                   memory={memory}
                   projects={projects}
                   snapshots={snapshots}
-                  chatThreads={chatThreads}
-                  chatMessages={chatMessages}
                   automationStatus={automationStatus}
                 />
               ) : null}
@@ -3346,7 +3139,6 @@ function OverviewTab({
   insightMetrics,
   onGoToObserver,
   onGoToMemory,
-  onGoToChat,
 }: {
   memory: MemoryCurrent | null;
   memoryStatus: MemoryStatus | null;
@@ -3358,7 +3150,6 @@ function OverviewTab({
   insightMetrics: InsightMetric[];
   onGoToObserver: () => void;
   onGoToMemory: () => void;
-  onGoToChat: () => void;
 }) {
   const [subTab, setSubTab] = useState<"summary" | "mapping" | "signals">("summary");
   const structuralStrengths = memory?.structural_strengths?.length ? memory.structural_strengths : (latestSnapshot?.key_learnings ?? []);
@@ -3383,10 +3174,6 @@ function OverviewTab({
     }
     if (nextAction.target === "memory") {
       onGoToMemory();
-      return;
-    }
-    if (nextAction.target === "chat") {
-      onGoToChat();
       return;
     }
     onGoToMemory();
@@ -3418,10 +3205,10 @@ function OverviewTab({
       state: hasMemoryBase ? "ok" : currentJob ? "active" : "pending",
     },
     {
-      title: "Usar no chat e nas operacoes",
+      title: "Usar nas operacoes",
       detail: hasMemoryBase
-        ? "O chat pessoal e os projetos ja podem reaproveitar a memoria consolidada."
-        : "Depois da primeira leitura, o chat passa a responder com base no perfil salvo.",
+        ? "Os projetos ja podem reaproveitar a memoria consolidada."
+        : "Depois da primeira leitura, o sistema passa a trabalhar com base no perfil salvo.",
       state: hasMemoryBase ? "ok" : "pending",
     },
   ];
@@ -4933,7 +4720,7 @@ function MemoryTab({
             <p className="lead-copy">
               {memory?.life_summary?.trim()
                 ? memory.life_summary
-                : "Nenhum resumo consolidado ainda. Assim que a primeira leitura rodar, este bloco vira a visao mais util do dono para o chat e para futuras atualizacoes manuais."}
+                : "Nenhum resumo consolidado ainda. Assim que a primeira leitura rodar, este bloco vira a visao mais util do dono para futuras atualizacoes manuais."}
             </p>
           </Card>
 
@@ -6778,226 +6565,6 @@ function ProjectsTab({
   );
 }
 
-function ChatTab({
-  chatThreads,
-  activeChatThread,
-  chatMessages,
-  chatDraft,
-  chatError,
-  streamingText,
-  isSendingChat,
-  isLoadingChatThread,
-  isCreatingChatThread,
-  deletingChatThreadIds,
-  chatScrollRef,
-  onChatDraftChange,
-  onSelectThread,
-  onCreateThread,
-  onDeleteThread,
-  onApplyPrompt,
-  onSubmit,
-}: {
-  chatThreads: ChatThread[];
-  activeChatThread: ChatThread | null;
-  chatMessages: ChatMessage[];
-  chatDraft: string;
-  chatError: string | null;
-  streamingText: string | null;
-  isSendingChat: boolean;
-  isLoadingChatThread: boolean;
-  isCreatingChatThread: boolean;
-  deletingChatThreadIds: string[];
-  chatScrollRef: React.RefObject<HTMLDivElement | null>;
-  onChatDraftChange: (value: string) => void;
-  onSelectThread: (threadId: string) => void;
-  onCreateThread: () => void;
-  onDeleteThread: (thread: ChatThread) => void;
-  onApplyPrompt: (value: string) => void;
-  onSubmit: () => void;
-}) {
-  const quickPrompts = [
-    "Me diga o que ficou pendente nos meus projetos.",
-    "Resuma meu perfil de decisão.",
-    "Monte um plano de prioridades para hoje.",
-  ];
-
-  const [threadSearch, setThreadSearch] = useState("");
-
-  const filteredThreads = useMemo(() => {
-    if (!threadSearch.trim()) return chatThreads;
-    const lowerSearch = threadSearch.toLowerCase();
-    return chatThreads.filter((t) => t.title.toLowerCase().includes(lowerSearch));
-  }, [chatThreads, threadSearch]);
-
-  const handleDraftChange = (val: string) => {
-    // Regex shortcuts
-    let newDraft = val;
-    // Replace "/hoje" with current localized date
-    newDraft = newDraft.replace(/(?:\b|^)\/hoje\b/gi, new Date().toLocaleDateString("pt-BR"));
-    newDraft = newDraft.replace(/(?:\b|^)\/amanha\b/gi, () => {
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      return tomorrow.toLocaleDateString("pt-BR");
-    });
-    // Replace "/tarefas" with quick prompt
-    newDraft = newDraft.replace(/(?:\b|^)\/tarefas\b/gi, "liste as tarefas pendentes extraídas da minha memória");
-    
-    onChatDraftChange(newDraft);
-  };
-
-  return (
-    <div className="gpt-chat-layout">
-      {/* Thread Sidebar */}
-      <aside className="gpt-thread-sidebar">
-        <div className="gpt-thread-sidebar-top">
-          <button className="gpt-new-chat-btn" onClick={onCreateThread} disabled={isCreatingChatThread} type="button">
-            <Plus size={16} />
-            {isCreatingChatThread ? "Criando..." : "Nova conversa"}
-          </button>
-          <div className="gpt-thread-search-box" style={{ marginTop: "0.75rem", position: "relative" }}>
-            <Search size={14} style={{ position: "absolute", left: "10px", top: "50%", transform: "translateY(-50%)", color: "var(--color-zinc-400)" }} />
-            <input 
-              type="text" 
-              className="ac-input" 
-              placeholder="Buscar histórico..." 
-              value={threadSearch}
-              onChange={(e) => setThreadSearch(e.target.value)}
-              style={{ paddingLeft: "1.8rem", width: "100%", fontSize: "0.85rem" }}
-            />
-          </div>
-        </div>
-
-        <div className="gpt-thread-list">
-          {filteredThreads.length === 0 ? (
-            <p className="gpt-thread-empty">Nenhuma conversa encontrada.</p>
-          ) : (
-            filteredThreads.map((thread) => {
-              const active = activeChatThread?.id === thread.id;
-              const isDeleting = deletingChatThreadIds.includes(thread.id);
-              return (
-                <div key={thread.id} className={`gpt-thread-item${active ? " gpt-thread-item-active" : ""}`}>
-                  <button
-                    className="gpt-thread-item-main"
-                    onClick={() => onSelectThread(thread.id)}
-                    type="button"
-                  >
-                    <MessageSquare size={14} />
-                    <span className="gpt-thread-title">{truncateText(thread.title, 32)}</span>
-                    <span className="gpt-thread-time">{formatRelativeTime(thread.last_message_at ?? thread.updated_at)}</span>
-                  </button>
-                  {thread.can_delete ? (
-                    <button
-                      className="gpt-thread-delete-btn"
-                      onClick={() => onDeleteThread(thread)}
-                      type="button"
-                      disabled={isDeleting}
-                      aria-label={`Excluir conversa ${thread.title}`}
-                      title={isDeleting ? "Excluindo..." : "Excluir conversa"}
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  ) : null}
-                </div>
-              );
-            })
-          )}
-        </div>
-      </aside>
-
-      {/* Main Chat Area */}
-      <section className="gpt-chat-main">
-        {/* Messages */}
-        <div ref={chatScrollRef} className="gpt-messages-scroll">
-          <div className="gpt-messages-container">
-            {isLoadingChatThread ? (
-              <div className="gpt-empty-state">
-                <RefreshCw size={20} className="spin" />
-                <p>Carregando conversa...</p>
-              </div>
-            ) : chatMessages.length === 0 && streamingText === null ? (
-              <div className="gpt-empty-state">
-                <div className="gpt-empty-icon">
-                  <Brain size={32} />
-                </div>
-                <h3>Orion</h3>
-                <p>Como posso ajudar você hoje?</p>
-                <div className="gpt-suggestions">
-                  {quickPrompts.map((prompt) => (
-                    <button key={prompt} onClick={() => onApplyPrompt(prompt)} type="button" className="gpt-suggestion-btn">
-                      <Sparkles size={14} />
-                      {prompt}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <>
-                {chatMessages.map((message) => (
-                  <div key={message.id} className={`gpt-message-row${message.role === "user" ? " gpt-message-user" : ""}`}>
-                    <div className={`gpt-msg-avatar${message.role === "user" ? " gpt-msg-avatar-user" : ""}`}>
-                      {message.role === "assistant" ? <Bot size={16} /> : <User size={16} />}
-                    </div>
-                    <div className="gpt-msg-content">
-                      <div className="gpt-msg-meta">
-                        <strong>{message.role === "assistant" ? "Orion" : "Você"}</strong>
-                        <span>{formatShortDateTime(message.created_at)}</span>
-                      </div>
-                      <div className={`gpt-msg-bubble${message.role === "user" ? " gpt-msg-bubble-user" : ""}`}>
-                        <p>{message.content}</p>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-
-                {/* Streaming response */}
-                {streamingText !== null ? (
-                  <div className="gpt-message-row">
-                    <div className="gpt-msg-avatar">
-                      <Bot size={16} />
-                    </div>
-                    <div className="gpt-msg-content">
-                      <div className="gpt-msg-meta">
-                        <strong>Orion</strong>
-                        <span className="gpt-typing-indicator">digitando...</span>
-                      </div>
-                      <div className="gpt-msg-bubble">
-                        <p>{streamingText}<span className="gpt-cursor">▊</span></p>
-                      </div>
-                    </div>
-                  </div>
-                ) : null}
-              </>
-            )}
-          </div>
-        </div>
-
-        {/* Composer */}
-        <div className="gpt-composer-wrap">
-          {chatError ? <InlineError title="Falha no chat" message={chatError} /> : null}
-          <div className="gpt-composer">
-            <textarea
-              rows={1}
-              value={chatDraft}
-              onChange={(event) => handleDraftChange(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault();
-                  onSubmit();
-                }
-              }}
-              placeholder="Envie uma mensagem..."
-              disabled={isSendingChat}
-            />
-            <button className="gpt-send-btn" onClick={onSubmit} disabled={isSendingChat || !chatDraft.trim()} type="button">
-              <Send size={18} />
-            </button>
-          </div>
-          <p className="gpt-composer-note">Pressione Enter para enviar.</p>
-        </div>
-      </section>
-    </div>
-  );
-}
 
 
 function ActivityTab({
@@ -7205,7 +6772,7 @@ function ActivityTab({
             <MemorySignalCard
               label="Base já conhecida"
               value={`${formatTokenCount(snapshotsCount)} snapshots / ${formatTokenCount(projectsCount)} projetos`}
-              meta={memoryReady ? "Também cruza com o chat pessoal salvo" : "Primeira base ainda será criada"}
+              meta={memoryReady ? "Pronta para uso nas operações" : "Primeira base ainda será criada"}
               tone="zinc"
             />
             <MemorySignalCard
@@ -7607,23 +7174,18 @@ function ManualTab({
   memory,
   projects,
   snapshots,
-  chatThreads,
-  chatMessages,
   automationStatus,
 }: {
   status: ObserverStatus | null;
   memory: MemoryCurrent | null;
   projects: ProjectMemory[];
   snapshots: MemorySnapshot[];
-  chatThreads: ChatThread[];
-  chatMessages: ChatMessage[];
   automationStatus: AutomationStatus | null;
 }) {
   const [manualSubTab, setManualSubTab] = useState<"overview" | "flow" | "architecture" | "data" | "operations">("overview");
   const latestSnapshot = snapshots[0] ?? null;
   const memoryReady = Boolean(memory?.last_analyzed_at);
   const projectCount = projects.length;
-  const threadCount = chatThreads.length;
   const manualTabs = [
     "Visao Geral",
     "Fluxo Real",
@@ -7643,8 +7205,7 @@ function ManualTab({
           <h3>O AuraCore e um operador de contexto pessoal em cima do WhatsApp.</h3>
           <p>
             Ele conecta o observador, filtra conversas uteis, consolida memoria do dono, salva memoria por
-            pessoa, organiza projetos e ainda oferece um chat pessoal que responde usando
-            esse contexto inteiro. Grupos so entram depois da base inicial e apenas quando voce ativa na aba Grupos.
+            pessoa e organiza projetos. Grupos so entram depois da base inicial e apenas quando voce ativa na aba Grupos.
           </p>
         </div>
         <div className="manual-hero-stats">
@@ -7703,7 +7264,7 @@ function ManualTab({
             <div className="manual-grid">
               <div className="manual-list">
                 <p>O site e dividido em duas camadas. A primeira e operacional: conectar o WhatsApp, ler mensagens, acompanhar a fila e ver os jobs. A segunda e cognitiva: consolidar memoria, mapear projetos e conversar com contexto.</p>
-                <p>O Observador cuida da entrada. A Memoria cuida da consolidacao. Projetos guardam o que merece sobreviver. O Chat usa tudo isso para responder. Atividade mostra o que o backend fez ou esta fazendo.</p>
+                <p>O Observador cuida da entrada. A Memoria cuida da consolidacao. Projetos guardam o que merece sobreviver. Atividade mostra o que o backend fez ou esta fazendo.</p>
               </div>
               <div className="manual-list">
                 <p>Para o usuario final, a ideia e simples: conectar, fazer a primeira analise, puxar mensagens novas quando quiser e rodar a analise manual para manter o contexto vivo.</p>
@@ -7720,7 +7281,6 @@ function ManualTab({
               <ManualInfoCard title="Grupos" text="Lista os grupos vistos no historico sincronizado. Todos nascem desativados e so entram na memoria incremental quando voce ativa." icon={Users} tone="amber" />
               <ManualInfoCard title="Memoria" text="Aqui nasce e evolui a memoria central. Primeira analise, lotes economicos de mensagens novas, estado da fila e resumo do dono." icon={Database} tone="indigo" />
               <ManualInfoCard title="Projetos" text="Organiza frentes reais detectadas nas conversas, com resumo, status, evidencias e proximos passos." icon={FolderGit2} tone="emerald" />
-              <ManualInfoCard title="Chat Pessoal" text="Thread por assunto usando a memoria central. Bom para separar estrategia, rotina, vendas, produto e operacao." icon={MessageSquare} tone="indigo" />
               <ManualInfoCard title="Atividade" text="Mostra o pipeline trabalhando: logs, lotes, trilha de execucao e o melhor raciocinio operacional salvo." icon={Activity} tone="emerald" />
               <ManualInfoCard title="Atividade Manual" text="Mostra syncs recentes, jobs manuais e execucoes de modelo persistidas no backend." icon={Terminal} tone="zinc" />
             </div>
@@ -7739,7 +7299,6 @@ function ManualTab({
               <ManualStep title="4. Atualizar por contato" text="Durante as analises, o sistema tenta entender com quem e cada conversa e atualiza memorias separadas por pessoa." icon={User} tone="indigo" />
               <ManualStep title="5. Processar em lotes" text="Depois da base inicial, o backend passa a trabalhar em lotes economicos de mensagens novas." icon={RefreshCw} tone="emerald" />
               <ManualStep title="6. Salvar o que dura" text="O processamento atualiza resumo do dono, snapshots e projetos." icon={FolderGit2} tone="amber" />
-              <ManualStep title="7. Reutilizar no chat" text="O chat pessoal consome a memoria consolidada, projetos e contexto da thread." icon={MessageSquare} tone="indigo" />
             </div>
           </Card>
 
@@ -7749,7 +7308,7 @@ function ManualTab({
               <ManualInfoCard title="Puxar Novas Mensagens" text="Forca uma releitura das conversas recentes e atualiza a fila operacional no banco." icon={RefreshCw} tone="indigo" />
               <ManualInfoCard title="Primeira Analise" text="Cria a base inicial da memoria quando o sistema ainda nao conhece bem o dono." icon={Play} tone="emerald" />
               <ManualInfoCard title="Executar Analise" text="Usa as mensagens pendentes mais a memoria ja salva para atualizar resumo e projetos de forma incremental." icon={Sparkles} tone="indigo" />
-              <ManualInfoCard title="Nova Conversa" text="Abre uma thread nova no chat sem perder a memoria central nem o restante do historico salvo." icon={Plus} tone="amber" />
+              <ManualInfoCard title="Nova Conversa" text="Abre uma nova thread de conversa mantendo a memoria central e o historico salvo." icon={Plus} tone="amber" />
               <ManualInfoCard title="Rodar Tick" text="Executa o ciclo da automacao manualmente: fecha syncs, registra decisoes e tenta processar a fila." icon={Zap} tone="emerald" />
             </div>
           </Card>
@@ -7761,10 +7320,10 @@ function ManualTab({
           <Card>
             <SectionTitle title="Arquitetura Em Camadas" icon={Server} />
             <div className="manual-grid">
-              <ManualInfoCard title="Frontend" text="O painel organiza as abas de operacao, memoria, atividade e chat. Ele consulta a API e mostra o estado persistido do sistema." icon={Smartphone} tone="indigo" />
-              <ManualInfoCard title="Backend FastAPI" text="Coordena observador, memoria, automacao, chat e persistencia. E onde ficam as regras de selecao de mensagens." icon={Server} tone="emerald" />
-              <ManualInfoCard title="Banco local SQLite" text="Armazena mensagens operacionais, snapshots, persona, projetos, memorias por pessoa, threads do chat e trilhas." icon={Database} tone="amber" />
-              <ManualInfoCard title="Modelos de IA" text="O motor de analise consolida memoria e o chat responde usando o contexto salvo do banco de dados local." icon={Brain} tone="indigo" />
+              <ManualInfoCard title="Frontend" text="O painel organiza as abas de operacao, memoria, atividade e outras. Ele consulta a API e mostra o estado persistido do sistema." icon={Smartphone} tone="indigo" />
+              <ManualInfoCard title="Backend FastAPI" text="Coordena observador, memoria, automacao e persistencia. E onde ficam as regras de selecao de mensagens." icon={Server} tone="emerald" />
+              <ManualInfoCard title="Banco local SQLite" text="Armazena mensagens operacionais, snapshots, persona, projetos, memorias por pessoa e trilhas." icon={Database} tone="amber" />
+              <ManualInfoCard title="Modelos de IA" text="O motor de analise consolida memoria usando o contexto salvo do banco de dados local." icon={Brain} tone="indigo" />
             </div>
           </Card>
 
@@ -7773,7 +7332,7 @@ function ManualTab({
             <div className="manual-list">
               <p>Observador envia mensagens para o backend. O backend decide o que entra em `mensagens`, separa diretas de grupos e atualiza a fila operacional.</p>
               <p>A Memoria seleciona uma janela ou um lote, monta o prompt com contexto consolidado e grava de volta os resultados mais importantes.</p>
-              <p>O Chat nao le o WhatsApp cru. Ele conversa em cima da memoria consolidada, do historico da thread atual, dos projetos e dos sinais duraveis.</p>
+              <p>A analise nao le o WhatsApp cru. Ela trabalha em cima da memoria consolidada, dos projetos e dos sinais duraveis.</p>
               <p>A Automacao observa se existe memoria base, conta mensagens novas e enfileira no maximo um lote automatico por ciclo quando faz sentido.</p>
             </div>
           </Card>
@@ -7789,7 +7348,6 @@ function ManualTab({
               <ManualInfoCard title="persona & snapshots" text="Resumo principal do dono e historico consolidado." icon={Fingerprint} tone="emerald" />
               <ManualInfoCard title="person_memories" text="Memoria separada por contato ou participante progressivamente." icon={User} tone="amber" />
               <ManualInfoCard title="project_memories" text="Projetos, frentes, entregas com base nas conversas." icon={FolderGit2} tone="indigo" />
-              <ManualInfoCard title="chat_threads" text="Threads do chat pessoal para separar contextos." icon={MessageSquare} tone="zinc" />
               <ManualInfoCard title="Logs do motor" text="Auditoria operacional sincronizada, processada e executada." icon={Activity} tone="emerald" />
               <ManualInfoCard title="wa_sessions" text="Estado de sessao e chaves locais." icon={Eye} tone="zinc" />
             </div>
@@ -7837,7 +7395,7 @@ function ManualTab({
               />
               <ManualInfoCard
                 title="Projetos e Threads"
-                text={`${projectCount} projeto(s) consolidado(s), ${threadCount} thread(s) no chat e ${chatMessages.length} mensagem(ns) na thread aberta.`}
+                text={`${projectCount} projeto(s) consolidado(s).`}
               />
               <ManualInfoCard
                 title="Fila Manual"
@@ -7857,7 +7415,6 @@ function ManualTab({
             <div className="manual-grid">
               <ManualInfoCard title="Sem mensagens" text="Olhe primeiro a aba Observador e a releitura manual." icon={AlertCircle} tone="amber" />
               <ManualInfoCard title="Sem memoria base" text="Rode manualmente a primeira analise na aba Memoria." icon={Database} tone="indigo" />
-              <ManualInfoCard title="Chat ruim/vazio" text="Confira se ja existe memoria consolidada e historico." icon={XCircle} tone="emerald" />
               <ManualInfoCard title="Fila travada" text="Use Atividade e Automacao para ver rastro." icon={Terminal} tone="zinc" />
             </div>
           </Card>

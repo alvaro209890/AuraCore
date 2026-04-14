@@ -258,7 +258,7 @@ class AgendaGuardianService:
                         event_id=event.id,
                         reminded_at=now,
                     )
-                    await self._log_debug(
+                    self._log_debug(
                         f"[Guardião do Tempo] Lembrete antecipado suprimido para '{event.titulo}' porque o evento esta tentativo."
                     )
                     continue
@@ -268,7 +268,7 @@ class AgendaGuardianService:
                         event_id=event.id,
                         reminded_at=now,
                     )
-                    await self._log_debug(
+                    self._log_debug(
                         f"[Guardião do Tempo] Lembrete antecipado suprimido para '{event.titulo}' porque o horário já chegou."
                     )
                     continue
@@ -293,7 +293,7 @@ class AgendaGuardianService:
                         event_id=event.id,
                         reminded_at=now,
                     )
-                    await self._log_debug(
+                    self._log_debug(
                         f"[Guardião do Tempo] Lembrete no horario suprimido para '{event.titulo}' porque o evento esta tentativo."
                     )
                     continue
@@ -303,7 +303,7 @@ class AgendaGuardianService:
                         event_id=event.id,
                         reminded_at=now,
                     )
-                    await self._log_debug(
+                    self._log_debug(
                         f"[Guardião do Tempo] Lembrete retroativo suprimido para '{event.titulo}' ({self._format_local(event.inicio)})."
                     )
                     continue
@@ -323,7 +323,7 @@ class AgendaGuardianService:
                 raise
             except Exception as exc:
                 logger.warning("agenda_reminder_loop_failed user_id=%s detail=%s", self.settings.default_user_id, str(exc))
-                await self._log_debug(f"[Guardião do Tempo] Falha no loop de lembretes: {str(exc)}")
+                self._log_debug(f"[Guardião do Tempo] Falha no loop de lembretes: {str(exc)}")
             await asyncio.sleep(REMINDER_LOOP_INTERVAL_SECONDS)
 
     async def _process_candidate(
@@ -356,7 +356,7 @@ class AgendaGuardianService:
             deleted = self.store.delete_agenda_event(user_id=user_id, event_id=target_event.id)
             if not deleted:
                 return AgendaProcessingResult(action="cancel", skipped_reason="cancel_apply_failed")
-            await self._log_debug(
+            self._log_debug(
                 f"[Guardião do Tempo] Compromisso cancelado: '{target_event.titulo}' em {self._format_local(target_event.inicio)}."
             )
             return AgendaProcessingResult(
@@ -373,7 +373,7 @@ class AgendaGuardianService:
                     reminder_offset_minutes=reminder_offset_minutes,
                 )
                 if updated_event is not None:
-                    await self._log_debug(
+                    self._log_debug(
                         f"[Guardião do Tempo] Antecedência atualizada para '{updated_event.titulo}': {reminder_offset_minutes} minuto(s) antes em horário de Brasília."
                     )
                     return AgendaProcessingResult(
@@ -391,7 +391,7 @@ class AgendaGuardianService:
                 )
             return AgendaProcessingResult(action=action, skipped_reason="no_schedule_signal")
 
-        await self._log_debug(
+        self._log_debug(
             f"[Guardião do Tempo] Sinal temporal detectado em {source_label}: {normalized_text}"
         )
 
@@ -401,7 +401,7 @@ class AgendaGuardianService:
                 reference_now=occurred_at.astimezone(DEFAULT_TIMEZONE),
             )
         except Exception as exc:
-            await self._log_debug(f"[Guardião do Tempo] Falha na extração estruturada: {str(exc)}")
+            self._log_debug(f"[Guardião do Tempo] Falha na extração estruturada: {str(exc)}")
             logger.warning("agenda_extraction_failed message_id=%s detail=%s", message_id, str(exc))
             return AgendaProcessingResult(skipped_reason="extract_failed")
 
@@ -432,7 +432,7 @@ class AgendaGuardianService:
         resolved_status = self._resolve_status(extraction=extraction, source_text=normalized_text)
         inicio = self._normalize_datetime(extraction.data_inicio, reference=occurred_at)
         if inicio is None:
-            await self._log_debug("[Guardião do Tempo] Extração retornou data_inicio inválida.")
+            self._log_debug("[Guardião do Tempo] Extração retornou data_inicio inválida.")
             return self._clarification_result(
                 action="clarify",
                 reason="invalid_start",
@@ -446,7 +446,7 @@ class AgendaGuardianService:
             fim = inicio + timedelta(minutes=duration_minutes) if duration_minutes > 0 else inicio + DEFAULT_EVENT_DURATION
 
         if self._should_require_clarification(extraction=extraction, source_text=normalized_text, action=resolved_action):
-            await self._log_debug(
+            self._log_debug(
                 "[Guardião do Tempo] Sinal de agenda bloqueado por ambiguidade ou baixa confianca."
             )
             return self._clarification_result(
@@ -475,7 +475,7 @@ class AgendaGuardianService:
                 source_text=normalized_text,
                 current_event=target_event,
             )
-        await self._log_debug(
+        self._log_debug(
             f"[Guardião do Tempo] Extração válida: '{titulo}' em {self._format_local(inicio)} ({resolved_status})."
         )
 
@@ -513,18 +513,18 @@ class AgendaGuardianService:
                 message_id=message_id,
                 reminder_offset_minutes=reminder_offset_minutes,
             )
-        await self._log_debug(
+        self._log_debug(
             f"[Guardião do Tempo] Compromisso salvo: '{saved_event.titulo}' de {self._format_local(saved_event.inicio)} até {self._format_local(saved_event.fim)}."
         )
         if reminder_offset_minutes > 0:
-            await self._log_debug(
+            self._log_debug(
                 f"[Guardião do Tempo] Lembrete antecipado configurado para {reminder_offset_minutes} minuto(s) antes, em horário de Brasília."
             )
 
         conflict_event = conflicts[0] if conflicts else None
         alert_sent = False
         if conflict_event is not None:
-            await self._log_debug(
+            self._log_debug(
                 f"[Guardião do Tempo] Conflito detectado com '{conflict_event.titulo}' em {self._format_local(conflict_event.inicio)}."
             )
             if should_send_conflict_alert:
@@ -641,7 +641,7 @@ class AgendaGuardianService:
     async def _send_conflict_alert(self, *, new_event: AgendaEventRecord, existing_event: AgendaEventRecord) -> bool:
         owner_target = await self._resolve_owner_chat_target(preferred_channel="agent")
         if not owner_target:
-            await self._log_debug("[Guardião do Tempo] Conflito detectado, mas o número conectado não foi localizado.")
+            self._log_debug("[Guardião do Tempo] Conflito detectado, mas o número conectado não foi localizado.")
             return False
         message_text = (
             "⚠️ AuraCore: conflito de agenda identificado.\n"
@@ -659,10 +659,10 @@ class AgendaGuardianService:
                 new_event=new_event,
                 existing_event=existing_event,
             )
-            await self._log_debug("[Guardião do Tempo] Alerta de conflito enviado pelo agente ao usuário.")
+            self._log_debug("[Guardião do Tempo] Alerta de conflito enviado pelo agente ao usuário.")
             return True
         except Exception as exc:
-            await self._log_debug(f"[Guardião do Tempo] Falha ao enviar alerta: {str(exc)}")
+            self._log_debug(f"[Guardião do Tempo] Falha ao enviar alerta: {str(exc)}")
             logger.warning(
                 "agenda_conflict_alert_failed message_id=%s conflict_message_id=%s detail=%s",
                 new_event.message_id,
@@ -919,7 +919,7 @@ class AgendaGuardianService:
     async def _send_due_reminder(self, *, event: AgendaEventRecord, phase: str) -> bool:
         owner_target = await self._resolve_owner_chat_target(preferred_channel="agent")
         if not owner_target:
-            await self._log_debug(
+            self._log_debug(
                 f"[Guardião do Tempo] Lembrete de '{event.titulo}' não pôde ser entregue porque o número conectado não foi localizado."
             )
             return False
@@ -944,7 +944,7 @@ class AgendaGuardianService:
 
         try:
             await self.agent_gateway.send_text_message(chat_jid=owner_target, message_text=message_text)
-            await self._log_debug(
+            self._log_debug(
                 f"[Guardião do Tempo] Lembrete {'antecipado' if phase == 'pre' else 'no horário'} enviado para '{event.titulo}'."
             )
             return True
@@ -952,12 +952,12 @@ class AgendaGuardianService:
             logger.warning("agenda_due_reminder_agent_failed event_id=%s detail=%s", event.id, str(agent_exc))
             try:
                 await self.observer_gateway.send_text_message(chat_jid=owner_target, message_text=message_text)
-                await self._log_debug(
+                self._log_debug(
                     f"[Guardião do Tempo] Lembrete {'antecipado' if phase == 'pre' else 'no horário'} enviado via observador para '{event.titulo}'."
                 )
                 return True
             except Exception as observer_exc:
-                await self._log_debug(
+                self._log_debug(
                     f"[Guardião do Tempo] Falha ao enviar lembrete de '{event.titulo}': {str(observer_exc)}"
                 )
                 logger.warning(
@@ -1031,14 +1031,8 @@ class AgendaGuardianService:
             return f"55{digits}"
         return digits
 
-    async def _log_debug(self, content: str) -> None:
-        thread = self.store.get_or_create_chat_thread(user_id=self.settings.default_user_id)
-        self.store.append_chat_message(
-            thread_id=thread.id,
-            role="assistant",
-            content=content,
-            created_at=datetime.now(UTC),
-        )
+    def _log_debug(self, content: str) -> None:
+        logger.debug(content)
 
     def _fallback_title(self, text: str) -> str:
         compact = " ".join(text.split()).strip()

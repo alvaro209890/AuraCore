@@ -81,11 +81,11 @@ class Settings(BaseSettings):
         2,
         alias="MEMORY_FIRST_ANALYSIS_SYNTHESIS_GROUP_SIZE",
     )
-    chat_max_history_messages: int = Field(18, alias="CHAT_MAX_HISTORY_MESSAGES")
-    chat_context_snapshots: int = Field(5, alias="CHAT_CONTEXT_SNAPSHOTS")
-    chat_context_projects: int = Field(8, alias="CHAT_CONTEXT_PROJECTS")
-    chat_context_chars: int = Field(18000, alias="CHAT_CONTEXT_CHARS")
-    chat_max_message_chars: int = Field(2000, alias="CHAT_MAX_MESSAGE_CHARS")
+    context_max_projects: int = Field(8, alias="CONTEXT_MAX_PROJECTS")
+    context_max_snapshots: int = Field(5, alias="CONTEXT_MAX_SNAPSHOTS")
+    context_max_chars: int = Field(18000, alias="CONTEXT_MAX_CHARS")
+    context_max_message_chars: int = Field(2000, alias="CONTEXT_MAX_MESSAGE_CHARS")
+    context_max_history_messages: int = Field(18, alias="CONTEXT_MAX_HISTORY_MESSAGES")
     whatsapp_agent_idle_timeout_minutes: int = Field(10, alias="WHATSAPP_AGENT_IDLE_TIMEOUT_MINUTES")
     message_retention_max_rows: int = Field(160, alias="MESSAGE_RETENTION_MAX_ROWS")
     request_timeout_seconds: float = Field(20.0, alias="REQUEST_TIMEOUT_SECONDS")

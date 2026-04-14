@@ -214,10 +214,6 @@ def get_memory_analysis_service(bundle: ServiceBundle = Depends(get_service_bund
     return bundle.memory_service
 
 
-def get_chat_assistant_service(bundle: ServiceBundle = Depends(get_service_bundle)):
-    return bundle.chat_service
-
-
 def get_memory_job_service(bundle: ServiceBundle = Depends(get_service_bundle)):
     return bundle.memory_job_service
 

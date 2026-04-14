@@ -37,6 +37,7 @@ class AgentLearningOutcome:
     model_run_id: str | None
     learned_at: datetime | None
     memory: WhatsAppAgentContactMemoryRecord | None
+    last_decision: DeepSeekAgentMemoryDecision | None = None
     error_text: str | None = None
 
 
@@ -103,7 +104,7 @@ class WhatsAppAgentService:
         messages = (
             self.store.list_whatsapp_agent_messages(
                 thread_id=active_thread_id,
-                limit=max(1, self.settings.chat_max_history_messages * 4),
+                limit=max(1, self.settings.context_max_history_messages * 4),
             )
             if active_thread_id
             else []
@@ -383,7 +384,7 @@ class WhatsAppAgentService:
         reply_started = perf_counter()
         prior_messages = self.store.list_whatsapp_agent_session_messages(
             session_id=session.id,
-            limit=max(1, self.settings.chat_max_history_messages),
+            limit=max(1, self.settings.context_max_history_messages),
         )
         prior_messages = [message for message in prior_messages if message.id != inbound_message.id]
 
@@ -391,6 +392,11 @@ class WhatsAppAgentService:
         reply_error_text: str | None = None
         reply_model_run_id: str | None = None
         reply_generated_by = "agenda_guardian" if agenda_outcome.detected else "deepseek"
+
+        contact_memory_context = self._build_rich_contact_context(
+            memory=contact_memory,
+            learning_outcome=learning_outcome,
+        )
 
         if agenda_outcome.detected:
             assistant_reply = self._build_agenda_confirmation_reply(agenda_outcome)
@@ -401,7 +407,8 @@ class WhatsAppAgentService:
                     recent_messages=prior_messages,
                     context_hint=None,
                     priority_context=None,
-                    channel="web_chat",
+                    contact_memory_context=contact_memory_context,
+                    channel="whatsapp_agent",
                 )
             except Exception as error:
                 reply_error_text = str(error)
@@ -687,6 +694,7 @@ class WhatsAppAgentService:
                 model_run_id=None,
                 learned_at=None,
                 memory=contact_memory,
+                last_decision=decision,
             )
 
         started = perf_counter()
@@ -734,6 +742,7 @@ class WhatsAppAgentService:
                 model_run_id=model_run_id,
                 learned_at=None,
                 memory=contact_memory,
+                last_decision=decision,
                 error_text=error_text,
             )
 
@@ -752,6 +761,7 @@ class WhatsAppAgentService:
                 model_run_id=model_run_id,
                 learned_at=None,
                 memory=contact_memory,
+                last_decision=decision,
             )
 
         learned_at = datetime.now(UTC)
@@ -777,6 +787,7 @@ class WhatsAppAgentService:
             model_run_id=model_run_id,
             learned_at=learned_at,
             memory=updated_memory,
+            last_decision=decision,
         )
 
     def _persist_contact_memory(
@@ -872,6 +883,32 @@ class WhatsAppAgentService:
             "sou ",
         )
         return any(keyword in normalized for keyword in keywords)
+
+    def _build_rich_contact_context(
+        self,
+        *,
+        memory: WhatsAppAgentContactMemoryRecord | None,
+        learning_outcome: AgentLearningOutcome,
+    ) -> str:
+        base = self._render_contact_memory_context(memory)
+        parts: list[str] = [base] if base else []
+
+        # Inject real-time signals from the latest learning extraction
+        decision = learning_outcome.last_decision
+
+        if decision is not None:
+            if decision.mood_signals:
+                parts.append(f"Humor/estado emocional atual: {'; '.join(decision.mood_signals[:4])}")
+            if decision.implied_urgency:
+                parts.append(f"Urgencia detectada: {decision.implied_urgency}")
+            if decision.mentioned_relationships:
+                parts.append(f"Relacionamentos mencionados: {'; '.join(decision.mentioned_relationships[:4])}")
+            if decision.implied_tasks:
+                parts.append(f"Acoes esperadas: {'; '.join(decision.implied_tasks[:4])}")
+            if decision.writing_style_hints:
+                parts.append(f"Estilo de escrita: {decision.writing_style_hints}")
+
+        return "\n".join(p for p in parts if p).strip()
 
     def _render_contact_memory_context(self, memory: WhatsAppAgentContactMemoryRecord | None) -> str:
         if memory is None:

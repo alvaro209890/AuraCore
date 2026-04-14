@@ -10,7 +10,6 @@ from app.dependencies import get_settings, warm_registered_accounts
 from app.routers.agenda import router as agenda_router
 from app.routers.auth import router as auth_router
 from app.routers.automation import router as automation_router
-from app.routers.chat import router as chat_router
 from app.routers.global_agent import router as global_agent_router
 from app.routers.internal_accounts import router as internal_accounts_router
 from app.routers.internal_agent import router as internal_agent_router
@@ -19,7 +18,6 @@ from app.routers.internal_storage import router as internal_storage_router
 from app.routers.memories import router as memories_router
 from app.routers.observer import router as observer_router
 from app.routers.whatsapp_agent import router as whatsapp_agent_router
-from app.services.chat_service import ChatServiceError
 from app.services.deepseek_service import DeepSeekError
 from app.services.groq_service import GroqChatError
 from app.services.memory_service import MemoryAnalysisError
@@ -47,7 +45,6 @@ app.include_router(agenda_router)
 app.include_router(observer_router)
 app.include_router(global_agent_router)
 app.include_router(memories_router)
-app.include_router(chat_router)
 app.include_router(automation_router)
 app.include_router(internal_accounts_router)
 app.include_router(internal_router)
@@ -82,11 +79,6 @@ async def deepseek_error_handler(_: Request, exc: DeepSeekError) -> JSONResponse
 
 @app.exception_handler(MemoryAnalysisError)
 async def memory_analysis_error_handler(_: Request, exc: MemoryAnalysisError) -> JSONResponse:
-    return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-
-@app.exception_handler(ChatServiceError)
-async def chat_service_error_handler(_: Request, exc: ChatServiceError) -> JSONResponse:
     return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 

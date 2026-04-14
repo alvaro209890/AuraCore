@@ -325,25 +325,6 @@ export type MemoryAnalysisPreview = {
   should_analyze: boolean;
 };
 
-export type ChatMessage = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  created_at: string;
-};
-
-export type ChatThread = {
-  id: string;
-  thread_key: string;
-  title: string;
-  can_delete: boolean;
-  message_count: number;
-  last_message_preview: string | null;
-  last_message_role: "user" | "assistant" | null;
-  last_message_at: string | null;
-  created_at: string;
-  updated_at: string;
-};
 
 export type AnalyzeMemoryResponse = {
   current: MemoryCurrent;
@@ -370,26 +351,6 @@ export type AgendaEventsListResponse = {
   events: AgendaEvent[];
 };
 
-export type ChatSession = {
-  thread_id: string;
-  title: string;
-  current: MemoryCurrent;
-  projects: ProjectMemory[];
-  messages: ChatMessage[];
-};
-
-export type ChatWorkspace = {
-  active_thread_id: string;
-  threads: ChatThread[];
-  session: ChatSession;
-};
-
-export type DeleteChatThreadResponse = {
-  active_thread_id: string;
-  deleted_thread_id: string;
-  threads: ChatThread[];
-  session: ChatSession;
-};
 
 export type SimpleOkResponse = {
   ok: boolean;
@@ -953,62 +914,3 @@ export async function runAutomationTick(): Promise<AutomationStatus> {
   });
 }
 
-export async function getChatSession(threadId?: string): Promise<ChatSession> {
-  const query = threadId ? `?thread_id=${encodeURIComponent(threadId)}` : "";
-  return request<ChatSession>(`/api/chat/session${query}`);
-}
-
-export async function getChatWorkspace(threadId?: string): Promise<ChatWorkspace> {
-  const query = threadId ? `?thread_id=${encodeURIComponent(threadId)}` : "";
-  try {
-    return await request<ChatWorkspace>(`/api/chat/workspace${query}`);
-  } catch (error) {
-    if (threadId) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (/nao foi encontrada|não foi encontrada|status 400|status 404/i.test(message)) {
-        return request<ChatWorkspace>("/api/chat/workspace");
-      }
-    }
-    throw error;
-  }
-}
-
-export async function createChatThread(title?: string): Promise<ChatWorkspace> {
-  return request<ChatWorkspace>("/api/chat/threads", {
-    method: "POST",
-    body: JSON.stringify(title ? { title } : {}),
-  });
-}
-
-export async function deleteChatThread(threadId: string): Promise<DeleteChatThreadResponse> {
-  return request<DeleteChatThreadResponse>(`/api/chat/threads/${encodeURIComponent(threadId)}`, {
-    method: "DELETE",
-  });
-}
-
-export async function sendChatMessage(messageText: string, threadId?: string, contextHint?: string): Promise<ChatWorkspace> {
-  const body: Record<string, unknown> = { message_text: messageText };
-  if (threadId) body.thread_id = threadId;
-  if (contextHint) body.context_hint = contextHint;
-  return request<ChatWorkspace>("/api/chat/messages", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
-}
-
-export type ChatStreamEvent =
-  | { type: "token"; content: string }
-  | { type: "done"; workspace: ChatWorkspace };
-
-export async function* sendChatMessageStream(
-  messageText: string,
-  threadId?: string,
-  contextHint?: string,
-): AsyncGenerator<ChatStreamEvent> {
-  const workspace = await sendChatMessage(messageText, threadId, contextHint);
-  const lastMsg = workspace.session.messages[workspace.session.messages.length - 1];
-  if (lastMsg?.role === "assistant") {
-    yield { type: "token", content: lastMsg.content };
-  }
-  yield { type: "done", workspace };
-}

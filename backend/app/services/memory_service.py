@@ -21,7 +21,6 @@ from app.services.deepseek_service import (
 from app.services.groq_service import GroqChatService
 from app.services.supabase_store import (
     AutomationSettingsRecord,
-    ChatMessageRecord,
     MemorySnapshotRecord,
     MessageRetentionStateRecord,
     PersonMemoryRecord,
@@ -278,7 +277,7 @@ class MemoryAnalysisService:
         project_context = self._build_project_context(
             self.store.list_project_memories(
                 self.settings.default_user_id,
-                limit=max(1, self.settings.chat_context_projects),
+                limit=max(1, self.settings.context_max_projects),
             )
         )
         chat_context = self._build_chat_context()
@@ -406,7 +405,7 @@ class MemoryAnalysisService:
         project_context = self._build_project_context(
             self.store.list_project_memories(
                 self.settings.default_user_id,
-                limit=max(1, self.settings.chat_context_projects),
+                limit=max(1, self.settings.context_max_projects),
             )
         )
         chat_context = self._build_chat_context()
@@ -535,7 +534,7 @@ class MemoryAnalysisService:
         project_context = self._build_project_context(
             self.store.list_project_memories(
                 self.settings.default_user_id,
-                limit=max(1, self.settings.chat_context_projects),
+                limit=max(1, self.settings.context_max_projects),
             )
         )
         chat_context = self._build_chat_context()
@@ -1207,7 +1206,7 @@ class MemoryAnalysisService:
         project_context = self._build_project_context(
             self.store.list_project_memories(
                 self.settings.default_user_id,
-                limit=max(1, self.settings.chat_context_projects),
+                limit=max(1, self.settings.context_max_projects),
             )
         )
         chat_context = self._build_chat_context()
@@ -1291,7 +1290,7 @@ class MemoryAnalysisService:
         prior_analyses_context = self._build_prior_analyses_context()
         existing_projects = self.store.list_project_memories(
             self.settings.default_user_id,
-            limit=max(1, self.settings.chat_context_projects),
+            limit=max(1, self.settings.context_max_projects),
         )
         prompt_context = AnalyzeMemoryPromptContext(
             transcript=plan.transcript,
@@ -2596,7 +2595,7 @@ class MemoryAnalysisService:
         instruction: str,
     ) -> tuple[ProjectMemoryRecord | None, str]:
         current_persona = self.get_current_persona()
-        projects = self.store.list_project_memories(self.settings.default_user_id, limit=max(8, self.settings.chat_context_projects))
+        projects = self.store.list_project_memories(self.settings.default_user_id, limit=max(8, self.settings.context_max_projects))
         target_project = next((project for project in projects if project.project_key == project_key), None)
         if target_project is None:
             return None, ""
@@ -2636,7 +2635,7 @@ class MemoryAnalysisService:
     async def refine_saved_memory(self) -> MemoryRefinementOutcome:
         current_persona = self.get_current_persona()
         snapshots = self.store.list_memory_snapshots(self.settings.default_user_id, limit=max(1, self.settings.memory_analysis_context_snapshots))
-        projects = self.store.list_project_memories(self.settings.default_user_id, limit=max(1, self.settings.chat_context_projects))
+        projects = self.store.list_project_memories(self.settings.default_user_id, limit=max(1, self.settings.context_max_projects))
 
         if not current_persona.life_summary.strip() and not snapshots and not projects:
             raise MemoryAnalysisError(
@@ -2874,14 +2873,9 @@ class MemoryAnalysisService:
         return "\n\n".join(sections)
 
     def _build_chat_context(self) -> str:
-        threads = self.store.list_chat_threads(user_id=self.settings.default_user_id, limit=4)
-        if not threads:
-            threads = [self.store.get_or_create_chat_thread(user_id=self.settings.default_user_id)]
-
         sections: list[str] = []
         current_size = 0
         char_budget = min(max(800, self.settings.memory_analysis_snapshot_context_chars // 5), 1300)
-        per_thread_limit = max(1, min(self.settings.chat_max_history_messages, 5))
 
         owner_phone = self.store.get_whatsapp_session_owner_phone(
             session_id=f"{self.settings.default_user_id}:observer"
@@ -2890,7 +2884,7 @@ class MemoryAnalysisService:
             owner_whatsapp_messages = self.store.list_whatsapp_agent_messages_for_contact(
                 user_id=self.settings.default_user_id,
                 contact_phone=owner_phone,
-                limit=max(per_thread_limit, 8),
+                limit=max(8, self.settings.context_max_history_messages),
             )
             owner_whatsapp_section = self._build_owner_whatsapp_chat_context(owner_whatsapp_messages)
             if owner_whatsapp_section:
@@ -2898,39 +2892,7 @@ class MemoryAnalysisService:
                 current_size += len(section) + 2
                 sections.append(section)
 
-        for thread in threads:
-            messages = self.store.list_chat_messages(thread.id, limit=per_thread_limit)
-            section_body = self._build_chat_context_from_messages(messages)
-            if not section_body:
-                continue
-
-            section = f"[{thread.title}]\n{section_body}"
-            projected_size = current_size + len(section) + 2
-            if sections and projected_size > char_budget:
-                break
-            sections.append(section)
-            current_size = projected_size
-
         return "\n\n".join(sections)
-
-    def _build_chat_context_from_messages(self, messages: list[ChatMessageRecord]) -> str:
-        if not messages:
-            return ""
-
-        sections: list[str] = []
-        current_size = 0
-        char_budget = min(max(720, self.settings.memory_analysis_snapshot_context_chars // 5), 1300)
-
-        for message in messages:
-            role = "Dono" if message.role == "user" else "AuraCore"
-            line = f"- {role}: {self._summarize_message_text(message.content, 180)}"
-            projected_size = current_size + len(line) + 1
-            if sections and projected_size > char_budget:
-                break
-            sections.append(line)
-            current_size = projected_size
-
-        return "\n".join(sections)
 
     def _build_owner_whatsapp_chat_context(self, messages: list[WhatsAppAgentMessageRecord]) -> str:
         if not messages:

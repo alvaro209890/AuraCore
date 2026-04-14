@@ -454,40 +454,6 @@ class MemorySnapshotsListResponse(BaseModel):
     snapshots: list[MemorySnapshotResponse] = Field(default_factory=list)
 
 
-class ChatMessageResponse(BaseModel):
-    id: str
-    role: Literal["user", "assistant"]
-    content: str
-    created_at: datetime
-
-
-class ChatThreadResponse(BaseModel):
-    id: str
-    thread_key: str
-    title: str
-    can_delete: bool = True
-    message_count: int = Field(ge=0)
-    last_message_preview: str | None = None
-    last_message_role: Literal["user", "assistant"] | None = None
-    last_message_at: datetime | None = None
-    created_at: datetime
-    updated_at: datetime
-
-
-class ChatSessionResponse(BaseModel):
-    thread_id: str
-    title: str
-    current: MemoryCurrentResponse
-    projects: list[ProjectMemoryResponse] = Field(default_factory=list)
-    messages: list[ChatMessageResponse] = Field(default_factory=list)
-
-
-class ChatWorkspaceResponse(BaseModel):
-    active_thread_id: str
-    threads: list[ChatThreadResponse] = Field(default_factory=list)
-    session: ChatSessionResponse
-
-
 class AgendaConflictResponse(BaseModel):
     id: str
     titulo: str
@@ -529,23 +495,6 @@ class UpdateAgendaEventRequest(BaseModel):
     status: Literal["firme", "tentativo"] | None = None
     contato_origem: str | None = Field(default=None, max_length=160)
     reminder_offset_minutes: int | None = Field(default=None, ge=0, le=10080)
-
-
-class SendChatMessageRequest(BaseModel):
-    thread_id: str | None = None
-    message_text: str = Field(min_length=1, max_length=4000)
-    context_hint: str | None = Field(default=None, max_length=2000)
-
-
-class CreateChatThreadRequest(BaseModel):
-    title: str | None = Field(default=None, max_length=80)
-
-
-class DeleteChatThreadResponse(BaseModel):
-    active_thread_id: str
-    deleted_thread_id: str
-    threads: list[ChatThreadResponse] = Field(default_factory=list)
-    session: ChatSessionResponse
 
 
 class AutomationSettingsResponse(BaseModel):

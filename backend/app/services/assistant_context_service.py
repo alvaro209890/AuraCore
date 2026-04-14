@@ -78,11 +78,11 @@ class AssistantContextService:
         )
         projects = self.store.list_project_memories(
             self.settings.default_user_id,
-            limit=max(1, self.settings.chat_context_projects),
+            limit=max(1, self.settings.context_max_projects),
         )
         snapshots = self.store.list_memory_snapshots(
             self.settings.default_user_id,
-            limit=max(1, self.settings.chat_context_snapshots),
+            limit=max(1, self.settings.context_max_snapshots),
         )
         interaction_mode = self._resolve_interaction_mode(user_message)
         light_touch = interaction_mode == "light_touch"
@@ -153,8 +153,8 @@ class AssistantContextService:
                 if light_touch
                 else self._compact_context_block(
                     self._build_persona_context(persona),
-                    char_budget=950 if targeted_context else 1300,
-                    max_lines=14,
+                    char_budget=1200 if targeted_context else 1800,
+                    max_lines=18,
                 )
             ),
             recent_snapshots_context=(
@@ -162,8 +162,8 @@ class AssistantContextService:
                 if light_touch
                 else self._compact_context_block(
                     self._render_snapshot_context(snapshots),
-                    char_budget=760 if targeted_context else 1050,
-                    max_lines=12,
+                    char_budget=1000 if targeted_context else 1500,
+                    max_lines=16,
                 )
             ),
             recent_projects_context=(
@@ -171,8 +171,8 @@ class AssistantContextService:
                 if light_touch
                 else self._compact_context_block(
                     self._build_project_context(projects),
-                    char_budget=1150 if targeted_context else 1750,
-                    max_lines=18,
+                    char_budget=1400 if targeted_context else 2200,
+                    max_lines=22,
                 )
             ),
             recent_chat_context=(
@@ -180,8 +180,8 @@ class AssistantContextService:
                 if light_touch
                 else self._compact_context_block(
                     self._build_chat_context(recent_messages),
-                    char_budget=760 if targeted_context else 1100,
-                    max_lines=12,
+                    char_budget=1000 if targeted_context else 1600,
+                    max_lines=16,
                 )
             ),
             interaction_mode=interaction_mode,
@@ -500,7 +500,7 @@ class AssistantContextService:
 
         parts: list[str] = []
         current_size = 0
-        char_budget = min(max(900, self.settings.chat_context_chars // 4), 1600)
+        char_budget = min(max(900, self.settings.context_max_chars // 4), 1600)
 
         for snapshot in snapshots:
             lines = [
@@ -527,7 +527,7 @@ class AssistantContextService:
 
         parts: list[str] = []
         current_size = 0
-        char_budget = min(max(1200, self.settings.chat_context_chars // 3), 2600)
+        char_budget = min(max(1200, self.settings.context_max_chars // 3), 2600)
 
         for project in projects:
             lines = [
@@ -567,7 +567,7 @@ class AssistantContextService:
 
         parts: list[str] = []
         current_size = 0
-        char_budget = min(max(900, self.settings.chat_context_chars // 4), 1600)
+        char_budget = min(max(900, self.settings.context_max_chars // 4), 1600)
 
         for message in reversed(messages):
             role_label = "Dono" if message.role == "user" else "Orion"

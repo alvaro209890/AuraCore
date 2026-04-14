@@ -9,7 +9,6 @@ from app.services.account_registry import AccountRecord
 from app.services.assistant_context_service import AssistantContextService
 from app.services.assistant_reply_service import AssistantReplyService
 from app.services.automation_service import AutomationService
-from app.services.chat_service import ChatAssistantService
 from app.services.deepseek_service import DeepSeekService
 from app.services.groq_service import GroqChatService
 from app.services.memory_job_service import MemoryJobService
@@ -31,7 +30,6 @@ class ServiceBundle:
     assistant_context_service: AssistantContextService
     assistant_reply_service: AssistantReplyService
     memory_service: MemoryAnalysisService
-    chat_service: ChatAssistantService
     memory_job_service: MemoryJobService
     automation_service: AutomationService
     whatsapp_agent_service: WhatsAppAgentService
@@ -97,11 +95,6 @@ class ServiceBundleCache:
                 deepseek_service=deepseek_service,
                 groq_service=groq_service,
             )
-            chat_service = ChatAssistantService(
-                settings=scoped_settings,
-                store=store,
-                reply_service=assistant_reply_service,
-            )
             memory_job_service = MemoryJobService(
                 settings=scoped_settings,
                 store=store,
@@ -140,7 +133,6 @@ class ServiceBundleCache:
                 assistant_context_service=assistant_context_service,
                 assistant_reply_service=assistant_reply_service,
                 memory_service=memory_service,
-                chat_service=chat_service,
                 memory_job_service=memory_job_service,
                 automation_service=automation_service,
                 whatsapp_agent_service=whatsapp_agent_service,
