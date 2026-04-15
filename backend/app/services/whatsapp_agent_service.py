@@ -651,6 +651,11 @@ class WhatsAppAgentService:
                 if outbound.generated_by.startswith("whatsapp_cli")
                 else {}
             )
+            source_inbound_message_id = (
+                payload.message_id
+                if index == 0 and self._can_claim_source_inbound_message(payload.message_id)
+                else None
+            )
             outbound_record = self.store.append_whatsapp_agent_message(
                 user_id=self.settings.default_user_id,
                 thread_id=thread.id,
@@ -661,7 +666,7 @@ class WhatsAppAgentService:
                 message_timestamp=datetime.now(UTC),
                 contact_phone=contact_phone,
                 chat_jid=delivery_chat_jid,
-                source_inbound_message_id=payload.message_id if index == 0 else None,
+                source_inbound_message_id=source_inbound_message_id,
                 processing_status="sending",
                 learning_status="not_applicable",
                 response_latency_ms=response_latency_ms if index == 0 else None,
@@ -828,7 +833,7 @@ class WhatsAppAgentService:
             message_timestamp=datetime.now(UTC),
             contact_phone=contact_phone,
             chat_jid=delivery_chat_jid,
-            source_inbound_message_id=payload.message_id,
+            source_inbound_message_id=None,
             processing_status="sending",
             learning_status="not_applicable",
             response_latency_ms=None,
@@ -890,6 +895,16 @@ class WhatsAppAgentService:
             last_activity_at=sent_at,
             updated_at=sent_at,
         )
+
+    def _can_claim_source_inbound_message(self, source_inbound_message_id: str | None) -> bool:
+        normalized_id = str(source_inbound_message_id or "").strip()
+        if not normalized_id:
+            return False
+        existing = self.store.get_whatsapp_agent_outbound_for_source_inbound(
+            user_id=self.settings.default_user_id,
+            source_inbound_message_id=normalized_id,
+        )
+        return existing is None
 
     def _build_agenda_confirmation_reply(self, outcome: AgendaProcessingResult) -> str:
         if outcome.clarification_needed:
