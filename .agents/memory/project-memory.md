@@ -27,3 +27,10 @@
 - Não reverter mudanças do usuário sem instrução explícita
 - Se alterar comportamento do backend em produção, reiniciar o backend local e validar o estado após o restart
 - Registrar aqui só fatos estáveis; contexto recente vai em `active-context.md`
+
+## Memória e contexto
+
+- O contexto de resposta do Orion agora prioriza carregamento sob demanda: projetos, snapshots e memória do contato entram no prompt apenas quando o planner indicar necessidade real
+- Mensagens simples/curtas podem pular a etapa de `assistant_search_plan` e cair direto no fallback heurístico para reduzir custo e latência
+- O pipeline `improve_memory` usa um contexto próprio mais enxuto que o da `first_analysis`, para reduzir tokens nos lotes automáticos sem mexer no bootstrap inicial
+- O merge incremental de projetos pode ser pulado quando o lote novo não trouxe candidatos de projeto; nesse caso os projetos existentes são preservados sem nova chamada ao modelo

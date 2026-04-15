@@ -2242,45 +2242,51 @@ Regras:
         recent_messages_label: str = "Historico recente desta conversa",
         additional_rules: list[str] | None = None,
     ) -> str:
-        priority_context_block = ""
-        if priority_context.strip():
-            priority_context_block = (
-                "Contexto prioritario desta conversa:\n"
-                f"{priority_context.strip()}\n\n"
-            )
-        extra_context_block = ""
-        if context_hint.strip():
-            extra_context_block = (
-                "Contexto adicional relevante:\n"
-                f"{context_hint.strip()}"
-            )
         extra_rules = "\n".join(
             f"- {rule.strip()}"
             for rule in (additional_rules or [])
             if isinstance(rule, str) and rule.strip()
         )
-        return f"""
-{priority_context_block}Contexto consolidado do dono:
-{current_life_summary.strip() or "(ainda sem resumo consolidado)"}
-
-Projetos e frentes conhecidos:
-{recent_projects_context.strip() or "(nenhum projeto consolidado ainda)"}
-
-Analises recentes da memoria:
-{recent_snapshots_context.strip() or "(nenhum snapshot recente)"}
-
-{recent_messages_label.strip() or "Historico recente desta conversa"}:
-{recent_chat_context.strip() or "(sem conversa anterior nesta thread)"}
-
-Mensagem atual do dono:
-{user_message.strip()}
-
-Modo de interacao:
-{interaction_mode}
-
-{extra_context_block}
-
-Regras:
+        blocks: list[str] = []
+        if priority_context.strip():
+            blocks.append(
+                "Contexto prioritario desta conversa:\n"
+                f"{priority_context.strip()}"
+            )
+        if current_life_summary.strip():
+            blocks.append(
+                "Contexto consolidado do dono:\n"
+                f"{current_life_summary.strip()}"
+            )
+        if recent_projects_context.strip():
+            blocks.append(
+                "Projetos e frentes conhecidos:\n"
+                f"{recent_projects_context.strip()}"
+            )
+        if recent_snapshots_context.strip():
+            blocks.append(
+                "Analises recentes da memoria:\n"
+                f"{recent_snapshots_context.strip()}"
+            )
+        blocks.append(
+            f"{recent_messages_label.strip() or 'Historico recente desta conversa'}:\n"
+            f"{recent_chat_context.strip() or '(sem conversa anterior nesta thread)'}"
+        )
+        blocks.append(
+            "Mensagem atual do dono:\n"
+            f"{user_message.strip()}"
+        )
+        blocks.append(
+            "Modo de interacao:\n"
+            f"{interaction_mode}"
+        )
+        if context_hint.strip():
+            blocks.append(
+                "Contexto adicional relevante:\n"
+                f"{context_hint.strip()}"
+            )
+        blocks.append(
+            f"""Regras:
 - Responda primeiro ao que o dono acabou de dizer, de forma natural e direta.
 - Antes de responder literalmente, infera a intencao implicita: o que o dono realmente quer saber ou resolver?
 - Use o resumo consolidado para adaptar tom, prioridade e praticidade da resposta.
@@ -2293,16 +2299,17 @@ Regras:
 - Se o pedido envolver promessa, compromisso, prazo, resposta em nome do dono ou dado sensivel, confirme antes de tratar isso como decidido.
 - Nao enumere fatos antigos sem convite explicito.
 - Evite hiperfoco em um unico tema so porque ele apareceu na memoria.
-- Seja conciso mas completo — entregue o que e necessario sem enrolacao.
+- Seja conciso mas completo - entregue o que e necessario sem enrolacao.
 - NUNCA mencione palavras como "memoria", "banco de dados", "contexto", "IA", "modelo", "sistema", "prompt" ou qualquer referencia a seus bastidores tecnicos.
 - Quando o dono parecer sob pressao ou frustrado, priorize empatia e solucao rapida antes de detalhes.
-- Quando o dono demonstrar entusiasmo ou progresso, reconheça brevemente — isso fortalece a relacao.
+- Quando o dono demonstrar entusiasmo ou progresso, reconheca brevemente - isso fortalece a relacao.
 - Se houver algo pendente relevante e nao resolvido que se conecta ao assunto atual, mencione de forma sutil (1 frase).
 - Proatividade comeco: se voce tiver uma sugestao util, coloque-a no final como opcao, nao como imposicao.
 - Se o dono estiver pedindo algo que conflita com algo que ele mesmo disse antes, aponte de forma gentil: "nao tinha ficado X antes? quer que eu ajuste?".
 - Nao use markdown fences.
-{extra_rules}
-""".strip()
+{extra_rules}""".strip()
+        )
+        return "\n\n".join(blocks).strip()
 
     def _parse_json_dict(
         self,

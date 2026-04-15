@@ -541,7 +541,7 @@ class MemoryAnalysisService:
         open_questions_context = self._build_open_questions_context(current_persona)
         conversation_context = self._build_conversation_context(included_messages)
         people_memory_context = self._build_people_memory_context(included_messages)
-        prompt_context = self._build_default_analysis_prompt_context(
+        prompt_context = self._build_analysis_prompt_context_for_intent(
             AnalyzeMemoryPromptContext(
                 transcript=transcript,
                 conversation_context=conversation_context,
@@ -551,7 +551,8 @@ class MemoryAnalysisService:
                 project_context=project_context,
                 chat_context=chat_context,
                 open_questions_context=open_questions_context,
-            )
+            ),
+            intent=intent,
         )
         prompt_preview = self.deepseek_service.build_analysis_prompt_preview(
             transcript=prompt_context.transcript,
@@ -1211,7 +1212,7 @@ class MemoryAnalysisService:
         )
         chat_context = self._build_chat_context()
         open_questions_context = self._build_open_questions_context(current_persona)
-        prompt_context = self._build_default_analysis_prompt_context(
+        prompt_context = self._build_analysis_prompt_context_for_intent(
             AnalyzeMemoryPromptContext(
                 transcript=transcript,
                 conversation_context=conversation_context,
@@ -1221,7 +1222,8 @@ class MemoryAnalysisService:
                 project_context=project_context,
                 chat_context=chat_context,
                 open_questions_context=open_questions_context,
-            )
+            ),
+            intent=resolved_intent,
         )
         prompt_preview = self.deepseek_service.build_analysis_prompt_preview(
             transcript=prompt_context.transcript,
@@ -1302,7 +1304,7 @@ class MemoryAnalysisService:
             chat_context=self._build_chat_context(),
             open_questions_context=self._build_open_questions_context(current_persona),
         )
-        prompt_context = self._build_default_analysis_prompt_context(prompt_context)
+        prompt_context = self._build_analysis_prompt_context_for_intent(prompt_context, intent=plan.intent)
         self._log_analysis_prompt_context_sizes(plan=plan, context=prompt_context, stage="primary")
         current_life_summary = prompt_context.current_life_summary
         if self._should_chunk_first_analysis(plan):
@@ -1366,6 +1368,7 @@ class MemoryAnalysisService:
             len(deepseek_result.active_projects),
         )
         merged_project_seeds = await self._merge_project_seeds_incrementally(
+            intent=plan.intent,
             updated_life_summary=effective_life_summary,
             existing_projects=existing_projects,
             candidate_projects=deepseek_result.active_projects,
@@ -1497,6 +1500,21 @@ class MemoryAnalysisService:
             open_questions_context=self._compact_context_block(context.open_questions_context, char_budget=220, max_lines=4),
         )
 
+    def _build_incremental_analysis_prompt_context(
+        self,
+        context: AnalyzeMemoryPromptContext,
+    ) -> AnalyzeMemoryPromptContext:
+        return AnalyzeMemoryPromptContext(
+            transcript=context.transcript,
+            conversation_context=self._compact_context_block(context.conversation_context, char_budget=520, max_lines=6),
+            people_memory_context=self._compact_context_block(context.people_memory_context, char_budget=420, max_lines=5),
+            current_life_summary=self._compact_context_block(context.current_life_summary, char_budget=620, max_lines=7),
+            prior_analyses_context=self._compact_context_block(context.prior_analyses_context, char_budget=520, max_lines=6),
+            project_context=self._compact_context_block(context.project_context, char_budget=420, max_lines=5),
+            chat_context=self._compact_context_block(context.chat_context, char_budget=160, max_lines=3),
+            open_questions_context=self._compact_context_block(context.open_questions_context, char_budget=140, max_lines=2),
+        )
+
     def _build_minimal_analysis_prompt_context(
         self,
         context: AnalyzeMemoryPromptContext,
@@ -1512,19 +1530,29 @@ class MemoryAnalysisService:
             open_questions_context=self._compact_context_block(context.open_questions_context, char_budget=120, max_lines=2),
         )
 
+    def _build_analysis_prompt_context_for_intent(
+        self,
+        context: AnalyzeMemoryPromptContext,
+        *,
+        intent: Literal["first_analysis", "improve_memory"],
+    ) -> AnalyzeMemoryPromptContext:
+        if intent == "improve_memory":
+            return self._build_incremental_analysis_prompt_context(context)
+        return self._build_default_analysis_prompt_context(context)
+
     def _build_default_analysis_prompt_context(
         self,
         context: AnalyzeMemoryPromptContext,
     ) -> AnalyzeMemoryPromptContext:
         return AnalyzeMemoryPromptContext(
             transcript=context.transcript,
-            conversation_context=self._compact_context_block(context.conversation_context, char_budget=1200, max_lines=14),
-            people_memory_context=self._compact_context_block(context.people_memory_context, char_budget=900, max_lines=12),
-            current_life_summary=self._compact_context_block(context.current_life_summary, char_budget=1000, max_lines=10),
-            prior_analyses_context=self._compact_context_block(context.prior_analyses_context, char_budget=1100, max_lines=12),
-            project_context=self._compact_context_block(context.project_context, char_budget=960, max_lines=11),
-            chat_context=self._compact_context_block(context.chat_context, char_budget=320, max_lines=5),
-            open_questions_context=self._compact_context_block(context.open_questions_context, char_budget=240, max_lines=4),
+            conversation_context=self._compact_context_block(context.conversation_context, char_budget=760, max_lines=9),
+            people_memory_context=self._compact_context_block(context.people_memory_context, char_budget=560, max_lines=7),
+            current_life_summary=self._compact_context_block(context.current_life_summary, char_budget=760, max_lines=8),
+            prior_analyses_context=self._compact_context_block(context.prior_analyses_context, char_budget=760, max_lines=8),
+            project_context=self._compact_context_block(context.project_context, char_budget=620, max_lines=7),
+            chat_context=self._compact_context_block(context.chat_context, char_budget=220, max_lines=4),
+            open_questions_context=self._compact_context_block(context.open_questions_context, char_budget=160, max_lines=3),
         )
 
     def _compact_context_block(
@@ -2435,6 +2463,7 @@ class MemoryAnalysisService:
     async def _merge_project_seeds_incrementally(
         self,
         *,
+        intent: Literal["first_analysis", "improve_memory"],
         updated_life_summary: str,
         existing_projects: list[ProjectMemoryRecord],
         candidate_projects: list[DeepSeekProjectMemory],
@@ -2448,6 +2477,12 @@ class MemoryAnalysisService:
         )
         if not existing_projects and not sanitized_candidates:
             logger.info("merge_projects_skipped reason=no_existing_and_no_candidates")
+            return []
+        if intent == "improve_memory" and not sanitized_candidates:
+            logger.info(
+                "merge_projects_skipped reason=no_incremental_candidates existing=%s",
+                len(existing_projects),
+            )
             return []
         merged_result = await self.deepseek_service.merge_projects_incrementally(
             current_life_summary=updated_life_summary,

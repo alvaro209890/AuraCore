@@ -38,3 +38,12 @@
 ## Limpeza
 
 - Quando este arquivo crescer demais, resumir e manter apenas o contexto operacional realmente útil
+
+## Atualização recente
+
+- Abril/2026: o fluxo de memória do Orion foi enxugado para gastar menos tokens
+- Ajustes aplicados:
+  - `assistant_context_service` agora evita buscar snapshots/projetos por padrão e só injeta memória do contato quando o planner pedir
+  - mensagens curtas e diretas podem pular o `assistant_search_plan`
+  - `memory_service` passou a compactar mais o contexto padrão de análise/refino antes de chamar o modelo
+  - no incremental automático (`improve_memory`), o contexto agora é menor que o da primeira análise e o merge de projetos é pulado quando não há candidatos novos

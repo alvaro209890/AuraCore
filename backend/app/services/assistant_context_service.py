@@ -64,39 +64,59 @@ class AssistantContextService:
         contact_memory_context: str | None = None,
         additional_rules: Sequence[str] | None = None,
     ) -> AssistantContextPackage:
-        persona = self.store.get_persona(self.settings.default_user_id) or PersonaRecord(
-            user_id=self.settings.default_user_id,
-            life_summary="",
-            last_analyzed_at=None,
-            last_snapshot_id=None,
-            last_analyzed_ingested_count=None,
-            last_analyzed_pruned_count=None,
-            structural_strengths=[],
-            structural_routines=[],
-            structural_preferences=[],
-            structural_open_questions=[],
-        )
-        projects = self.store.list_project_memories(
-            self.settings.default_user_id,
-            limit=max(1, self.settings.context_max_projects),
-        )
-        snapshots = self.store.list_memory_snapshots(
-            self.settings.default_user_id,
-            limit=max(1, self.settings.context_max_snapshots),
-        )
         interaction_mode = self._resolve_interaction_mode(user_message)
         light_touch = interaction_mode == "light_touch"
         identity_query = self._is_identity_query(user_message)
+        has_priority_context = bool((priority_context or "").strip())
+        has_external_hint = bool((context_hint or "").strip())
+        has_contact_memory = bool((contact_memory_context or "").strip())
 
         plan = await self._resolve_search_plan(
             user_message=user_message,
             channel=channel,
             interaction_mode=interaction_mode,
-            has_contact_memory=bool((contact_memory_context or "").strip()),
+            has_contact_memory=has_contact_memory,
+        )
+
+        should_load_persona = not light_touch
+        should_load_projects = not light_touch and plan.needs_retrieval
+        should_load_snapshots = not light_touch and (
+            plan.needs_retrieval or plan.should_include_open_questions
+        )
+
+        persona = self.store.get_persona(self.settings.default_user_id) if should_load_persona else None
+        if persona is None:
+            persona = PersonaRecord(
+                user_id=self.settings.default_user_id,
+                life_summary="",
+                last_analyzed_at=None,
+                last_snapshot_id=None,
+                last_analyzed_ingested_count=None,
+                last_analyzed_pruned_count=None,
+                structural_strengths=[],
+                structural_routines=[],
+                structural_preferences=[],
+                structural_open_questions=[],
+            )
+        projects = (
+            self.store.list_project_memories(
+                self.settings.default_user_id,
+                limit=max(1, self.settings.context_max_projects),
+            )
+            if should_load_projects
+            else []
+        )
+        snapshots = (
+            self.store.list_memory_snapshots(
+                self.settings.default_user_id,
+                limit=max(1, self.settings.context_max_snapshots),
+            )
+            if should_load_snapshots
+            else []
         )
 
         retrieval_sections: list[str] = []
-        if not light_touch:
+        if not light_touch and plan.needs_retrieval:
             retrieval_sections = self._build_retrieval_sections(
                 persona=persona,
                 projects=projects,
@@ -104,14 +124,23 @@ class AssistantContextService:
                 plan=plan,
             )
 
-        effective_priority_parts = [part.strip() for part in (priority_context or "",) if part and part.strip()]
+        effective_priority_parts = [
+            self._compact_context_block(part.strip(), char_budget=320, max_lines=4)
+            for part in (priority_context or "",)
+            if part and part.strip()
+        ]
         if identity_query:
             effective_priority_parts.append(
                 "O dono perguntou sua identidade. Responda diretamente que seu nome e Orion, que voce e a IA pessoal criada para ajudar essa pessoa, e depois siga a conversa sem cair em saudacao genérica."
             )
-        if contact_memory_context and contact_memory_context.strip():
-            if channel == "whatsapp_agent" and (not light_touch or plan.should_include_contact_memory):
-                effective_priority_parts.append(contact_memory_context.strip())
+        if channel == "whatsapp_agent" and plan.should_include_contact_memory and has_contact_memory:
+            effective_priority_parts.append(
+                self._compact_context_block(
+                    contact_memory_context or "",
+                    char_budget=380 if plan.needs_retrieval else 240,
+                    max_lines=5 if plan.needs_retrieval else 3,
+                )
+            )
 
         merged_hint = "\n\n".join(
             part
@@ -122,6 +151,11 @@ class AssistantContextService:
             if part
         ).strip()
         targeted_context = bool(merged_hint or effective_priority_parts)
+        should_include_life_summary = not light_touch and (
+            plan.needs_retrieval or has_external_hint or has_priority_context or identity_query
+        )
+        should_include_project_context = not light_touch and plan.needs_retrieval and not retrieval_sections
+        should_include_snapshot_context = not light_touch and plan.needs_retrieval and not retrieval_sections
 
         resolved_rules = [
             "Seu nome e Orion. Voce e uma IA pessoal feita para ajudar o dono desta conta.",
@@ -147,36 +181,36 @@ class AssistantContextService:
             len(plan.project_queries),
             len(plan.snapshot_queries),
             plan.should_include_open_questions,
-            bool(contact_memory_context and contact_memory_context.strip() and (channel == "whatsapp_agent" and (not light_touch or plan.should_include_contact_memory))),
+            bool(channel == "whatsapp_agent" and plan.should_include_contact_memory and has_contact_memory),
             plan.requires_confirmation,
         )
 
         return AssistantContextPackage(
             current_life_summary=(
                 ""
-                if light_touch
+                if not should_include_life_summary
                 else self._compact_context_block(
                     self._build_persona_context(persona),
-                    char_budget=1400 if targeted_context else 2000,
-                    max_lines=20,
+                    char_budget=520 if targeted_context else 760,
+                    max_lines=7 if targeted_context else 10,
                 )
             ),
             recent_snapshots_context=(
                 ""
-                if light_touch
+                if not should_include_snapshot_context
                 else self._compact_context_block(
                     self._render_snapshot_context(snapshots),
-                    char_budget=1200 if targeted_context else 1700,
-                    max_lines=18,
+                    char_budget=520,
+                    max_lines=7,
                 )
             ),
             recent_projects_context=(
                 ""
-                if light_touch
+                if not should_include_project_context
                 else self._compact_context_block(
                     self._build_project_context(projects),
-                    char_budget=1600 if targeted_context else 2500,
-                    max_lines=24,
+                    char_budget=620,
+                    max_lines=8,
                 )
             ),
             recent_chat_context=(
@@ -184,8 +218,8 @@ class AssistantContextService:
                 if light_touch
                 else self._compact_context_block(
                     self._build_chat_context(recent_messages),
-                    char_budget=1200 if targeted_context else 1800,
-                    max_lines=18,
+                    char_budget=480 if targeted_context else 720,
+                    max_lines=7 if targeted_context else 10,
                 )
             ),
             interaction_mode=interaction_mode,
@@ -204,6 +238,8 @@ class AssistantContextService:
     ) -> DeepSeekAssistantSearchPlan:
         if interaction_mode == "light_touch":
             return DeepSeekAssistantSearchPlan.empty()
+        if self._should_skip_search_plan(user_message=user_message, has_contact_memory=has_contact_memory):
+            return self._fallback_search_plan(user_message=user_message, has_contact_memory=has_contact_memory)
 
         try:
             plan = await self.deepseek_service.extract_assistant_search_plan(
@@ -236,6 +272,53 @@ class AssistantContextService:
             requires_confirmation=requires_confirmation,
             explanation="Plano de busca em fallback heuristico.",
         )
+
+    def _should_skip_search_plan(
+        self,
+        *,
+        user_message: str,
+        has_contact_memory: bool,
+    ) -> bool:
+        normalized = " ".join(user_message.casefold().split()).strip()
+        if not normalized:
+            return True
+        if len(normalized) <= 18:
+            return True
+        memory_markers = (
+            "lembra",
+            "como eu",
+            "como estou",
+            "antes",
+            "ontem",
+            "semana passada",
+            "projeto",
+            "cliente",
+            "contato",
+            "agenda",
+            "prazo",
+            "pendente",
+            "continuar",
+            "retomar",
+            "historico",
+            "histórico",
+            "memoria",
+            "memória",
+        )
+        if any(marker in normalized for marker in memory_markers):
+            return False
+        token_count = len(self._tokenize(normalized))
+        interrogative_starts = ("quem ", "qual ", "quais ", "como ", "onde ", "quando ", "por que ", "porque ")
+        if (
+            token_count <= 10
+            and len(normalized) <= 90
+            and "?" not in normalized
+            and not normalized.startswith(interrogative_starts)
+            and not self._looks_sensitive(normalized)
+        ):
+            return True
+        if has_contact_memory and len(normalized) <= 48 and "?" not in normalized:
+            return True
+        return False
 
     def _build_retrieval_sections(
         self,
