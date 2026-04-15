@@ -4,6 +4,7 @@ import ast
 import asyncio
 import json
 import re
+import shlex
 from dataclasses import dataclass
 from datetime import datetime
 import logging
@@ -159,6 +160,29 @@ class DeepSeekCliPlan(BaseModel):
 
 ParsedResultT = TypeVar("ParsedResultT")
 logger = logging.getLogger("auracore.deepseek")
+
+_CLI_TOOL_ALIASES = {
+    "answer": "final",
+    "bash": "exec",
+    "cat_file": "cat",
+    "chdir": "cd",
+    "command": "exec",
+    "dir": "ls",
+    "directory": "ls",
+    "grep": "rg",
+    "list": "ls",
+    "ls_dir": "ls",
+    "open": "cat",
+    "read": "cat",
+    "read_file": "cat",
+    "reply": "final",
+    "report": "final",
+    "respond": "final",
+    "run": "exec",
+    "search": "rg",
+    "shell": "exec",
+    "view": "cat",
+}
 
 
 @dataclass(slots=True)
@@ -803,9 +827,10 @@ class DeepSeekService:
                 "Voce escreve a resposta final da CLI do Cursar no WhatsApp. "
                 "Responda em portugues do Brasil, de forma direta e tecnica, como um engenheiro senior operando o terminal. "
                 "Entregue o resultado pedido pelo usuario com base apenas no historico de execucao recebido. "
+                "Pense no formato do WhatsApp: blocos curtos, resultado primeiro, depois achados e proximos passos so quando fizer sentido. "
                 "Se o pedido era uma analise de pasta, repo, bug ou logs, devolva um relatorio objetivo com achados, evidencias e proximos passos quando fizer sentido. "
                 "Se houve erro, explique claramente o que falhou e em qual etapa. "
-                "Nao invente fatos e nao repita todo o log bruto se um resumo objetivo for melhor."
+                "Nao invente fatos, nao repita todo o log bruto se um resumo objetivo for melhor e nao inclua uma frase de encerramento tipo 'pode mandar a proxima' porque isso sera enviado separadamente."
             ),
             user_prompt=user_prompt,
             max_tokens=self._adaptive_max_tokens(
@@ -1793,22 +1818,10 @@ Regras:
 
     def _validate_cli_plan(self, parsed: DeepSeekCliPlan) -> None:
         parsed.summary = parsed.summary.strip()
-        parsed.actions = parsed.actions[:6]
+        parsed.actions = parsed.actions[:5]
         normalized_actions: list[DeepSeekCliAction] = []
         for action in parsed.actions:
-            tool = action.tool.strip().lower()
-            if tool not in {"pwd", "ls", "cd", "cat", "write", "exec", "find", "head", "tail", "mkdir", "touch", "cp", "mv", "rm", "rg", "final"}:
-                tool = "exec"
-            normalized_actions.append(
-                DeepSeekCliAction(
-                    tool=tool,
-                    path=action.path.strip(),
-                    command=action.command.strip(),
-                    content=action.content,
-                    mode="append" if action.mode == "append" else "overwrite",
-                    explanation=action.explanation.strip(),
-                )
-            )
+            normalized_actions.append(self._normalize_cli_action(action=action))
         parsed.actions = normalized_actions
 
     def _is_reasoning_model(self, model_name: str | None = None) -> bool:
@@ -2016,19 +2029,29 @@ Regras:
             shape_error_message="DeepSeek retornou um payload inesperado para o plano da CLI.",
         )
         raw_actions = raw.get("actions")
+        if isinstance(raw_actions, dict):
+            raw_actions = [raw_actions]
+        elif isinstance(raw_actions, str):
+            raw_actions = [raw_actions]
         actions: list[DeepSeekCliAction] = []
         if isinstance(raw_actions, list):
             for item in raw_actions:
-                if not isinstance(item, dict):
+                action = self._coerce_cli_action(item)
+                if action is None:
                     continue
+                actions.append(action)
+        if not actions:
+            fallback_final = self._as_text(
+                raw.get("final_answer")
+                or raw.get("response")
+                or raw.get("assistant_message")
+                or raw.get("result")
+            )
+            if fallback_final:
                 actions.append(
                     DeepSeekCliAction(
-                        tool=self._as_text(item.get("tool")) or "exec",
-                        path=self._as_text(item.get("path")),
-                        command=self._as_text(item.get("command")),
-                        content=self._as_text(item.get("content")),
-                        mode="append" if self._as_text(item.get("mode")).strip().lower() == "append" else "overwrite",
-                        explanation=self._as_text(item.get("explanation")),
+                        tool="final",
+                        explanation=fallback_final,
                     )
                 )
         return DeepSeekCliPlan(
@@ -2036,6 +2059,96 @@ Regras:
             explicit_sensitive_request=bool(raw.get("explicit_sensitive_request")),
             actions=actions,
         )
+
+    def _coerce_cli_action(self, value: Any) -> DeepSeekCliAction | None:
+        if isinstance(value, str):
+            raw_text = self._as_text(value)
+            if not raw_text:
+                return None
+            return DeepSeekCliAction(
+                tool="exec",
+                command=raw_text,
+                explanation="Acao convertida de texto livre do planner.",
+            )
+        if not isinstance(value, dict):
+            return None
+
+        tool = self._normalize_cli_tool(value.get("tool"))
+        command = self._as_text(value.get("command"))
+        path = self._as_text(value.get("path"))
+        content = self._as_text(value.get("content"))
+        explanation = self._as_text(value.get("explanation"))
+        mode = self._normalize_cli_mode(value.get("mode"))
+
+        if tool == "final":
+            final_text = explanation or command or path or content
+            if not final_text:
+                return None
+            return DeepSeekCliAction(
+                tool="final",
+                explanation=final_text,
+            )
+
+        if tool in {"cat", "cd", "mkdir", "touch"} and not command and path:
+            command = path
+        if tool in {"exec", "rg", "find", "head", "tail", "ls", "cp", "mv", "rm"} and not command and path:
+            command = path
+        if tool == "write" and not path and command:
+            path = command
+
+        tool, command = self._simplify_cli_action(tool=tool, command=command)
+
+        return DeepSeekCliAction(
+            tool=tool,
+            path=path,
+            command=command,
+            content=content,
+            mode=mode,
+            explanation=explanation,
+        )
+
+    def _normalize_cli_action(self, *, action: DeepSeekCliAction) -> DeepSeekCliAction:
+        return DeepSeekCliAction(
+            tool=self._normalize_cli_tool(action.tool),
+            path=action.path.strip(),
+            command=action.command.strip(),
+            content=action.content,
+            mode=self._normalize_cli_mode(action.mode),
+            explanation=action.explanation.strip(),
+        )
+
+    def _normalize_cli_tool(self, raw_tool: Any) -> str:
+        tool = self._as_text(raw_tool).strip().lower().replace("-", "_").replace(" ", "_")
+        if tool in _CLI_TOOL_ALIASES:
+            tool = _CLI_TOOL_ALIASES[tool]
+        if tool in {"pwd", "ls", "cd", "cat", "write", "exec", "find", "head", "tail", "mkdir", "touch", "cp", "mv", "rm", "rg", "final"}:
+            return tool
+        return "exec"
+
+    def _normalize_cli_mode(self, raw_mode: Any) -> str:
+        mode = self._as_text(raw_mode).strip().lower()
+        if mode in {"append", "append_text", "add", "plus"}:
+            return "append"
+        return "overwrite"
+
+    def _simplify_cli_action(self, *, tool: str, command: str) -> tuple[str, str]:
+        if tool != "exec":
+            return tool, command
+        normalized_command = self._as_text(command)
+        if not normalized_command:
+            return tool, command
+        primary_segment = re.split(r"\s*(?:\|\||&&)\s*", normalized_command, maxsplit=1)[0].strip()
+        candidate = primary_segment or normalized_command
+        try:
+            parts = shlex.split(candidate)
+        except ValueError:
+            return tool, command
+        if not parts:
+            return tool, command
+        head = parts[0].strip().lower()
+        if head in {"pwd", "ls", "cd", "cat", "find", "head", "tail", "mkdir", "touch", "cp", "mv", "rm", "rg"}:
+            return head, candidate
+        return tool, command
 
     def _build_reply_prompt(
         self,

@@ -76,6 +76,9 @@ SQLITE_LEGACY_COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
         "pending_command_text": "TEXT",
         "pending_plan_json": "TEXT DEFAULT '{}'",
         "pending_requested_at": "TEXT",
+        "session_summary": "TEXT NOT NULL DEFAULT ''",
+        "last_discovery_summary": "TEXT NOT NULL DEFAULT ''",
+        "context_metadata": "TEXT DEFAULT '{}'",
     },
 }
 
@@ -480,6 +483,9 @@ class WhatsAppAgentTerminalSessionRecord:
     pending_command_text: str | None
     pending_plan_json: dict[str, Any]
     pending_requested_at: datetime | None
+    session_summary: str
+    last_discovery_summary: str
+    context_metadata: dict[str, Any]
     closed_at: datetime | None
     created_at: datetime
     updated_at: datetime
@@ -3602,7 +3608,7 @@ class SupabaseStore:
                 .select(
                     "id,user_id,thread_id,contact_phone,chat_jid,cli_mode_enabled,cwd,context_version,"
                     "last_command_text,last_command_at,pending_command_text,pending_plan_json,pending_requested_at,"
-                    "closed_at,created_at,updated_at"
+                    "session_summary,last_discovery_summary,context_metadata,closed_at,created_at,updated_at"
                 )
                 .eq("user_id", str(user_id))
                 .eq("thread_id", thread_id)
@@ -3633,6 +3639,9 @@ class SupabaseStore:
         pending_command_text: str | None | object = _UNSET,
         pending_plan_json: dict[str, Any] | object = _UNSET,
         pending_requested_at: datetime | None | object = _UNSET,
+        session_summary: str | None | object = _UNSET,
+        last_discovery_summary: str | None | object = _UNSET,
+        context_metadata: dict[str, Any] | object = _UNSET,
         closed_at: datetime | None | object = _UNSET,
         updated_at: datetime | None = None,
     ) -> WhatsAppAgentTerminalSessionRecord:
@@ -3680,6 +3689,23 @@ class SupabaseStore:
                 else pending_requested_at.isoformat()
                 if isinstance(pending_requested_at, datetime)
                 else None
+            ),
+            "session_summary": (
+                current.session_summary
+                if session_summary is _UNSET and current is not None
+                else self._optional_text(session_summary if isinstance(session_summary, str) else None) or ""
+            ),
+            "last_discovery_summary": (
+                current.last_discovery_summary
+                if last_discovery_summary is _UNSET and current is not None
+                else self._optional_text(last_discovery_summary if isinstance(last_discovery_summary, str) else None) or ""
+            ),
+            "context_metadata": (
+                current.context_metadata
+                if context_metadata is _UNSET and current is not None
+                else context_metadata
+                if isinstance(context_metadata, dict)
+                else {}
             ),
             "closed_at": (
                 current.closed_at.isoformat()
@@ -6938,6 +6964,9 @@ class SupabaseStore:
             pending_command_text=self._optional_text(value.get("pending_command_text")),
             pending_plan_json=value.get("pending_plan_json") if isinstance(value.get("pending_plan_json"), dict) else {},
             pending_requested_at=self._parse_datetime(value.get("pending_requested_at")),
+            session_summary=self._optional_text(value.get("session_summary")) or "",
+            last_discovery_summary=self._optional_text(value.get("last_discovery_summary")) or "",
+            context_metadata=value.get("context_metadata") if isinstance(value.get("context_metadata"), dict) else {},
             closed_at=self._parse_datetime(value.get("closed_at")),
             created_at=self._parse_datetime(value.get("created_at")) or datetime.now(UTC),
             updated_at=self._parse_datetime(value.get("updated_at")) or datetime.now(UTC),

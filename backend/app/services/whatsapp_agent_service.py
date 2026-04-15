@@ -372,11 +372,10 @@ class WhatsAppAgentService:
                 model_run_id=cli_result.model_run_id,
                 metadata={
                     **inbound_message.metadata,
-                    "interaction_mode": "cli",
-                    "cli_training_candidate": True,
-                    "cli_mode_enabled": cli_result.terminal_session.cli_mode_enabled,
-                    "cli_cwd": cli_result.terminal_session.cwd,
-                    "cli_context_version": cli_result.terminal_session.context_version,
+                    **self._build_cli_message_metadata(
+                        contact_phone=contact_phone,
+                        terminal_session=cli_result.terminal_session,
+                    ),
                 },
             )
             return await self._send_outbound_messages(
@@ -631,6 +630,19 @@ class WhatsAppAgentService:
         last_sent_at: datetime | None = None
 
         for index, outbound in enumerate(outbound_messages):
+            cli_metadata = (
+                self._build_cli_message_metadata(
+                    contact_phone=contact_phone,
+                    cwd=str(outbound.metadata.get("cwd") or ""),
+                    context_version=(
+                        outbound.metadata.get("cli_context_version")
+                        if isinstance(outbound.metadata.get("cli_context_version"), int)
+                        else None
+                    ),
+                )
+                if outbound.generated_by.startswith("whatsapp_cli")
+                else {}
+            )
             outbound_record = self.store.append_whatsapp_agent_message(
                 user_id=self.settings.default_user_id,
                 thread_id=thread.id,
@@ -654,6 +666,7 @@ class WhatsAppAgentService:
                     "generated_by": outbound.generated_by,
                     "reply_to_message_id": inbound_message.whatsapp_message_id,
                     "delivery_chat_jid": delivery_chat_jid,
+                    **cli_metadata,
                     **outbound.metadata,
                 },
                 created_at=datetime.now(UTC),
@@ -1076,6 +1089,43 @@ class WhatsAppAgentService:
 
     def _sync_settings_with_observer(self, _observer_status: ObserverStatusResponse) -> WhatsAppAgentSettingsRecord:
         return self.store.get_whatsapp_agent_settings(self.settings.default_user_id)
+
+    def _build_cli_message_metadata(
+        self,
+        *,
+        contact_phone: str | None,
+        terminal_session: WhatsAppAgentTerminalSessionRecord | None = None,
+        cwd: str | None = None,
+        context_version: int | None = None,
+    ) -> dict[str, object]:
+        owner_phone = self.settings.normalized_whatsapp_cli_owner_phone
+        contact_is_admin = self.store.is_whatsapp_agent_admin_contact(
+            user_id=self.settings.default_user_id,
+            contact_phone=contact_phone,
+        )
+        is_owner = bool(owner_phone and self.store.phone_matches(contact_phone, owner_phone))
+        resolved_cwd = (
+            terminal_session.cwd
+            if terminal_session is not None
+            else str(cwd or "").strip()
+        )
+        resolved_context_version = (
+            terminal_session.context_version
+            if terminal_session is not None
+            else context_version
+        )
+        return {
+            "interaction_mode": "cli",
+            "channel": "whatsapp_agent_cli",
+            "cli_training_candidate": True,
+            "cli_mode_enabled": terminal_session.cli_mode_enabled if terminal_session is not None else True,
+            "cli_cwd": resolved_cwd,
+            "cli_context_version": resolved_context_version,
+            "contact_is_admin": contact_is_admin,
+            "admin_actor": bool(contact_is_admin or is_owner),
+            "server_operator": True,
+            "device_context": "server_pc",
+        }
 
     def _ensure_cli_admin_defaults(self) -> None:
         owner_phone = self.settings.normalized_whatsapp_cli_owner_phone

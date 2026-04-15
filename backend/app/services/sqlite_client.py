@@ -31,6 +31,7 @@ JSON_COLUMNS = {
     "constraints",
     "recurring_instructions",
     "pending_plan_json",
+    "context_metadata",
     "creds",
     "value",
 }
@@ -117,6 +118,21 @@ class SQLiteClient:
             ("mensagens", "participant_name", "ALTER TABLE mensagens ADD COLUMN participant_name TEXT"),
             ("mensagens", "participant_phone", "ALTER TABLE mensagens ADD COLUMN participant_phone TEXT"),
             ("mensagens", "participant_jid", "ALTER TABLE mensagens ADD COLUMN participant_jid TEXT"),
+            (
+                "whatsapp_agent_terminal_sessions",
+                "session_summary",
+                "ALTER TABLE whatsapp_agent_terminal_sessions ADD COLUMN session_summary TEXT NOT NULL DEFAULT ''",
+            ),
+            (
+                "whatsapp_agent_terminal_sessions",
+                "last_discovery_summary",
+                "ALTER TABLE whatsapp_agent_terminal_sessions ADD COLUMN last_discovery_summary TEXT NOT NULL DEFAULT ''",
+            ),
+            (
+                "whatsapp_agent_terminal_sessions",
+                "context_metadata",
+                "ALTER TABLE whatsapp_agent_terminal_sessions ADD COLUMN context_metadata TEXT NOT NULL DEFAULT '{}'",
+            ),
             (
                 "whatsapp_known_contacts",
                 "is_admin",

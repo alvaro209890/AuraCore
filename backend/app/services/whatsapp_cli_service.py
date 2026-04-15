@@ -88,6 +88,12 @@ SAFE_EXEC_PREFIXES: tuple[tuple[str, ...], ...] = (
     ("file",),
 )
 
+WHATSAPP_SUMMARY_CHUNK_CHARS = 900
+WHATSAPP_TURN_DONE_MESSAGE = "Solicitação concluída. Agora estou aguardando sua próxima mensagem."
+WHATSAPP_TURN_DONE_ERROR_MESSAGE = (
+    "Essa solicitação foi encerrada com erro. Se quiser, mande a próxima mensagem com ajuste ou novo comando."
+)
+
 
 @dataclass(slots=True)
 class CliOutboundMessage:
@@ -235,6 +241,9 @@ class WhatsAppCliService:
                 pending_requested_at=None,
                 last_command_text=None,
                 last_command_at=None,
+                session_summary="",
+                last_discovery_summary="",
+                context_metadata=self._session_context_metadata(contact_phone=thread.contact_phone),
                 closed_at=None,
             )
             return WhatsAppCliDispatchResult(
@@ -268,6 +277,9 @@ class WhatsAppCliService:
                 pending_requested_at=None,
                 last_command_text=None,
                 last_command_at=None,
+                session_summary="",
+                last_discovery_summary="",
+                context_metadata=self._session_context_metadata(contact_phone=thread.contact_phone),
                 closed_at=None,
             )
             return WhatsAppCliDispatchResult(
@@ -372,7 +384,8 @@ class WhatsAppCliService:
         execution_error: str | None = None
         final_text_from_plan: str | None = None
         observations = list(prior_observations)
-        session_context = self._build_recent_cli_context(
+        session_context = self._build_session_context(
+            terminal_session=terminal_session,
             thread_id=thread.id,
             exclude_message_id=inbound_message.id,
         )
@@ -497,26 +510,18 @@ class WhatsAppCliService:
 
             plan = None
 
-        terminal_session = self._store_terminal_session(
-            thread=thread,
-            session=session,
-            chat_jid=chat_jid,
-            current=terminal_session,
-            cli_mode_enabled=True,
-            cwd=current_cwd,
-            last_command_text=command_text,
-            last_command_at=datetime.now(UTC),
-            pending_command_text=None,
-            pending_plan_json={},
-            pending_requested_at=None,
-            closed_at=None,
-        )
-
         outbound_messages: list[CliOutboundMessage]
+        session_summary: str
+        discovery_summary = self._build_discovery_summary(observations=observations)
         if return_mode == "raw":
             outbound_messages = self._build_raw_output_messages(
                 observations=observations,
                 cwd=current_cwd,
+                execution_error=execution_error,
+            )
+            session_summary = self._build_session_summary(
+                command_text=command_text,
+                final_text=observations[-1].output if observations else "",
                 execution_error=execution_error,
             )
         else:
@@ -531,18 +536,41 @@ class WhatsAppCliService:
                 )
                 if summary_model_run_id:
                     latest_model_run_id = summary_model_run_id
-            outbound_messages = [
-                CliOutboundMessage(
-                    text=summary_text,
-                    generated_by="whatsapp_cli_final",
-                    metadata={
-                        "phase": "final",
-                        "cwd": current_cwd,
-                        "model_run_id": latest_model_run_id or "",
-                        "execution_error": execution_error or "",
-                    },
-                )
-            ]
+            summary_text = self._normalize_summary_text(
+                summary_text=summary_text,
+                command_text=command_text,
+                cwd=current_cwd,
+                execution_error=execution_error,
+            )
+            outbound_messages = self._build_summary_output_messages(
+                summary_text=summary_text,
+                cwd=current_cwd,
+                execution_error=execution_error,
+                model_run_id=latest_model_run_id,
+            )
+            session_summary = self._build_session_summary(
+                command_text=command_text,
+                final_text=summary_text,
+                execution_error=execution_error,
+            )
+
+        terminal_session = self._store_terminal_session(
+            thread=thread,
+            session=session,
+            chat_jid=chat_jid,
+            current=terminal_session,
+            cli_mode_enabled=True,
+            cwd=current_cwd,
+            last_command_text=command_text,
+            last_command_at=datetime.now(UTC),
+            pending_command_text=None,
+            pending_plan_json={},
+            pending_requested_at=None,
+            session_summary=session_summary,
+            last_discovery_summary=discovery_summary,
+            context_metadata=self._session_context_metadata(contact_phone=thread.contact_phone),
+            closed_at=None,
+        )
 
         return WhatsAppCliDispatchResult(
             action="cli_executed" if execution_error is None else "cli_failed",
@@ -694,10 +722,14 @@ class WhatsAppCliService:
             error_text = str(error)
             logger.warning("whatsapp_cli_summary_failed detail=%s", error_text)
             if execution_error:
-                summary_text = self._format_code_block(f"ERRO\n{execution_error}")
+                summary_text = (
+                    "Não consegui sintetizar a resposta final automaticamente, "
+                    f"mas a execução terminou com erro: {execution_error}"
+                )
             else:
-                summary_text = self._format_code_block(
-                    "ERRO\nNao consegui sintetizar a resposta final desta execucao."
+                summary_text = (
+                    "Não consegui sintetizar a resposta final desta execução. "
+                    "Se quiser, peça para eu repetir a análise ou rodar um comando mais específico."
                 )
 
         model_run = self.store.create_model_run(
@@ -753,6 +785,35 @@ class WhatsAppCliService:
             return False
         return tuple(part.lower() for part in parts[: len(prefix)]) == prefix
 
+    def _build_session_context(
+        self,
+        *,
+        terminal_session: WhatsAppAgentTerminalSessionRecord,
+        thread_id: str,
+        exclude_message_id: str | None = None,
+    ) -> str:
+        sections: list[str] = []
+        context_lines = self._render_session_context_metadata(terminal_session.context_metadata)
+        if context_lines:
+            sections.append("Contexto persistente da sessao:\n" + context_lines)
+        if terminal_session.session_summary.strip():
+            sections.append(
+                "Resumo persistente da sessao:\n"
+                f"{self._truncate(terminal_session.session_summary, max_chars=380)}"
+            )
+        if terminal_session.last_discovery_summary.strip():
+            sections.append(
+                "Ultimos achados observados:\n"
+                f"{self._truncate(terminal_session.last_discovery_summary, max_chars=900)}"
+            )
+        recent_context = self._build_recent_cli_context(
+            thread_id=thread_id,
+            exclude_message_id=exclude_message_id,
+        )
+        if recent_context:
+            sections.append("Historico recente da conversa CLI:\n" + recent_context)
+        return "\n\n".join(section for section in sections if section.strip())
+
     def _build_recent_cli_context(self, *, thread_id: str, exclude_message_id: str | None = None) -> str:
         messages = self.store.list_whatsapp_agent_messages(thread_id=thread_id, limit=14)
         lines: list[str] = []
@@ -761,6 +822,7 @@ class WhatsAppCliService:
                 continue
             metadata = message.metadata if isinstance(message.metadata, dict) else {}
             generated_by = str(metadata.get("generated_by") or "").strip()
+            phase = str(metadata.get("phase") or "").strip()
             interaction_mode = str(metadata.get("interaction_mode") or "").strip()
             if message.direction == "inbound":
                 if interaction_mode != "cli" and not str(message.processing_status).startswith("cli_"):
@@ -768,6 +830,8 @@ class WhatsAppCliService:
                 role = "usuario"
             else:
                 if not generated_by.startswith("whatsapp_cli"):
+                    continue
+                if phase == "turn_complete_notice":
                     continue
                 role = "cli"
             text = " ".join(str(message.content or "").split()).strip()
@@ -818,9 +882,9 @@ class WhatsAppCliService:
                     )
                 )
         final_text = (
-            f"⚠️ Execução encerrada com erro. Diretório atual: {cwd}"
+            f"Execução encerrada com erro. Diretório atual: {cwd}"
             if execution_error is not None
-            else f"✅ Comando finalizado. Diretório atual: {cwd}"
+            else f"Comando concluído. Diretório atual: {cwd}"
         )
         outbound.append(
             CliOutboundMessage(
@@ -829,7 +893,151 @@ class WhatsAppCliService:
                 metadata={"phase": "finished", "cwd": cwd, "error": execution_error or ""},
             )
         )
+        outbound.append(self._build_turn_done_message(cwd=cwd, execution_error=execution_error))
         return outbound
+
+    def _build_summary_output_messages(
+        self,
+        *,
+        summary_text: str,
+        cwd: str,
+        execution_error: str | None,
+        model_run_id: str | None,
+    ) -> list[CliOutboundMessage]:
+        outbound: list[CliOutboundMessage] = []
+        for chunk in self._split_whatsapp_text(summary_text):
+            outbound.append(
+                CliOutboundMessage(
+                    text=chunk,
+                    generated_by="whatsapp_cli_final",
+                    metadata={
+                        "phase": "final",
+                        "cwd": cwd,
+                        "model_run_id": model_run_id or "",
+                        "execution_error": execution_error or "",
+                    },
+                )
+            )
+        outbound.append(self._build_turn_done_message(cwd=cwd, execution_error=execution_error))
+        return outbound
+
+    def _build_turn_done_message(self, *, cwd: str, execution_error: str | None) -> CliOutboundMessage:
+        text = WHATSAPP_TURN_DONE_MESSAGE if execution_error is None else WHATSAPP_TURN_DONE_ERROR_MESSAGE
+        return CliOutboundMessage(
+            text=text,
+            generated_by="whatsapp_cli_turn_done",
+            metadata={
+                "phase": "turn_complete_notice",
+                "cwd": cwd,
+                "execution_error": execution_error or "",
+            },
+        )
+
+    def _normalize_summary_text(
+        self,
+        *,
+        summary_text: str,
+        command_text: str,
+        cwd: str,
+        execution_error: str | None,
+    ) -> str:
+        normalized = str(summary_text or "").strip()
+        if normalized:
+            return normalized
+        if execution_error:
+            return (
+                f"Não consegui concluir `{command_text}` sem erro.\n\n"
+                f"Erro observado: {execution_error}\n"
+                f"Diretório atual: `{cwd}`"
+            )
+        return (
+            f"Concluí a solicitação `{command_text}`.\n\n"
+            f"Diretório atual: `{cwd}`"
+        )
+
+    def _build_session_summary(
+        self,
+        *,
+        command_text: str,
+        final_text: str,
+        execution_error: str | None,
+    ) -> str:
+        if execution_error:
+            base = f"Solicitação '{command_text}' encerrada com erro: {execution_error}"
+        else:
+            base = final_text.strip() or f"Solicitação '{command_text}' concluída."
+        return self._truncate(" ".join(base.split()), max_chars=420)
+
+    def _build_discovery_summary(self, *, observations: list[CliExecutionObservation]) -> str:
+        if not observations:
+            return ""
+        lines: list[str] = []
+        for item in observations[-4:]:
+            status = "ok" if item.success else "erro"
+            output_preview = self._truncate(" ".join(item.output.split()), max_chars=150)
+            lines.append(f"- {status} | {item.command or item.tool}: {output_preview}")
+        return "\n".join(lines)
+
+    def _render_session_context_metadata(self, metadata: dict[str, Any]) -> str:
+        if not isinstance(metadata, dict) or not metadata:
+            return ""
+        lines: list[str] = []
+        if metadata.get("admin_actor"):
+            lines.append("- ator_admin=true")
+        if metadata.get("server_operator"):
+            lines.append("- operando_servidor=true")
+        channel = str(metadata.get("channel") or "").strip()
+        if channel:
+            lines.append(f"- canal={channel}")
+        device_context = str(metadata.get("device_context") or "").strip()
+        if device_context:
+            lines.append(f"- dispositivo={device_context}")
+        contact_phone = str(metadata.get("contact_phone") or "").strip()
+        if contact_phone:
+            lines.append(f"- contato={contact_phone}")
+        return "\n".join(lines)
+
+    def _session_context_metadata(self, *, contact_phone: str | None) -> dict[str, Any]:
+        contact_is_admin = self.store.is_whatsapp_agent_admin_contact(
+            user_id=self.settings.default_user_id,
+            contact_phone=contact_phone,
+        )
+        owner_phone = self.settings.normalized_whatsapp_cli_owner_phone
+        is_owner = bool(owner_phone and self.store.phone_matches(contact_phone, owner_phone))
+        normalized_phone = self.store.normalize_contact_phone(contact_phone)
+        return {
+            "admin_actor": bool(contact_is_admin or is_owner),
+            "channel": "whatsapp_agent_cli",
+            "contact_phone": normalized_phone,
+            "device_context": "server_pc",
+            "interaction_mode": "cli",
+            "server_operator": True,
+        }
+
+    def _split_whatsapp_text(self, content: str) -> list[str]:
+        normalized = str(content or "").strip()
+        if not normalized:
+            return ["Não encontrei conteúdo útil para responder."]
+        chunk_limit = max(500, min(self.settings.whatsapp_cli_output_chunk_chars, WHATSAPP_SUMMARY_CHUNK_CHARS))
+        if len(normalized) <= chunk_limit:
+            return [normalized]
+
+        parts: list[str] = []
+        current = ""
+        for block in [segment.strip() for segment in normalized.split("\n\n") if segment.strip()]:
+            candidate = f"{current}\n\n{block}".strip() if current else block
+            if len(candidate) <= chunk_limit:
+                current = candidate
+                continue
+            if current:
+                parts.append(current)
+            while len(block) > chunk_limit:
+                parts.append(block[:chunk_limit].rstrip())
+                block = block[chunk_limit:].lstrip()
+            current = block
+        if current:
+            parts.append(current)
+        return parts or [normalized[:chunk_limit]]
 
     def _serialize_pending_execution(self, pending: CliPendingExecution) -> dict[str, Any]:
         return {
@@ -992,6 +1200,9 @@ class WhatsAppCliService:
             pending_command_text=None,
             pending_plan_json={},
             pending_requested_at=None,
+            session_summary="",
+            last_discovery_summary="",
+            context_metadata=self._session_context_metadata(contact_phone=thread.contact_phone),
             closed_at=now,
             updated_at=now,
         )
@@ -1011,6 +1222,9 @@ class WhatsAppCliService:
         pending_command_text: str | None | object = _UNSET,
         pending_plan_json: dict[str, Any] | object = _UNSET,
         pending_requested_at: datetime | None | object = _UNSET,
+        session_summary: str | None | object = _UNSET,
+        last_discovery_summary: str | None | object = _UNSET,
+        context_metadata: dict[str, Any] | object = _UNSET,
         closed_at: datetime | None | object = _UNSET,
     ) -> WhatsAppAgentTerminalSessionRecord:
         return self.store.upsert_whatsapp_agent_terminal_session(
@@ -1026,6 +1240,9 @@ class WhatsAppCliService:
             pending_command_text=pending_command_text,
             pending_plan_json=pending_plan_json,
             pending_requested_at=pending_requested_at,
+            session_summary=session_summary,
+            last_discovery_summary=last_discovery_summary,
+            context_metadata=context_metadata,
             closed_at=closed_at,
             updated_at=datetime.now(UTC),
         )
@@ -1036,22 +1253,15 @@ class WhatsAppCliService:
     def _build_help_message(self, *, cli_mode_enabled: bool) -> str:
         cli_status = "ativa" if cli_mode_enabled else "fechada"
         return (
-            "Comandos disponíveis para o Álvaro no WhatsApp CLI\n\n"
-            f"Estado atual da CLI: `{cli_status}`\n\n"
-            "`/`\n"
-            "Mostra esta lista de comandos e o estado atual da CLI.\n\n"
-            "`/agente`\n"
-            "Abre a CLI do Cursar no WhatsApp.\n\n"
-            "`/confirmar`\n"
-            "Confirma a próxima ação sensível ou destrutiva pendente.\n\n"
-            "`/cancelar`\n"
-            "Descarta a execução pendente sem rodar nada no PC.\n\n"
-            "`/clear`\n"
-            "Limpa o contexto da CLI e reinicia a sessão no diretório raiz configurado.\n\n"
-            "`/fechar`\n"
-            "Encerra a CLI e volta a bloquear execução até novo `/agente`.\n\n"
+            "WhatsApp CLI do AuraCore\n\n"
+            f"Estado atual: `{cli_status}`\n\n"
+            "`/agente` abre a CLI.\n"
+            "`/fechar` encerra a CLI.\n"
+            "`/clear` limpa o contexto da sessão.\n"
+            "`/confirmar` executa uma ação sensível pendente.\n"
+            "`/cancelar` descarta a ação pendente.\n\n"
             "Comandos diretos como `pwd`, `ls`, `cd`, `cat`, `rg`, `git status`, `pytest` e `npm run build` rodam como terminal.\n\n"
-            "Pedidos em linguagem natural como \"analise esta pasta\", \"investigue esse erro\" ou \"corrija isso\" agora podem explorar o projeto automaticamente e devolver um relatório final.\n"
+            "Pedidos naturais como \"analise esta pasta\", \"veja esse erro\" ou \"corrija isso\" usam modo agente: investigam, executam e depois respondem com relatório final.\n"
         )
 
     def _build_confirmation_message(
@@ -1078,11 +1288,11 @@ class WhatsAppCliService:
             )
         summary = plan.summary.strip() or "Plano pronto para execução."
         return (
-            "Confirmação necessária antes de executar no PC\n\n"
-            f"Comando recebido: `{command_text}`\n"
+            "Confirmação necessária para continuar\n\n"
+            f"Pedido: `{command_text}`\n"
             f"Resumo: {summary}\n"
             f"{inspected_block}\n"
-            "Ações pendentes:\n"
+            "Próximas ações:\n"
             f"{chr(10).join(action_lines) if action_lines else '1. `exec` acao sensivel'}\n\n"
             "Envie `/confirmar` para executar agora ou `/cancelar` para descartar."
         )

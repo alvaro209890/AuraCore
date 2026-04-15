@@ -2924,10 +2924,13 @@ class MemoryAnalysisService:
         cli_mode = bool(metadata.get("cli_mode_enabled")) or str(message.processing_status).startswith("cli_")
         if not cli_mode:
             return "WhatsApp"
+        qualifier = "WhatsApp CLI"
+        if metadata.get("admin_actor") and metadata.get("server_operator"):
+            qualifier = "WhatsApp CLI admin servidor"
         cwd = str(metadata.get("cli_cwd") or "").strip()
         if cwd:
-            return f"WhatsApp CLI cwd={self._summarize_message_text(cwd, 70)}"
-        return "WhatsApp CLI"
+            return f"{qualifier} cwd={self._summarize_message_text(cwd, 70)}"
+        return qualifier
 
     def _analysis_includes_groups(self, *, has_memory: bool) -> bool:
         return has_memory
