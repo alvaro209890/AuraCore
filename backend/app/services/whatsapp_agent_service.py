@@ -273,6 +273,17 @@ class WhatsAppAgentService:
         agent_owner_number = await self._get_agent_owner_number()
         owner_self_message = bool(agent_owner_number and self.store.phone_matches(contact_phone, agent_owner_number))
 
+        # Only reply to pre-registered contacts or the agent owner
+        known_contact = self.store.get_known_contact_by_phone(
+            user_id=self.settings.default_user_id,
+            contact_phone=contact_phone,
+        )
+        is_owner_or_admin = bool(
+            agent_owner_number and self.store.phone_matches(contact_phone, agent_owner_number)
+        )
+        if known_contact is None and not is_owner_or_admin:
+            return WhatsAppAgentInboundMessageResponse(action="ignored_unknown_contact")
+
         observer_status, settings_record = await self._load_observer_context()
         self.store.upsert_known_contact(
             user_id=self.settings.default_user_id,
@@ -282,6 +293,11 @@ class WhatsAppAgentService:
             name_source=contact_name_source,
             seen_at=payload.timestamp,
         )
+        # Refetch after upsert to get authoritative record
+        known_contact = self.store.get_known_contact_by_phone(
+            user_id=self.settings.default_user_id,
+            contact_phone=contact_phone,
+        ) or known_contact
 
         thread = self.store.get_or_create_whatsapp_agent_thread(
             user_id=self.settings.default_user_id,
@@ -289,10 +305,6 @@ class WhatsAppAgentService:
             chat_jid=chat_jid,
             contact_name=contact_name,
             created_at=payload.timestamp,
-        )
-        known_contact = self.store.get_known_contact_by_phone(
-            user_id=self.settings.default_user_id,
-            contact_phone=contact_phone,
         )
         contact_is_admin = bool(known_contact is not None and known_contact.is_admin)
         delivery_chat_jid = known_contact.chat_jid if known_contact and known_contact.chat_jid else thread.chat_jid or chat_jid
