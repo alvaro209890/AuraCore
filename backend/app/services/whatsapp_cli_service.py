@@ -66,6 +66,11 @@ class WhatsAppCliService:
         self.deepseek_service = deepseek_service
 
     def is_eligible_contact(self, *, contact_phone: str | None) -> bool:
+        if self.store.is_whatsapp_agent_admin_contact(
+            user_id=self.settings.default_user_id,
+            contact_phone=contact_phone,
+        ):
+            return True
         owner_phone = self.settings.normalized_whatsapp_cli_owner_phone
         return bool(owner_phone and self.store.phone_matches(contact_phone, owner_phone))
 

@@ -2907,7 +2907,10 @@ class MemoryAnalysisService:
             if not content:
                 continue
             role = "Dono" if message.role == "user" or message.direction == "inbound" else "Orion"
-            line = f"- {role} (WhatsApp): {self._summarize_message_text(content, 180)}"
+            line = (
+                f"- {role} ({self._owner_whatsapp_message_channel_label(message)}): "
+                f"{self._summarize_message_text(content, 180)}"
+            )
             projected_size = current_size + len(line) + 1
             if sections and projected_size > char_budget:
                 break
@@ -2915,6 +2918,16 @@ class MemoryAnalysisService:
             current_size = projected_size
 
         return "\n".join(sections)
+
+    def _owner_whatsapp_message_channel_label(self, message: WhatsAppAgentMessageRecord) -> str:
+        metadata = message.metadata if isinstance(message.metadata, dict) else {}
+        cli_mode = bool(metadata.get("cli_mode_enabled")) or str(message.processing_status).startswith("cli_")
+        if not cli_mode:
+            return "WhatsApp"
+        cwd = str(metadata.get("cli_cwd") or "").strip()
+        if cwd:
+            return f"WhatsApp CLI cwd={self._summarize_message_text(cwd, 70)}"
+        return "WhatsApp CLI"
 
     def _analysis_includes_groups(self, *, has_memory: bool) -> bool:
         return has_memory

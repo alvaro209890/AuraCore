@@ -274,7 +274,9 @@ class KnownContactRecord:
     chat_jid: str | None
     contact_name: str
     name_source: str
+    is_admin: bool
     last_seen_at: datetime | None
+    admin_updated_at: datetime | None
     updated_at: datetime
 
 
@@ -4629,7 +4631,7 @@ class SupabaseStore:
         try:
             response = (
                 self.client.table("whatsapp_known_contacts")
-                .select("id,user_id,contact_phone,chat_jid,contact_name,name_source,last_seen_at,updated_at")
+                .select("id,user_id,contact_phone,chat_jid,contact_name,name_source,is_admin,last_seen_at,admin_updated_at,updated_at")
                 .eq("user_id", str(user_id))
                 .eq("contact_phone", normalized_phone)
                 .limit(1)
@@ -4656,7 +4658,7 @@ class SupabaseStore:
         try:
             response = (
                 self.client.table("whatsapp_known_contacts")
-                .select("id,user_id,contact_phone,chat_jid,contact_name,name_source,last_seen_at,updated_at")
+                .select("id,user_id,contact_phone,chat_jid,contact_name,name_source,is_admin,last_seen_at,admin_updated_at,updated_at")
                 .eq("user_id", str(user_id))
                 .eq("chat_jid", normalized_jid)
                 .order("updated_at", desc=True)
@@ -4681,6 +4683,7 @@ class SupabaseStore:
         contact_name: str | None,
         name_source: str | None,
         seen_at: datetime | None,
+        is_admin: bool | None | object = _UNSET,
     ) -> KnownContactRecord | None:
         normalized_phone = self.normalize_contact_phone(contact_phone)
         if not normalized_phone:
@@ -4694,6 +4697,11 @@ class SupabaseStore:
         resolved_name_source = self._optional_text(name_source) or (known.name_source if known is not None else "unknown")
         resolved_chat_jid = self._optional_text(chat_jid) or (known.chat_jid if known is not None else None)
         resolved_seen_at = self._latest_datetime(known.last_seen_at if known is not None else None, seen_at)
+        resolved_is_admin = (
+            known.is_admin
+            if is_admin is _UNSET
+            else bool(is_admin)
+        ) if known is not None else bool(is_admin) if is_admin is not _UNSET else False
         updated_at = datetime.now(UTC)
         payload = {
             "id": known.id if known is not None else str(uuid4()),
@@ -4702,7 +4710,13 @@ class SupabaseStore:
             "chat_jid": resolved_chat_jid,
             "contact_name": resolved_name,
             "name_source": resolved_name_source,
+            "is_admin": resolved_is_admin,
             "last_seen_at": resolved_seen_at.isoformat() if resolved_seen_at else None,
+            "admin_updated_at": (
+                updated_at.isoformat()
+                if is_admin is not _UNSET and (known is None or known.is_admin != resolved_is_admin)
+                else known.admin_updated_at.isoformat() if known is not None and known.admin_updated_at is not None else None
+            ),
             "updated_at": updated_at.isoformat(),
         }
         try:
@@ -4724,6 +4738,61 @@ class SupabaseStore:
                 resolved_name_source,
             )
         return self.get_known_contact_by_phone(user_id=user_id, contact_phone=normalized_phone)
+
+    def list_known_contacts(
+        self,
+        *,
+        user_id: UUID,
+        limit: int = 200,
+    ) -> list[KnownContactRecord]:
+        try:
+            response = (
+                self.client.table("whatsapp_known_contacts")
+                .select("id,user_id,contact_phone,chat_jid,contact_name,name_source,is_admin,last_seen_at,admin_updated_at,updated_at")
+                .eq("user_id", str(user_id))
+                .order("is_admin", desc=True)
+                .order("last_seen_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "whatsapp_known_contacts"):
+                raise
+            return []
+        contacts: list[KnownContactRecord] = []
+        for row in response.data or []:
+            parsed = self._parse_known_contact(row, fallback_user_id=user_id)
+            if parsed is not None:
+                contacts.append(parsed)
+        return contacts
+
+    def is_whatsapp_agent_admin_contact(
+        self,
+        *,
+        user_id: UUID,
+        contact_phone: str | None,
+    ) -> bool:
+        contact = self.get_known_contact_by_phone(user_id=user_id, contact_phone=contact_phone)
+        return bool(contact is not None and contact.is_admin)
+
+    def set_known_contact_admin(
+        self,
+        *,
+        user_id: UUID,
+        contact_phone: str | None,
+        chat_jid: str | None = None,
+        contact_name: str | None = None,
+        is_admin: bool,
+    ) -> KnownContactRecord | None:
+        return self.upsert_known_contact(
+            user_id=user_id,
+            contact_phone=contact_phone,
+            chat_jid=chat_jid,
+            contact_name=contact_name,
+            name_source="admin_panel",
+            seen_at=datetime.now(UTC),
+            is_admin=is_admin,
+        )
 
     def get_known_group_by_chat_jid(
         self,
@@ -6762,7 +6831,9 @@ class SupabaseStore:
                 known_name=self._optional_text(value.get("contact_name")),
             ),
             name_source=self._optional_text(value.get("name_source")) or "unknown",
+            is_admin=bool(self._parse_bool(value.get("is_admin"))),
             last_seen_at=self._parse_datetime(value.get("last_seen_at")),
+            admin_updated_at=self._parse_datetime(value.get("admin_updated_at")),
             updated_at=self._parse_datetime(value.get("updated_at")) or datetime.now(UTC),
         )
 

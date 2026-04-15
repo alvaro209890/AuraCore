@@ -50,6 +50,30 @@ class WhatsAppAgentSettingsResponse(BaseModel):
     updated_at: datetime
 
 
+class WhatsAppAgentAdminContactResponse(BaseModel):
+    id: str
+    user_id: str
+    contact_phone: str
+    chat_jid: str | None = None
+    contact_name: str
+    name_source: str
+    is_admin: bool
+    last_seen_at: datetime | None = None
+    admin_updated_at: datetime | None = None
+    updated_at: datetime
+
+
+class WhatsAppAgentAdminContactsListResponse(BaseModel):
+    contacts: list[WhatsAppAgentAdminContactResponse] = Field(default_factory=list)
+
+
+class UpdateWhatsAppAgentAdminContactRequest(BaseModel):
+    contact_phone: str = Field(min_length=1)
+    chat_jid: str | None = None
+    contact_name: str | None = None
+    is_admin: bool
+
+
 class WhatsAppAgentSessionResponse(BaseModel):
     id: str
     thread_id: str

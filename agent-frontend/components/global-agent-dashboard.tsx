@@ -6,6 +6,7 @@ import {
   Bot,
   CheckCircle2,
   Database,
+  Fingerprint,
   LoaderCircle,
   MessageCircleMore,
   QrCode,
@@ -17,8 +18,11 @@ import {
 
 import {
   connectGlobalAgent,
+  getGlobalAgentAdminContacts,
   getGlobalAgentStatus,
   resetGlobalAgent,
+  updateGlobalAgentAdminContact,
+  type GlobalAgentAdminContact,
   type GlobalAgentStatus,
 } from "@/lib/api";
 
@@ -29,6 +33,8 @@ export function GlobalAgentDashboard() {
   const [agentStatus, setAgentStatus] = useState<GlobalAgentStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyAction, setBusyAction] = useState<"connect" | "reset" | "refresh" | null>(null);
+  const [adminContacts, setAdminContacts] = useState<GlobalAgentAdminContact[]>([]);
+  const [busyAdminPhone, setBusyAdminPhone] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -62,13 +68,17 @@ export function GlobalAgentDashboard() {
     setLoading(true);
     try {
       const nextStatus = await connectGlobalAgent();
+      const nextContacts = await getGlobalAgentAdminContacts();
       setAgentStatus(nextStatus);
+      setAdminContacts(nextContacts);
       setError(null);
     } catch (nextError) {
       setError(formatUiError(nextError));
       try {
         const fallbackStatus = await getGlobalAgentStatus();
+        const fallbackContacts = await getGlobalAgentAdminContacts();
         setAgentStatus(fallbackStatus);
+        setAdminContacts(fallbackContacts);
       } catch {
         // Keep the original error state if even the fallback fails.
       }
@@ -82,6 +92,8 @@ export function GlobalAgentDashboard() {
     try {
       const nextStatus = await getGlobalAgentStatus();
       setAgentStatus(nextStatus);
+      const nextContacts = await getGlobalAgentAdminContacts();
+      setAdminContacts(nextContacts);
       setError(null);
     } catch (nextError) {
       setError(formatUiError(nextError));
@@ -113,6 +125,24 @@ export function GlobalAgentDashboard() {
       setError(formatUiError(nextError));
     } finally {
       setBusyAction(null);
+    }
+  }
+
+  async function handleToggleAdmin(contact: GlobalAgentAdminContact): Promise<void> {
+    setBusyAdminPhone(contact.contact_phone);
+    try {
+      const nextContacts = await updateGlobalAgentAdminContact({
+        contact_phone: contact.contact_phone,
+        chat_jid: contact.chat_jid,
+        contact_name: contact.contact_name,
+        is_admin: !contact.is_admin,
+      });
+      setAdminContacts(nextContacts);
+      setError(null);
+    } catch (nextError) {
+      setError(formatUiError(nextError));
+    } finally {
+      setBusyAdminPhone(null);
     }
   }
 
@@ -201,6 +231,44 @@ export function GlobalAgentDashboard() {
             </section>
 
             <section className="agent-dashboard-grid agent-dashboard-grid-secondary">
+              <article className="agent-panel">
+                <div className="agent-panel-head">
+                  <div>
+                    <span className="agent-section-kicker">Admins do CLI</span>
+                    <h2>Quem pode operar o terminal</h2>
+                  </div>
+                </div>
+                <div className="agent-admin-list">
+                  {adminContacts.length === 0 ? (
+                    <div className="agent-empty-qr">
+                      <Fingerprint size={26} />
+                      <span>Os contatos conhecidos vao aparecer aqui conforme o backend observar as conversas.</span>
+                    </div>
+                  ) : (
+                    adminContacts.map((contact) => (
+                      <div className="agent-admin-row" key={contact.id}>
+                        <div className="agent-admin-copy">
+                          <strong>{contact.contact_name || contact.contact_phone}</strong>
+                          <span>{contact.contact_phone}</span>
+                          <small>
+                            {contact.last_seen_at ? `Ultima atividade: ${formatShortDate(contact.last_seen_at)}` : "Ainda sem atividade"}
+                          </small>
+                        </div>
+                        <button
+                          className={contact.is_admin ? "agent-primary-button" : "agent-ghost-button"}
+                          disabled={busyAdminPhone === contact.contact_phone}
+                          onClick={() => void handleToggleAdmin(contact)}
+                          type="button"
+                        >
+                          {busyAdminPhone === contact.contact_phone ? <LoaderCircle className="spin" size={18} /> : <ShieldCheck size={18} />}
+                          {contact.is_admin ? "Admin ativo" : "Tornar admin"}
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </article>
+
               <article className="agent-panel">
                 <div className="agent-panel-head">
                   <div>
@@ -308,4 +376,16 @@ function formatUiError(error: unknown): string {
     return error.message;
   }
   return "Nao foi possivel carregar o Agent Hub.";
+}
+
+function formatShortDate(value: string): string {
+  try {
+    return new Intl.DateTimeFormat("pt-BR", {
+      dateStyle: "short",
+      timeStyle: "short",
+      timeZone: "America/Sao_Paulo",
+    }).format(new Date(value));
+  } catch {
+    return value;
+  }
 }

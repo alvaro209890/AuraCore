@@ -5,7 +5,9 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from app.dependencies import get_whatsapp_agent_service
 from app.schemas import (
     UpdateWhatsAppAgentSettingsRequest,
+    UpdateWhatsAppAgentAdminContactRequest,
     WhatsAppAgentMessagesListResponse,
+    WhatsAppAgentAdminContactsListResponse,
     WhatsAppAgentSettingsResponse,
     WhatsAppAgentStatusResponse,
     WhatsAppAgentThreadsListResponse,
@@ -64,6 +66,34 @@ async def update_agent_settings(
     agent_service: WhatsAppAgentService = Depends(get_whatsapp_agent_service),
 ) -> WhatsAppAgentSettingsResponse:
     return agent_service.update_settings(auto_reply_enabled=payload.auto_reply_enabled)
+
+
+@router.get("/admin-contacts", response_model=WhatsAppAgentAdminContactsListResponse)
+async def list_agent_admin_contacts(
+    limit: int = Query(default=200, ge=1, le=500),
+    agent_service: WhatsAppAgentService = Depends(get_whatsapp_agent_service),
+) -> WhatsAppAgentAdminContactsListResponse:
+    contacts = agent_service.list_admin_contacts(limit=limit)
+    return WhatsAppAgentAdminContactsListResponse(
+        contacts=[_to_admin_contact_response(contact) for contact in contacts],
+    )
+
+
+@router.put("/admin-contacts", response_model=WhatsAppAgentAdminContactsListResponse)
+async def update_agent_admin_contact(
+    payload: UpdateWhatsAppAgentAdminContactRequest = Body(...),
+    agent_service: WhatsAppAgentService = Depends(get_whatsapp_agent_service),
+) -> WhatsAppAgentAdminContactsListResponse:
+    agent_service.update_admin_contact(
+        contact_phone=payload.contact_phone,
+        chat_jid=payload.chat_jid,
+        contact_name=payload.contact_name,
+        is_admin=payload.is_admin,
+    )
+    contacts = agent_service.list_admin_contacts(limit=200)
+    return WhatsAppAgentAdminContactsListResponse(
+        contacts=[_to_admin_contact_response(contact) for contact in contacts],
+    )
 
 
 @router.get("/workspace", response_model=WhatsAppAgentWorkspaceResponse)
@@ -206,6 +236,21 @@ def _to_contact_memory_response(memory) -> dict | None:
         "learned_message_count": memory.learned_message_count,
         "last_learned_at": memory.last_learned_at,
         "updated_at": memory.updated_at,
+    }
+
+
+def _to_admin_contact_response(contact) -> dict:
+    return {
+        "id": contact.id,
+        "user_id": str(contact.user_id),
+        "contact_phone": contact.contact_phone,
+        "chat_jid": contact.chat_jid,
+        "contact_name": contact.contact_name,
+        "name_source": contact.name_source,
+        "is_admin": contact.is_admin,
+        "last_seen_at": contact.last_seen_at,
+        "admin_updated_at": contact.admin_updated_at,
+        "updated_at": contact.updated_at,
     }
 
 

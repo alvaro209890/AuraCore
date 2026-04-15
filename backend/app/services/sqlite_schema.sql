@@ -43,7 +43,9 @@ CREATE TABLE IF NOT EXISTS whatsapp_known_contacts (
   chat_jid TEXT,
   contact_name TEXT NOT NULL DEFAULT '',
   name_source TEXT NOT NULL DEFAULT 'unknown',
+  is_admin INTEGER NOT NULL DEFAULT 0,
   last_seen_at TEXT,
+  admin_updated_at TEXT,
   updated_at TEXT NOT NULL,
   UNIQUE (user_id, contact_phone)
 );
@@ -51,6 +53,7 @@ CREATE TABLE IF NOT EXISTS whatsapp_known_contacts (
 CREATE INDEX IF NOT EXISTS whatsapp_known_contacts_user_phone_idx ON whatsapp_known_contacts (user_id, contact_phone);
 CREATE INDEX IF NOT EXISTS whatsapp_known_contacts_user_chat_jid_idx ON whatsapp_known_contacts (user_id, chat_jid);
 CREATE INDEX IF NOT EXISTS whatsapp_known_contacts_user_seen_idx ON whatsapp_known_contacts (user_id, last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS whatsapp_known_contacts_user_admin_idx ON whatsapp_known_contacts (user_id, is_admin, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS whatsapp_known_groups (
   id TEXT PRIMARY KEY,

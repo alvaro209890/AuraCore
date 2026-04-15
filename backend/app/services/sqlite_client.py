@@ -117,6 +117,16 @@ class SQLiteClient:
             ("mensagens", "participant_name", "ALTER TABLE mensagens ADD COLUMN participant_name TEXT"),
             ("mensagens", "participant_phone", "ALTER TABLE mensagens ADD COLUMN participant_phone TEXT"),
             ("mensagens", "participant_jid", "ALTER TABLE mensagens ADD COLUMN participant_jid TEXT"),
+            (
+                "whatsapp_known_contacts",
+                "is_admin",
+                "ALTER TABLE whatsapp_known_contacts ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0",
+            ),
+            (
+                "whatsapp_known_contacts",
+                "admin_updated_at",
+                "ALTER TABLE whatsapp_known_contacts ADD COLUMN admin_updated_at TEXT",
+            ),
         ]
         with self._lock:
             for table_name, column_name, alter_sql in migrations:

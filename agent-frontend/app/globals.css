@@ -425,14 +425,16 @@ button {
 }
 
 .agent-rule-list,
-.agent-status-list {
+.agent-status-list,
+.agent-admin-list {
   display: flex;
   flex-direction: column;
   gap: 14px;
 }
 
 .agent-rule-row,
-.agent-status-line {
+.agent-status-line,
+.agent-admin-row {
   display: flex;
   gap: 12px;
   padding: 14px 16px;
@@ -450,6 +452,22 @@ button {
 .agent-status-line {
   justify-content: space-between;
   align-items: center;
+}
+
+.agent-admin-row {
+  justify-content: space-between;
+  align-items: center;
+}
+
+.agent-admin-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-admin-copy span,
+.agent-admin-copy small {
+  color: var(--muted);
 }
 
 @media (max-width: 1080px) {
@@ -500,5 +518,10 @@ button {
   .agent-danger-button,
   .agent-ghost-button {
     width: 100%;
+  }
+
+  .agent-admin-row {
+    flex-direction: column;
+    align-items: stretch;
   }
 }
