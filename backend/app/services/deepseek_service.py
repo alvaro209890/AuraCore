@@ -143,7 +143,7 @@ class DeepSeekAgentMemoryDecision(BaseModel):
 
 
 class DeepSeekCliAction(BaseModel):
-    tool: Literal["pwd", "ls", "cd", "cat", "write", "exec", "find", "head", "tail", "mkdir", "touch", "cp", "mv", "rm", "final"] = "exec"
+    tool: Literal["pwd", "ls", "cd", "cat", "write", "exec", "find", "head", "tail", "mkdir", "touch", "cp", "mv", "rm", "rg", "final"] = "exec"
     path: str = ""
     command: str = ""
     content: str = ""
@@ -717,33 +717,47 @@ class DeepSeekService:
         user_message: str,
         cwd: str,
         cli_mode_enabled: bool,
+        session_context: str = "",
+        execution_history: str = "",
+        iteration: int = 1,
     ) -> DeepSeekCliPlan:
         user_prompt = (
             f"Diretorio atual: {cwd.strip()}\n"
             f"Modo CLI ativo: {'sim' if cli_mode_enabled else 'nao'}\n"
-            "Mensagem do usuario:\n"
-            f"{user_message.strip()}"
+            f"Iteracao atual: {max(1, iteration)}\n"
+            "Pedido original do usuario:\n"
+            f"{user_message.strip()}\n\n"
+            "Contexto recente da sessao:\n"
+            f"{session_context.strip() or '(sem contexto anterior relevante)'}\n\n"
+            "Historico de execucao desta solicitacao:\n"
+            f"{execution_history.strip() or '(nenhum passo executado ainda)'}"
         )
         payload = self._build_completion_payload(
             system_prompt=(
-                "Voce orquestra um terminal via WhatsApp com as ferramentas pwd, ls, cd, cat, write, exec, find, head, tail, mkdir, touch, cp, mv e rm. "
+                "Voce e a CLI autonoma do Cursar operando via WhatsApp. "
+                "A cada chamada, escolha apenas o proximo bloco pequeno de acoes para resolver o pedido de ponta a ponta. "
+                "Trabalhe como uma CLI real: explore arquivos, leia codigo, rode comandos de validacao, refine a investigacao e so finalize quando tiver informacao suficiente. "
+                "Voce pode usar as ferramentas pwd, ls, cd, cat, write, exec, find, head, tail, mkdir, touch, cp, mv, rm e rg. "
                 "Responda EXCLUSIVAMENTE em JSON valido com as chaves summary, explicit_sensitive_request e actions. "
                 "Cada item de actions deve ter: tool, path, command, content, mode e explanation. "
-                "Use o menor numero de acoes necessario. "
+                "Use poucas acoes por iteracao e prefira passos observaveis e verificaveis. "
                 "tool=cd so para mudar o diretorio persistente. "
                 "tool=ls para listar arquivos. "
                 "tool=cat para ler arquivo. "
                 "tool=write para criar ou alterar arquivo quando o pedido explicitar conteudo. "
-                "tool=exec para comandos shell gerais. "
+                "tool=exec para comandos shell seguros, investigativos ou de validacao. "
                 "tool=find para localizar arquivos ou texto. "
                 "tool=head e tool=tail para ver trechos de arquivo. "
                 "tool=mkdir para criar diretorios. "
                 "tool=touch para criar arquivo vazio. "
                 "tool=cp e tool=mv para copiar ou mover. "
                 "tool=rm para remover quando o pedido for explicito. "
-                "tool=final apenas se nenhuma ferramenta for necessaria e houver uma resposta curta a enviar. "
-                "Marque explicit_sensitive_request=true somente quando o usuario pedir de forma explicita mexer em servicos, systemctl, docker, geoserver, cloudflared, tunnel, tunnel do cloudflare ou processos do sistema. "
-                "Nao invente conteudo de arquivo nem comandos que o usuario nao pediu."
+                "tool=rg para buscas textuais rapidas no projeto. "
+                "tool=final quando ja houver informacao suficiente para responder completamente ao usuario nesta iteracao. "
+                "Se o pedido for analisar uma pasta, repo, bug ou logs, investigue antes de finalizar. "
+                "Se ainda faltar contexto, NUNCA finalize cedo. "
+                "Marque explicit_sensitive_request=true quando qualquer acao do bloco tocar servicos, systemctl, docker, geoserver, cloudflared, tunnel, processos do sistema, remocao destrutiva, paths sensiveis fora do projeto ou comandos claramente perigosos. "
+                "Nao invente conteudo de arquivo, saida de comando ou fatos nao observados no historico recebido."
             ),
             user_prompt=user_prompt,
             max_tokens=self._adaptive_max_tokens(
@@ -763,6 +777,50 @@ class DeepSeekService:
             validator=self._validate_cli_plan,
             operation="cli_plan",
         )
+
+    async def summarize_cli_execution(
+        self,
+        *,
+        user_message: str,
+        cwd: str,
+        session_context: str,
+        execution_history: str,
+        execution_error: str | None = None,
+    ) -> str:
+        user_prompt = (
+            f"Diretorio final: {cwd.strip()}\n"
+            "Pedido original do usuario:\n"
+            f"{user_message.strip()}\n\n"
+            "Contexto recente da sessao:\n"
+            f"{session_context.strip() or '(sem contexto anterior relevante)'}\n\n"
+            "Historico de execucao:\n"
+            f"{execution_history.strip() or '(nenhum passo executado)'}\n\n"
+            "Erro final:\n"
+            f"{(execution_error or 'nenhum').strip()}"
+        )
+        payload = self._build_text_completion_payload(
+            system_prompt=(
+                "Voce escreve a resposta final da CLI do Cursar no WhatsApp. "
+                "Responda em portugues do Brasil, de forma direta e tecnica, como um engenheiro senior operando o terminal. "
+                "Entregue o resultado pedido pelo usuario com base apenas no historico de execucao recebido. "
+                "Se o pedido era uma analise de pasta, repo, bug ou logs, devolva um relatorio objetivo com achados, evidencias e proximos passos quando fizer sentido. "
+                "Se houve erro, explique claramente o que falhou e em qual etapa. "
+                "Nao invente fatos e nao repita todo o log bruto se um resumo objetivo for melhor."
+            ),
+            user_prompt=user_prompt,
+            max_tokens=self._adaptive_max_tokens(
+                user_prompt,
+                ceiling_reasoning=900,
+                ceiling_standard=520,
+                floor_reasoning=260,
+                floor_standard=180,
+                chars_per_step=900,
+                step_tokens=90,
+                max_steps=6,
+            ),
+            interaction_mode="contextual",
+        )
+        return await self._request_text_completion(payload=payload, operation="cli_summary")
 
     def build_analysis_prompt_preview(
         self,
@@ -1739,7 +1797,7 @@ Regras:
         normalized_actions: list[DeepSeekCliAction] = []
         for action in parsed.actions:
             tool = action.tool.strip().lower()
-            if tool not in {"pwd", "ls", "cd", "cat", "write", "exec", "find", "head", "tail", "mkdir", "touch", "cp", "mv", "rm", "final"}:
+            if tool not in {"pwd", "ls", "cd", "cat", "write", "exec", "find", "head", "tail", "mkdir", "touch", "cp", "mv", "rm", "rg", "final"}:
                 tool = "exec"
             normalized_actions.append(
                 DeepSeekCliAction(
