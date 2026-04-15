@@ -2029,11 +2029,17 @@ Regras:
         )
 
     def _parse_cli_plan(self, content: str) -> DeepSeekCliPlan:
-        raw = self._parse_json_dict(
-            content,
-            error_message="DeepSeek retornou JSON invalido para o plano da CLI.",
-            shape_error_message="DeepSeek retornou um payload inesperado para o plano da CLI.",
-        )
+        try:
+            raw = self._parse_json_dict(
+                content,
+                error_message="DeepSeek retornou JSON invalido para o plano da CLI.",
+                shape_error_message="DeepSeek retornou um payload inesperado para o plano da CLI.",
+            )
+        except DeepSeekError:
+            fallback = self._parse_cli_plan_from_raw_text(content)
+            if fallback is not None:
+                return fallback
+            raise
         raw_actions = raw.get("actions")
         if isinstance(raw_actions, dict):
             raw_actions = [raw_actions]
@@ -2063,6 +2069,46 @@ Regras:
         return DeepSeekCliPlan(
             summary=self._as_text(raw.get("summary")),
             explicit_sensitive_request=bool(raw.get("explicit_sensitive_request")),
+            actions=actions,
+        )
+
+    def _parse_cli_plan_from_raw_text(self, content: str) -> DeepSeekCliPlan | None:
+        normalized = self._repair_json_like_content(self._normalize_json_content(content))
+        if not normalized:
+            return None
+        summary = self._extract_jsonish_string(normalized, "summary")
+        explicit_sensitive = self._extract_jsonish_bool(normalized, "explicit_sensitive_request")
+        action_blobs = re.findall(r"\{[^{}]*\"tool\"\s*:\s*\".*?\"[^{}]*\}", normalized, flags=re.DOTALL)
+        actions: list[DeepSeekCliAction] = []
+        for blob in action_blobs[:6]:
+            action = self._coerce_cli_action(
+                {
+                    "tool": self._extract_jsonish_string(blob, "tool"),
+                    "path": self._extract_jsonish_string(blob, "path"),
+                    "command": self._extract_jsonish_string(blob, "command"),
+                    "content": self._extract_jsonish_string(blob, "content"),
+                    "old_text": self._extract_jsonish_string(blob, "old_text"),
+                    "new_text": self._extract_jsonish_string(blob, "new_text"),
+                    "mode": self._extract_jsonish_string(blob, "mode"),
+                    "explanation": self._extract_jsonish_string(blob, "explanation"),
+                }
+            )
+            if action is not None:
+                actions.append(action)
+        if not actions:
+            final_text = (
+                self._extract_jsonish_string(normalized, "response")
+                or self._extract_jsonish_string(normalized, "final_answer")
+                or self._extract_jsonish_string(normalized, "assistant_message")
+                or self._extract_jsonish_string(normalized, "result")
+            )
+            if final_text:
+                actions.append(DeepSeekCliAction(tool="final", explanation=final_text))
+        if not actions:
+            return None
+        return DeepSeekCliPlan(
+            summary=summary,
+            explicit_sensitive_request=explicit_sensitive,
             actions=actions,
         )
 
@@ -2163,6 +2209,24 @@ Regras:
         if head in {"pwd", "ls", "cd", "cat", "find", "head", "tail", "mkdir", "touch", "cp", "mv", "rm", "rg"}:
             return head, candidate
         return tool, command
+
+    def _extract_jsonish_string(self, content: str, key: str) -> str:
+        pattern = rf'"{re.escape(key)}"\s*:\s*"((?:\\.|[^"\\])*)"'
+        match = re.search(pattern, content, flags=re.DOTALL)
+        if not match:
+            return ""
+        raw_value = match.group(1)
+        try:
+            return json.loads(f'"{raw_value}"')
+        except json.JSONDecodeError:
+            return raw_value.replace('\\"', '"').replace("\\n", "\n").strip()
+
+    def _extract_jsonish_bool(self, content: str, key: str) -> bool:
+        pattern = rf'"{re.escape(key)}"\s*:\s*(true|false)'
+        match = re.search(pattern, content, flags=re.IGNORECASE)
+        if not match:
+            return False
+        return match.group(1).strip().lower() == "true"
 
     def _build_reply_prompt(
         self,

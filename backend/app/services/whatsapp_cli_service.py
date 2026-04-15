@@ -4,11 +4,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
 from pathlib import Path
+import re
 from time import perf_counter
 from typing import Any, Awaitable, Callable
 import logging
 import shlex
 import subprocess
+import unicodedata
 
 from app.config import Settings
 from app.services.deepseek_service import DeepSeekCliAction, DeepSeekCliPlan, DeepSeekService
@@ -378,8 +380,16 @@ class WhatsAppCliService:
                 terminal_session=terminal_session,
             )
 
-        direct_plan = self._try_parse_direct_command(normalized_text)
-        return_mode = "raw" if direct_plan is not None else "summary"
+        direct_command_plan = self._try_parse_direct_command(normalized_text)
+        planned_heuristic = False
+        direct_plan = direct_command_plan
+        if direct_plan is None:
+            direct_plan = self._try_build_heuristic_plan(
+                message_text=normalized_text,
+                cwd=terminal_session.cwd,
+            )
+            planned_heuristic = direct_plan is not None
+        return_mode = "raw" if direct_command_plan is not None and not planned_heuristic else "summary"
         return await self._run_cli_turn(
             command_text=normalized_text,
             inbound_message=inbound_message,
@@ -882,10 +892,106 @@ class WhatsAppCliService:
 
         return None
 
+    def _try_build_heuristic_plan(self, *, message_text: str, cwd: str) -> DeepSeekCliPlan | None:
+        normalized = self._normalize_natural_text(message_text)
+        if not self._looks_like_directory_analysis_request(normalized):
+            return None
+        target_path = self._infer_analysis_target_path(message_text=message_text, cwd=cwd)
+        if target_path is None:
+            return None
+        actions = [
+            DeepSeekCliAction(tool="pwd", explanation="Confirmar o diretório atual antes da análise."),
+            DeepSeekCliAction(
+                tool="cd",
+                path=str(target_path),
+                command=str(target_path),
+                explanation="Entrar no diretório alvo da análise.",
+            ),
+            DeepSeekCliAction(
+                tool="ls",
+                command="ls -la",
+                explanation="Listar o conteúdo imediato do diretório.",
+            ),
+            DeepSeekCliAction(
+                tool="find",
+                command="find . -maxdepth 2 -mindepth 1",
+                explanation="Mapear a estrutura principal do diretório em até dois níveis.",
+            ),
+        ]
+        return DeepSeekCliPlan(
+            summary=f"Plano heurístico de análise do diretório {target_path}.",
+            actions=actions,
+        )
+
     def _matches_prefix(self, parts: list[str], prefix: tuple[str, ...]) -> bool:
         if len(parts) < len(prefix):
             return False
         return tuple(part.lower() for part in parts[: len(prefix)]) == prefix
+
+    def _normalize_natural_text(self, value: str) -> str:
+        normalized = unicodedata.normalize("NFKD", str(value or ""))
+        ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
+        cleaned = re.sub(r"[^a-z0-9/._ -]+", " ", ascii_only.casefold())
+        return " ".join(cleaned.split())
+
+    def _looks_like_directory_analysis_request(self, normalized_text: str) -> bool:
+        analysis_terms = ("analise", "analisar", "analisa", "relatorio", "investigue", "inspecione", "veja")
+        target_terms = ("pasta", "diretorio", "diretorio", "repo", "repositorio", "projeto", "downloads", "download")
+        has_analysis_intent = any(term in normalized_text for term in analysis_terms)
+        has_target = any(term in normalized_text for term in target_terms)
+        continuation_patterns = ("e na pasta", "nessa pasta", "nesta pasta", "nessa pasta", "na pasta")
+        return (has_analysis_intent and has_target) or any(pattern in normalized_text for pattern in continuation_patterns)
+
+    def _infer_analysis_target_path(self, *, message_text: str, cwd: str) -> Path | None:
+        normalized = self._normalize_natural_text(message_text)
+        explicit_path = self._extract_explicit_path(message_text)
+        if explicit_path is not None:
+            return explicit_path
+        if self._looks_like_downloads_request(normalized):
+            downloads = self._find_downloads_directory()
+            if downloads is not None:
+                return downloads
+        if any(token in normalized for token in {"repo", "repositorio", "projeto", "essa pasta", "esta pasta", "diretorio atual"}):
+            return Path(cwd).resolve(strict=False)
+        if "pasta" in normalized or "diretorio" in normalized:
+            return Path(cwd).resolve(strict=False)
+        return None
+
+    def _extract_explicit_path(self, message_text: str) -> Path | None:
+        raw = str(message_text or "")
+        code_match = re.search(r"`([^`]+)`", raw)
+        if code_match:
+            return self._resolve_path(code_match.group(1), cwd=self.settings.normalized_whatsapp_cli_root)
+        path_match = re.search(r"(/[^\s]+(?: [^\s]+)*)", raw)
+        if path_match:
+            return self._resolve_path(path_match.group(1), cwd=self.settings.normalized_whatsapp_cli_root)
+        return None
+
+    def _looks_like_downloads_request(self, normalized_text: str) -> bool:
+        download_variants = (
+            "download",
+            "downloads",
+            "doeload",
+            "doeloads",
+            "doweload",
+            "doweloads",
+            "downlod",
+            "downlaod",
+            "arquivos baixados",
+        )
+        return any(term in normalized_text for term in download_variants)
+
+    def _find_downloads_directory(self) -> Path | None:
+        candidates = [
+            Path("/home/server/Downloads"),
+            Path("/home/server/Download"),
+            Path.home() / "Downloads",
+            Path.home() / "Download",
+        ]
+        for candidate in candidates:
+            if candidate.exists() and candidate.is_dir():
+                return candidate.resolve(strict=False)
+        return None
 
     def _build_session_context(
         self,
