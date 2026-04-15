@@ -783,25 +783,25 @@ class WhatsAppCliService:
         if action.tool == "write":
             return self._execute_write(action=action, cwd=cwd), cwd
         if action.tool == "ls":
-            return self._run_process(["ls", *self._split_tool_args(action)], cwd=cwd), cwd
+            return self._run_process(["ls", *self._split_tool_args(action, tool_name="ls")], cwd=cwd), cwd
         if action.tool == "cat":
-            return self._run_process(["cat", *self._split_tool_args(action)], cwd=cwd), cwd
+            return self._run_process(["cat", *self._split_tool_args(action, tool_name="cat")], cwd=cwd), cwd
         if action.tool == "find":
-            return self._run_process(["find", *self._split_tool_args(action)], cwd=cwd), cwd
+            return self._run_process(["find", *self._split_tool_args(action, tool_name="find")], cwd=cwd), cwd
         if action.tool == "head":
-            return self._run_process(["head", *self._split_tool_args(action)], cwd=cwd), cwd
+            return self._run_process(["head", *self._split_tool_args(action, tool_name="head")], cwd=cwd), cwd
         if action.tool == "tail":
-            return self._run_process(["tail", *self._split_tool_args(action)], cwd=cwd), cwd
+            return self._run_process(["tail", *self._split_tool_args(action, tool_name="tail")], cwd=cwd), cwd
         if action.tool == "mkdir":
-            return self._run_process(["mkdir", *self._split_tool_args(action)], cwd=cwd), cwd
+            return self._run_process(["mkdir", *self._split_tool_args(action, tool_name="mkdir")], cwd=cwd), cwd
         if action.tool == "touch":
-            return self._run_process(["touch", *self._split_tool_args(action)], cwd=cwd), cwd
+            return self._run_process(["touch", *self._split_tool_args(action, tool_name="touch")], cwd=cwd), cwd
         if action.tool == "cp":
-            return self._run_process(["cp", *self._split_tool_args(action)], cwd=cwd), cwd
+            return self._run_process(["cp", *self._split_tool_args(action, tool_name="cp")], cwd=cwd), cwd
         if action.tool == "mv":
-            return self._run_process(["mv", *self._split_tool_args(action)], cwd=cwd), cwd
+            return self._run_process(["mv", *self._split_tool_args(action, tool_name="mv")], cwd=cwd), cwd
         if action.tool == "rm":
-            return self._run_process(["rm", *self._split_tool_args(action)], cwd=cwd), cwd
+            return self._run_process(["rm", *self._split_tool_args(action, tool_name="rm")], cwd=cwd), cwd
         if action.tool == "exec":
             command = action.command.strip() or action.path.strip()
             if not command:
@@ -855,11 +855,15 @@ class WhatsAppCliService:
             raise RuntimeError(combined or f"Comando retornou código {completed.returncode}.")
         return combined or "(sem saída)"
 
-    def _split_tool_args(self, action: DeepSeekCliAction) -> list[str]:
+    def _split_tool_args(self, action: DeepSeekCliAction, *, tool_name: str | None = None) -> list[str]:
         raw = action.command.strip() or action.path.strip()
         if not raw:
             return []
-        return shlex.split(raw)
+        parts = shlex.split(raw)
+        normalized_tool = (tool_name or "").strip().lower()
+        if normalized_tool and parts and parts[0].strip().lower() == normalized_tool:
+            return parts[1:]
+        return parts
 
     def _resolve_path(self, target: str, *, cwd: str) -> Path:
         candidate = Path(target.strip()).expanduser()
