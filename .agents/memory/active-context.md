@@ -17,6 +17,15 @@
 - Isso foi mitigado em duas camadas:
   - recuperação do plano por texto cru no parser
   - fallback heurístico local para pedidos de análise de pasta/repositório
+- Outro erro real ocorreu na sessão `Analise a pasta de dowloads desse pc`
+- Causa observada em produção:
+  - o typo `dowloads` ainda não era reconhecido como pedido de `Downloads`
+  - o planner acabou emitindo `cd ..`
+  - o backend tratava `cd ..` como caminho literal `.../cd ..`, em vez de interpretar o alvo `..`
+- Correção aplicada:
+  - novos aliases comuns de typo para `Downloads`
+  - parsing de alvo primário para ferramentas como `cd`, `write` e `edit`
+  - wrappers seguros como `bash -lc 'ls -la'` e `bash -lc 'find . -maxdepth 2'` agora contam como autonomia segura e não pedem confirmação
 
 ## Uso futuro desta pasta
 

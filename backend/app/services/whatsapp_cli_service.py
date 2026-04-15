@@ -57,6 +57,17 @@ DIRECT_TOOL_COMMANDS = {
     "rg",
 }
 
+SAFE_DIRECT_TOOL_COMMANDS = {
+    "pwd",
+    "ls",
+    "cd",
+    "cat",
+    "find",
+    "head",
+    "tail",
+    "rg",
+}
+
 SAFE_EXEC_PREFIXES: tuple[tuple[str, ...], ...] = (
     ("git", "status"),
     ("git", "diff"),
@@ -971,8 +982,12 @@ class WhatsAppCliService:
         download_variants = (
             "download",
             "downloads",
+            "dowload",
+            "dowloads",
             "doeload",
             "doeloads",
+            "donwload",
+            "donwloads",
             "doweload",
             "doweloads",
             "downlod",
@@ -1456,6 +1471,9 @@ class WhatsAppCliService:
         raw = command.strip()
         if not raw:
             return True
+        unwrapped = self._unwrap_safe_shell_wrapper(raw)
+        if unwrapped and unwrapped != raw:
+            return self._exec_requires_confirmation(unwrapped)
         lowered = raw.casefold()
         if any(marker in lowered for marker in {"&&", "||", ";", "sudo ", " pkill ", " kill ", "systemctl", "docker ", "cloudflared"}):
             return True
@@ -1467,6 +1485,9 @@ class WhatsAppCliService:
             return True
         if not parts:
             return True
+        head = parts[0].strip().lower()
+        if head in SAFE_DIRECT_TOOL_COMMANDS:
+            return False
         for prefix in SAFE_EXEC_PREFIXES:
             if self._matches_prefix([part.lower() for part in parts], prefix):
                 return False
@@ -1474,17 +1495,23 @@ class WhatsAppCliService:
 
     def _mutating_path_outside_root(self, *, action: DeepSeekCliAction, cwd: str) -> bool:
         targets: list[str] = []
-        raw = action.command.strip() or action.path.strip()
-        try:
-            parts = shlex.split(raw) if raw else []
-        except ValueError:
-            return True
 
         if action.tool in {"write", "edit", "mkdir", "touch"}:
-            if raw:
-                targets.append(raw)
+            target = self._extract_primary_target(action=action, tool_name=action.tool)
+            if target:
+                targets.append(target)
         elif action.tool in {"cp", "mv"}:
-            targets.extend(part for part in parts if part and not part.startswith("-"))
+            targets.extend(
+                part
+                for part in self._split_tool_args(action, tool_name=action.tool)
+                if part and not part.startswith("-")
+            )
+        elif action.tool == "rm":
+            targets.extend(
+                part
+                for part in self._split_tool_args(action, tool_name="rm")
+                if part and not part.startswith("-")
+            )
 
         for target in targets:
             resolved = self._resolve_path(target, cwd=cwd)
@@ -1650,7 +1677,7 @@ class WhatsAppCliService:
         if action.tool == "pwd":
             return cwd, cwd
         if action.tool == "cd":
-            target = action.path or action.command
+            target = self._extract_primary_target(action=action, tool_name="cd")
             if not target.strip():
                 raise RuntimeError("Comando cd sem destino.")
             resolved = self._resolve_path(target, cwd=cwd)
@@ -1693,7 +1720,7 @@ class WhatsAppCliService:
         raise RuntimeError(f"Ferramenta da CLI não suportada: {action.tool}")
 
     def _execute_write(self, *, action: DeepSeekCliAction, cwd: str) -> str:
-        target = action.path.strip() or action.command.strip()
+        target = self._extract_primary_target(action=action, tool_name="write")
         if not target:
             raise RuntimeError("Ferramenta write sem caminho de arquivo.")
         resolved = self._resolve_path(target, cwd=cwd)
@@ -1705,7 +1732,7 @@ class WhatsAppCliService:
         return f"Arquivo atualizado: {resolved}\nModo: {action.mode}\nCaracteres gravados: {written_chars}"
 
     def _execute_edit(self, *, action: DeepSeekCliAction, cwd: str) -> str:
-        target = action.path.strip() or action.command.strip()
+        target = self._extract_primary_target(action=action, tool_name="edit")
         if not target:
             raise RuntimeError("Ferramenta edit sem caminho de arquivo.")
         if not action.old_text:
@@ -1774,6 +1801,46 @@ class WhatsAppCliService:
         if normalized_tool and parts and parts[0].strip().lower() == normalized_tool:
             return parts[1:]
         return parts
+
+    def _extract_primary_target(self, *, action: DeepSeekCliAction, tool_name: str | None = None) -> str:
+        args = self._split_tool_args(action, tool_name=tool_name)
+        for part in args:
+            if part and not part.startswith("-"):
+                return part
+        raw_path = action.path.strip()
+        if raw_path:
+            return raw_path
+        raw_command = action.command.strip()
+        if not raw_command:
+            return ""
+        try:
+            parts = shlex.split(raw_command)
+        except ValueError:
+            return raw_command
+        if tool_name and parts and parts[0].strip().lower() == tool_name.strip().lower():
+            parts = parts[1:]
+        cleaned = [part for part in parts if part and not part.startswith("-")]
+        if cleaned:
+            return cleaned[0]
+        return raw_command
+
+    def _unwrap_safe_shell_wrapper(self, command: str) -> str:
+        raw = command.strip()
+        if not raw:
+            return raw
+        try:
+            parts = shlex.split(raw)
+        except ValueError:
+            return raw
+        if len(parts) < 3:
+            return raw
+        shell_name = Path(parts[0]).name.lower()
+        if shell_name not in {"bash", "sh", "zsh"}:
+            return raw
+        if parts[1] not in {"-lc", "-c"}:
+            return raw
+        inner_command = parts[2].strip()
+        return inner_command or raw
 
     def _resolve_path(self, target: str, *, cwd: str) -> Path:
         candidate = Path(target.strip()).expanduser()
@@ -1857,20 +1924,16 @@ class WhatsAppCliService:
         return mutated
 
     def _extract_action_targets(self, *, action: DeepSeekCliAction, cwd: str) -> list[Path]:
-        raw = action.command.strip() or action.path.strip()
-        try:
-            parts = shlex.split(raw) if raw else []
-        except ValueError:
-            parts = []
         if action.tool in {"write", "edit", "mkdir", "touch"}:
-            if raw:
-                return [self._resolve_path(raw, cwd=cwd)]
+            target = self._extract_primary_target(action=action, tool_name=action.tool)
+            if target:
+                return [self._resolve_path(target, cwd=cwd)]
             return []
         if action.tool in {"cp", "mv"}:
-            cleaned = [part for part in parts if part and not part.startswith("-")]
+            cleaned = [part for part in self._split_tool_args(action, tool_name=action.tool) if part and not part.startswith("-")]
             return [self._resolve_path(part, cwd=cwd) for part in cleaned[-2:]]
         if action.tool == "rm":
-            cleaned = [part for part in parts if part and not part.startswith("-")]
+            cleaned = [part for part in self._split_tool_args(action, tool_name="rm") if part and not part.startswith("-")]
             return [self._resolve_path(part, cwd=cwd) for part in cleaned]
         return []
 
