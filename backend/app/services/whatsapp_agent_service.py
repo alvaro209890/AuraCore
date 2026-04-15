@@ -364,6 +364,14 @@ class WhatsAppAgentService:
                 thread=thread,
                 session=session,
                 chat_jid=delivery_chat_jid,
+                progress_callback=self._build_cli_progress_callback(
+                    payload=payload,
+                    inbound_message=inbound_message,
+                    thread=thread,
+                    session=session,
+                    contact_phone=contact_phone,
+                    delivery_chat_jid=delivery_chat_jid,
+                ),
             )
             self.store.update_whatsapp_agent_message(
                 message_id=inbound_message.id,
@@ -765,6 +773,122 @@ class WhatsAppAgentService:
             outbound_message_id=message_ids[0] if message_ids else None,
             outbound_message_ids=message_ids,
             outbound_count=len(message_ids),
+        )
+
+    def _build_cli_progress_callback(
+        self,
+        *,
+        payload: WhatsAppAgentInboundMessageRequest,
+        inbound_message: WhatsAppAgentMessageRecord,
+        thread: WhatsAppAgentThreadRecord,
+        session: WhatsAppAgentThreadSessionRecord,
+        contact_phone: str,
+        delivery_chat_jid: str,
+    ):
+        async def _callback(outbound: CliOutboundMessage) -> None:
+            await self._send_progress_outbound_message(
+                payload=payload,
+                inbound_message=inbound_message,
+                thread=thread,
+                session=session,
+                contact_phone=contact_phone,
+                delivery_chat_jid=delivery_chat_jid,
+                outbound=outbound,
+            )
+
+        return _callback
+
+    async def _send_progress_outbound_message(
+        self,
+        *,
+        payload: WhatsAppAgentInboundMessageRequest,
+        inbound_message: WhatsAppAgentMessageRecord,
+        thread: WhatsAppAgentThreadRecord,
+        session: WhatsAppAgentThreadSessionRecord,
+        contact_phone: str,
+        delivery_chat_jid: str,
+        outbound: CliOutboundMessage,
+    ) -> None:
+        cli_metadata = self._build_cli_message_metadata(
+            contact_phone=contact_phone,
+            cwd=str(outbound.metadata.get("cwd") or ""),
+            context_version=(
+                outbound.metadata.get("cli_context_version")
+                if isinstance(outbound.metadata.get("cli_context_version"), int)
+                else None
+            ),
+        )
+        outbound_record = self.store.append_whatsapp_agent_message(
+            user_id=self.settings.default_user_id,
+            thread_id=thread.id,
+            direction="outbound",
+            role="assistant",
+            session_id=session.id,
+            content=outbound.text,
+            message_timestamp=datetime.now(UTC),
+            contact_phone=contact_phone,
+            chat_jid=delivery_chat_jid,
+            source_inbound_message_id=payload.message_id,
+            processing_status="sending",
+            learning_status="not_applicable",
+            response_latency_ms=None,
+            model_run_id=(
+                str(outbound.metadata.get("model_run_id"))
+                if isinstance(outbound.metadata.get("model_run_id"), str)
+                else None
+            ),
+            metadata={
+                "generated_by": outbound.generated_by,
+                "reply_to_message_id": inbound_message.whatsapp_message_id,
+                "delivery_chat_jid": delivery_chat_jid,
+                **cli_metadata,
+                **outbound.metadata,
+            },
+            created_at=datetime.now(UTC),
+        )
+        try:
+            send_result = await self.agent_gateway.send_text_message(
+                chat_jid=delivery_chat_jid,
+                message_text=outbound.text,
+            )
+        except Exception as error:
+            send_error = str(error)
+            self.store.update_whatsapp_agent_message(
+                message_id=outbound_record.id,
+                send_status="failed",
+                processing_status="failed_send",
+                error_text=send_error,
+            )
+            logger.warning(
+                "reply_progress_send_failed thread_id=%s inbound_message_id=%s outbound_message_id=%s detail=%s",
+                thread.id,
+                inbound_message.id,
+                outbound_record.id,
+                send_error,
+            )
+            return
+
+        sent_at = send_result.timestamp or datetime.now(UTC)
+        self.store.update_whatsapp_agent_message(
+            message_id=outbound_record.id,
+            send_status="sent",
+            processing_status="sent",
+            whatsapp_message_id=send_result.message_id,
+            message_timestamp=sent_at,
+        )
+        self.store.update_whatsapp_agent_thread(
+            thread_id=thread.id,
+            chat_jid=delivery_chat_jid,
+            status="active",
+            last_outbound_at=sent_at,
+            last_message_at=sent_at,
+            last_error_at=None,
+            last_error_text=None,
+        )
+        self.store.update_whatsapp_agent_session(
+            session_id=session.id,
+            last_activity_at=sent_at,
+            updated_at=sent_at,
         )
 
     def _build_agenda_confirmation_reply(self, outcome: AgendaProcessingResult) -> str:

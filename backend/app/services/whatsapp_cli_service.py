@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import json
 from pathlib import Path
 from time import perf_counter
-from typing import Any
+from typing import Any, Awaitable, Callable
 import logging
 import shlex
 import subprocess
@@ -130,6 +131,9 @@ class WhatsAppCliDispatchResult:
     model_run_id: str | None = None
 
 
+ProgressCallback = Callable[[CliOutboundMessage], Awaitable[None]]
+
+
 class WhatsAppCliService:
     def __init__(
         self,
@@ -165,6 +169,7 @@ class WhatsAppCliService:
         thread: WhatsAppAgentThreadRecord,
         session: WhatsAppAgentThreadSessionRecord,
         chat_jid: str,
+        progress_callback: ProgressCallback | None = None,
     ) -> WhatsAppCliDispatchResult:
         normalized_text = " ".join(message_text.split()).strip()
         terminal_session = self._ensure_terminal_session(thread=thread, chat_jid=chat_jid)
@@ -190,6 +195,7 @@ class WhatsAppCliService:
                 session=session,
                 chat_jid=chat_jid,
                 terminal_session=terminal_session,
+                progress_callback=progress_callback,
             )
 
         if control_command == "/cancelar":
@@ -215,6 +221,12 @@ class WhatsAppCliService:
                 pending_command_text=None,
                 pending_plan_json={},
                 pending_requested_at=None,
+                context_metadata=self._session_context_metadata(
+                    contact_phone=thread.contact_phone,
+                    current=terminal_session.context_metadata,
+                    task_status="idle",
+                    awaiting_user_turn=True,
+                ),
             )
             return WhatsAppCliDispatchResult(
                 action="cli_cancelled",
@@ -243,7 +255,11 @@ class WhatsAppCliService:
                 last_command_at=None,
                 session_summary="",
                 last_discovery_summary="",
-                context_metadata=self._session_context_metadata(contact_phone=thread.contact_phone),
+                context_metadata=self._session_context_metadata(
+                    contact_phone=thread.contact_phone,
+                    task_status="idle",
+                    awaiting_user_turn=True,
+                ),
                 closed_at=None,
             )
             return WhatsAppCliDispatchResult(
@@ -279,7 +295,11 @@ class WhatsAppCliService:
                 last_command_at=None,
                 session_summary="",
                 last_discovery_summary="",
-                context_metadata=self._session_context_metadata(contact_phone=thread.contact_phone),
+                context_metadata=self._session_context_metadata(
+                    contact_phone=thread.contact_phone,
+                    task_status="idle",
+                    awaiting_user_turn=True,
+                ),
                 closed_at=None,
             )
             return WhatsAppCliDispatchResult(
@@ -309,6 +329,12 @@ class WhatsAppCliService:
                 pending_command_text=None,
                 pending_plan_json={},
                 pending_requested_at=None,
+                context_metadata=self._session_context_metadata(
+                    contact_phone=thread.contact_phone,
+                    current=terminal_session.context_metadata,
+                    task_status="closed",
+                    awaiting_user_turn=True,
+                ),
                 closed_at=datetime.now(UTC),
             )
             return WhatsAppCliDispatchResult(
@@ -364,6 +390,7 @@ class WhatsAppCliService:
             initial_plan=direct_plan,
             prior_observations=[],
             return_mode=return_mode,
+            progress_callback=progress_callback,
         )
 
     async def _run_cli_turn(
@@ -378,12 +405,14 @@ class WhatsAppCliService:
         initial_plan: DeepSeekCliPlan | None,
         prior_observations: list[CliExecutionObservation],
         return_mode: str,
+        progress_callback: ProgressCallback | None,
     ) -> WhatsAppCliDispatchResult:
         current_cwd = terminal_session.cwd
         latest_model_run_id: str | None = None
         execution_error: str | None = None
         final_text_from_plan: str | None = None
         observations = list(prior_observations)
+        executed_actions: list[DeepSeekCliAction] = []
         session_context = self._build_session_context(
             terminal_session=terminal_session,
             thread_id=thread.id,
@@ -391,6 +420,8 @@ class WhatsAppCliService:
         )
         plan = initial_plan
         max_rounds = max(1, min(4, self.settings.whatsapp_cli_max_steps))
+        progress_started = False
+        validation_progress_sent = False
 
         for iteration in range(1, max_rounds + 1):
             if plan is None:
@@ -428,6 +459,15 @@ class WhatsAppCliService:
                     pending_command_text=command_text,
                     pending_plan_json=pending_payload,
                     pending_requested_at=datetime.now(UTC),
+                    context_metadata=self._session_context_metadata(
+                        contact_phone=thread.contact_phone,
+                        current=terminal_session.context_metadata,
+                        active_task=command_text,
+                        cwd=current_cwd,
+                        observations=observations,
+                        task_status="awaiting_confirmation",
+                        awaiting_user_turn=True,
+                    ),
                     closed_at=None,
                 )
                 return WhatsAppCliDispatchResult(
@@ -461,11 +501,25 @@ class WhatsAppCliService:
                     final_text_from_plan = action.explanation.strip() or None
                     break
 
+                if progress_callback is not None and return_mode == "summary" and not progress_started:
+                    progress_started = True
+                    await progress_callback(
+                        CliOutboundMessage(
+                            text=(
+                                f"Recebi sua solicitação e já comecei a analisar em `{current_cwd}`. "
+                                "Vou te mandar o resultado quando terminar."
+                            ),
+                            generated_by="whatsapp_cli_progress",
+                            metadata={"phase": "progress", "cwd": current_cwd},
+                        )
+                    )
+
                 executed_any = True
                 command_label = action.command.strip() or action.path.strip() or action.tool
                 cwd_before = current_cwd
                 try:
                     result_text, current_cwd = self._run_tool(action=action, cwd=current_cwd)
+                    executed_actions.append(action)
                     observations.append(
                         CliExecutionObservation(
                             tool=action.tool,
@@ -509,6 +563,28 @@ class WhatsAppCliService:
                 break
 
             plan = None
+
+        if (
+            execution_error is None
+            and return_mode == "summary"
+            and self._should_run_post_edit_validation(executed_actions=executed_actions)
+        ):
+            if progress_callback is not None and not validation_progress_sent:
+                validation_progress_sent = True
+                await progress_callback(
+                    CliOutboundMessage(
+                        text="Fiz as alterações necessárias. Agora estou validando o resultado antes de te responder.",
+                        generated_by="whatsapp_cli_progress",
+                        metadata={"phase": "progress_validation", "cwd": current_cwd},
+                    )
+                )
+            validation_observations, validation_error = self._run_post_edit_validation(
+                cwd=current_cwd,
+                executed_actions=executed_actions,
+            )
+            observations.extend(validation_observations)
+            if validation_error is not None:
+                execution_error = validation_error
 
         outbound_messages: list[CliOutboundMessage]
         session_summary: str
@@ -568,7 +644,16 @@ class WhatsAppCliService:
             pending_requested_at=None,
             session_summary=session_summary,
             last_discovery_summary=discovery_summary,
-            context_metadata=self._session_context_metadata(contact_phone=thread.contact_phone),
+            context_metadata=self._session_context_metadata(
+                contact_phone=thread.contact_phone,
+                current=terminal_session.context_metadata,
+                active_task=command_text,
+                cwd=current_cwd,
+                observations=observations,
+                task_status="failed" if execution_error is not None else "completed",
+                awaiting_user_turn=True,
+                last_error=execution_error,
+            ),
             closed_at=None,
         )
 
@@ -587,6 +672,7 @@ class WhatsAppCliService:
         session: WhatsAppAgentThreadSessionRecord,
         chat_jid: str,
         terminal_session: WhatsAppAgentTerminalSessionRecord,
+        progress_callback: ProgressCallback | None,
     ) -> WhatsAppCliDispatchResult:
         if not self._has_pending_confirmation(terminal_session):
             return WhatsAppCliDispatchResult(
@@ -617,6 +703,12 @@ class WhatsAppCliService:
                 pending_command_text=None,
                 pending_plan_json={},
                 pending_requested_at=None,
+                context_metadata=self._session_context_metadata(
+                    contact_phone=thread.contact_phone,
+                    current=terminal_session.context_metadata,
+                    task_status="idle",
+                    awaiting_user_turn=True,
+                ),
             )
             return WhatsAppCliDispatchResult(
                 action="cli_confirm_invalid_plan",
@@ -640,6 +732,15 @@ class WhatsAppCliService:
             pending_command_text=None,
             pending_plan_json={},
             pending_requested_at=None,
+            context_metadata=self._session_context_metadata(
+                contact_phone=thread.contact_phone,
+                current=terminal_session.context_metadata,
+                active_task=pending.command_text,
+                cwd=pending.cwd,
+                observations=pending.observations,
+                task_status="running",
+                awaiting_user_turn=False,
+            ),
             closed_at=None,
         )
         return await self._run_cli_turn(
@@ -652,6 +753,7 @@ class WhatsAppCliService:
             initial_plan=pending.plan,
             prior_observations=pending.observations,
             return_mode=pending.return_mode,
+            progress_callback=progress_callback,
         )
 
     async def _request_cli_plan(
@@ -831,7 +933,7 @@ class WhatsAppCliService:
             else:
                 if not generated_by.startswith("whatsapp_cli"):
                     continue
-                if phase == "turn_complete_notice":
+                if phase in {"turn_complete_notice", "progress", "progress_validation"}:
                     continue
                 role = "cli"
             text = " ".join(str(message.content or "").split()).strip()
@@ -992,12 +1094,61 @@ class WhatsAppCliService:
         device_context = str(metadata.get("device_context") or "").strip()
         if device_context:
             lines.append(f"- dispositivo={device_context}")
+        current_cwd = str(metadata.get("cwd") or "").strip()
+        if current_cwd:
+            lines.append(f"- cwd={self._truncate(current_cwd, max_chars=90)}")
         contact_phone = str(metadata.get("contact_phone") or "").strip()
         if contact_phone:
             lines.append(f"- contato={contact_phone}")
+        active_task = str(metadata.get("active_task") or "").strip()
+        if active_task:
+            lines.append(f"- tarefa_atual={self._truncate(active_task, max_chars=140)}")
+        task_status = str(metadata.get("task_status") or "").strip()
+        if task_status:
+            lines.append(f"- status_tarefa={task_status}")
+        if metadata.get("awaiting_user_turn"):
+            lines.append("- aguardando_usuario=true")
+        recent_commands = metadata.get("recent_commands")
+        if isinstance(recent_commands, list) and recent_commands:
+            rendered_commands = ", ".join(
+                self._truncate(str(item), max_chars=48) for item in recent_commands[:5] if str(item).strip()
+            )
+            if rendered_commands:
+                lines.append(f"- comandos_recentes={rendered_commands}")
+        inspected_paths = metadata.get("inspected_paths")
+        if isinstance(inspected_paths, list) and inspected_paths:
+            rendered_paths = ", ".join(
+                self._truncate(str(item), max_chars=60) for item in inspected_paths[:5] if str(item).strip()
+            )
+            if rendered_paths:
+                lines.append(f"- caminhos_inspecionados={rendered_paths}")
+        last_validation_commands = metadata.get("last_validation_commands")
+        if isinstance(last_validation_commands, list) and last_validation_commands:
+            rendered_validations = ", ".join(
+                self._truncate(str(item), max_chars=60)
+                for item in last_validation_commands[:3]
+                if str(item).strip()
+            )
+            if rendered_validations:
+                lines.append(f"- validacoes={rendered_validations}")
+        last_error = str(metadata.get("last_error") or "").strip()
+        if last_error:
+            lines.append(f"- ultimo_erro={self._truncate(last_error, max_chars=120)}")
         return "\n".join(lines)
 
-    def _session_context_metadata(self, *, contact_phone: str | None) -> dict[str, Any]:
+    def _session_context_metadata(
+        self,
+        *,
+        contact_phone: str | None,
+        current: dict[str, Any] | None = None,
+        active_task: str | None = None,
+        cwd: str | None = None,
+        observations: list[CliExecutionObservation] | None = None,
+        task_status: str | None = None,
+        awaiting_user_turn: bool | None = None,
+        last_error: str | None = None,
+    ) -> dict[str, Any]:
+        previous = current if isinstance(current, dict) else {}
         contact_is_admin = self.store.is_whatsapp_agent_admin_contact(
             user_id=self.settings.default_user_id,
             contact_phone=contact_phone,
@@ -1005,7 +1156,7 @@ class WhatsAppCliService:
         owner_phone = self.settings.normalized_whatsapp_cli_owner_phone
         is_owner = bool(owner_phone and self.store.phone_matches(contact_phone, owner_phone))
         normalized_phone = self.store.normalize_contact_phone(contact_phone)
-        return {
+        metadata = {
             "admin_actor": bool(contact_is_admin or is_owner),
             "channel": "whatsapp_agent_cli",
             "contact_phone": normalized_phone,
@@ -1013,6 +1164,43 @@ class WhatsAppCliService:
             "interaction_mode": "cli",
             "server_operator": True,
         }
+        if active_task is not None:
+            metadata["active_task"] = self._truncate(" ".join(active_task.split()), max_chars=220)
+        elif previous.get("active_task"):
+            metadata["active_task"] = previous.get("active_task")
+        if task_status is not None:
+            metadata["task_status"] = task_status
+        elif previous.get("task_status"):
+            metadata["task_status"] = previous.get("task_status")
+        if awaiting_user_turn is not None:
+            metadata["awaiting_user_turn"] = awaiting_user_turn
+        elif "awaiting_user_turn" in previous:
+            metadata["awaiting_user_turn"] = bool(previous.get("awaiting_user_turn"))
+        if cwd:
+            metadata["cwd"] = cwd
+        elif previous.get("cwd"):
+            metadata["cwd"] = previous.get("cwd")
+
+        effective_observations = observations or []
+        if effective_observations:
+            metadata["recent_commands"] = self._collect_recent_commands(effective_observations)
+            metadata["inspected_paths"] = self._collect_inspected_paths(effective_observations)
+            metadata["last_validation_commands"] = self._collect_validation_commands(effective_observations)
+        else:
+            if isinstance(previous.get("recent_commands"), list):
+                metadata["recent_commands"] = previous.get("recent_commands")
+            if isinstance(previous.get("inspected_paths"), list):
+                metadata["inspected_paths"] = previous.get("inspected_paths")
+            if isinstance(previous.get("last_validation_commands"), list):
+                metadata["last_validation_commands"] = previous.get("last_validation_commands")
+
+        if last_error is None and task_status in {"completed", "idle", "closed"}:
+            resolved_error = ""
+        else:
+            resolved_error = last_error if last_error is not None else str(previous.get("last_error") or "").strip()
+        if resolved_error:
+            metadata["last_error"] = self._truncate(resolved_error, max_chars=220)
+        return metadata
 
     def _split_whatsapp_text(self, content: str) -> list[str]:
         normalized = str(content or "").strip()
@@ -1038,6 +1226,38 @@ class WhatsAppCliService:
         if current:
             parts.append(current)
         return parts or [normalized[:chunk_limit]]
+
+    def _collect_recent_commands(self, observations: list[CliExecutionObservation]) -> list[str]:
+        commands: list[str] = []
+        for item in observations[-8:]:
+            label = " ".join((item.command or item.tool).split()).strip()
+            if not label or label in commands:
+                continue
+            commands.append(self._truncate(label, max_chars=80))
+        return commands[-5:]
+
+    def _collect_inspected_paths(self, observations: list[CliExecutionObservation]) -> list[str]:
+        paths: list[str] = []
+        for item in observations[-10:]:
+            if item.tool not in {"cat", "edit", "write", "find", "head", "tail", "ls", "rg"}:
+                continue
+            candidate = self._extract_first_path_from_command(item.command)
+            if not candidate:
+                continue
+            normalized = self._truncate(candidate, max_chars=100)
+            if normalized not in paths:
+                paths.append(normalized)
+        return paths[-5:]
+
+    def _collect_validation_commands(self, observations: list[CliExecutionObservation]) -> list[str]:
+        validations: list[str] = []
+        for item in observations[-8:]:
+            if not self._looks_like_validation_command(item.command or item.tool):
+                continue
+            label = self._truncate(" ".join((item.command or item.tool).split()), max_chars=90)
+            if label not in validations:
+                validations.append(label)
+        return validations[-3:]
 
     def _serialize_pending_execution(self, pending: CliPendingExecution) -> dict[str, Any]:
         return {
@@ -1122,7 +1342,7 @@ class WhatsAppCliService:
             return True
         if action.tool == "exec":
             return self._exec_requires_confirmation(action.command.strip() or action.path.strip())
-        if action.tool in {"write", "mkdir", "touch", "cp", "mv"}:
+        if action.tool in {"write", "edit", "mkdir", "touch", "cp", "mv"}:
             return self._mutating_path_outside_root(action=action, cwd=cwd)
         return False
 
@@ -1154,7 +1374,7 @@ class WhatsAppCliService:
         except ValueError:
             return True
 
-        if action.tool in {"write", "mkdir", "touch"}:
+        if action.tool in {"write", "edit", "mkdir", "touch"}:
             if raw:
                 targets.append(raw)
         elif action.tool in {"cp", "mv"}:
@@ -1202,7 +1422,11 @@ class WhatsAppCliService:
             pending_requested_at=None,
             session_summary="",
             last_discovery_summary="",
-            context_metadata=self._session_context_metadata(contact_phone=thread.contact_phone),
+            context_metadata=self._session_context_metadata(
+                contact_phone=thread.contact_phone,
+                task_status="closed",
+                awaiting_user_turn=True,
+            ),
             closed_at=now,
             updated_at=now,
         )
@@ -1260,7 +1484,8 @@ class WhatsAppCliService:
             "`/clear` limpa o contexto da sessão.\n"
             "`/confirmar` executa uma ação sensível pendente.\n"
             "`/cancelar` descarta a ação pendente.\n\n"
-            "Comandos diretos como `pwd`, `ls`, `cd`, `cat`, `rg`, `git status`, `pytest` e `npm run build` rodam como terminal.\n\n"
+            "Comandos diretos como `pwd`, `ls`, `cd`, `cat`, `rg`, `git status`, `pytest` e `npm run build` rodam como terminal.\n"
+            "O modo agente tambem pode editar arquivos com mais precisao e validar automaticamente depois da alteracao.\n\n"
             "Pedidos naturais como \"analise esta pasta\", \"veja esse erro\" ou \"corrija isso\" usam modo agente: investigam, executam e depois respondem com relatório final.\n"
         )
 
@@ -1330,6 +1555,8 @@ class WhatsAppCliService:
             return f"Diretório alterado para {resolved}", str(resolved)
         if action.tool == "write":
             return self._execute_write(action=action, cwd=cwd), cwd
+        if action.tool == "edit":
+            return self._execute_edit(action=action, cwd=cwd), cwd
         if action.tool == "ls":
             return self._run_process(["ls", *self._split_tool_args(action, tool_name="ls")], cwd=cwd), cwd
         if action.tool == "cat":
@@ -1370,6 +1597,30 @@ class WhatsAppCliService:
             handle.write(action.content)
         written_chars = len(action.content)
         return f"Arquivo atualizado: {resolved}\nModo: {action.mode}\nCaracteres gravados: {written_chars}"
+
+    def _execute_edit(self, *, action: DeepSeekCliAction, cwd: str) -> str:
+        target = action.path.strip() or action.command.strip()
+        if not target:
+            raise RuntimeError("Ferramenta edit sem caminho de arquivo.")
+        if not action.old_text:
+            raise RuntimeError("Ferramenta edit sem old_text para localizar o trecho atual.")
+        resolved = self._resolve_path(target, cwd=cwd)
+        if not resolved.exists():
+            raise RuntimeError(f"Arquivo para editar não encontrado: {resolved}")
+        original = resolved.read_text(encoding="utf-8")
+        occurrences = original.count(action.old_text)
+        if occurrences == 0:
+            raise RuntimeError(f"O trecho old_text não foi encontrado em {resolved}.")
+        if occurrences > 1:
+            raise RuntimeError(f"O trecho old_text apareceu mais de uma vez em {resolved}; preciso de um alvo mais específico.")
+        updated = original.replace(action.old_text, action.new_text, 1)
+        resolved.write_text(updated, encoding="utf-8")
+        return (
+            f"Arquivo editado: {resolved}\n"
+            "Modo: substituicao estruturada\n"
+            f"Trecho antigo: {len(action.old_text)} caracteres\n"
+            f"Trecho novo: {len(action.new_text)} caracteres"
+        )
 
     def _run_process(self, args: list[str], *, cwd: str) -> str:
         try:
@@ -1423,6 +1674,158 @@ class WhatsAppCliService:
         if not candidate.is_absolute():
             candidate = Path(cwd) / candidate
         return candidate.resolve(strict=False)
+
+    def _should_run_post_edit_validation(self, *, executed_actions: list[DeepSeekCliAction]) -> bool:
+        has_mutation = any(action.tool in {"write", "edit", "mkdir", "touch", "cp", "mv", "rm"} for action in executed_actions)
+        if not has_mutation:
+            return False
+        return not any(
+            action.tool == "exec" and self._looks_like_validation_command(action.command)
+            for action in executed_actions
+        )
+
+    def _run_post_edit_validation(
+        self,
+        *,
+        cwd: str,
+        executed_actions: list[DeepSeekCliAction],
+    ) -> tuple[list[CliExecutionObservation], str | None]:
+        validation_commands = self._infer_validation_commands(cwd=cwd, executed_actions=executed_actions)
+        observations: list[CliExecutionObservation] = []
+        for command in validation_commands:
+            try:
+                output = self._run_shell(command=command, cwd=cwd)
+                observations.append(
+                    CliExecutionObservation(
+                        tool="exec",
+                        command=command,
+                        cwd_before=cwd,
+                        cwd_after=cwd,
+                        explanation="Validacao automatica apos alteracoes.",
+                        output=output,
+                        success=True,
+                    )
+                )
+            except Exception as error:
+                error_text = str(error)
+                observations.append(
+                    CliExecutionObservation(
+                        tool="exec",
+                        command=command,
+                        cwd_before=cwd,
+                        cwd_after=cwd,
+                        explanation="Validacao automatica apos alteracoes.",
+                        output=error_text,
+                        success=False,
+                    )
+                )
+                return observations, f"Validação automática falhou em `{command}`: {error_text}"
+        return observations, None
+
+    def _infer_validation_commands(
+        self,
+        *,
+        cwd: str,
+        executed_actions: list[DeepSeekCliAction],
+    ) -> list[str]:
+        mutated_paths = self._collect_mutated_paths(cwd=cwd, executed_actions=executed_actions)
+        if not mutated_paths:
+            return []
+        python_paths = [path for path in mutated_paths if path.suffix == ".py" and path.exists()]
+        if python_paths:
+            quoted = " ".join(shlex.quote(str(path)) for path in python_paths[:12])
+            return [f"python3 -m py_compile {quoted}"]
+        package_json = self._find_package_json(start_cwd=cwd)
+        if package_json is not None and any(path.suffix in {".js", ".jsx", ".ts", ".tsx", ".css", ".scss"} for path in mutated_paths):
+            return self._infer_node_validation_commands(package_json)
+        return []
+
+    def _collect_mutated_paths(self, *, cwd: str, executed_actions: list[DeepSeekCliAction]) -> list[Path]:
+        mutated: list[Path] = []
+        for action in executed_actions:
+            if action.tool not in {"write", "edit", "mkdir", "touch", "cp", "mv", "rm"}:
+                continue
+            for target in self._extract_action_targets(action=action, cwd=cwd):
+                if target not in mutated:
+                    mutated.append(target)
+        return mutated
+
+    def _extract_action_targets(self, *, action: DeepSeekCliAction, cwd: str) -> list[Path]:
+        raw = action.command.strip() or action.path.strip()
+        try:
+            parts = shlex.split(raw) if raw else []
+        except ValueError:
+            parts = []
+        if action.tool in {"write", "edit", "mkdir", "touch"}:
+            if raw:
+                return [self._resolve_path(raw, cwd=cwd)]
+            return []
+        if action.tool in {"cp", "mv"}:
+            cleaned = [part for part in parts if part and not part.startswith("-")]
+            return [self._resolve_path(part, cwd=cwd) for part in cleaned[-2:]]
+        if action.tool == "rm":
+            cleaned = [part for part in parts if part and not part.startswith("-")]
+            return [self._resolve_path(part, cwd=cwd) for part in cleaned]
+        return []
+
+    def _find_package_json(self, *, start_cwd: str) -> Path | None:
+        current = Path(start_cwd).resolve(strict=False)
+        root = Path(self.settings.normalized_whatsapp_cli_root).resolve(strict=False)
+        for candidate_dir in [current, *current.parents]:
+            package_json = candidate_dir / "package.json"
+            if package_json.exists():
+                return package_json
+            if candidate_dir == root:
+                break
+        return None
+
+    def _infer_node_validation_commands(self, package_json_path: Path) -> list[str]:
+        try:
+            package_data = json.loads(package_json_path.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+        scripts = package_data.get("scripts")
+        if not isinstance(scripts, dict):
+            return []
+        package_manager = "npm"
+        if (package_json_path.parent / "pnpm-lock.yaml").exists():
+            package_manager = "pnpm"
+        elif (package_json_path.parent / "yarn.lock").exists():
+            package_manager = "yarn"
+        if "build" in scripts:
+            return [self._package_manager_command(package_manager, "build")]
+        if "lint" in scripts:
+            return [self._package_manager_command(package_manager, "lint")]
+        if "test" in scripts:
+            return [self._package_manager_command(package_manager, "test")]
+        return []
+
+    def _package_manager_command(self, package_manager: str, script_name: str) -> str:
+        if package_manager == "npm":
+            return f"npm run {script_name}"
+        return f"{package_manager} {script_name}"
+
+    def _looks_like_validation_command(self, command: str) -> bool:
+        normalized = " ".join(str(command or "").split()).strip().lower()
+        if not normalized:
+            return False
+        markers = ("pytest", "test", "build", "lint", "py_compile", "mypy", "ruff", "tsc", "cargo test", "go test")
+        return any(marker in normalized for marker in markers)
+
+    def _extract_first_path_from_command(self, command: str) -> str | None:
+        normalized = str(command or "").strip()
+        if not normalized:
+            return None
+        try:
+            parts = shlex.split(normalized)
+        except ValueError:
+            return None
+        for part in parts[1:]:
+            if part.startswith("-"):
+                continue
+            if "/" in part or "." in Path(part).name:
+                return part
+        return None
 
     def _action_hits_sensitive_area(self, action: DeepSeekCliAction) -> bool:
         haystack = " ".join([action.tool, action.path, action.command, action.explanation]).casefold()

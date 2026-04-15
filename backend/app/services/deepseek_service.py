@@ -144,10 +144,12 @@ class DeepSeekAgentMemoryDecision(BaseModel):
 
 
 class DeepSeekCliAction(BaseModel):
-    tool: Literal["pwd", "ls", "cd", "cat", "write", "exec", "find", "head", "tail", "mkdir", "touch", "cp", "mv", "rm", "rg", "final"] = "exec"
+    tool: Literal["pwd", "ls", "cd", "cat", "write", "edit", "exec", "find", "head", "tail", "mkdir", "touch", "cp", "mv", "rm", "rg", "final"] = "exec"
     path: str = ""
     command: str = ""
     content: str = ""
+    old_text: str = ""
+    new_text: str = ""
     mode: Literal["overwrite", "append"] = "overwrite"
     explanation: str = ""
 
@@ -172,9 +174,12 @@ _CLI_TOOL_ALIASES = {
     "grep": "rg",
     "list": "ls",
     "ls_dir": "ls",
+    "modify": "edit",
     "open": "cat",
+    "patch": "edit",
     "read": "cat",
     "read_file": "cat",
+    "replace": "edit",
     "reply": "final",
     "report": "final",
     "respond": "final",
@@ -761,14 +766,15 @@ class DeepSeekService:
                 "Voce e a CLI autonoma do Cursar operando via WhatsApp. "
                 "A cada chamada, escolha apenas o proximo bloco pequeno de acoes para resolver o pedido de ponta a ponta. "
                 "Trabalhe como uma CLI real: explore arquivos, leia codigo, rode comandos de validacao, refine a investigacao e so finalize quando tiver informacao suficiente. "
-                "Voce pode usar as ferramentas pwd, ls, cd, cat, write, exec, find, head, tail, mkdir, touch, cp, mv, rm e rg. "
+                "Voce pode usar as ferramentas pwd, ls, cd, cat, write, edit, exec, find, head, tail, mkdir, touch, cp, mv, rm e rg. "
                 "Responda EXCLUSIVAMENTE em JSON valido com as chaves summary, explicit_sensitive_request e actions. "
-                "Cada item de actions deve ter: tool, path, command, content, mode e explanation. "
+                "Cada item de actions deve ter: tool, path, command, content, old_text, new_text, mode e explanation. "
                 "Use poucas acoes por iteracao e prefira passos observaveis e verificaveis. "
                 "tool=cd so para mudar o diretorio persistente. "
                 "tool=ls para listar arquivos. "
                 "tool=cat para ler arquivo. "
                 "tool=write para criar ou alterar arquivo quando o pedido explicitar conteudo. "
+                "tool=edit para editar um trecho especifico de um arquivo usando path, old_text e new_text sem reescrever o arquivo inteiro. "
                 "tool=exec para comandos shell seguros, investigativos ou de validacao. "
                 "tool=find para localizar arquivos ou texto. "
                 "tool=head e tool=tail para ver trechos de arquivo. "
@@ -2077,6 +2083,8 @@ Regras:
         command = self._as_text(value.get("command"))
         path = self._as_text(value.get("path"))
         content = self._as_text(value.get("content"))
+        old_text = self._as_text(value.get("old_text"))
+        new_text = self._as_text(value.get("new_text"))
         explanation = self._as_text(value.get("explanation"))
         mode = self._normalize_cli_mode(value.get("mode"))
 
@@ -2095,6 +2103,8 @@ Regras:
             command = path
         if tool == "write" and not path and command:
             path = command
+        if tool == "edit" and not path and command:
+            path = command
 
         tool, command = self._simplify_cli_action(tool=tool, command=command)
 
@@ -2103,6 +2113,8 @@ Regras:
             path=path,
             command=command,
             content=content,
+            old_text=old_text,
+            new_text=new_text,
             mode=mode,
             explanation=explanation,
         )
@@ -2113,6 +2125,8 @@ Regras:
             path=action.path.strip(),
             command=action.command.strip(),
             content=action.content,
+            old_text=action.old_text,
+            new_text=action.new_text,
             mode=self._normalize_cli_mode(action.mode),
             explanation=action.explanation.strip(),
         )
@@ -2121,7 +2135,7 @@ Regras:
         tool = self._as_text(raw_tool).strip().lower().replace("-", "_").replace(" ", "_")
         if tool in _CLI_TOOL_ALIASES:
             tool = _CLI_TOOL_ALIASES[tool]
-        if tool in {"pwd", "ls", "cd", "cat", "write", "exec", "find", "head", "tail", "mkdir", "touch", "cp", "mv", "rm", "rg", "final"}:
+        if tool in {"pwd", "ls", "cd", "cat", "write", "edit", "exec", "find", "head", "tail", "mkdir", "touch", "cp", "mv", "rm", "rg", "final"}:
             return tool
         return "exec"
 
