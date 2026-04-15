@@ -82,6 +82,19 @@ class WhatsAppCliService:
         terminal_session = self._ensure_terminal_session(thread=thread, chat_jid=chat_jid)
         control_command = normalized_text.casefold()
 
+        if control_command == "/":
+            return WhatsAppCliDispatchResult(
+                action="cli_help",
+                outbound_messages=[
+                    CliOutboundMessage(
+                        text=self._build_help_message(cli_mode_enabled=terminal_session.cli_mode_enabled),
+                        generated_by="whatsapp_cli_control",
+                        metadata={"control_command": "/", "cli_mode_enabled": terminal_session.cli_mode_enabled},
+                    )
+                ],
+                terminal_session=terminal_session,
+            )
+
         if control_command == "/agente":
             root_cwd = self._default_root_cwd()
             terminal_session = self.store.upsert_whatsapp_agent_terminal_session(
@@ -443,6 +456,33 @@ class WhatsAppCliService:
 
     def _default_root_cwd(self) -> str:
         return str(Path(self.settings.normalized_whatsapp_cli_root))
+
+    def _build_help_message(self, *, cli_mode_enabled: bool) -> str:
+        cli_status = "ativa" if cli_mode_enabled else "fechada"
+        return (
+            "Comandos disponíveis para o Álvaro no WhatsApp CLI\n\n"
+            f"Estado atual da CLI: `{cli_status}`\n\n"
+            "`/`\n"
+            "Mostra esta lista de comandos e o estado atual da CLI.\n\n"
+            "`/agente`\n"
+            "Abre a CLI do Cursar no WhatsApp e passa a tratar as próximas mensagens como comandos.\n\n"
+            "`/clear`\n"
+            "Limpa o contexto da CLI e reinicia a sessão no diretório raiz configurado.\n\n"
+            "`/fechar`\n"
+            "Encerra a CLI e volta a bloquear execução até novo `/agente`.\n\n"
+            "`pwd`\n"
+            "Mostra o diretório atual da sessão.\n\n"
+            "`ls` ou `ls -la`\n"
+            "Lista arquivos e diretórios no caminho atual ou no caminho informado.\n\n"
+            "`cd <caminho>`\n"
+            "Muda o diretório persistente da sessão.\n\n"
+            "`cat <arquivo>`\n"
+            "Lê o conteúdo de um arquivo.\n\n"
+            "`write <arquivo>`\n"
+            "Escreve ou atualiza arquivo quando o pedido trouxer o conteúdo explicitamente.\n\n"
+            "`exec` ou comandos livres\n"
+            "Executa comandos de sistema no diretório atual, sempre planejados pelo DeepSeek.\n"
+        )
 
     def _run_tool(self, *, action: DeepSeekCliAction, cwd: str) -> tuple[str, str]:
         if action.tool == "pwd":
