@@ -226,7 +226,6 @@ class WhatsAppCliService:
         except Exception as error:
             plan_error = str(error)
             logger.warning("whatsapp_cli_plan_failed thread_id=%s detail=%s", thread.id, plan_error)
-            plan = self._fallback_plan(message_text)
 
         plan_elapsed_ms = int((perf_counter() - started_clock) * 1000)
         model_run = self.store.create_model_run(
@@ -246,12 +245,86 @@ class WhatsAppCliService:
         )
         model_run_id = model_run.id if model_run is not None else None
 
+        if plan is None:
+            outbound_messages.append(
+                CliOutboundMessage(
+                    text=self._format_code_block(
+                        "ERRO\nDeepSeek indisponível para planejar a execução da CLI. Nenhum comando foi executado."
+                    ),
+                    generated_by="whatsapp_cli_error",
+                    metadata={"phase": "deepseek_unavailable", "cwd": cwd},
+                )
+            )
+            finished_at = datetime.now(UTC)
+            terminal_session = self.store.upsert_whatsapp_agent_terminal_session(
+                user_id=self.settings.default_user_id,
+                thread_id=thread.id,
+                contact_phone=thread.contact_phone or session.contact_phone,
+                chat_jid=chat_jid,
+                cli_mode_enabled=True,
+                cwd=cwd,
+                context_version=terminal_session.context_version,
+                last_command_text=message_text,
+                last_command_at=finished_at,
+                closed_at=None,
+                updated_at=finished_at,
+            )
+            outbound_messages.append(
+                CliOutboundMessage(
+                    text=f"⚠️ Execução encerrada sem DeepSeek. Diretório atual: {cwd}",
+                    generated_by="whatsapp_cli_status",
+                    metadata={"phase": "finished", "cwd": cwd, "model_run_id": model_run_id, "error": plan_error},
+                )
+            )
+            return WhatsAppCliDispatchResult(
+                action="cli_failed_deepseek",
+                outbound_messages=outbound_messages,
+                terminal_session=terminal_session,
+                model_run_id=model_run_id,
+            )
+
         restricted_allowed = bool(
             (plan and plan.explicit_sensitive_request) or self._message_has_explicit_sensitive_request(message_text)
         )
-        actions = (plan.actions if plan is not None and plan.actions else self._fallback_plan(message_text).actions)[
-            : max(1, self.settings.whatsapp_cli_max_steps)
-        ]
+        actions = plan.actions[: max(1, self.settings.whatsapp_cli_max_steps)]
+
+        if not actions:
+            outbound_messages.append(
+                CliOutboundMessage(
+                    text=self._format_code_block(
+                        "ERRO\nDeepSeek não retornou nenhuma ação executável para esta mensagem. Nenhum comando foi executado."
+                    ),
+                    generated_by="whatsapp_cli_error",
+                    metadata={"phase": "empty_plan", "cwd": cwd},
+                )
+            )
+            finished_at = datetime.now(UTC)
+            terminal_session = self.store.upsert_whatsapp_agent_terminal_session(
+                user_id=self.settings.default_user_id,
+                thread_id=thread.id,
+                contact_phone=thread.contact_phone or session.contact_phone,
+                chat_jid=chat_jid,
+                cli_mode_enabled=True,
+                cwd=cwd,
+                context_version=terminal_session.context_version,
+                last_command_text=message_text,
+                last_command_at=finished_at,
+                closed_at=None,
+                updated_at=finished_at,
+            )
+            outbound_messages.append(
+                CliOutboundMessage(
+                    text=f"⚠️ Execução encerrada sem plano válido. Diretório atual: {cwd}",
+                    generated_by="whatsapp_cli_status",
+                    metadata={"phase": "finished", "cwd": cwd, "model_run_id": model_run_id},
+                )
+            )
+            return WhatsAppCliDispatchResult(
+                action="cli_failed_empty_plan",
+                outbound_messages=outbound_messages,
+                terminal_session=terminal_session,
+                model_run_id=model_run_id,
+            )
 
         execution_error: str | None = None
         executed_tools: list[str] = []
@@ -370,25 +443,6 @@ class WhatsAppCliService:
 
     def _default_root_cwd(self) -> str:
         return str(Path(self.settings.normalized_whatsapp_cli_root))
-
-    def _fallback_plan(self, message_text: str) -> DeepSeekCliPlan:
-        normalized = message_text.strip()
-        lowered = normalized.casefold()
-        if lowered == "pwd":
-            actions = [DeepSeekCliAction(tool="pwd", explanation="Mostrar o diretório atual.")]
-        elif lowered == "cd" or lowered.startswith("cd "):
-            actions = [DeepSeekCliAction(tool="cd", path=normalized[2:].strip(), explanation="Alterar diretório.")]
-        elif lowered == "ls" or lowered.startswith("ls "):
-            actions = [DeepSeekCliAction(tool="ls", command=normalized[2:].strip(), explanation="Listar arquivos.")]
-        elif lowered.startswith("cat "):
-            actions = [DeepSeekCliAction(tool="cat", command=normalized[3:].strip(), explanation="Ler arquivo.")]
-        else:
-            actions = [DeepSeekCliAction(tool="exec", command=normalized, explanation="Executar comando shell.")]
-        return DeepSeekCliPlan(
-            summary="Plano de contingencia local.",
-            explicit_sensitive_request=self._message_has_explicit_sensitive_request(message_text),
-            actions=actions,
-        )
 
     def _run_tool(self, *, action: DeepSeekCliAction, cwd: str) -> tuple[str, str]:
         if action.tool == "pwd":
