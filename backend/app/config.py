@@ -60,32 +60,32 @@ class Settings(BaseSettings):
     groq_model: str = Field("llama-3.1-8b-instant", alias="GROQ_MODEL")
     groq_api_base_url: str = Field("https://api.groq.com/openai/v1", alias="GROQ_API_BASE_URL")
     groq_timeout_seconds: float = Field(45.0, alias="GROQ_TIMEOUT_SECONDS")
-    memory_analysis_max_messages: int = Field(160, alias="MEMORY_ANALYSIS_MAX_MESSAGES")
-    memory_first_analysis_max_messages: int = Field(120, alias="MEMORY_FIRST_ANALYSIS_MAX_MESSAGES")
+    memory_analysis_max_messages: int = Field(200, alias="MEMORY_ANALYSIS_MAX_MESSAGES")
+    memory_first_analysis_max_messages: int = Field(150, alias="MEMORY_FIRST_ANALYSIS_MAX_MESSAGES")
     memory_incremental_min_messages: int = Field(20, alias="MEMORY_INCREMENTAL_MIN_MESSAGES")
-    memory_incremental_batch_size: int = Field(20, alias="MEMORY_INCREMENTAL_BATCH_SIZE")
-    memory_analysis_max_chars: int = Field(36000, alias="MEMORY_ANALYSIS_MAX_CHARS")
+    memory_incremental_batch_size: int = Field(24, alias="MEMORY_INCREMENTAL_BATCH_SIZE")
+    memory_analysis_max_chars: int = Field(48000, alias="MEMORY_ANALYSIS_MAX_CHARS")
     memory_analysis_max_window_hours: int = Field(168, alias="MEMORY_ANALYSIS_MAX_WINDOW_HOURS")
-    memory_analysis_context_snapshots: int = Field(5, alias="MEMORY_ANALYSIS_CONTEXT_SNAPSHOTS")
-    memory_analysis_snapshot_context_chars: int = Field(12000, alias="MEMORY_ANALYSIS_SNAPSHOT_CONTEXT_CHARS")
+    memory_analysis_context_snapshots: int = Field(7, alias="MEMORY_ANALYSIS_CONTEXT_SNAPSHOTS")
+    memory_analysis_snapshot_context_chars: int = Field(16000, alias="MEMORY_ANALYSIS_SNAPSHOT_CONTEXT_CHARS")
     memory_first_analysis_chunk_trigger_messages: int = Field(
         60,
         alias="MEMORY_FIRST_ANALYSIS_CHUNK_TRIGGER_MESSAGES",
     )
-    memory_first_analysis_chunk_size: int = Field(36, alias="MEMORY_FIRST_ANALYSIS_CHUNK_SIZE")
+    memory_first_analysis_chunk_size: int = Field(42, alias="MEMORY_FIRST_ANALYSIS_CHUNK_SIZE")
     memory_first_analysis_chunk_char_budget: int = Field(
-        6500,
+        8000,
         alias="MEMORY_FIRST_ANALYSIS_CHUNK_CHAR_BUDGET",
     )
     memory_first_analysis_synthesis_group_size: int = Field(
         2,
         alias="MEMORY_FIRST_ANALYSIS_SYNTHESIS_GROUP_SIZE",
     )
-    context_max_projects: int = Field(10, alias="CONTEXT_MAX_PROJECTS")
-    context_max_snapshots: int = Field(6, alias="CONTEXT_MAX_SNAPSHOTS")
-    context_max_chars: int = Field(24000, alias="CONTEXT_MAX_CHARS")
-    context_max_message_chars: int = Field(2500, alias="CONTEXT_MAX_MESSAGE_CHARS")
-    context_max_history_messages: int = Field(24, alias="CONTEXT_MAX_HISTORY_MESSAGES")
+    context_max_projects: int = Field(12, alias="CONTEXT_MAX_PROJECTS")
+    context_max_snapshots: int = Field(8, alias="CONTEXT_MAX_SNAPSHOTS")
+    context_max_chars: int = Field(32000, alias="CONTEXT_MAX_CHARS")
+    context_max_message_chars: int = Field(3200, alias="CONTEXT_MAX_MESSAGE_CHARS")
+    context_max_history_messages: int = Field(30, alias="CONTEXT_MAX_HISTORY_MESSAGES")
     whatsapp_agent_idle_timeout_minutes: int = Field(10, alias="WHATSAPP_AGENT_IDLE_TIMEOUT_MINUTES")
     message_retention_max_rows: int = Field(160, alias="MESSAGE_RETENTION_MAX_ROWS")
     request_timeout_seconds: float = Field(20.0, alias="REQUEST_TIMEOUT_SECONDS")

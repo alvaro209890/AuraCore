@@ -963,26 +963,26 @@ class MemoryAnalysisService:
     def _build_persona_context(self, persona: PersonaRecord) -> str:
         sections: list[str] = []
         if persona.life_summary.strip():
-            sections.append(self._summarize_message_text(persona.life_summary.strip(), 720))
+            sections.append(self._summarize_message_text(persona.life_summary.strip(), 1000))
         if persona.structural_strengths:
             sections.append(
                 "Forcas recorrentes:\n- "
-                + "\n- ".join(self._summarize_list_items(persona.structural_strengths, item_limit=5, item_chars=120))
+                + "\n- ".join(self._summarize_list_items(persona.structural_strengths, item_limit=6, item_chars=140))
             )
         if persona.structural_routines:
             sections.append(
                 "Rotina recorrente:\n- "
-                + "\n- ".join(self._summarize_list_items(persona.structural_routines, item_limit=5, item_chars=120))
+                + "\n- ".join(self._summarize_list_items(persona.structural_routines, item_limit=6, item_chars=140))
             )
         if persona.structural_preferences:
             sections.append(
                 "Preferencias operacionais:\n- "
-                + "\n- ".join(self._summarize_list_items(persona.structural_preferences, item_limit=5, item_chars=120))
+                + "\n- ".join(self._summarize_list_items(persona.structural_preferences, item_limit=6, item_chars=140))
             )
         if persona.structural_open_questions:
             sections.append(
                 "Lacunas ainda abertas:\n- "
-                + "\n- ".join(self._summarize_list_items(persona.structural_open_questions, item_limit=4, item_chars=120))
+                + "\n- ".join(self._summarize_list_items(persona.structural_open_questions, item_limit=6, item_chars=140))
             )
         return "\n\n".join(section for section in sections if section).strip()
 
@@ -1518,13 +1518,13 @@ class MemoryAnalysisService:
     ) -> AnalyzeMemoryPromptContext:
         return AnalyzeMemoryPromptContext(
             transcript=context.transcript,
-            conversation_context=self._compact_context_block(context.conversation_context, char_budget=900, max_lines=10),
-            people_memory_context=self._compact_context_block(context.people_memory_context, char_budget=720, max_lines=9),
-            current_life_summary=self._compact_context_block(context.current_life_summary, char_budget=800, max_lines=8),
-            prior_analyses_context=self._compact_context_block(context.prior_analyses_context, char_budget=900, max_lines=10),
-            project_context=self._compact_context_block(context.project_context, char_budget=760, max_lines=9),
-            chat_context=self._compact_context_block(context.chat_context, char_budget=240, max_lines=4),
-            open_questions_context=self._compact_context_block(context.open_questions_context, char_budget=180, max_lines=3),
+            conversation_context=self._compact_context_block(context.conversation_context, char_budget=1200, max_lines=14),
+            people_memory_context=self._compact_context_block(context.people_memory_context, char_budget=900, max_lines=12),
+            current_life_summary=self._compact_context_block(context.current_life_summary, char_budget=1000, max_lines=10),
+            prior_analyses_context=self._compact_context_block(context.prior_analyses_context, char_budget=1100, max_lines=12),
+            project_context=self._compact_context_block(context.project_context, char_budget=960, max_lines=11),
+            chat_context=self._compact_context_block(context.chat_context, char_budget=320, max_lines=5),
+            open_questions_context=self._compact_context_block(context.open_questions_context, char_budget=240, max_lines=4),
         )
 
     def _compact_context_block(

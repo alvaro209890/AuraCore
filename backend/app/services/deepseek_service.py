@@ -747,6 +747,24 @@ class DeepSeekService:
                     if not is_first_analysis
                     else ""
                 )
+                + (
+                    "\n\nCamadas de profundidade esperadas: "
+                    "1) Camada factual — o que aconteceu, com quem, quando, qual o resultado visivel. "
+                    "2) Camada comportamental — como o dono agiu, qual estrategia de comunicacao usou, como lidou com obstaculos. "
+                    "3) Camada emocional — que emocoes transparecem (frustracao, orgulho, ansiedade, satisfacao) e como elas moldaram a acao. "
+                    "4) Camada relacional — qual a natureza real de cada vinculo (confianca, dependencia, admiracao, tenso) e como evoluiu. "
+                    "5) Camada estratégica — o que o dono realmente prioriza (vs o que diz que prioriza), quais projetos avancam vs estagnam, "
+                    "qual e o padrao de decisao quando conflitam."
+                    if not is_first_analysis
+                    else (
+                        "\n\nCamadas esperadas para a primeira analise: "
+                        "1) Quem e o dono — responsabilidades, contexto de vida, papeis. "
+                        "2) Com quem se relaciona — contatos mais ativos, natureza dos vinculos. "
+                        "3) O que faz — projetos visiveis, rotinas, ferramentas. "
+                        "4) Como age e decide — estilo de comunicacao, padrao sob pressao. "
+                        "5) Lacunas — o que ainda nao da para saber com confianca e precisa de mais conversa."
+                    )
+                )
             ),
             user_prompt=self._build_prompt(
                 transcript=transcript,
@@ -985,6 +1003,14 @@ Regras:
 - Identifique assuntos ou contatos que o dono evita, adia ou menciona de forma evasiva — isso e tao informativo quanto o que ele aborda diretamente.
 - Diferencie entre "o dono disse X uma vez" e "o dono consistentemente age como se X fosse verdade". Prefira padroes consistentes nas listas de sinais.
 - Se o dono demonstra mudanca de comportamento ou prioridade entre esta janela e as anteriores, destaque isso em key_learnings.
+- Detecte contradicoes explicitas: o dono afirmou algo e depois agiu de forma oposta? Isso nao e erro — e sinal de complexidade humana. Registre em key_learnings com contexto: "diz X mas na pratica prioriza Y".
+- Avalie confianca de cada sinal: alta (aparece 3+ vezes ou em 2+ contextos diferentes), media (aparece 2 vezes ou com evidencia forte), baixa (aparece 1 vez mas e revelador). Sinais de confianca baixa vao em listas como hipotese, nao no resumo.
+- Observe o arco emocional da janela: o dono comecou frustrado e terminou satisfeito? Ou o inverso? Isso importa tanto quanto o conteudo factual.
+- Mapeie tomadores de decisao: quando uma escolha depende de alguem externo, quem e? O dono delega, decide sozinho, ou precisa de validacao? Isso define como um assistente deve se posicionar.
+- Em active_projects, detecte sinais de ciclo de vida: inicio (exploracao, duvidas), meio (execucao, entregas), fim (conclusao, abandono, pivot). Regresse o status acorde.
+- Para cada contato, va alem do superficial: qual e o nivel de confianca do dono nesse contato? O dono busca conselho, da ordens, pede favor, ou divide responsabilidades?
+- Se a mesma pessoa aparece em multiplas conversas com tom diferente, isso revela nuance — registre em relationship_summary.
+- Em key_learnings, priorize: (1) mudancas de comportamento/prioridade, (2) padroes que se repetem em 2+ conversas, (3) descobertas sobre como o dono opera. Evite listar fatos isolados.
 {bootstrap_rules if is_first_analysis else ""}
 """.strip()
 
@@ -1044,6 +1070,12 @@ Regras:
 - Se um projeto sumiu de snapshots recentes, considere que pode estar concluido ou abandonado — atualize o status acorde.
 - Se o dono mudou de comportamento entre snapshots (nova rotina, prioridade diferente, contato mais frequente com alguem), destaque isso.
 - Nao inclua markdown fences.
+- Detecte contradicoes entre snapshots anteriores: se um snapshot diz X e outro diz Y, resolva explicitando a tensao ("em alguns momentos X, mas a tendencia recente sugere Y").
+- Sinais com decaimento: o que era relevante 3 snapshots atras mas nao aparece mais? Remova ou enfraqueça progressivamente. Memoria precisa respirar.
+- Sinais com aceleracao: o que aparece pela primeira vez mas com alta intensidade ou frequencia? Merece atencao especial mesmo sendo novo.
+- Avalie a qualidade da memoria atual: se ha muitas lacunas ainda nao resolvidas, mantenha open_questions no resumo em vez de preencher com suposicoes.
+- Projetos devem ter lifecycle real: se o nome e o mesmo mas o contexto mudou completamente, atualize summary e status — nao mantenha o que nao faz mais sentido.
+- No resumo final, o assistente do futuro deve conseguir responder: (1) quem e o dono, (2) no que ele esta focado AGORA, (3) como ele toma decisoes, (4) o que ele precisa que o assistente saiba antes de responder.
 """.strip()
 
     def _build_memory_synthesis_prompt(
@@ -1155,6 +1187,11 @@ Regras:
 - Em open_questions, preserve apenas lacunas que continuarem abertas apos unir as parciais.
 - Nao inclua markdown fences.
 {"- Esta e a primeira analise persistida do dono; mantenha cobertura ampla, prudente e conservadora." if is_first_analysis else ""}
+- Detecte padroes entre parciais: o que o dono disse no inicio da janela mudou no final? Isso e uma evolucao, nao uma contradicao — registre em key_learnings.
+- Se um tema aparece em 3+ parciais com intensidade, e um pilar da vida atual do dono — merece peso no resumo.
+- Se um contato aparece em multiplas parciais com tom consistente, o vinculo e duravel. Se o tom varia, explique a nuance em relationship_summary.
+- Resolva conflitos explicitos: se uma parcial diz "projeto X ativo" e outra sugere abandono, avalie qual tem evidencia mais recente e decida explicitamente no status.
+- A qualidade final da memoria deve ser maior que a soma das parciais individuais — voce esta vendo o quadro completo que nenhuma parcial viu isoladamente.
 """.strip()
 
     def _build_project_merge_prompt(
@@ -1635,9 +1672,9 @@ Regras:
     def _analysis_max_output_tokens(self, *, intent: str = "improve_memory") -> int:
         if self._is_reasoning_model(self.settings.deepseek_memory_model):
             if intent == "first_analysis":
-                return 5600
-            return 3800
-        return 2800
+                return 6400
+            return 4200
+        return 3400
 
     def _refinement_max_output_tokens(self) -> int:
         return 3200 if self._is_reasoning_model() else 1500
