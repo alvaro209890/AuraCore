@@ -143,7 +143,7 @@ class DeepSeekAgentMemoryDecision(BaseModel):
 
 
 class DeepSeekCliAction(BaseModel):
-    tool: Literal["pwd", "ls", "cd", "cat", "write", "exec", "final"] = "exec"
+    tool: Literal["pwd", "ls", "cd", "cat", "write", "exec", "find", "head", "tail", "mkdir", "touch", "cp", "mv", "rm", "final"] = "exec"
     path: str = ""
     command: str = ""
     content: str = ""
@@ -726,7 +726,7 @@ class DeepSeekService:
         )
         payload = self._build_completion_payload(
             system_prompt=(
-                "Voce orquestra um terminal via WhatsApp com as ferramentas pwd, ls, cd, cat, write e exec. "
+                "Voce orquestra um terminal via WhatsApp com as ferramentas pwd, ls, cd, cat, write, exec, find, head, tail, mkdir, touch, cp, mv e rm. "
                 "Responda EXCLUSIVAMENTE em JSON valido com as chaves summary, explicit_sensitive_request e actions. "
                 "Cada item de actions deve ter: tool, path, command, content, mode e explanation. "
                 "Use o menor numero de acoes necessario. "
@@ -735,6 +735,12 @@ class DeepSeekService:
                 "tool=cat para ler arquivo. "
                 "tool=write para criar ou alterar arquivo quando o pedido explicitar conteudo. "
                 "tool=exec para comandos shell gerais. "
+                "tool=find para localizar arquivos ou texto. "
+                "tool=head e tool=tail para ver trechos de arquivo. "
+                "tool=mkdir para criar diretorios. "
+                "tool=touch para criar arquivo vazio. "
+                "tool=cp e tool=mv para copiar ou mover. "
+                "tool=rm para remover quando o pedido for explicito. "
                 "tool=final apenas se nenhuma ferramenta for necessaria e houver uma resposta curta a enviar. "
                 "Marque explicit_sensitive_request=true somente quando o usuario pedir de forma explicita mexer em servicos, systemctl, docker, geoserver, cloudflared, tunnel, tunnel do cloudflare ou processos do sistema. "
                 "Nao invente conteudo de arquivo nem comandos que o usuario nao pediu."
@@ -1733,7 +1739,7 @@ Regras:
         normalized_actions: list[DeepSeekCliAction] = []
         for action in parsed.actions:
             tool = action.tool.strip().lower()
-            if tool not in {"pwd", "ls", "cd", "cat", "write", "exec", "final"}:
+            if tool not in {"pwd", "ls", "cd", "cat", "write", "exec", "find", "head", "tail", "mkdir", "touch", "cp", "mv", "rm", "final"}:
                 tool = "exec"
             normalized_actions.append(
                 DeepSeekCliAction(

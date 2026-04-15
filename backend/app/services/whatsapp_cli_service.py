@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-import logging
-from pathlib import Path
 from time import perf_counter
+from pathlib import Path
+from typing import Any
+import logging
 import shlex
 import subprocess
 
@@ -19,12 +20,17 @@ from app.services.supabase_store import (
 )
 
 logger = logging.getLogger("auracore.whatsapp_cli")
+_UNSET = object()
 
 SENSITIVE_TERMS = {
     "cloudflared",
     "cloudflare",
     "docker",
     "geoserver",
+    "kill",
+    "pkill",
+    "reboot",
+    "shutdown",
     "systemctl",
     "service",
     "tunnel",
@@ -95,20 +101,65 @@ class WhatsAppCliService:
                 terminal_session=terminal_session,
             )
 
-        if control_command == "/agente":
-            root_cwd = self._default_root_cwd()
-            terminal_session = self.store.upsert_whatsapp_agent_terminal_session(
-                user_id=self.settings.default_user_id,
-                thread_id=thread.id,
-                contact_phone=thread.contact_phone,
+        if control_command == "/confirmar":
+            return self._confirm_pending_execution(
+                inbound_message=inbound_message,
+                thread=thread,
+                session=session,
                 chat_jid=chat_jid,
+                terminal_session=terminal_session,
+            )
+
+        if control_command == "/cancelar":
+            if not self._has_pending_confirmation(terminal_session):
+                return WhatsAppCliDispatchResult(
+                    action="cli_cancel_noop",
+                    outbound_messages=[
+                        CliOutboundMessage(
+                            text="Nenhuma execução pendente para cancelar.",
+                            generated_by="whatsapp_cli_control",
+                            metadata={"control_command": "/cancelar"},
+                        )
+                    ],
+                    terminal_session=terminal_session,
+                )
+            terminal_session = self._store_terminal_session(
+                thread=thread,
+                session=session,
+                chat_jid=chat_jid,
+                current=terminal_session,
+                cli_mode_enabled=terminal_session.cli_mode_enabled,
+                cwd=terminal_session.cwd,
+                pending_command_text=None,
+                pending_plan_json={},
+                pending_requested_at=None,
+            )
+            return WhatsAppCliDispatchResult(
+                action="cli_cancelled",
+                outbound_messages=[
+                    CliOutboundMessage(
+                        text="Execução pendente cancelada. Você pode enviar outro comando quando quiser.",
+                        generated_by="whatsapp_cli_control",
+                        metadata={"control_command": "/cancelar"},
+                    )
+                ],
+                terminal_session=terminal_session,
+            )
+
+        if control_command == "/agente":
+            terminal_session = self._store_terminal_session(
+                thread=thread,
+                session=session,
+                chat_jid=chat_jid,
+                current=terminal_session,
                 cli_mode_enabled=True,
-                cwd=root_cwd,
-                context_version=max(1, terminal_session.context_version),
+                cwd=self._default_root_cwd(),
+                pending_command_text=None,
+                pending_plan_json={},
+                pending_requested_at=None,
                 last_command_text=None,
                 last_command_at=None,
                 closed_at=None,
-                updated_at=datetime.now(UTC),
             )
             return WhatsAppCliDispatchResult(
                 action="cli_opened",
@@ -117,7 +168,7 @@ class WhatsAppCliService:
                         text=(
                             "CLI ativada.\n\n"
                             f"Diretorio inicial: `{terminal_session.cwd}`\n"
-                            "Envie comandos normalmente. Use `/clear` para resetar o contexto e `/fechar` para encerrar."
+                            "Envie comandos normalmente. Use `/confirmar`, `/cancelar`, `/clear` e `/fechar` para controlar a sessão."
                         ),
                         generated_by="whatsapp_cli_control",
                         metadata={"control_command": "/agente", "cwd": terminal_session.cwd},
@@ -127,19 +178,20 @@ class WhatsAppCliService:
             )
 
         if control_command == "/clear":
-            root_cwd = self._default_root_cwd()
-            terminal_session = self.store.upsert_whatsapp_agent_terminal_session(
-                user_id=self.settings.default_user_id,
-                thread_id=thread.id,
-                contact_phone=thread.contact_phone,
+            terminal_session = self._store_terminal_session(
+                thread=thread,
+                session=session,
                 chat_jid=chat_jid,
+                current=terminal_session,
                 cli_mode_enabled=True,
-                cwd=root_cwd,
-                context_version=max(1, terminal_session.context_version + 1),
+                cwd=self._default_root_cwd(),
+                context_version=terminal_session.context_version + 1,
+                pending_command_text=None,
+                pending_plan_json={},
+                pending_requested_at=None,
                 last_command_text=None,
                 last_command_at=None,
                 closed_at=None,
-                updated_at=datetime.now(UTC),
             )
             return WhatsAppCliDispatchResult(
                 action="cli_cleared",
@@ -158,18 +210,17 @@ class WhatsAppCliService:
             )
 
         if control_command == "/fechar":
-            terminal_session = self.store.upsert_whatsapp_agent_terminal_session(
-                user_id=self.settings.default_user_id,
-                thread_id=thread.id,
-                contact_phone=thread.contact_phone,
+            terminal_session = self._store_terminal_session(
+                thread=thread,
+                session=session,
                 chat_jid=chat_jid,
+                current=terminal_session,
                 cli_mode_enabled=False,
                 cwd=terminal_session.cwd,
-                context_version=terminal_session.context_version,
-                last_command_text=terminal_session.last_command_text,
-                last_command_at=terminal_session.last_command_at,
+                pending_command_text=None,
+                pending_plan_json={},
+                pending_requested_at=None,
                 closed_at=datetime.now(UTC),
-                updated_at=datetime.now(UTC),
             )
             return WhatsAppCliDispatchResult(
                 action="cli_closed",
@@ -196,7 +247,23 @@ class WhatsAppCliService:
                 terminal_session=terminal_session,
             )
 
-        return await self._execute_cli_message(
+        if self._has_pending_confirmation(terminal_session):
+            return WhatsAppCliDispatchResult(
+                action="cli_waiting_confirmation",
+                outbound_messages=[
+                    CliOutboundMessage(
+                        text=(
+                            "Existe uma execução pendente aguardando confirmação.\n\n"
+                            "Envie `/confirmar` para executar ou `/cancelar` para descartar antes de mandar outro comando."
+                        ),
+                        generated_by="whatsapp_cli_control",
+                        metadata={"pending_command_text": terminal_session.pending_command_text or ""},
+                    )
+                ],
+                terminal_session=terminal_session,
+            )
+
+        return await self._prepare_cli_execution(
             message_text=normalized_text,
             inbound_message=inbound_message,
             thread=thread,
@@ -205,7 +272,7 @@ class WhatsAppCliService:
             terminal_session=terminal_session,
         )
 
-    async def _execute_cli_message(
+    async def _prepare_cli_execution(
         self,
         *,
         message_text: str,
@@ -218,14 +285,6 @@ class WhatsAppCliService:
         started_at = datetime.now(UTC)
         started_clock = perf_counter()
         cwd = terminal_session.cwd
-        status_text = f"⚙️ Processando comando: `{message_text}`..."
-        outbound_messages: list[CliOutboundMessage] = [
-            CliOutboundMessage(
-                text=status_text,
-                generated_by="whatsapp_cli_status",
-                metadata={"phase": "started", "cwd": cwd},
-            )
-        ]
         plan: DeepSeekCliPlan | None = None
         plan_error: str | None = None
         model_run_id: str | None = None
@@ -259,90 +318,226 @@ class WhatsAppCliService:
         model_run_id = model_run.id if model_run is not None else None
 
         if plan is None:
-            outbound_messages.append(
-                CliOutboundMessage(
-                    text=self._format_code_block(
-                        "ERRO\nDeepSeek indisponível para planejar a execução da CLI. Nenhum comando foi executado."
-                    ),
-                    generated_by="whatsapp_cli_error",
-                    metadata={"phase": "deepseek_unavailable", "cwd": cwd},
-                )
-            )
-            finished_at = datetime.now(UTC)
-            terminal_session = self.store.upsert_whatsapp_agent_terminal_session(
-                user_id=self.settings.default_user_id,
-                thread_id=thread.id,
-                contact_phone=thread.contact_phone or session.contact_phone,
+            terminal_session = self._store_terminal_session(
+                thread=thread,
+                session=session,
                 chat_jid=chat_jid,
+                current=terminal_session,
                 cli_mode_enabled=True,
                 cwd=cwd,
-                context_version=terminal_session.context_version,
                 last_command_text=message_text,
-                last_command_at=finished_at,
+                last_command_at=datetime.now(UTC),
+                pending_command_text=None,
+                pending_plan_json={},
+                pending_requested_at=None,
                 closed_at=None,
-                updated_at=finished_at,
-            )
-            outbound_messages.append(
-                CliOutboundMessage(
-                    text=f"⚠️ Execução encerrada sem DeepSeek. Diretório atual: {cwd}",
-                    generated_by="whatsapp_cli_status",
-                    metadata={"phase": "finished", "cwd": cwd, "model_run_id": model_run_id, "error": plan_error},
-                )
             )
             return WhatsAppCliDispatchResult(
                 action="cli_failed_deepseek",
-                outbound_messages=outbound_messages,
+                outbound_messages=[
+                    CliOutboundMessage(
+                        text=self._format_code_block(
+                            "ERRO\nDeepSeek indisponível para planejar a execução da CLI. Nenhum comando foi executado."
+                        ),
+                        generated_by="whatsapp_cli_error",
+                        metadata={"phase": "deepseek_unavailable", "cwd": cwd},
+                    )
+                ],
+                terminal_session=terminal_session,
+                model_run_id=model_run_id,
+            )
+
+        actions = plan.actions[: max(1, self.settings.whatsapp_cli_max_steps)]
+        if not actions:
+            terminal_session = self._store_terminal_session(
+                thread=thread,
+                session=session,
+                chat_jid=chat_jid,
+                current=terminal_session,
+                cli_mode_enabled=True,
+                cwd=cwd,
+                last_command_text=message_text,
+                last_command_at=datetime.now(UTC),
+                pending_command_text=None,
+                pending_plan_json={},
+                pending_requested_at=None,
+                closed_at=None,
+            )
+            return WhatsAppCliDispatchResult(
+                action="cli_failed_empty_plan",
+                outbound_messages=[
+                    CliOutboundMessage(
+                        text=self._format_code_block(
+                            "ERRO\nDeepSeek não retornou nenhuma ação executável para esta mensagem. Nenhum comando foi executado."
+                        ),
+                        generated_by="whatsapp_cli_error",
+                        metadata={"phase": "empty_plan", "cwd": cwd},
+                    )
+                ],
+                terminal_session=terminal_session,
+                model_run_id=model_run_id,
+            )
+
+        executable_actions = [action for action in actions if action.tool != "final"]
+        if not executable_actions:
+            terminal_session = self._store_terminal_session(
+                thread=thread,
+                session=session,
+                chat_jid=chat_jid,
+                current=terminal_session,
+                cli_mode_enabled=True,
+                cwd=cwd,
+                last_command_text=message_text,
+                last_command_at=datetime.now(UTC),
+                pending_command_text=None,
+                pending_plan_json={},
+                pending_requested_at=None,
+                closed_at=None,
+            )
+            messages = [
+                CliOutboundMessage(
+                    text=action.explanation.strip(),
+                    generated_by="whatsapp_cli_plan",
+                    metadata={"tool": "final"},
+                )
+                for action in actions
+                if action.tool == "final" and action.explanation.strip()
+            ]
+            return WhatsAppCliDispatchResult(
+                action="cli_final_only",
+                outbound_messages=messages or [
+                    CliOutboundMessage(
+                        text="Nenhuma ação de sistema foi necessária para esta mensagem.",
+                        generated_by="whatsapp_cli_plan",
+                        metadata={"tool": "final"},
+                    )
+                ],
                 terminal_session=terminal_session,
                 model_run_id=model_run_id,
             )
 
         restricted_allowed = bool(
-            (plan and plan.explicit_sensitive_request) or self._message_has_explicit_sensitive_request(message_text)
+            plan.explicit_sensitive_request or self._message_has_explicit_sensitive_request(message_text)
         )
-        actions = plan.actions[: max(1, self.settings.whatsapp_cli_max_steps)]
-
-        if not actions:
-            outbound_messages.append(
+        terminal_session = self._store_terminal_session(
+            thread=thread,
+            session=session,
+            chat_jid=chat_jid,
+            current=terminal_session,
+            cli_mode_enabled=True,
+            cwd=cwd,
+            pending_command_text=message_text,
+            pending_plan_json=self._serialize_plan(plan),
+            pending_requested_at=datetime.now(UTC),
+            closed_at=None,
+        )
+        return WhatsAppCliDispatchResult(
+            action="cli_confirmation_requested",
+            outbound_messages=[
                 CliOutboundMessage(
-                    text=self._format_code_block(
-                        "ERRO\nDeepSeek não retornou nenhuma ação executável para esta mensagem. Nenhum comando foi executado."
+                    text=self._build_confirmation_message(
+                        command_text=message_text,
+                        plan=plan,
+                        restricted_allowed=restricted_allowed,
                     ),
-                    generated_by="whatsapp_cli_error",
-                    metadata={"phase": "empty_plan", "cwd": cwd},
+                    generated_by="whatsapp_cli_control",
+                    metadata={
+                        "phase": "awaiting_confirmation",
+                        "cwd": cwd,
+                        "plan_summary": plan.summary,
+                        "model_run_id": model_run_id or "",
+                        "source_inbound_message_id": inbound_message.whatsapp_message_id or "",
+                    },
                 )
+            ],
+            terminal_session=terminal_session,
+            model_run_id=model_run_id,
+        )
+
+    def _confirm_pending_execution(
+        self,
+        *,
+        inbound_message: WhatsAppAgentMessageRecord,
+        thread: WhatsAppAgentThreadRecord,
+        session: WhatsAppAgentThreadSessionRecord,
+        chat_jid: str,
+        terminal_session: WhatsAppAgentTerminalSessionRecord,
+    ) -> WhatsAppCliDispatchResult:
+        if not self._has_pending_confirmation(terminal_session):
+            return WhatsAppCliDispatchResult(
+                action="cli_confirm_noop",
+                outbound_messages=[
+                    CliOutboundMessage(
+                        text="Nenhuma execução pendente para confirmar.",
+                        generated_by="whatsapp_cli_control",
+                        metadata={"control_command": "/confirmar"},
+                    )
+                ],
+                terminal_session=terminal_session,
             )
-            finished_at = datetime.now(UTC)
-            terminal_session = self.store.upsert_whatsapp_agent_terminal_session(
-                user_id=self.settings.default_user_id,
-                thread_id=thread.id,
-                contact_phone=thread.contact_phone or session.contact_phone,
+
+        plan = self._deserialize_plan(terminal_session.pending_plan_json)
+        if plan is None:
+            terminal_session = self._store_terminal_session(
+                thread=thread,
+                session=session,
                 chat_jid=chat_jid,
+                current=terminal_session,
                 cli_mode_enabled=True,
-                cwd=cwd,
-                context_version=terminal_session.context_version,
-                last_command_text=message_text,
-                last_command_at=finished_at,
-                closed_at=None,
-                updated_at=finished_at,
-            )
-            outbound_messages.append(
-                CliOutboundMessage(
-                    text=f"⚠️ Execução encerrada sem plano válido. Diretório atual: {cwd}",
-                    generated_by="whatsapp_cli_status",
-                    metadata={"phase": "finished", "cwd": cwd, "model_run_id": model_run_id},
-                )
+                cwd=terminal_session.cwd,
+                pending_command_text=None,
+                pending_plan_json={},
+                pending_requested_at=None,
             )
             return WhatsAppCliDispatchResult(
-                action="cli_failed_empty_plan",
-                outbound_messages=outbound_messages,
+                action="cli_confirm_invalid_plan",
+                outbound_messages=[
+                    CliOutboundMessage(
+                        text="O plano pendente ficou inválido e foi descartado. Envie o comando novamente.",
+                        generated_by="whatsapp_cli_control",
+                        metadata={"control_command": "/confirmar"},
+                    )
+                ],
                 terminal_session=terminal_session,
-                model_run_id=model_run_id,
             )
 
+        return self._execute_confirmed_plan(
+            command_text=terminal_session.pending_command_text or terminal_session.last_command_text or "",
+            inbound_message=inbound_message,
+            thread=thread,
+            session=session,
+            chat_jid=chat_jid,
+            terminal_session=terminal_session,
+            plan=plan,
+        )
+
+    def _execute_confirmed_plan(
+        self,
+        *,
+        command_text: str,
+        inbound_message: WhatsAppAgentMessageRecord,
+        thread: WhatsAppAgentThreadRecord,
+        session: WhatsAppAgentThreadSessionRecord,
+        chat_jid: str,
+        terminal_session: WhatsAppAgentTerminalSessionRecord,
+        plan: DeepSeekCliPlan,
+    ) -> WhatsAppCliDispatchResult:
+        cwd = terminal_session.cwd
+        outbound_messages: list[CliOutboundMessage] = [
+            CliOutboundMessage(
+                text=f"⚙️ Executando comando confirmado: `{command_text}`...",
+                generated_by="whatsapp_cli_status",
+                metadata={"phase": "started", "cwd": cwd},
+            )
+        ]
+        restricted_allowed = bool(
+            plan.explicit_sensitive_request or self._message_has_explicit_sensitive_request(command_text)
+        )
         execution_error: str | None = None
         executed_tools: list[str] = []
+
         try:
-            for action in actions:
+            for action in plan.actions[: max(1, self.settings.whatsapp_cli_max_steps)]:
                 if action.tool == "final":
                     if action.explanation.strip():
                         outbound_messages.append(
@@ -356,7 +551,7 @@ class WhatsAppCliService:
 
                 if not restricted_allowed and self._action_hits_sensitive_area(action):
                     raise PermissionError(
-                        "Comando bloqueado para proteger GeoServer, Cloudflare Tunnel e servicos do sistema. "
+                        "Comando bloqueado para proteger GeoServer, Cloudflare Tunnel e serviços do sistema. "
                         "Peça isso explicitamente na mensagem para liberar."
                     )
 
@@ -386,20 +581,20 @@ class WhatsAppCliService:
             )
 
         finished_at = datetime.now(UTC)
-        terminal_session = self.store.upsert_whatsapp_agent_terminal_session(
-            user_id=self.settings.default_user_id,
-            thread_id=thread.id,
-            contact_phone=thread.contact_phone or session.contact_phone,
+        terminal_session = self._store_terminal_session(
+            thread=thread,
+            session=session,
             chat_jid=chat_jid,
+            current=terminal_session,
             cli_mode_enabled=True,
             cwd=cwd,
-            context_version=terminal_session.context_version,
-            last_command_text=message_text,
+            last_command_text=command_text,
             last_command_at=finished_at,
+            pending_command_text=None,
+            pending_plan_json={},
+            pending_requested_at=None,
             closed_at=None,
-            updated_at=finished_at,
         )
-
         final_text = (
             f"✅ Comando finalizado. Diretório atual: {cwd}"
             if execution_error is None
@@ -413,10 +608,9 @@ class WhatsAppCliService:
                     "phase": "finished",
                     "cwd": cwd,
                     "executed_tools": executed_tools,
-                    "plan_summary": plan.summary if plan is not None else "",
-                    "model_run_id": model_run_id,
-                    "error": execution_error,
-                    "source_inbound_message_id": inbound_message.whatsapp_message_id,
+                    "plan_summary": plan.summary,
+                    "error": execution_error or "",
+                    "source_inbound_message_id": inbound_message.whatsapp_message_id or "",
                 },
             )
         )
@@ -424,7 +618,6 @@ class WhatsAppCliService:
             action="cli_executed" if execution_error is None else "cli_failed",
             outbound_messages=outbound_messages,
             terminal_session=terminal_session,
-            model_run_id=model_run_id,
         )
 
     def _ensure_terminal_session(
@@ -450,8 +643,45 @@ class WhatsAppCliService:
             context_version=1,
             last_command_text=None,
             last_command_at=None,
+            pending_command_text=None,
+            pending_plan_json={},
+            pending_requested_at=None,
             closed_at=now,
             updated_at=now,
+        )
+
+    def _store_terminal_session(
+        self,
+        *,
+        thread: WhatsAppAgentThreadRecord,
+        session: WhatsAppAgentThreadSessionRecord,
+        chat_jid: str,
+        current: WhatsAppAgentTerminalSessionRecord,
+        cli_mode_enabled: bool,
+        cwd: str,
+        context_version: int | None = None,
+        last_command_text: str | None | object = _UNSET,
+        last_command_at: datetime | None | object = _UNSET,
+        pending_command_text: str | None | object = _UNSET,
+        pending_plan_json: dict[str, Any] | object = _UNSET,
+        pending_requested_at: datetime | None | object = _UNSET,
+        closed_at: datetime | None | object = _UNSET,
+    ) -> WhatsAppAgentTerminalSessionRecord:
+        return self.store.upsert_whatsapp_agent_terminal_session(
+            user_id=self.settings.default_user_id,
+            thread_id=thread.id,
+            contact_phone=thread.contact_phone or session.contact_phone,
+            chat_jid=chat_jid,
+            cli_mode_enabled=cli_mode_enabled,
+            cwd=cwd,
+            context_version=context_version if context_version is not None else current.context_version,
+            last_command_text=last_command_text,
+            last_command_at=last_command_at,
+            pending_command_text=pending_command_text,
+            pending_plan_json=pending_plan_json,
+            pending_requested_at=pending_requested_at,
+            closed_at=closed_at,
+            updated_at=datetime.now(UTC),
         )
 
     def _default_root_cwd(self) -> str:
@@ -466,6 +696,10 @@ class WhatsAppCliService:
             "Mostra esta lista de comandos e o estado atual da CLI.\n\n"
             "`/agente`\n"
             "Abre a CLI do Cursar no WhatsApp e passa a tratar as próximas mensagens como comandos.\n\n"
+            "`/confirmar`\n"
+            "Confirma e executa o último plano pendente preparado pelo DeepSeek.\n\n"
+            "`/cancelar`\n"
+            "Descarta a execução pendente sem rodar nada no PC.\n\n"
             "`/clear`\n"
             "Limpa o contexto da CLI e reinicia a sessão no diretório raiz configurado.\n\n"
             "`/fechar`\n"
@@ -480,8 +714,57 @@ class WhatsAppCliService:
             "Lê o conteúdo de um arquivo.\n\n"
             "`write <arquivo>`\n"
             "Escreve ou atualiza arquivo quando o pedido trouxer o conteúdo explicitamente.\n\n"
+            "`find`, `head`, `tail`\n"
+            "Localiza arquivos ou mostra começo e fim de arquivos maiores.\n\n"
+            "`mkdir`, `touch`, `cp`, `mv`, `rm`\n"
+            "Cria, copia, move e remove arquivos ou diretórios quando o pedido for explícito.\n\n"
             "`exec` ou comandos livres\n"
-            "Executa comandos de sistema no diretório atual, sempre planejados pelo DeepSeek.\n"
+            "Executa comandos de sistema no diretório atual, sempre planejados pelo DeepSeek e sempre com confirmação antes da execução.\n"
+        )
+
+    def _build_confirmation_message(
+        self,
+        *,
+        command_text: str,
+        plan: DeepSeekCliPlan,
+        restricted_allowed: bool,
+    ) -> str:
+        action_lines: list[str] = []
+        for index, action in enumerate(plan.actions[: max(1, self.settings.whatsapp_cli_max_steps)], start=1):
+            target = action.command.strip() or action.path.strip() or action.explanation.strip() or "(sem detalhe)"
+            action_lines.append(f"{index}. `{action.tool}` {target}".strip())
+        summary = plan.summary.strip() or "Plano pronto para execução."
+        sensitive_note = (
+            "\nPedido sensível explícito detectado: a execução inclui ação sobre serviço ou processo."
+            if restricted_allowed
+            else ""
+        )
+        return (
+            "Confirmação necessária antes de executar no PC\n\n"
+            f"Comando recebido: `{command_text}`\n"
+            f"Resumo: {summary}\n\n"
+            "Ações planejadas:\n"
+            f"{chr(10).join(action_lines)}"
+            f"{sensitive_note}\n\n"
+            "Envie `/confirmar` para executar agora ou `/cancelar` para descartar."
+        )
+
+    def _serialize_plan(self, plan: DeepSeekCliPlan) -> dict[str, Any]:
+        return plan.model_dump(mode="json")
+
+    def _deserialize_plan(self, payload: dict[str, Any]) -> DeepSeekCliPlan | None:
+        if not isinstance(payload, dict) or not payload:
+            return None
+        try:
+            return DeepSeekCliPlan.model_validate(payload)
+        except Exception:
+            return None
+
+    def _has_pending_confirmation(self, terminal_session: WhatsAppAgentTerminalSessionRecord) -> bool:
+        return bool(
+            terminal_session.pending_command_text
+            and terminal_session.pending_plan_json
+            and terminal_session.pending_requested_at is not None
         )
 
     def _run_tool(self, *, action: DeepSeekCliAction, cwd: str) -> tuple[str, str]:
@@ -503,6 +786,22 @@ class WhatsAppCliService:
             return self._run_process(["ls", *self._split_tool_args(action)], cwd=cwd), cwd
         if action.tool == "cat":
             return self._run_process(["cat", *self._split_tool_args(action)], cwd=cwd), cwd
+        if action.tool == "find":
+            return self._run_process(["find", *self._split_tool_args(action)], cwd=cwd), cwd
+        if action.tool == "head":
+            return self._run_process(["head", *self._split_tool_args(action)], cwd=cwd), cwd
+        if action.tool == "tail":
+            return self._run_process(["tail", *self._split_tool_args(action)], cwd=cwd), cwd
+        if action.tool == "mkdir":
+            return self._run_process(["mkdir", *self._split_tool_args(action)], cwd=cwd), cwd
+        if action.tool == "touch":
+            return self._run_process(["touch", *self._split_tool_args(action)], cwd=cwd), cwd
+        if action.tool == "cp":
+            return self._run_process(["cp", *self._split_tool_args(action)], cwd=cwd), cwd
+        if action.tool == "mv":
+            return self._run_process(["mv", *self._split_tool_args(action)], cwd=cwd), cwd
+        if action.tool == "rm":
+            return self._run_process(["rm", *self._split_tool_args(action)], cwd=cwd), cwd
         if action.tool == "exec":
             command = action.command.strip() or action.path.strip()
             if not command:
@@ -589,23 +888,13 @@ class WhatsAppCliService:
         )
 
     def _action_hits_sensitive_area(self, action: DeepSeekCliAction) -> bool:
-        haystack = " ".join(
-            [
-                action.tool,
-                action.path,
-                action.command,
-                action.explanation,
-            ]
-        ).casefold()
+        haystack = " ".join([action.tool, action.path, action.command, action.explanation]).casefold()
         return any(term in haystack for term in SENSITIVE_TERMS)
 
     def _format_output_chunks(self, *, tool_name: str, content: str) -> list[str]:
         normalized = content if content.strip() else "(sem saída)"
         chunk_size = max(300, self.settings.whatsapp_cli_output_chunk_chars)
-        chunks = [
-            normalized[index:index + chunk_size]
-            for index in range(0, len(normalized), chunk_size)
-        ] or ["(sem saída)"]
+        chunks = [normalized[index:index + chunk_size] for index in range(0, len(normalized), chunk_size)] or ["(sem saída)"]
         total = len(chunks)
         rendered: list[str] = []
         for index, chunk in enumerate(chunks, start=1):

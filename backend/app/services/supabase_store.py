@@ -72,6 +72,11 @@ SQLITE_LEGACY_COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
         "pre_reminder_sent_at": "TEXT",
         "reminder_sent_at": "TEXT",
     },
+    "whatsapp_agent_terminal_sessions": {
+        "pending_command_text": "TEXT",
+        "pending_plan_json": "TEXT DEFAULT '{}'",
+        "pending_requested_at": "TEXT",
+    },
 }
 
 
@@ -470,6 +475,9 @@ class WhatsAppAgentTerminalSessionRecord:
     context_version: int
     last_command_text: str | None
     last_command_at: datetime | None
+    pending_command_text: str | None
+    pending_plan_json: dict[str, Any]
+    pending_requested_at: datetime | None
     closed_at: datetime | None
     created_at: datetime
     updated_at: datetime
@@ -3591,7 +3599,8 @@ class SupabaseStore:
                 self.client.table("whatsapp_agent_terminal_sessions")
                 .select(
                     "id,user_id,thread_id,contact_phone,chat_jid,cli_mode_enabled,cwd,context_version,"
-                    "last_command_text,last_command_at,closed_at,created_at,updated_at"
+                    "last_command_text,last_command_at,pending_command_text,pending_plan_json,pending_requested_at,"
+                    "closed_at,created_at,updated_at"
                 )
                 .eq("user_id", str(user_id))
                 .eq("thread_id", thread_id)
@@ -3619,6 +3628,9 @@ class SupabaseStore:
         context_version: int | None = None,
         last_command_text: str | None | object = _UNSET,
         last_command_at: datetime | None | object = _UNSET,
+        pending_command_text: str | None | object = _UNSET,
+        pending_plan_json: dict[str, Any] | object = _UNSET,
+        pending_requested_at: datetime | None | object = _UNSET,
         closed_at: datetime | None | object = _UNSET,
         updated_at: datetime | None = None,
     ) -> WhatsAppAgentTerminalSessionRecord:
@@ -3646,6 +3658,25 @@ class SupabaseStore:
                 if last_command_at is _UNSET and current is not None and current.last_command_at is not None
                 else last_command_at.isoformat()
                 if isinstance(last_command_at, datetime)
+                else None
+            ),
+            "pending_command_text": (
+                current.pending_command_text
+                if pending_command_text is _UNSET and current is not None
+                else self._optional_text(pending_command_text if isinstance(pending_command_text, str) else None)
+            ),
+            "pending_plan_json": (
+                current.pending_plan_json
+                if pending_plan_json is _UNSET and current is not None
+                else pending_plan_json
+                if isinstance(pending_plan_json, dict)
+                else {}
+            ),
+            "pending_requested_at": (
+                current.pending_requested_at.isoformat()
+                if pending_requested_at is _UNSET and current is not None and current.pending_requested_at is not None
+                else pending_requested_at.isoformat()
+                if isinstance(pending_requested_at, datetime)
                 else None
             ),
             "closed_at": (
@@ -6833,6 +6864,9 @@ class SupabaseStore:
             context_version=max(1, self._parse_int(value.get("context_version")) or 1),
             last_command_text=self._optional_text(value.get("last_command_text")),
             last_command_at=self._parse_datetime(value.get("last_command_at")),
+            pending_command_text=self._optional_text(value.get("pending_command_text")),
+            pending_plan_json=value.get("pending_plan_json") if isinstance(value.get("pending_plan_json"), dict) else {},
+            pending_requested_at=self._parse_datetime(value.get("pending_requested_at")),
             closed_at=self._parse_datetime(value.get("closed_at")),
             created_at=self._parse_datetime(value.get("created_at")) or datetime.now(UTC),
             updated_at=self._parse_datetime(value.get("updated_at")) or datetime.now(UTC),

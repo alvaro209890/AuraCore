@@ -30,6 +30,7 @@ JSON_COLUMNS = {
     "durable_facts",
     "constraints",
     "recurring_instructions",
+    "pending_plan_json",
     "creds",
     "value",
 }
