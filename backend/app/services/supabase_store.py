@@ -459,6 +459,23 @@ class WhatsAppAgentThreadSessionRecord:
 
 
 @dataclass(slots=True)
+class WhatsAppAgentTerminalSessionRecord:
+    id: str
+    user_id: UUID
+    thread_id: str
+    contact_phone: str | None
+    chat_jid: str | None
+    cli_mode_enabled: bool
+    cwd: str
+    context_version: int
+    last_command_text: str | None
+    last_command_at: datetime | None
+    closed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(slots=True)
 class WhatsAppAgentContactMemoryRecord:
     id: str
     user_id: UUID
@@ -3562,6 +3579,101 @@ class SupabaseStore:
             started_at=activity_at,
         )
         return created, True
+
+    def get_whatsapp_agent_terminal_session(
+        self,
+        *,
+        user_id: UUID,
+        thread_id: str,
+    ) -> WhatsAppAgentTerminalSessionRecord | None:
+        try:
+            response = (
+                self.client.table("whatsapp_agent_terminal_sessions")
+                .select(
+                    "id,user_id,thread_id,contact_phone,chat_jid,cli_mode_enabled,cwd,context_version,"
+                    "last_command_text,last_command_at,closed_at,created_at,updated_at"
+                )
+                .eq("user_id", str(user_id))
+                .eq("thread_id", thread_id)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "whatsapp_agent_terminal_sessions"):
+                raise
+            return None
+        rows = response.data or []
+        if not rows:
+            return None
+        return self._parse_whatsapp_agent_terminal_session(rows[0], fallback_user_id=user_id)
+
+    def upsert_whatsapp_agent_terminal_session(
+        self,
+        *,
+        user_id: UUID,
+        thread_id: str,
+        contact_phone: str | None,
+        chat_jid: str | None,
+        cli_mode_enabled: bool,
+        cwd: str,
+        context_version: int | None = None,
+        last_command_text: str | None | object = _UNSET,
+        last_command_at: datetime | None | object = _UNSET,
+        closed_at: datetime | None | object = _UNSET,
+        updated_at: datetime | None = None,
+    ) -> WhatsAppAgentTerminalSessionRecord:
+        current = self.get_whatsapp_agent_terminal_session(user_id=user_id, thread_id=thread_id)
+        resolved_updated_at = updated_at or datetime.now(UTC)
+        record_id = current.id if current is not None else str(uuid4())
+        created_at = current.created_at if current is not None else resolved_updated_at
+        resolved_cwd = (cwd or "").strip() or "/"
+        payload = {
+            "id": record_id,
+            "user_id": str(user_id),
+            "thread_id": thread_id,
+            "contact_phone": self.normalize_contact_phone(contact_phone),
+            "chat_jid": self._optional_text(chat_jid),
+            "cli_mode_enabled": bool(cli_mode_enabled),
+            "cwd": resolved_cwd,
+            "context_version": max(1, context_version if context_version is not None else (current.context_version if current is not None else 1)),
+            "last_command_text": (
+                current.last_command_text
+                if last_command_text is _UNSET and current is not None
+                else self._optional_text(last_command_text if isinstance(last_command_text, str) else None)
+            ),
+            "last_command_at": (
+                current.last_command_at.isoformat()
+                if last_command_at is _UNSET and current is not None and current.last_command_at is not None
+                else last_command_at.isoformat()
+                if isinstance(last_command_at, datetime)
+                else None
+            ),
+            "closed_at": (
+                current.closed_at.isoformat()
+                if closed_at is _UNSET and current is not None and current.closed_at is not None
+                else closed_at.isoformat()
+                if isinstance(closed_at, datetime)
+                else None
+            ),
+            "created_at": created_at.isoformat(),
+            "updated_at": resolved_updated_at.isoformat(),
+        }
+        try:
+            self.client.table("whatsapp_agent_terminal_sessions").upsert(
+                payload,
+                on_conflict="user_id,thread_id",
+            ).execute()
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "whatsapp_agent_terminal_sessions"):
+                raise
+            parsed = self._parse_whatsapp_agent_terminal_session(payload, fallback_user_id=user_id)
+            if parsed is None:
+                raise RuntimeError("WhatsApp agent terminal session could not be stored.")
+            return parsed
+        stored = self.get_whatsapp_agent_terminal_session(user_id=user_id, thread_id=thread_id)
+        if stored is None:
+            raise RuntimeError("WhatsApp agent terminal session could not be stored.")
+        return stored
 
     def count_whatsapp_agent_session_messages(self, *, session_id: str) -> int:
         try:
@@ -6694,6 +6806,34 @@ class SupabaseStore:
             last_activity_at=self._parse_datetime(value.get("last_activity_at")) or datetime.now(UTC),
             ended_at=self._parse_datetime(value.get("ended_at")),
             reset_reason=self._optional_text(value.get("reset_reason")),
+            created_at=self._parse_datetime(value.get("created_at")) or datetime.now(UTC),
+            updated_at=self._parse_datetime(value.get("updated_at")) or datetime.now(UTC),
+        )
+
+    def _parse_whatsapp_agent_terminal_session(
+        self,
+        value: Any,
+        *,
+        fallback_user_id: UUID,
+    ) -> WhatsAppAgentTerminalSessionRecord | None:
+        if not isinstance(value, dict):
+            return None
+        thread_id = self._optional_text(value.get("thread_id"))
+        cwd = self._optional_text(value.get("cwd"))
+        if not thread_id or not cwd:
+            return None
+        return WhatsAppAgentTerminalSessionRecord(
+            id=str(value.get("id") or ""),
+            user_id=self._parse_uuid(value.get("user_id")) or fallback_user_id,
+            thread_id=thread_id,
+            contact_phone=self.normalize_contact_phone(self._optional_text(value.get("contact_phone"))),
+            chat_jid=self._optional_text(value.get("chat_jid")),
+            cli_mode_enabled=bool(self._parse_bool(value.get("cli_mode_enabled"))),
+            cwd=cwd,
+            context_version=max(1, self._parse_int(value.get("context_version")) or 1),
+            last_command_text=self._optional_text(value.get("last_command_text")),
+            last_command_at=self._parse_datetime(value.get("last_command_at")),
+            closed_at=self._parse_datetime(value.get("closed_at")),
             created_at=self._parse_datetime(value.get("created_at")) or datetime.now(UTC),
             updated_at=self._parse_datetime(value.get("updated_at")) or datetime.now(UTC),
         )

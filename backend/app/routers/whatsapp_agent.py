@@ -81,6 +81,7 @@ async def get_agent_workspace(
         observer_status=snapshot.observer_status,
         active_thread_id=snapshot.active_thread_id,
         active_session=_to_session_response(snapshot.active_session),
+        terminal_session=_to_terminal_session_response(snapshot.terminal_session),
         contact_memory=_to_contact_memory_response(snapshot.contact_memory),
         threads=[_to_thread_response(thread, agent_service) for thread in snapshot.threads],
         messages=[_to_message_response(message) for message in snapshot.messages],
@@ -205,4 +206,23 @@ def _to_contact_memory_response(memory) -> dict | None:
         "learned_message_count": memory.learned_message_count,
         "last_learned_at": memory.last_learned_at,
         "updated_at": memory.updated_at,
+    }
+
+
+def _to_terminal_session_response(session) -> dict | None:
+    if session is None:
+        return None
+    return {
+        "id": session.id,
+        "thread_id": session.thread_id,
+        "contact_phone": session.contact_phone,
+        "chat_jid": session.chat_jid,
+        "cli_mode_enabled": session.cli_mode_enabled,
+        "cwd": session.cwd,
+        "context_version": session.context_version,
+        "last_command_text": session.last_command_text,
+        "last_command_at": session.last_command_at,
+        "closed_at": session.closed_at,
+        "created_at": session.created_at,
+        "updated_at": session.updated_at,
     }

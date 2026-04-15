@@ -24,9 +24,11 @@ from app.services.supabase_store import (
     WhatsAppAgentContactMemoryRecord,
     WhatsAppAgentMessageRecord,
     WhatsAppAgentSettingsRecord,
+    WhatsAppAgentTerminalSessionRecord,
     WhatsAppAgentThreadRecord,
     WhatsAppAgentThreadSessionRecord,
 )
+from app.services.whatsapp_cli_service import CliOutboundMessage, WhatsAppCliService
 
 logger = logging.getLogger("auracore.agent_reply")
 
@@ -50,6 +52,7 @@ class AgentWorkspaceSnapshot:
     messages: list[WhatsAppAgentMessageRecord]
     active_thread_id: str | None
     active_session: WhatsAppAgentThreadSessionRecord | None
+    terminal_session: WhatsAppAgentTerminalSessionRecord | None
     contact_memory: WhatsAppAgentContactMemoryRecord | None
 
 
@@ -74,6 +77,11 @@ class WhatsAppAgentService:
         self.observer_gateway = observer_gateway
         self.agent_gateway = agent_gateway
         self.agenda_guardian_service = agenda_guardian_service
+        self.cli_service = WhatsAppCliService(
+            settings=settings,
+            store=store,
+            deepseek_service=deepseek_service,
+        )
 
     async def get_status(self) -> WhatsAppAgentStatusResponse:
         agent_status = await self.agent_gateway.get_agent_status()
@@ -117,6 +125,14 @@ class WhatsAppAgentService:
             if active_thread is not None
             else None
         )
+        terminal_session = (
+            self.store.get_whatsapp_agent_terminal_session(
+                user_id=self.settings.default_user_id,
+                thread_id=active_thread.id,
+            )
+            if active_thread is not None
+            else None
+        )
         contact_memory = (
             self.store.get_whatsapp_agent_contact_memory(
                 user_id=self.settings.default_user_id,
@@ -133,6 +149,7 @@ class WhatsAppAgentService:
             messages=messages,
             active_thread_id=active_thread_id,
             active_session=active_session,
+            terminal_session=terminal_session,
             contact_memory=contact_memory,
         )
 
@@ -158,6 +175,9 @@ class WhatsAppAgentService:
             user_id=self.settings.default_user_id,
             thread_id=thread_id,
         )
+
+    def get_terminal_session_for_thread(self, *, thread_id: str) -> WhatsAppAgentTerminalSessionRecord | None:
+        return self.cli_service.get_terminal_session_for_thread(thread_id=thread_id)
 
     def get_contact_memory_for_thread(self, thread: WhatsAppAgentThreadRecord) -> WhatsAppAgentContactMemoryRecord | None:
         if not thread.contact_phone:
@@ -300,6 +320,37 @@ class WhatsAppAgentService:
                 action="duplicate_reply",
                 thread_id=thread.id,
                 inbound_message_id=inbound_message.id,
+            )
+
+        if self.cli_service.is_eligible_contact(contact_phone=contact_phone):
+            cli_result = await self.cli_service.handle_message(
+                message_text=normalized_text,
+                inbound_message=inbound_message,
+                thread=thread,
+                session=session,
+                chat_jid=delivery_chat_jid,
+            )
+            self.store.update_whatsapp_agent_message(
+                message_id=inbound_message.id,
+                processing_status=cli_result.action,
+                learning_status="not_applicable",
+                model_run_id=cli_result.model_run_id,
+                metadata={
+                    **inbound_message.metadata,
+                    "cli_mode_enabled": cli_result.terminal_session.cli_mode_enabled,
+                    "cli_cwd": cli_result.terminal_session.cwd,
+                    "cli_context_version": cli_result.terminal_session.context_version,
+                },
+            )
+            return await self._send_outbound_messages(
+                payload=payload,
+                inbound_message=inbound_message,
+                thread=thread,
+                session=session,
+                contact_phone=contact_phone,
+                delivery_chat_jid=delivery_chat_jid,
+                outbound_messages=cli_result.outbound_messages,
+                response_latency_ms=0,
             )
 
         contact_memory = self.store.get_whatsapp_agent_contact_memory(
@@ -505,111 +556,166 @@ class WhatsAppAgentService:
         reply_model_run_id: str | None,
         generated_by: str,
     ) -> WhatsAppAgentInboundMessageResponse:
-        outbound_message = self.store.append_whatsapp_agent_message(
-            user_id=self.settings.default_user_id,
-            thread_id=thread.id,
-            direction="outbound",
-            role="assistant",
-            session_id=session.id,
-            content=assistant_reply,
-            message_timestamp=datetime.now(UTC),
+        return await self._send_outbound_messages(
+            payload=payload,
+            inbound_message=inbound_message,
+            thread=thread,
+            session=session,
             contact_phone=contact_phone,
-            chat_jid=delivery_chat_jid,
-            source_inbound_message_id=payload.message_id,
-            processing_status="sending",
-            learning_status="not_applicable",
+            delivery_chat_jid=delivery_chat_jid,
+            outbound_messages=[
+                CliOutboundMessage(
+                    text=assistant_reply,
+                    generated_by=generated_by,
+                    metadata={
+                        "reply_to_message_id": inbound_message.whatsapp_message_id,
+                        "delivery_chat_jid": delivery_chat_jid,
+                        "model_run_id": reply_model_run_id,
+                    },
+                )
+            ],
             response_latency_ms=response_latency_ms,
-            model_run_id=reply_model_run_id,
-            metadata={
-                "generated_by": generated_by,
-                "reply_to_message_id": inbound_message.whatsapp_message_id,
-                "delivery_chat_jid": delivery_chat_jid,
-            },
-            created_at=datetime.now(UTC),
         )
 
-        try:
-            send_result = await self.agent_gateway.send_text_message(
+    async def _send_outbound_messages(
+        self,
+        *,
+        payload: WhatsAppAgentInboundMessageRequest,
+        inbound_message: WhatsAppAgentMessageRecord,
+        thread: WhatsAppAgentThreadRecord,
+        session: WhatsAppAgentThreadSessionRecord,
+        contact_phone: str,
+        delivery_chat_jid: str,
+        outbound_messages: Sequence[CliOutboundMessage],
+        response_latency_ms: int,
+    ) -> WhatsAppAgentInboundMessageResponse:
+        stored_messages: list[WhatsAppAgentMessageRecord] = []
+        message_ids: list[str] = []
+        last_sent_at: datetime | None = None
+
+        for index, outbound in enumerate(outbound_messages):
+            outbound_record = self.store.append_whatsapp_agent_message(
+                user_id=self.settings.default_user_id,
+                thread_id=thread.id,
+                direction="outbound",
+                role="assistant",
+                session_id=session.id,
+                content=outbound.text,
+                message_timestamp=datetime.now(UTC),
+                contact_phone=contact_phone,
                 chat_jid=delivery_chat_jid,
-                message_text=assistant_reply,
+                source_inbound_message_id=payload.message_id if index == 0 else None,
+                processing_status="sending",
+                learning_status="not_applicable",
+                response_latency_ms=response_latency_ms if index == 0 else None,
+                model_run_id=(
+                    str(outbound.metadata.get("model_run_id"))
+                    if isinstance(outbound.metadata.get("model_run_id"), str)
+                    else None
+                ),
+                metadata={
+                    "generated_by": outbound.generated_by,
+                    "reply_to_message_id": inbound_message.whatsapp_message_id,
+                    "delivery_chat_jid": delivery_chat_jid,
+                    **outbound.metadata,
+                },
+                created_at=datetime.now(UTC),
             )
+            stored_messages.append(outbound_record)
+
+            try:
+                send_result = await self.agent_gateway.send_text_message(
+                    chat_jid=delivery_chat_jid,
+                    message_text=outbound.text,
+                )
+            except Exception as error:
+                send_error = str(error)
+                self.store.update_whatsapp_agent_message(
+                    message_id=outbound_record.id,
+                    send_status="failed",
+                    processing_status="failed_send",
+                    error_text=send_error,
+                )
+                self.store.update_whatsapp_agent_message(
+                    message_id=inbound_message.id,
+                    processing_status="reply_failed_send",
+                    error_text=send_error,
+                )
+                self.store.update_whatsapp_agent_thread(
+                    thread_id=thread.id,
+                    status="error",
+                    last_error_at=datetime.now(UTC),
+                    last_error_text=send_error,
+                )
+                logger.error(
+                    "reply_send_failed thread_id=%s inbound_message_id=%s outbound_message_id=%s contact_phone=%s chat_jid=%s error=%s",
+                    thread.id,
+                    inbound_message.id,
+                    outbound_record.id,
+                    contact_phone,
+                    delivery_chat_jid,
+                    send_error,
+                )
+                return WhatsAppAgentInboundMessageResponse(
+                    action="failed_send",
+                    thread_id=thread.id,
+                    inbound_message_id=inbound_message.id,
+                    outbound_message_id=stored_messages[0].id if stored_messages else outbound_record.id,
+                    outbound_message_ids=[message.id for message in stored_messages],
+                    outbound_count=len(stored_messages),
+                )
+
             sent_at = send_result.timestamp or datetime.now(UTC)
+            last_sent_at = sent_at
             self.store.update_whatsapp_agent_message(
-                message_id=outbound_message.id,
+                message_id=outbound_record.id,
                 send_status="sent",
                 processing_status="sent",
                 whatsapp_message_id=send_result.message_id,
-                response_latency_ms=response_latency_ms,
+                response_latency_ms=response_latency_ms if index == 0 else None,
                 message_timestamp=sent_at,
             )
-            self.store.update_whatsapp_agent_message(
-                message_id=inbound_message.id,
-                processing_status="replied",
-            )
+            message_ids.append(outbound_record.id)
+
+        resolved_status = "replied" if message_ids else "no_reply"
+        self.store.update_whatsapp_agent_message(
+            message_id=inbound_message.id,
+            processing_status=resolved_status,
+            error_text=None,
+        )
+        if last_sent_at is not None:
             self.store.update_whatsapp_agent_thread(
                 thread_id=thread.id,
                 chat_jid=delivery_chat_jid,
                 status="active",
-                last_outbound_at=sent_at,
-                last_message_at=sent_at,
+                last_outbound_at=last_sent_at,
+                last_message_at=last_sent_at,
                 last_error_at=None,
                 last_error_text=None,
             )
             self.store.update_whatsapp_agent_session(
                 session_id=session.id,
-                last_activity_at=sent_at,
-                updated_at=sent_at,
+                last_activity_at=last_sent_at,
+                updated_at=last_sent_at,
             )
-            logger.info(
-                "reply_sent thread_id=%s inbound_message_id=%s outbound_message_id=%s contact_phone=%s chat_jid=%s latency_ms=%s generator=%s",
-                thread.id,
-                inbound_message.id,
-                outbound_message.id,
-                contact_phone,
-                delivery_chat_jid,
-                response_latency_ms,
-                generated_by,
-            )
-            return WhatsAppAgentInboundMessageResponse(
-                action="replied",
-                thread_id=thread.id,
-                inbound_message_id=inbound_message.id,
-                outbound_message_id=outbound_message.id,
-            )
-        except Exception as error:
-            send_error = str(error)
-            self.store.update_whatsapp_agent_message(
-                message_id=outbound_message.id,
-                send_status="failed",
-                processing_status="failed_send",
-                error_text=send_error,
-            )
-            self.store.update_whatsapp_agent_message(
-                message_id=inbound_message.id,
-                processing_status="reply_failed_send",
-                error_text=send_error,
-            )
-            self.store.update_whatsapp_agent_thread(
-                thread_id=thread.id,
-                status="error",
-                last_error_at=datetime.now(UTC),
-                last_error_text=send_error,
-            )
-            logger.error(
-                "reply_send_failed thread_id=%s inbound_message_id=%s outbound_message_id=%s contact_phone=%s chat_jid=%s error=%s",
-                thread.id,
-                inbound_message.id,
-                outbound_message.id,
-                contact_phone,
-                delivery_chat_jid,
-                send_error,
-            )
-            return WhatsAppAgentInboundMessageResponse(
-                action="failed_send",
-                thread_id=thread.id,
-                inbound_message_id=inbound_message.id,
-                outbound_message_id=outbound_message.id,
-            )
+
+        logger.info(
+            "reply_sent thread_id=%s inbound_message_id=%s outbound_count=%s contact_phone=%s chat_jid=%s latency_ms=%s",
+            thread.id,
+            inbound_message.id,
+            len(message_ids),
+            contact_phone,
+            delivery_chat_jid,
+            response_latency_ms,
+        )
+        return WhatsAppAgentInboundMessageResponse(
+            action="replied",
+            thread_id=thread.id,
+            inbound_message_id=inbound_message.id,
+            outbound_message_id=message_ids[0] if message_ids else None,
+            outbound_message_ids=message_ids,
+            outbound_count=len(message_ids),
+        )
 
     def _build_agenda_confirmation_reply(self, outcome: AgendaProcessingResult) -> str:
         if outcome.clarification_needed:

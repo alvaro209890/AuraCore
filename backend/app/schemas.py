@@ -63,6 +63,21 @@ class WhatsAppAgentSessionResponse(BaseModel):
     updated_at: datetime
 
 
+class WhatsAppAgentTerminalSessionResponse(BaseModel):
+    id: str
+    thread_id: str
+    contact_phone: str | None = None
+    chat_jid: str | None = None
+    cli_mode_enabled: bool
+    cwd: str
+    context_version: int = Field(default=1, ge=1)
+    last_command_text: str | None = None
+    last_command_at: datetime | None = None
+    closed_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
 class WhatsAppAgentContactMemoryResponse(BaseModel):
     id: str
     thread_id: str | None = None
@@ -142,6 +157,7 @@ class WhatsAppAgentWorkspaceResponse(BaseModel):
     observer_status: ObserverStatusResponse
     active_thread_id: str | None = None
     active_session: WhatsAppAgentSessionResponse | None = None
+    terminal_session: WhatsAppAgentTerminalSessionResponse | None = None
     contact_memory: WhatsAppAgentContactMemoryResponse | None = None
     threads: list[WhatsAppAgentThreadResponse] = Field(default_factory=list)
     messages: list[WhatsAppAgentMessageResponse] = Field(default_factory=list)
@@ -221,6 +237,8 @@ class WhatsAppAgentInboundMessageResponse(BaseModel):
     thread_id: str | None = None
     inbound_message_id: str | None = None
     outbound_message_id: str | None = None
+    outbound_message_ids: list[str] = Field(default_factory=list)
+    outbound_count: int = Field(default=0, ge=0)
 
 
 class WhatsAppAgentInboundMessagesResponse(BaseModel):

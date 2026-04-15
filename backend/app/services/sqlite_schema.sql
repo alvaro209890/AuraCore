@@ -266,6 +266,27 @@ CREATE INDEX IF NOT EXISTS whatsapp_agent_thread_sessions_user_thread_idx ON wha
 CREATE INDEX IF NOT EXISTS whatsapp_agent_thread_sessions_user_contact_idx ON whatsapp_agent_thread_sessions (user_id, contact_phone, last_activity_at DESC);
 CREATE INDEX IF NOT EXISTS whatsapp_agent_thread_sessions_active_idx ON whatsapp_agent_thread_sessions (thread_id, last_activity_at DESC);
 
+CREATE TABLE IF NOT EXISTS whatsapp_agent_terminal_sessions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  thread_id TEXT NOT NULL,
+  contact_phone TEXT,
+  chat_jid TEXT,
+  cli_mode_enabled INTEGER NOT NULL DEFAULT 0,
+  cwd TEXT NOT NULL,
+  context_version INTEGER NOT NULL DEFAULT 1,
+  last_command_text TEXT,
+  last_command_at TEXT,
+  closed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (user_id, thread_id),
+  FOREIGN KEY (thread_id) REFERENCES whatsapp_agent_threads(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS whatsapp_agent_terminal_sessions_user_thread_idx ON whatsapp_agent_terminal_sessions (user_id, thread_id);
+CREATE INDEX IF NOT EXISTS whatsapp_agent_terminal_sessions_user_contact_idx ON whatsapp_agent_terminal_sessions (user_id, contact_phone, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS whatsapp_agent_messages (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,
