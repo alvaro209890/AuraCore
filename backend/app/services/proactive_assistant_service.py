@@ -979,7 +979,11 @@ class ProactiveAssistantService:
         return sent_count >= prefs.max_unsolicited_per_day
 
     def _min_interval_active(self, *, prefs: ProactivePreferencesRecord, now: datetime) -> bool:
-        deliveries = self.store.list_recent_proactive_deliveries(user_id=self.settings.default_user_id, limit=1)
+        deliveries = self.store.list_recent_proactive_deliveries(
+            user_id=self.settings.default_user_id,
+            limit=1,
+            decisions=["sent"],
+        )
         if not deliveries:
             return False
         last_delivery = deliveries[0]

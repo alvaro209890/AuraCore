@@ -1,6 +1,6 @@
 import toast from 'react-hot-toast';
 import type { ReactNode } from 'react';
-import { AlertCircle, Check, Clock, Edit2, Plus, RefreshCw, Trash2, X } from 'lucide-react';
+import { AlertCircle, BellRing, Check, Clock, Edit2, Plus, RefreshCw, Trash2, Users, X } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import {
   formatAgendaReminderRule,
@@ -12,6 +12,8 @@ import {
 } from '../../connection-dashboard';
 import type { AgendaEvent, CreateAgendaEventInput, UpdateAgendaEventInput } from '@/lib/api';
 
+type Tone = 'emerald' | 'indigo' | 'amber';
+
 type AgendaEditDraft = {
   titulo: string;
   inicio: string;
@@ -20,6 +22,28 @@ type AgendaEditDraft = {
   contato_origem: string;
   reminder_offset_minutes: string;
 };
+
+const STATUS_OPTIONS: Array<{
+  value: AgendaEditDraft['status'];
+  title: string;
+  description: string;
+  tone: Tone;
+}> = [
+  {
+    value: 'firme',
+    title: 'Firme',
+    description: 'Compromisso confirmado e pronto para lembrete normal.',
+    tone: 'emerald',
+  },
+  {
+    value: 'tentativo',
+    title: 'Tentativo',
+    description: 'Mantém o horário visível, mas preserva incerteza operacional.',
+    tone: 'amber',
+  },
+];
+
+const REMINDER_PRESETS = [0, 15, 30, 60, 120];
 
 function AgendaField({
   label,
@@ -38,6 +62,28 @@ function AgendaField({
       {children}
       {hint ? <span className="ops-field-caption">{hint}</span> : null}
     </label>
+  );
+}
+
+function InputShell({
+  icon,
+  tone = 'indigo',
+  hint,
+  children,
+}: {
+  icon: ReactNode;
+  tone?: Tone;
+  hint?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className={`ops-input-shell ops-input-shell-${tone}`}>
+      <span className="ops-input-shell-icon">{icon}</span>
+      <div className="ops-input-shell-body">
+        {children}
+        {hint ? <span className="ops-input-shell-hint">{hint}</span> : null}
+      </div>
+    </div>
   );
 }
 
@@ -103,6 +149,190 @@ function parseDraftPayload(draft: AgendaEditDraft): CreateAgendaEventInput | nul
     contato_origem: draft.contato_origem.trim() || undefined,
     reminder_offset_minutes: reminderOffsetMinutes,
   };
+}
+
+function formatReminderLead(minutesValue: string): string {
+  const minutes = Number.parseInt(minutesValue || '0', 10);
+  if (Number.isNaN(minutes) || minutes < 0) {
+    return 'Antecedência inválida';
+  }
+  if (minutes === 0) {
+    return 'Lembrete no horário do compromisso';
+  }
+  if (minutes < 60) {
+    return `Lembrete ${minutes} min antes`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  if (remainder === 0) {
+    return `Lembrete ${hours}h antes`;
+  }
+  return `Lembrete ${hours}h${remainder}min antes`;
+}
+
+function formatWindowSummary(draft: AgendaEditDraft): string {
+  const inicio = parseBrazilDateTimeInput(draft.inicio);
+  const fim = parseBrazilDateTimeInput(draft.fim);
+  if (Number.isNaN(inicio.getTime()) || Number.isNaN(fim.getTime())) {
+    return 'Preencha o horário para ver a janela final do compromisso.';
+  }
+  return `${formatShortDateTime(inicio.toISOString())} até ${formatShortDateTime(fim.toISOString())}`;
+}
+
+function AgendaEditor({
+  title,
+  description,
+  draft,
+  disabled,
+  submitLabel,
+  submittingLabel,
+  onChange,
+  onSubmit,
+  onCancel,
+}: {
+  title: string;
+  description: string;
+  draft: AgendaEditDraft;
+  disabled: boolean;
+  submitLabel: string;
+  submittingLabel: string;
+  onChange: (patch: Partial<AgendaEditDraft>) => void;
+  onSubmit: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="ops-form-shell">
+      <div className="ops-form-head">
+        <div>
+          <strong>{title}</strong>
+          <p>{description}</p>
+        </div>
+      </div>
+
+      <div className="ops-form-grid ops-form-grid-dual">
+        <AgendaField full hint="Use um título objetivo e reconhecível no painel." label="Título do compromisso">
+          <InputShell hint="Evite nomes genéricos como reunião ou call solta." icon={<Edit2 size={16} />} tone="indigo">
+            <input
+              className="ops-input"
+              onChange={(event) => onChange({ titulo: event.target.value })}
+              placeholder="Ex.: Revisão do deploy com cliente X"
+              type="text"
+              value={draft.titulo}
+            />
+          </InputShell>
+        </AgendaField>
+
+        <AgendaField hint="Horário inicial em Brasília." label="Início">
+          <InputShell hint="Ponto de entrada do compromisso." icon={<Clock size={16} />} tone="indigo">
+            <input
+              className="ops-input"
+              onChange={(event) => onChange({ inicio: event.target.value })}
+              type="datetime-local"
+              value={draft.inicio}
+            />
+          </InputShell>
+        </AgendaField>
+
+        <AgendaField hint="Horário final em Brasília." label="Fim">
+          <InputShell hint="Define a duração visível e conflito." icon={<Clock size={16} />} tone="amber">
+            <input
+              className="ops-input"
+              onChange={(event) => onChange({ fim: event.target.value })}
+              type="datetime-local"
+              value={draft.fim}
+            />
+          </InputShell>
+        </AgendaField>
+
+        <AgendaField hint="Pessoa, grupo ou origem livre do compromisso." label="Origem / contato">
+          <InputShell hint="Ajuda a rastrear de onde saiu o compromisso." icon={<Users size={16} />} tone="emerald">
+            <input
+              className="ops-input"
+              onChange={(event) => onChange({ contato_origem: event.target.value })}
+              placeholder="Ex.: WhatsApp, cliente, equipe interna"
+              type="text"
+              value={draft.contato_origem}
+            />
+          </InputShell>
+        </AgendaField>
+
+        <AgendaField hint="Minutos antes do evento em que o lembrete deve sair." label="Antecedência do lembrete">
+          <InputShell hint="O guardião usa esse lead time para o pré-aviso." icon={<BellRing size={16} />} tone="amber">
+            <input
+              className="ops-input"
+              min="0"
+              onChange={(event) => onChange({ reminder_offset_minutes: event.target.value })}
+              step="1"
+              type="number"
+              value={draft.reminder_offset_minutes}
+            />
+          </InputShell>
+        </AgendaField>
+      </div>
+
+      <AgendaField
+        full
+        hint="Troque o tipo do compromisso sem depender de select simples. O estado fica mais legível."
+        label="Status operacional"
+      >
+        <div className="ops-pill-grid">
+          {STATUS_OPTIONS.map((option) => {
+            const isActive = draft.status === option.value;
+            return (
+              <button
+                key={option.value}
+                className={`ops-pill-button${isActive ? ` ops-pill-button-active ops-pill-button-active-${option.tone}` : ''}`}
+                onClick={() => onChange({ status: option.value })}
+                type="button"
+              >
+                <strong>{option.title}</strong>
+                <span>{option.description}</span>
+              </button>
+            );
+          })}
+        </div>
+      </AgendaField>
+
+      <div className="ops-inline-note">
+        <strong>{formatWindowSummary(draft)}</strong>
+        <span>{formatReminderLead(draft.reminder_offset_minutes)}</span>
+      </div>
+
+      <AgendaField
+        full
+        hint="Atalhos rápidos para não digitar toda vez a mesma antecedência."
+        label="Presets de lembrete"
+      >
+        <div className="ops-pill-grid">
+          {REMINDER_PRESETS.map((minutes) => {
+            const isActive = draft.reminder_offset_minutes === String(minutes);
+            return (
+              <button
+                key={minutes}
+                className={`ops-pill-button${isActive ? ' ops-pill-button-active ops-pill-button-active-amber' : ''}`}
+                onClick={() => onChange({ reminder_offset_minutes: String(minutes) })}
+                type="button"
+              >
+                <strong>{minutes === 0 ? 'No horário' : `${minutes} min`}</strong>
+                <span>{minutes === 0 ? 'Sem antecedência extra' : `Disparar ${minutes} min antes`}</span>
+              </button>
+            );
+          })}
+        </div>
+      </AgendaField>
+
+      <div className="project-inline-actions">
+        <button className="ops-hero-button ops-hero-button-primary" disabled={disabled} onClick={onSubmit} type="button">
+          {disabled ? <RefreshCw className="spin" size={15} /> : <Check size={15} />}
+          {disabled ? submittingLabel : submitLabel}
+        </button>
+        <button className="ops-hero-button ops-hero-button-ghost" disabled={disabled} onClick={onCancel} type="button">
+          <X size={15} />
+          Cancelar
+        </button>
+      </div>
+    </div>
+  );
 }
 
 export default function AgendaTab({
@@ -232,17 +462,17 @@ export default function AgendaTab({
             <Clock size={14} />
             Guardião do Tempo
           </div>
-          <h3>Agenda mais clara, com criação manual melhor resolvida e leitura rápida dos conflitos.</h3>
+          <h3>Agenda com criação manual mais sólida, conflito legível e formulários consistentes com o restante do painel.</h3>
           <p>
-            Esta visão reúne compromissos detectados nas mensagens e os que foram adicionados manualmente. O foco aqui
-            é deixar status, lembretes e edição bem mais legíveis.
+            Esta visão reúne compromissos detectados nas mensagens e lançamentos manuais. A criação e a edição agora
+            usam shells modernos, presets de lembrete e um status visual mais claro.
           </p>
-          <div className="hero-actions">
-            <button className="ac-button ac-button-primary" onClick={toggleCreate} type="button">
+          <div className="ops-hero-actions">
+            <button className="ops-hero-button ops-hero-button-primary" onClick={toggleCreate} type="button">
               <Plus size={15} />
               {creatingEvent ? 'Fechar criação' : 'Novo compromisso'}
             </button>
-            <button className="ac-button ac-button-outline" onClick={onRefresh} type="button">
+            <button className="ops-hero-button ops-hero-button-ghost" onClick={onRefresh} type="button">
               <RefreshCw size={15} />
               Atualizar agenda
             </button>
@@ -277,11 +507,7 @@ export default function AgendaTab({
         <SectionTitle
           title="Compromissos"
           icon={Clock}
-          action={
-            <div className="hero-actions" style={{ margin: 0 }}>
-              <span className="micro-badge">Formulário em horário de Brasília</span>
-            </div>
-          }
+          action={<span className="micro-badge">Formulário em horário de Brasília</span>}
         />
 
         <div className="projects-toolbar">
@@ -301,100 +527,17 @@ export default function AgendaTab({
         </div>
 
         {creatingEvent ? (
-          <div className="ops-form-shell">
-            <div className="ops-form-head">
-              <div>
-                <strong>Novo compromisso manual</strong>
-                <p>Preencha título, faixa de horário, origem e regra de lembrete num bloco único e mais limpo.</p>
-              </div>
-            </div>
-            <div className="ops-form-grid">
-              <AgendaField full hint="Use um título objetivo para o compromisso." label="Título">
-                <input
-                  className="ops-input"
-                  onChange={(event) => setCreateDraft((current) => ({ ...current, titulo: event.target.value }))}
-                  placeholder="Ex.: Reunião com cliente X"
-                  type="text"
-                  value={createDraft.titulo}
-                />
-              </AgendaField>
-
-              <AgendaField label="Início">
-                <input
-                  className="ops-input"
-                  onChange={(event) => setCreateDraft((current) => ({ ...current, inicio: event.target.value }))}
-                  type="datetime-local"
-                  value={createDraft.inicio}
-                />
-              </AgendaField>
-
-              <AgendaField label="Fim">
-                <input
-                  className="ops-input"
-                  onChange={(event) => setCreateDraft((current) => ({ ...current, fim: event.target.value }))}
-                  type="datetime-local"
-                  value={createDraft.fim}
-                />
-              </AgendaField>
-
-              <AgendaField hint="Firme entra como compromisso consolidado; tentativo mantém incerteza." label="Status">
-                <select
-                  className="ops-select"
-                  onChange={(event) =>
-                    setCreateDraft((current) => ({
-                      ...current,
-                      status: event.target.value === 'tentativo' ? 'tentativo' : 'firme',
-                    }))
-                  }
-                  value={createDraft.status}
-                >
-                  <option value="firme">Firme</option>
-                  <option value="tentativo">Tentativo</option>
-                </select>
-              </AgendaField>
-
-              <AgendaField hint="Contato, grupo ou origem livre do compromisso." label="Origem / contato">
-                <input
-                  className="ops-input"
-                  onChange={(event) =>
-                    setCreateDraft((current) => ({ ...current, contato_origem: event.target.value }))
-                  }
-                  placeholder="Ex.: WhatsApp, cliente, equipe"
-                  type="text"
-                  value={createDraft.contato_origem}
-                />
-              </AgendaField>
-
-              <AgendaField hint="Quantos minutos antes o lembrete deve sair." label="Antecedência do lembrete">
-                <input
-                  className="ops-input"
-                  min="0"
-                  onChange={(event) =>
-                    setCreateDraft((current) => ({ ...current, reminder_offset_minutes: event.target.value }))
-                  }
-                  step="1"
-                  type="number"
-                  value={createDraft.reminder_offset_minutes}
-                />
-              </AgendaField>
-            </div>
-
-            <div className="project-inline-actions">
-              <button
-                className="ac-button ac-button-primary"
-                disabled={isCreatingEvent}
-                onClick={() => void handleCreate()}
-                type="button"
-              >
-                {isCreatingEvent ? <RefreshCw className="spin" size={15} /> : <Check size={15} />}
-                {isCreatingEvent ? 'Criando...' : 'Salvar compromisso'}
-              </button>
-              <button className="ac-button ac-button-outline" disabled={isCreatingEvent} onClick={toggleCreate} type="button">
-                <X size={15} />
-                Cancelar
-              </button>
-            </div>
-          </div>
+          <AgendaEditor
+            description="Preencha o bloco inteiro sem campos crus. Título, faixa de horário, origem e lembrete ficam no mesmo shell operacional."
+            disabled={isCreatingEvent}
+            draft={createDraft}
+            onCancel={toggleCreate}
+            onChange={(patch) => setCreateDraft((current) => ({ ...current, ...patch }))}
+            onSubmit={() => void handleCreate()}
+            submitLabel="Salvar compromisso"
+            submittingLabel="Criando..."
+            title="Novo compromisso manual"
+          />
         ) : null}
 
         <div className="project-list-modern">
@@ -422,135 +565,43 @@ export default function AgendaTab({
                     </span>
                     {event.has_conflict ? <span className="micro-status micro-status-amber">Conflito</span> : null}
                     <button
-                      className="ac-button ac-button-outline ac-button-sm"
+                      className="ops-hero-button ops-hero-button-ghost"
                       disabled={isSaving || isDeleting}
                       onClick={() => (isEditing ? closeEdit() : openEdit(event))}
                       type="button"
                     >
                       {isEditing ? <X size={14} /> : <Edit2 size={14} />}
+                      {isEditing ? 'Fechar' : 'Editar'}
                     </button>
                     <button
-                      className="ac-button ac-button-outline ac-button-sm project-delete-button"
+                      className="ac-danger-button"
                       disabled={isSaving || isDeleting}
                       onClick={() => void onDeleteEvent(event)}
                       type="button"
                     >
                       <Trash2 size={14} />
+                      Excluir
                     </button>
                   </div>
                 </div>
 
                 {isEditing ? (
-                  <div className="ops-form-shell">
-                    <div className="ops-form-grid">
-                      <AgendaField full label="Título">
-                        <input
-                          className="ops-input"
-                          onChange={(editEvent) =>
-                            setAgendaDrafts((current) => ({
-                              ...current,
-                              [event.id]: { ...draft, titulo: editEvent.target.value },
-                            }))
-                          }
-                          type="text"
-                          value={draft.titulo}
-                        />
-                      </AgendaField>
-
-                      <AgendaField label="Início">
-                        <input
-                          className="ops-input"
-                          onChange={(editEvent) =>
-                            setAgendaDrafts((current) => ({
-                              ...current,
-                              [event.id]: { ...draft, inicio: editEvent.target.value },
-                            }))
-                          }
-                          type="datetime-local"
-                          value={draft.inicio}
-                        />
-                      </AgendaField>
-
-                      <AgendaField label="Fim">
-                        <input
-                          className="ops-input"
-                          onChange={(editEvent) =>
-                            setAgendaDrafts((current) => ({
-                              ...current,
-                              [event.id]: { ...draft, fim: editEvent.target.value },
-                            }))
-                          }
-                          type="datetime-local"
-                          value={draft.fim}
-                        />
-                      </AgendaField>
-
-                      <AgendaField label="Status">
-                        <select
-                          className="ops-select"
-                          onChange={(editEvent) =>
-                            setAgendaDrafts((current) => ({
-                              ...current,
-                              [event.id]: {
-                                ...draft,
-                                status: editEvent.target.value === 'firme' ? 'firme' : 'tentativo',
-                              },
-                            }))
-                          }
-                          value={draft.status}
-                        >
-                          <option value="firme">Firme</option>
-                          <option value="tentativo">Tentativo</option>
-                        </select>
-                      </AgendaField>
-
-                      <AgendaField label="Origem / contato">
-                        <input
-                          className="ops-input"
-                          onChange={(editEvent) =>
-                            setAgendaDrafts((current) => ({
-                              ...current,
-                              [event.id]: { ...draft, contato_origem: editEvent.target.value },
-                            }))
-                          }
-                          type="text"
-                          value={draft.contato_origem}
-                        />
-                      </AgendaField>
-
-                      <AgendaField hint="Minutos antes do evento." label="Antecedência do lembrete">
-                        <input
-                          className="ops-input"
-                          min="0"
-                          onChange={(editEvent) =>
-                            setAgendaDrafts((current) => ({
-                              ...current,
-                              [event.id]: { ...draft, reminder_offset_minutes: editEvent.target.value },
-                            }))
-                          }
-                          step="1"
-                          type="number"
-                          value={draft.reminder_offset_minutes}
-                        />
-                      </AgendaField>
-                    </div>
-
-                    <div className="project-inline-actions">
-                      <button
-                        className="ac-button ac-button-primary"
-                        disabled={isSaving || isDeleting}
-                        onClick={() => void handleSave(event)}
-                        type="button"
-                      >
-                        {isSaving ? <RefreshCw className="spin" size={15} /> : <Check size={15} />}
-                        {isSaving ? 'Salvando...' : 'Salvar alterações'}
-                      </button>
-                      <button className="ac-button ac-button-outline" disabled={isSaving} onClick={closeEdit} type="button">
-                        <X size={15} />
-                        Cancelar
-                      </button>
-                    </div>
-                  </div>
+                  <AgendaEditor
+                    description="Ajuste rapidamente horário, status, origem e lembrete sem cair em campos brancos e soltos."
+                    disabled={isSaving || isDeleting}
+                    draft={draft}
+                    onCancel={closeEdit}
+                    onChange={(patch) =>
+                      setAgendaDrafts((current) => ({
+                        ...current,
+                        [event.id]: { ...draft, ...patch },
+                      }))
+                    }
+                    onSubmit={() => void handleSave(event)}
+                    submitLabel="Salvar alterações"
+                    submittingLabel="Salvando..."
+                    title="Editar compromisso"
+                  />
                 ) : (
                   <>
                     <div className="ops-meta-grid">

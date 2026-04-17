@@ -620,7 +620,7 @@ class MemoryAnalysisService:
                 chat_context=chat_context,
                 open_questions_context=open_questions_context,
             ),
-            intent=intent,
+            intent=resolved_intent,
         )
         prompt_preview = self.deepseek_service.build_analysis_prompt_preview(
             transcript=prompt_context.transcript,

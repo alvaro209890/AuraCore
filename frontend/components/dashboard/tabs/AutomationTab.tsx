@@ -422,9 +422,9 @@ export default function AutomationTab({
                 <InputShell hint="Entrada mínima para justificar custo." icon={<Sparkles size={16} />} tone="amber">
                   <input
                     className="ops-input"
-                    min="0"
+                    min="1"
                     onChange={(event) =>
-                      patchDraft({ min_new_messages_threshold: Math.max(0, Number(event.target.value) || 0) })
+                      patchDraft({ min_new_messages_threshold: Math.max(1, Number(event.target.value) || 1) })
                     }
                     step="1"
                     type="number"
@@ -440,9 +440,9 @@ export default function AutomationTab({
                 <InputShell hint="Quanto tempo o contexto pode ficar parado." icon={<Clock3 size={16} />} tone="indigo">
                   <input
                     className="ops-input"
-                    min="0"
+                    min="1"
                     onChange={(event) =>
-                      patchDraft({ stale_hours_threshold: Math.max(0, Number(event.target.value) || 0) })
+                      patchDraft({ stale_hours_threshold: Math.max(1, Number(event.target.value) || 1) })
                     }
                     step="1"
                     type="number"
@@ -483,9 +483,9 @@ export default function AutomationTab({
                 <InputShell hint="Tamanho típico do recorte." icon={<Activity size={16} />} tone="indigo">
                   <input
                     className="ops-input"
-                    min="1"
+                    min="20"
                     onChange={(event) =>
-                      patchDraft({ default_target_message_count: Math.max(1, Number(event.target.value) || 1) })
+                      patchDraft({ default_target_message_count: Math.max(20, Number(event.target.value) || 20) })
                     }
                     step="1"
                     type="number"
@@ -562,9 +562,9 @@ export default function AutomationTab({
                 <InputShell hint="Teto de jobs automáticos diários." icon={<Zap size={16} />} tone="amber">
                   <input
                     className="ops-input"
-                    min="0"
+                    min="1"
                     onChange={(event) =>
-                      patchDraft({ max_auto_jobs_per_day: Math.max(0, Number(event.target.value) || 0) })
+                      patchDraft({ max_auto_jobs_per_day: Math.max(1, Number(event.target.value) || 1) })
                     }
                     step="1"
                     type="number"

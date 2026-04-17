@@ -56,3 +56,6 @@
 - O aprendizado do WhatsApp pode persistir `important_messages` direto do `extract_agent_memory`, usando a mesma rodada do modelo para classificar relevância global sem abrir outro pipeline paralelo
 - A proatividade de projetos agora pode enriquecer `project_nudge` com `suggested_actions` geradas pelo DeepSeek, com fallback heurístico local quando o modelo falhar
 - O `agenda_guardian_service` agora consegue calcular slots livres locais para sugerir alternativas em conflitos de agenda
+- O `automation_service` agora respeita `auto_sync_enabled` para o loop automático de ingest/sync, usa `default_detail_mode`, `default_target_message_count` e `default_lookback_hours` nos lotes incrementais automáticos e pode enfileirar `refine_saved` automático quando `auto_refine_enabled` estiver ligado e o backlog imediato acabar
+- Na proatividade, `followup`, `routine`, `project_nudge` e os digests têm produtores reais no `ProactiveAssistantService`; a UI deixou de expor `Agenda` como categoria proativa e o cooldown mínimo passou a olhar apenas entregas `sent`, enquanto os lembretes formais continuam no `agenda_guardian_service`
+- A aba `Agenda` agora usa shells visuais `ops-*` e botões/pills do dashboard para criação e edição, com status em pills e presets de lembrete em vez de campos crus e `select` simples

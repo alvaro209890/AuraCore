@@ -3782,9 +3782,15 @@ class SupabaseStore:
             raise RuntimeError("Proactive delivery log could not be created.")
         return parsed
 
-    def list_recent_proactive_deliveries(self, *, user_id: UUID, limit: int = 20) -> list[ProactiveDeliveryLogRecord]:
+    def list_recent_proactive_deliveries(
+        self,
+        *,
+        user_id: UUID,
+        limit: int = 20,
+        decisions: Sequence[str] | None = None,
+    ) -> list[ProactiveDeliveryLogRecord]:
         try:
-            response = (
+            query = (
                 self.client.table("proactive_delivery_log")
                 .select(
                     "id,user_id,candidate_id,category,decision,score,reason_code,reason_text,message_text,"
@@ -3793,8 +3799,15 @@ class SupabaseStore:
                 .eq("user_id", str(user_id))
                 .order("created_at", desc=True)
                 .limit(limit)
-                .execute()
             )
+            normalized_decisions = [
+                self._normalize_proactive_delivery_decision(item)
+                for item in (decisions or [])
+                if isinstance(item, str) and item.strip()
+            ]
+            if normalized_decisions:
+                query = query.in_("decision", normalized_decisions)
+            response = query.execute()
         except Exception as exc:
             if not self._is_missing_table_error(exc, "proactive_delivery_log"):
                 raise

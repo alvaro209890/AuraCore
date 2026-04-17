@@ -2698,6 +2698,7 @@ export function ConnectionDashboard({
               running_job_id: null,
             },
       );
+      setAutomationDraft(null);
       pushAgentLog("success", "Configuração da automação salva no backend.");
     } catch (error) {
       const message = getErrorMessage(error);
@@ -3512,4 +3513,3 @@ export function ManualStep({ title, text, icon: Icon, tone }: any) {
 }
 
 export type { MemoryActivity };
-

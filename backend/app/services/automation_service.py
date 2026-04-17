@@ -32,6 +32,7 @@ DecisionReasonCode = Literal[
     "awaiting_first_analysis",
     "batch_ready",
     "backlog_drain",
+    "refinement_ready",
     "awaiting_next_batch",
     "pruned_messages",
     "new_messages_threshold",
@@ -80,6 +81,25 @@ class AutomationService:
         self._scheduled_settle_task: asyncio.Task[None] | None = None
         self._scheduled_settle_deadline: datetime | None = None
 
+    def _get_automation_settings(self) -> AutomationSettingsRecord:
+        return self.store.get_automation_settings(self.settings.default_user_id)
+
+    def _should_manage_sync_loop(self) -> bool:
+        if self._get_automation_settings().auto_sync_enabled:
+            return True
+        return self.store.get_latest_running_sync_run(self.settings.default_user_id) is not None
+
+    async def _build_automatic_incremental_preview(
+        self,
+        *,
+        automation_settings: AutomationSettingsRecord,
+    ) -> MemoryAnalysisPreview:
+        return await self.memory_service.get_analysis_preview(
+            target_message_count=automation_settings.default_target_message_count,
+            max_lookback_hours=automation_settings.default_lookback_hours,
+            detail_mode=automation_settings.default_detail_mode,  # type: ignore[arg-type]
+        )
+
     async def start_manual_sync(self, *, trigger: str = "manual") -> WhatsAppSyncRunRecord:
         started_at = datetime.now(UTC)
         return self.store.create_whatsapp_sync_run(
@@ -97,6 +117,8 @@ class AutomationService:
     ) -> WhatsAppSyncRunRecord | None:
         now = datetime.now(UTC)
         sync_run = self.store.get_latest_running_sync_run(self.settings.default_user_id)
+        if sync_run is None and not self._get_automation_settings().auto_sync_enabled:
+            return None
         if sync_run is None:
             sync_run = self.store.create_whatsapp_sync_run(
                 user_id=self.settings.default_user_id,
@@ -116,9 +138,13 @@ class AutomationService:
         )
 
     def schedule_live_backlog_check(self) -> None:
+        if not self._should_manage_sync_loop():
+            return
         self._schedule_tick()
 
     def schedule_sync_settle(self, *, delay_seconds: float = 13.0) -> None:
+        if not self._should_manage_sync_loop():
+            return
         proposed_deadline = datetime.now(UTC) + timedelta(seconds=delay_seconds)
         if self._scheduled_settle_task is not None and not self._scheduled_settle_task.done():
             if self._scheduled_settle_deadline is not None and self._scheduled_settle_deadline <= proposed_deadline:
@@ -149,6 +175,7 @@ class AutomationService:
         )
 
     async def settle_sync_runs(self) -> list[WhatsAppSyncRunRecord]:
+        automation_settings = self._get_automation_settings()
         finalized_runs = self.store.finalize_idle_sync_runs(
             user_id=self.settings.default_user_id,
             idle_before=datetime.now(UTC) - timedelta(seconds=12),
@@ -163,6 +190,8 @@ class AutomationService:
         seen_sync_ids = {decision.sync_run_id for decision in recent_decisions if decision.sync_run_id}
         for sync_run in finalized_runs:
             if sync_run.id in seen_sync_ids:
+                continue
+            if sync_run.trigger != "manual" and not automation_settings.auto_sync_enabled:
                 continue
             await self.evaluate_and_schedule(
                 sync_run_id=sync_run.id,
@@ -198,7 +227,7 @@ class AutomationService:
         force_analysis: bool = False,
         trigger_source: str = "automation",
     ) -> tuple[AutomationDecisionRecord, AnalysisJobRecord | None]:
-        automation_settings = self.store.get_automation_settings(self.settings.default_user_id)
+        automation_settings = self._get_automation_settings()
         memory_status = self.memory_service.get_memory_status()
         intent: AnalysisIntent = "improve_memory" if memory_status.has_initial_analysis else "first_analysis"
         daily_cost_usd = self._get_daily_cost_usd()
@@ -222,6 +251,7 @@ class AutomationService:
         estimated_total_tokens = 0
         estimated_cost_ceiling_usd = 0.0
         job_plan: FixedAnalysisPlan | None = None
+        job_preview: MemoryAnalysisPreview | None = None
 
         if not memory_status.has_initial_analysis and memory_status.can_run_next_batch:
             try:
@@ -279,54 +309,71 @@ class AutomationService:
                 "do observador para abrir a primeira analise."
             )
         elif memory_status.can_run_next_batch:
-            job_plan = self.memory_service.plan_next_batch()
-            selected_message_count = len(job_plan.source_messages)
-            estimated_total_tokens = job_plan.estimated_input_tokens + job_plan.estimated_output_tokens
-            estimated_cost_ceiling_usd = job_plan.estimated_cost_ceiling_usd
-
-            if force_analysis and has_pending_job:
-                reason_code = "job_already_pending"
-                explanation = "Ja existe uma leitura em andamento ou na fila; a sincronizacao manual nao abriu outro lote em paralelo."
-            elif not force_analysis and not automation_settings.auto_analyze_enabled:
-                reason_code = "auto_analyze_disabled"
-                explanation = (
-                    "A automacao de analise esta desligada; o backend registrou o novo lote disponivel, "
-                    "mas nao o enfileirou automaticamente."
+            try:
+                job_preview = await self._build_automatic_incremental_preview(
+                    automation_settings=automation_settings,
                 )
-            elif not force_analysis and daily_cost_usd >= automation_settings.daily_budget_usd:
-                reason_code = "daily_budget_reached"
-                explanation = (
-                    f"O custo estimado acumulado hoje ja chegou a US$ {daily_cost_usd:.4f}, "
-                    "acima do teto automatico configurado."
-                )
-            elif not force_analysis and daily_auto_jobs_count >= automation_settings.max_auto_jobs_per_day:
-                reason_code = "max_auto_jobs_reached"
-                explanation = (
-                    "O limite diario de jobs automaticos ja foi atingido; o novo lote ficou aguardando "
-                    "o proximo ciclo disponivel."
-                )
-            elif not force_analysis and has_pending_auto_job:
-                reason_code = "job_already_pending"
-                explanation = (
-                    "Ja existe um job automatico em andamento ou na fila; o sistema nao empilha "
-                    "outro lote incremental em paralelo."
-                )
-            elif memory_status.pending_new_message_count < incremental_threshold:
-                reason_code = "awaiting_next_batch"
-                explanation = (
-                    f"Existem {memory_status.pending_new_message_count} mensagens novas pendentes. "
-                    f"O backend vai enfileirar a proxima atualizacao automatica quando a conta atingir "
-                    f"{incremental_threshold} mensagens novas."
-                )
+            except MemoryAnalysisError as error:
+                reason_code = "low_change"
+                explanation = str(error)
             else:
-                action = "queue"
-                should_analyze = True
-                reason_code = "new_messages_threshold"
-                explanation = (
-                    f"Existem {memory_status.pending_new_message_count} mensagens novas pendentes. "
-                    f"O backend vai atualizar a memoria automaticamente agora e processar um lote economico com "
-                    f"{selected_message_count} mensagens."
-                )
+                selected_message_count = job_preview.selected_message_count
+                estimated_total_tokens = job_preview.estimated_total_tokens
+                estimated_cost_ceiling_usd = job_preview.estimated_cost_total_ceiling_usd
+
+                if force_analysis and has_pending_job:
+                    reason_code = "job_already_pending"
+                    explanation = "Ja existe uma leitura em andamento ou na fila; a sincronizacao manual nao abriu outro lote em paralelo."
+                elif not force_analysis and not automation_settings.auto_analyze_enabled:
+                    reason_code = "auto_analyze_disabled"
+                    explanation = (
+                        "A automacao de analise esta desligada; o backend registrou o novo lote disponivel, "
+                        "mas nao o enfileirou automaticamente."
+                    )
+                elif not force_analysis and daily_cost_usd >= automation_settings.daily_budget_usd:
+                    reason_code = "daily_budget_reached"
+                    explanation = (
+                        f"O custo estimado acumulado hoje ja chegou a US$ {daily_cost_usd:.4f}, "
+                        "acima do teto automatico configurado."
+                    )
+                elif not force_analysis and daily_auto_jobs_count >= automation_settings.max_auto_jobs_per_day:
+                    reason_code = "max_auto_jobs_reached"
+                    explanation = (
+                        "O limite diario de jobs automaticos ja foi atingido; o novo lote ficou aguardando "
+                        "o proximo ciclo disponivel."
+                    )
+                elif not force_analysis and has_pending_auto_job:
+                    reason_code = "job_already_pending"
+                    explanation = (
+                        "Ja existe um job automatico em andamento ou na fila; o sistema nao empilha "
+                        "outro lote incremental em paralelo."
+                    )
+                elif memory_status.pending_new_message_count < incremental_threshold:
+                    reason_code = "awaiting_next_batch"
+                    explanation = (
+                        f"Existem {memory_status.pending_new_message_count} mensagens novas pendentes. "
+                        f"O backend vai enfileirar a proxima atualizacao automatica quando a conta atingir "
+                        f"{incremental_threshold} mensagens novas."
+                    )
+                elif job_preview.selected_message_count <= 0:
+                    reason_code = "low_change"
+                    explanation = (
+                        "A janela automatica configurada nao encontrou mensagens suficientes para abrir um lote "
+                        "incremental consistente. Ajuste o lookback ou o alvo de mensagens."
+                    )
+                elif not force_analysis and not job_preview.should_analyze:
+                    reason_code = "low_change"
+                    explanation = job_preview.recommendation_summary
+                else:
+                    action = "queue"
+                    should_analyze = True
+                    reason_code = "new_messages_threshold"
+                    explanation = (
+                        f"Existem {memory_status.pending_new_message_count} mensagens novas pendentes. "
+                        f"O backend vai atualizar a memoria automaticamente com uma janela de "
+                        f"{job_preview.max_lookback_hours}h, profundidade {job_preview.detail_mode} e "
+                        f"ate {job_preview.target_message_count} mensagens."
+                    )
         elif memory_status.has_initial_analysis:
             reason_code = "awaiting_next_batch"
             explanation = (
@@ -355,27 +402,49 @@ class AutomationService:
         if action != "queue":
             return decision, None
 
-        if job_plan is None:
+        if job_plan is None and job_preview is None:
             return decision, None
 
-        job = self.store.create_analysis_job(
-            user_id=self.settings.default_user_id,
-            intent=job_plan.intent,
-            status="queued",
-            trigger_source=trigger_source,
-            decision_id=decision.id,
-            sync_run_id=sync_run_id,
-            target_message_count=len(job_plan.source_messages),
-            max_lookback_hours=0,
-            detail_mode="balanced",
-            selected_message_count=len(job_plan.source_messages),
-            selected_transcript_chars=job_plan.selected_transcript_chars,
-            estimated_input_tokens=job_plan.estimated_input_tokens,
-            estimated_output_tokens=job_plan.estimated_output_tokens,
-            estimated_cost_floor_usd=job_plan.estimated_cost_floor_usd,
-            estimated_cost_ceiling_usd=job_plan.estimated_cost_ceiling_usd,
-            created_at=datetime.now(UTC),
-        )
+        created_at = datetime.now(UTC)
+        if job_plan is not None:
+            job = self.store.create_analysis_job(
+                user_id=self.settings.default_user_id,
+                intent=job_plan.intent,
+                status="queued",
+                trigger_source=trigger_source,
+                decision_id=decision.id,
+                sync_run_id=sync_run_id,
+                target_message_count=len(job_plan.source_messages),
+                max_lookback_hours=0,
+                detail_mode="deep" if job_plan.intent == "first_analysis" else "balanced",
+                selected_message_count=len(job_plan.source_messages),
+                selected_transcript_chars=job_plan.selected_transcript_chars,
+                estimated_input_tokens=job_plan.estimated_input_tokens,
+                estimated_output_tokens=job_plan.estimated_output_tokens,
+                estimated_cost_floor_usd=job_plan.estimated_cost_floor_usd,
+                estimated_cost_ceiling_usd=job_plan.estimated_cost_ceiling_usd,
+                created_at=created_at,
+            )
+        else:
+            assert job_preview is not None
+            job = self.store.create_analysis_job(
+                user_id=self.settings.default_user_id,
+                intent=intent,
+                status="queued",
+                trigger_source=trigger_source,
+                decision_id=decision.id,
+                sync_run_id=sync_run_id,
+                target_message_count=job_preview.target_message_count,
+                max_lookback_hours=job_preview.max_lookback_hours,
+                detail_mode=job_preview.detail_mode,
+                selected_message_count=job_preview.selected_message_count,
+                selected_transcript_chars=job_preview.selected_transcript_chars,
+                estimated_input_tokens=job_preview.estimated_input_tokens,
+                estimated_output_tokens=job_preview.estimated_output_tokens,
+                estimated_cost_floor_usd=job_preview.estimated_cost_total_floor_usd,
+                estimated_cost_ceiling_usd=job_preview.estimated_cost_total_ceiling_usd,
+                created_at=created_at,
+            )
         self._schedule_tick()
         return decision, job
 
@@ -816,6 +885,7 @@ class AutomationService:
             error_text=None,
             created_at=datetime.now(UTC),
         )
+        await self._schedule_follow_up_evaluation_if_needed(job=job)
         return outcome
 
     async def _execute_fixed_analysis_job(
@@ -894,58 +964,86 @@ class AutomationService:
             error_text=None,
             created_at=datetime.now(UTC),
         )
-        self._schedule_follow_up_evaluation_if_needed(job=job)
+        await self._schedule_follow_up_evaluation_if_needed(job=job)
         return outcome
 
-    def _schedule_follow_up_evaluation_if_needed(self, *, job: AnalysisJobRecord) -> None:
+    async def _schedule_follow_up_evaluation_if_needed(self, *, job: AnalysisJobRecord) -> None:
         try:
             status = self.memory_service.get_memory_status()
         except Exception:
             logger.exception("follow_up_memory_status_failed")
             return
 
-        if not status.has_initial_analysis or status.pending_new_message_count <= 0:
+        if not status.has_initial_analysis:
             return
 
+        automation_settings = self._get_automation_settings()
         recent_jobs = self.store.list_analysis_jobs(user_id=self.settings.default_user_id, limit=20)
         has_pending_job = any(pending_job.status in {"queued", "running"} for pending_job in recent_jobs)
         if has_pending_job:
             return
 
-        if job.intent == "improve_memory":
+        if status.pending_new_message_count > 0 and job.intent == "improve_memory":
             logger.info(
                 "follow_up_analysis_queueing_drain pending=%s batch_size=%s",
                 status.pending_new_message_count,
                 status.incremental_batch_size,
             )
-            self._queue_follow_up_incremental_job(
+            queued_job = await self._queue_follow_up_incremental_job(
                 pending_message_count=status.pending_new_message_count,
                 trigger_source=job.trigger_source,
             )
+            if queued_job is not None:
+                self._schedule_tick()
+            return
+
+        if status.pending_new_message_count > 0 and status.can_run_next_batch:
+            logger.info(
+                "follow_up_analysis_queueing pending=%s min_batch=%s",
+                status.pending_new_message_count,
+                status.incremental_min_messages,
+            )
+            queued_job = await self._queue_follow_up_incremental_job(
+                pending_message_count=status.pending_new_message_count,
+                trigger_source=job.trigger_source,
+            )
+            if queued_job is not None:
+                self._schedule_tick()
+            return
+
+        if (
+            job.trigger_source == "automation"
+            and automation_settings.auto_refine_enabled
+            and job.intent in {"first_analysis", "improve_memory"}
+            and self._get_daily_cost_usd() < automation_settings.daily_budget_usd
+            and self._get_daily_auto_jobs_count() < automation_settings.max_auto_jobs_per_day
+        ):
+            logger.info("follow_up_refinement_queueing intent=%s trigger=%s", job.intent, job.trigger_source)
+            self._queue_follow_up_refinement_job(trigger_source=job.trigger_source)
             self._schedule_tick()
-            return
 
-        if not status.can_run_next_batch:
-            return
-
-        logger.info(
-            "follow_up_analysis_queueing pending=%s min_batch=%s",
-            status.pending_new_message_count,
-            status.incremental_min_messages,
-        )
-        self._queue_follow_up_incremental_job(
-            pending_message_count=status.pending_new_message_count,
-            trigger_source=job.trigger_source,
-        )
-        self._schedule_tick()
-
-    def _queue_follow_up_incremental_job(
+    async def _queue_follow_up_incremental_job(
         self,
         *,
         pending_message_count: int,
         trigger_source: str,
-    ) -> AnalysisJobRecord:
-        plan = self.memory_service.plan_next_batch()
+    ) -> AnalysisJobRecord | None:
+        automation_settings = self._get_automation_settings()
+        try:
+            preview = await self._build_automatic_incremental_preview(
+                automation_settings=automation_settings,
+            )
+        except MemoryAnalysisError:
+            logger.exception("follow_up_incremental_preview_failed")
+            return None
+        if preview.selected_message_count <= 0:
+            logger.info(
+                "follow_up_incremental_skipped_empty_window pending=%s lookback=%s target=%s",
+                pending_message_count,
+                automation_settings.default_lookback_hours,
+                automation_settings.default_target_message_count,
+            )
+            return None
         created_at = datetime.now(UTC)
         decision = self.store.create_automation_decision(
             user_id=self.settings.default_user_id,
@@ -956,34 +1054,69 @@ class AutomationService:
             score=100,
             should_analyze=True,
             available_message_count=max(0, pending_message_count),
-            selected_message_count=len(plan.source_messages),
+            selected_message_count=preview.selected_message_count,
             new_message_count=max(0, pending_message_count),
             replaced_message_count=0,
-            estimated_total_tokens=plan.estimated_input_tokens + plan.estimated_output_tokens,
-            estimated_cost_ceiling_usd=plan.estimated_cost_ceiling_usd,
+            estimated_total_tokens=preview.estimated_total_tokens,
+            estimated_cost_ceiling_usd=preview.estimated_cost_total_ceiling_usd,
             explanation=(
                 f"Ainda restam {pending_message_count} mensagens novas pendentes depois do lote anterior. "
-                f"O backend vai continuar a melhoria da memoria automaticamente em mais um lote de "
-                f"{len(plan.source_messages)} mensagens."
+                f"O backend vai continuar a melhoria da memoria automaticamente com a janela padrao de "
+                f"{preview.max_lookback_hours}h e ate {preview.target_message_count} mensagens."
             ),
             created_at=created_at,
         )
         return self.store.create_analysis_job(
             user_id=self.settings.default_user_id,
-            intent=plan.intent,
+            intent="improve_memory",
             status="queued",
             trigger_source=trigger_source,
             decision_id=decision.id,
             sync_run_id=None,
-            target_message_count=len(plan.source_messages),
+            target_message_count=preview.target_message_count,
+            max_lookback_hours=preview.max_lookback_hours,
+            detail_mode=preview.detail_mode,
+            selected_message_count=preview.selected_message_count,
+            selected_transcript_chars=preview.selected_transcript_chars,
+            estimated_input_tokens=preview.estimated_input_tokens,
+            estimated_output_tokens=preview.estimated_output_tokens,
+            estimated_cost_floor_usd=preview.estimated_cost_total_floor_usd,
+            estimated_cost_ceiling_usd=preview.estimated_cost_total_ceiling_usd,
+            created_at=created_at,
+        )
+
+    def _queue_follow_up_refinement_job(self, *, trigger_source: str) -> AnalysisJobRecord:
+        created_at = datetime.now(UTC)
+        decision = self.store.create_automation_decision(
+            user_id=self.settings.default_user_id,
+            sync_run_id=None,
+            intent="refine_saved",
+            action="queue",
+            reason_code="refinement_ready",
+            score=100,
+            should_analyze=True,
+            available_message_count=0,
+            selected_message_count=0,
+            new_message_count=0,
+            replaced_message_count=0,
+            estimated_total_tokens=0,
+            estimated_cost_ceiling_usd=0.0,
+            explanation=(
+                "A memoria base ja foi atualizada e o backlog imediato acabou. O backend vai rodar um passe "
+                "de refinamento para consolidar a memoria salva e deixar os projetos mais precisos."
+            ),
+            created_at=created_at,
+        )
+        return self.store.create_analysis_job(
+            user_id=self.settings.default_user_id,
+            intent="refine_saved",
+            status="queued",
+            trigger_source=trigger_source,
+            decision_id=decision.id,
+            sync_run_id=None,
+            target_message_count=0,
             max_lookback_hours=0,
             detail_mode="balanced",
-            selected_message_count=len(plan.source_messages),
-            selected_transcript_chars=plan.selected_transcript_chars,
-            estimated_input_tokens=plan.estimated_input_tokens,
-            estimated_output_tokens=plan.estimated_output_tokens,
-            estimated_cost_floor_usd=plan.estimated_cost_floor_usd,
-            estimated_cost_ceiling_usd=plan.estimated_cost_ceiling_usd,
             created_at=created_at,
         )
 
@@ -1013,6 +1146,8 @@ class AutomationService:
         )
 
     async def _maybe_schedule_analysis_from_live_backlog(self) -> None:
+        if not self._get_automation_settings().auto_sync_enabled:
+            return
         status = self.memory_service.get_memory_status()
         if not status.can_run_next_batch:
             return

@@ -40,12 +40,6 @@ type CategoryField = {
 
 const CATEGORY_FIELDS: CategoryField[] = [
   {
-    key: 'agenda_enabled',
-    title: 'Agenda',
-    description: 'Lembretes, follow-up de compromisso e preparação de horários.',
-    tone: 'emerald',
-  },
-  {
     key: 'followups_enabled',
     title: 'Follow-ups',
     description: 'Retomada leve de promessas, respostas e pontos pendentes.',
@@ -285,7 +279,6 @@ export default function ProactivityTab({
   );
   const lastDelivery = proactiveDeliveries[0] ?? null;
   const enabledCategoriesCount = [
-    effectiveSettings.agenda_enabled,
     effectiveSettings.followups_enabled,
     effectiveSettings.projects_enabled,
     effectiveSettings.routine_enabled,
@@ -493,9 +486,9 @@ export default function ProactivityTab({
                 <InputShell hint="Teto bruto de iniciativas." icon={<BellRing size={16} />} tone="amber">
                   <input
                     className="ops-input"
-                    min="0"
+                    min="1"
                     onChange={(event) =>
-                      patchDraft({ max_unsolicited_per_day: Math.max(0, Number(event.target.value) || 0) })
+                      patchDraft({ max_unsolicited_per_day: Math.max(1, Number(event.target.value) || 1) })
                     }
                     step="1"
                     type="number"
@@ -508,9 +501,9 @@ export default function ProactivityTab({
                 <InputShell hint="Tempo de respiro entre toques." icon={<Clock3 size={16} />} tone="indigo">
                   <input
                     className="ops-input"
-                    min="0"
+                    min="15"
                     onChange={(event) =>
-                      patchDraft({ min_interval_minutes: Math.max(0, Number(event.target.value) || 0) })
+                      patchDraft({ min_interval_minutes: Math.max(15, Number(event.target.value) || 15) })
                     }
                     step="5"
                     type="number"
@@ -580,8 +573,8 @@ export default function ProactivityTab({
       <div className="ops-surface">
         <SectionTitle title="Matriz de Categorias" icon={LayoutGrid} />
         <p className="support-copy">
-          Cada cartão abaixo ativa um eixo da proatividade. Isso deixa claro o que o sistema pode iniciar sozinho e o
-          que deve continuar dependendo de contexto mais forte.
+          Cada cartão abaixo ativa um eixo real da proatividade. Lembretes de agenda continuam sendo tratados na aba
+          de Agenda, para não misturar o motor proativo com compromissos formais.
         </p>
         <div className="ops-toggle-grid">
           {CATEGORY_FIELDS.map((field) => (

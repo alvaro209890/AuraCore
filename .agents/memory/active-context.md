@@ -256,3 +256,31 @@
 - Deploy:
   - Firebase Hosting target `app` publicado novamente
   - URL: `https://auracore-82bf2.web.app`
+
+## Atualização 2026-04-17 14
+
+- Correções aplicadas após a auditoria funcional de `Automação`, `Proatividade` e `Agenda`
+- Mudanças principais:
+  - `Automação`: `auto_sync_enabled` agora governa o loop automático de ingest/sync; jobs incrementais automáticos passaram a usar `default_detail_mode`, `default_target_message_count` e `default_lookback_hours`; `auto_refine_enabled` pode enfileirar `refine_saved` quando o backlog acabar
+  - `Automação` e `Proatividade`: validações numéricas do frontend foram alinhadas aos contratos do backend
+  - `Proatividade`: a UI deixou de expor `Agenda` como categoria proativa; o cooldown global mínimo agora consulta apenas entregas `sent`
+  - `Agenda`: criação/edição manual foi refatorada para shells `ops-*`, status em pills e presets de lembrete, removendo campos visuais crus/brancos
+- Validação local desta rodada:
+  - `python3 -m py_compile` em `automation_service.py`, `proactive_assistant_service.py` e `supabase_store.py`: ok
+  - `npm run build` em `frontend`: ok
+
+## Atualização 2026-04-17 15
+
+- Runtime local sincronizado com:
+  - `automation_service.py`
+  - `proactive_assistant_service.py`
+  - `supabase_store.py`
+  - `memory_service.py`
+- Correção extra aplicada no backend: `memory_service.get_analysis_preview()` estava chamando `_build_analysis_prompt_context_for_intent` com variável `intent` inexistente; passou a usar `resolved_intent`
+- Backend:
+  - `auracore-backend.service` reiniciado com sucesso e ficou `active/running`
+  - após o restart, o serviço voltou processando um job automático já reenfileirado no warm start
+  - `GET /api/memories/status` local respondeu `401 Bearer token ausente`, confirmando servidor ativo e rotas protegidas carregadas
+- Frontend:
+  - `firebase deploy --only hosting:app`: ok
+  - URL publicada: `https://auracore-82bf2.web.app`
