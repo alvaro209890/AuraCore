@@ -488,6 +488,16 @@ class UpdateProjectMemoryRequest(BaseModel):
     evidence: list[str] | None = None
 
 
+class CreateProjectMemoryRequest(BaseModel):
+    project_name: str = Field(min_length=1, max_length=120)
+    summary: str = Field(min_length=1, max_length=1200)
+    status: str = Field(default="", max_length=120)
+    what_is_being_built: str = Field(default="", max_length=800)
+    built_for: str = Field(default="", max_length=800)
+    next_steps: list[str] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+
+
 class UpdatePersonMemoryRequest(BaseModel):
     contact_name: str | None = Field(default=None, min_length=1, max_length=120)
     relationship_type: str | None = Field(default=None, max_length=120)
@@ -525,6 +535,7 @@ class ProjectMemoryResponse(BaseModel):
     id: str
     project_key: str
     project_name: str
+    origin_source: Literal["memory", "manual"] = "memory"
     summary: str
     status: str = ""
     what_is_being_built: str = ""
@@ -607,6 +618,15 @@ class AgendaEventResponse(BaseModel):
 
 class AgendaEventsListResponse(BaseModel):
     events: list[AgendaEventResponse] = Field(default_factory=list)
+
+
+class CreateAgendaEventRequest(BaseModel):
+    titulo: str = Field(min_length=1, max_length=160)
+    inicio: datetime
+    fim: datetime
+    status: Literal["firme", "tentativo"] = "firme"
+    contato_origem: str | None = Field(default=None, max_length=160)
+    reminder_offset_minutes: int = Field(default=0, ge=0, le=10080)
 
 
 class UpdateAgendaEventRequest(BaseModel):

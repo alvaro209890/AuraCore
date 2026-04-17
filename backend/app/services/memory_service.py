@@ -2623,6 +2623,29 @@ class MemoryAnalysisService:
             updated_at=datetime.now(UTC),
         )
 
+    def create_project(
+        self,
+        *,
+        project_name: str,
+        summary: str,
+        status: str = "",
+        what_is_being_built: str = "",
+        built_for: str = "",
+        next_steps: list[str] | None = None,
+        evidence: list[str] | None = None,
+    ) -> ProjectMemoryRecord:
+        return self.store.create_project_memory(
+            user_id=self.settings.default_user_id,
+            project_name=project_name,
+            summary=summary,
+            status=status,
+            what_is_being_built=what_is_being_built,
+            built_for=built_for,
+            next_steps=next_steps or [],
+            evidence=evidence or [],
+            created_at=datetime.now(UTC),
+        )
+
     async def edit_project_with_ai(
         self,
         *,

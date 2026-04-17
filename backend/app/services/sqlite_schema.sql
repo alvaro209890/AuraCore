@@ -161,6 +161,7 @@ CREATE TABLE IF NOT EXISTS project_memories (
   user_id TEXT NOT NULL,
   project_key TEXT NOT NULL,
   project_name TEXT NOT NULL,
+  origin_source TEXT NOT NULL DEFAULT 'memory',
   summary TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT '',
   what_is_being_built TEXT NOT NULL DEFAULT '',

@@ -18,6 +18,7 @@ from app.schemas import (
     AnalysisJobResponse,
     AnalyzeMemoryRequest,
     AnalyzeMemoryResponse,
+    CreateProjectMemoryRequest,
     MemoryActivityResponse,
     MemoryAnalysisPreviewResponse,
     MemoryCurrentResponse,
@@ -271,6 +272,27 @@ async def get_memory_projects(
     memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
 ) -> list[ProjectMemoryResponse]:
     return [_to_project_response(project) for project in memory_service.list_projects()]
+
+
+@router.post("/projects", response_model=ProjectMemoryResponse)
+async def create_memory_project(
+    request: CreateProjectMemoryRequest,
+    memory_service: MemoryAnalysisService = Depends(get_memory_analysis_service),
+) -> ProjectMemoryResponse:
+    try:
+        created = await run_in_threadpool(
+            memory_service.create_project,
+            project_name=request.project_name,
+            summary=request.summary,
+            status=request.status,
+            what_is_being_built=request.what_is_being_built,
+            built_for=request.built_for,
+            next_steps=request.next_steps,
+            evidence=request.evidence,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return _to_project_response(created)
 
 
 @router.get("/relations", response_model=list[PersonMemoryResponse])
@@ -541,6 +563,7 @@ def _to_project_response(project: ProjectMemoryRecord) -> ProjectMemoryResponse:
         id=project.id,
         project_key=project.project_key,
         project_name=project.project_name,
+        origin_source=project.origin_source if project.origin_source == "manual" else "memory",
         summary=project.summary,
         status=project.status,
         what_is_being_built=project.what_is_being_built,

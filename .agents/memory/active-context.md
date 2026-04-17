@@ -106,3 +106,35 @@
 - Frontend principal foi rebuildado localmente com `npm run build` em `frontend` e publicado no Firebase Hosting target `app`
 - URL publicada confirmada no deploy: `https://auracore-82bf2.web.app`
 - Backend da proatividade já estava rodando localmente; nesta etapa o publish visível entregue foi o dashboard principal do frontend
+
+## Atualização 2026-04-17 5
+
+- Implementada a rodada de melhoria de memória/agenda/projetos focada em reduzir tokens e aumentar qualidade em consultas operacionais
+- Backend:
+  - `assistant_context_service` agora prioriza contexto estruturado de agenda/projetos e pode pular retrieval amplo quando a intenção estiver forte
+  - `project_memories` ganhou `origin_source` com migração forward-compatible em `sqlite_client`
+  - API nova para criação manual:
+    - `POST /api/agenda`
+    - `POST /api/memories/projects`
+  - eventos manuais da agenda usam `message_id` sintético `manual:{uuid}` e entram no mesmo fluxo de conflito/lembrete
+- Frontend:
+  - aba `Agenda` agora permite criar compromisso manual inline, além de editar/excluir
+  - aba `Projetos` agora permite criar projeto manual inline e marca origem manual na UI
+- Validação local concluída nesta rodada:
+  - `python3 -m py_compile` dos arquivos backend alterados: ok
+  - `npm run build` em `frontend`: ok
+- Pendência operacional:
+  - esta rodada nao reiniciou o backend local nem fez deploy/publicacao nova; se o objetivo for colocar em runtime, ainda precisa sincronizar o runtime/backend e publicar o frontend desejado
+
+## Atualização 2026-04-17 6
+
+- Frontend principal publicado novamente no Firebase Hosting target `app`
+  - URL: `https://auracore-82bf2.web.app`
+- Backend sincronizado manualmente para o runtime em `/home/server/.local/share/auracore-runtime/repo/backend`
+- `auracore-backend.service` reiniciado com sucesso via `systemctl --user`
+  - novo `ExecMainPID=362379`
+  - `ActiveEnterTimestamp=Fri 2026-04-17 11:31:35 -03`
+- Validação pós-restart:
+  - `GET /api/memories/status` respondeu `{"detail":"Bearer token ausente."}`
+  - `GET /api/whatsapp-agent/proactivity/settings` respondeu `{"detail":"Bearer token ausente."}`
+  - isso confirma backend ativo e rotas protegidas carregadas após o restart

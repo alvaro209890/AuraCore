@@ -269,6 +269,7 @@ export type ProjectMemory = {
   id: string;
   project_key: string;
   project_name: string;
+  origin_source: "memory" | "manual";
   summary: string;
   status: string;
   what_is_being_built: string;
@@ -322,9 +323,28 @@ export type UpdateAgendaEventInput = {
   reminder_offset_minutes?: number;
 };
 
+export type CreateAgendaEventInput = {
+  titulo: string;
+  inicio: string;
+  fim: string;
+  status?: "firme" | "tentativo";
+  contato_origem?: string;
+  reminder_offset_minutes?: number;
+};
+
 export type ProjectAssistantEditResponse = {
   project: ProjectMemory;
   assistant_message: string;
+};
+
+export type CreateProjectMemoryInput = {
+  project_name: string;
+  summary: string;
+  status?: string;
+  what_is_being_built?: string;
+  built_for?: string;
+  next_steps?: string[];
+  evidence?: string[];
 };
 
 export type PersonRelation = {
@@ -861,6 +881,20 @@ export async function getAgendaEvents(limit = 120, upcomingOnly = false): Promis
   return response.events;
 }
 
+export async function createAgendaEvent(input: CreateAgendaEventInput): Promise<AgendaEvent> {
+  return request<AgendaEvent>("/api/agenda", {
+    method: "POST",
+    body: JSON.stringify({
+      titulo: input.titulo,
+      inicio: input.inicio,
+      fim: input.fim,
+      status: input.status ?? "firme",
+      contato_origem: input.contato_origem,
+      reminder_offset_minutes: input.reminder_offset_minutes ?? 0,
+    }),
+  });
+}
+
 export async function updateAgendaEvent(eventId: string, input: UpdateAgendaEventInput): Promise<AgendaEvent> {
   return request<AgendaEvent>(`/api/agenda/${encodeURIComponent(eventId)}`, {
     method: "PUT",
@@ -876,6 +910,21 @@ export async function deleteAgendaEvent(eventId: string): Promise<SimpleOkRespon
 
 export async function getMemoryProjects(): Promise<ProjectMemory[]> {
   return request<ProjectMemory[]>("/api/memories/projects");
+}
+
+export async function createMemoryProject(input: CreateProjectMemoryInput): Promise<ProjectMemory> {
+  return request<ProjectMemory>("/api/memories/projects", {
+    method: "POST",
+    body: JSON.stringify({
+      project_name: input.project_name,
+      summary: input.summary,
+      status: input.status ?? "",
+      what_is_being_built: input.what_is_being_built ?? "",
+      built_for: input.built_for ?? "",
+      next_steps: input.next_steps ?? [],
+      evidence: input.evidence ?? [],
+    }),
+  });
 }
 
 export async function getMemoryRelations(): Promise<PersonRelation[]> {

@@ -10,6 +10,7 @@ from typing import Literal, Sequence
 from app.config import Settings
 from app.services.deepseek_service import DeepSeekAssistantSearchPlan, DeepSeekService
 from app.services.supabase_store import (
+    AgendaEventRecord,
     MemorySnapshotRecord,
     PersonMemoryRecord,
     PersonaRecord,
@@ -20,6 +21,7 @@ from app.services.supabase_store import (
 logger = logging.getLogger("auracore.assistant_context")
 
 AssistantChannel = Literal["web_chat", "whatsapp_agent"]
+StructuredFocus = Literal["none", "agenda", "project", "mixed"]
 
 
 @dataclass(slots=True)
@@ -70,17 +72,26 @@ class AssistantContextService:
         has_priority_context = bool((priority_context or "").strip())
         has_external_hint = bool((context_hint or "").strip())
         has_contact_memory = bool((contact_memory_context or "").strip())
-
-        plan = await self._resolve_search_plan(
+        structured_focus = self._resolve_structured_focus(user_message)
+        structured_context_hint, structured_priority_context = self._build_structured_context(
             user_message=user_message,
-            channel=channel,
-            interaction_mode=interaction_mode,
-            has_contact_memory=has_contact_memory,
+            focus=structured_focus,
         )
+        structured_focus_strong = bool(structured_context_hint or structured_priority_context)
 
-        should_load_persona = not light_touch
-        should_load_projects = not light_touch and plan.needs_retrieval
-        should_load_snapshots = not light_touch and (
+        if structured_focus_strong:
+            plan = DeepSeekAssistantSearchPlan.empty()
+        else:
+            plan = await self._resolve_search_plan(
+                user_message=user_message,
+                channel=channel,
+                interaction_mode=interaction_mode,
+                has_contact_memory=has_contact_memory,
+            )
+
+        should_load_persona = not light_touch and not structured_focus_strong
+        should_load_projects = not light_touch and not structured_focus_strong and plan.needs_retrieval
+        should_load_snapshots = not light_touch and not structured_focus_strong and (
             plan.needs_retrieval or plan.should_include_open_questions
         )
 
@@ -116,7 +127,7 @@ class AssistantContextService:
         )
 
         retrieval_sections: list[str] = []
-        if not light_touch and plan.needs_retrieval:
+        if not light_touch and not structured_focus_strong and plan.needs_retrieval:
             retrieval_sections = self._build_retrieval_sections(
                 persona=persona,
                 projects=projects,
@@ -129,6 +140,11 @@ class AssistantContextService:
             for part in (priority_context or "",)
             if part and part.strip()
         ]
+        if structured_priority_context:
+            effective_priority_parts.insert(
+                0,
+                self._compact_context_block(structured_priority_context, char_budget=360, max_lines=5),
+            )
         if identity_query:
             effective_priority_parts.append(
                 "O dono perguntou sua identidade. Responda diretamente que seu nome e Orion, que voce e a IA pessoal criada para ajudar essa pessoa, e depois siga a conversa sem cair em saudacao genérica."
@@ -145,17 +161,22 @@ class AssistantContextService:
         merged_hint = "\n\n".join(
             part
             for part in [
+                structured_context_hint,
                 (context_hint or "").strip(),
                 *retrieval_sections,
             ]
             if part
         ).strip()
         targeted_context = bool(merged_hint or effective_priority_parts)
-        should_include_life_summary = not light_touch and (
+        should_include_life_summary = not light_touch and not structured_focus_strong and (
             plan.needs_retrieval or has_external_hint or has_priority_context or identity_query
         )
-        should_include_project_context = not light_touch and plan.needs_retrieval and not retrieval_sections
-        should_include_snapshot_context = not light_touch and plan.needs_retrieval and not retrieval_sections
+        should_include_project_context = (
+            not light_touch and not structured_focus_strong and plan.needs_retrieval and not retrieval_sections
+        )
+        should_include_snapshot_context = (
+            not light_touch and not structured_focus_strong and plan.needs_retrieval and not retrieval_sections
+        )
 
         resolved_rules = [
             "Seu nome e Orion. Voce e uma IA pessoal feita para ajudar o dono desta conta.",
@@ -215,7 +236,7 @@ class AssistantContextService:
             ),
             recent_chat_context=(
                 ""
-                if light_touch
+                if light_touch or structured_focus_strong
                 else self._compact_context_block(
                     self._build_chat_context(recent_messages),
                     char_budget=480 if targeted_context else 720,
@@ -227,6 +248,199 @@ class AssistantContextService:
             priority_context="\n\n".join(effective_priority_parts).strip(),
             additional_rules=resolved_rules,
         )
+
+    def _resolve_structured_focus(self, user_message: str) -> StructuredFocus:
+        normalized = " ".join(user_message.casefold().split()).strip()
+        if not normalized:
+            return "none"
+
+        agenda_markers = (
+            "agenda",
+            "compromisso",
+            "reuni",
+            "consulta",
+            "call",
+            "horario",
+            "horário",
+            "lembrete",
+            "lembr",
+            "amanha",
+            "amanhã",
+            "hoje",
+            "proximo",
+            "próximo",
+            "marcado",
+            "marcar",
+            "remarcar",
+            "reagendar",
+            "cancelar",
+        )
+        project_markers = (
+            "projeto",
+            "roadmap",
+            "entrega",
+            "entregar",
+            "proximo passo",
+            "próximo passo",
+            "next step",
+            "cliente",
+            "escopo",
+            "construindo",
+            "fazendo",
+            "frente",
+            "pendencia",
+            "pendência",
+        )
+
+        has_agenda = any(marker in normalized for marker in agenda_markers)
+        has_project = any(marker in normalized for marker in project_markers)
+        if has_agenda and has_project:
+            return "mixed"
+        if has_agenda:
+            return "agenda"
+        if has_project:
+            return "project"
+        return "none"
+
+    def _build_structured_context(
+        self,
+        *,
+        user_message: str,
+        focus: StructuredFocus,
+    ) -> tuple[str, str]:
+        if focus == "none":
+            return "", ""
+
+        sections: list[str] = []
+        priority_parts: list[str] = []
+
+        if focus in {"agenda", "mixed"}:
+            agenda_block = self._build_agenda_structured_block(user_message=user_message, limit=3)
+            if agenda_block:
+                sections.append("Agenda estruturada relevante:\n" + agenda_block)
+                priority_parts.append(
+                    "Se a pergunta envolver agenda, horário, próximo compromisso, conflito ou lembrete, use primeiro a agenda estruturada abaixo."
+                )
+
+        if focus in {"project", "mixed"}:
+            project_block = self._build_project_structured_block(user_message=user_message, limit=3)
+            if project_block:
+                sections.append("Projetos estruturados relevantes:\n" + project_block)
+                priority_parts.append(
+                    "Se a pergunta envolver projeto, andamento, entrega, escopo ou próximo passo, use primeiro os projetos estruturados abaixo."
+                )
+
+        if not sections:
+            return "", ""
+
+        return (
+            self._compact_context_block("\n\n".join(sections), char_budget=520, max_lines=8),
+            self._compact_context_block("\n".join(priority_parts), char_budget=320, max_lines=4),
+        )
+
+    def _build_agenda_structured_block(self, *, user_message: str, limit: int) -> str:
+        ranked_events = self._rank_agenda_events(user_message=user_message, limit=limit)
+        if not ranked_events:
+            return ""
+
+        lines: list[str] = []
+        for event in ranked_events:
+            line = (
+                f"- {event.titulo}: {event.inicio.astimezone(UTC).strftime('%d/%m %H:%M UTC')} "
+                f"ate {event.fim.astimezone(UTC).strftime('%H:%M UTC')} [{event.status}]"
+            )
+            if event.contato_origem:
+                line += f"; origem: {event.contato_origem}"
+            conflict = self.store.find_agenda_conflicts(
+                user_id=self.settings.default_user_id,
+                inicio=event.inicio,
+                fim=event.fim,
+                exclude_message_id=event.message_id,
+                limit=1,
+            )
+            if conflict:
+                line += f"; conflito: {conflict[0].titulo}"
+            lines.append(line)
+        return "\n".join(lines)
+
+    def _rank_agenda_events(self, *, user_message: str, limit: int) -> list[AgendaEventRecord]:
+        events = self.store.list_agenda_events(
+            user_id=self.settings.default_user_id,
+            limit=max(24, limit * 12),
+        )
+        if not events:
+            return []
+
+        normalized = " ".join(user_message.casefold().split()).strip()
+        now = datetime.now(UTC)
+        prefers_upcoming = any(
+            marker in normalized
+            for marker in ("agenda", "proximo", "próximo", "hoje", "amanha", "amanhã", "horario", "horário", "quando")
+        )
+        scored: list[tuple[float, AgendaEventRecord]] = []
+        for event in events:
+            haystack = " ".join(
+                [
+                    event.titulo,
+                    event.contato_origem or "",
+                    event.status,
+                ]
+            )
+            score = self._score_text_block(haystack, [user_message])
+            if event.status == "firme":
+                score += 0.8
+            if event.fim >= now:
+                score += 1.6
+            if prefers_upcoming and event.fim >= now:
+                hours_until = max(0.0, (event.inicio - now).total_seconds() / 3600)
+                score += max(0.0, 7.0 - min(hours_until / 8.0, 7.0))
+            if score > 0 or prefers_upcoming:
+                scored.append((score, event))
+
+        if not scored:
+            return []
+
+        scored.sort(
+            key=lambda item: (
+                -item[0],
+                item[1].inicio,
+                item[1].updated_at,
+            )
+        )
+        return [event for _score, event in scored[: max(1, limit)]]
+
+    def _build_project_structured_block(self, *, user_message: str, limit: int) -> str:
+        projects = self.store.list_project_memories(
+            self.settings.default_user_id,
+            limit=max(12, limit * 6),
+        )
+        if not projects:
+            return ""
+
+        normalized = " ".join(user_message.casefold().split()).strip()
+        broad_project_query = any(
+            marker in normalized
+            for marker in ("projeto", "roadmap", "entrega", "escopo", "próximo passo", "proximo passo", "cliente")
+        )
+        ranked = self._rank_projects(projects, queries=[user_message], limit=limit)
+        if not ranked and broad_project_query:
+            ranked = [project for project in projects if project.completion_source != "manual" or project.manual_completed_at is None][:limit]
+        if not ranked:
+            return ""
+
+        lines: list[str] = []
+        for project in ranked:
+            line = f"- {project.project_name}"
+            if project.status:
+                line += f" [{project.status}]"
+            if project.next_steps:
+                line += f"; proximo passo: {self._summarize_text(project.next_steps[0], 120)}"
+            elif project.summary:
+                line += f"; resumo: {self._summarize_text(project.summary, 140)}"
+            if project.origin_source == "manual":
+                line += "; origem manual"
+            lines.append(line)
+        return "\n".join(lines)
 
     async def _resolve_search_plan(
         self,

@@ -247,6 +247,7 @@ class ProjectMemoryRecord:
     user_id: UUID
     project_key: str
     project_name: str
+    origin_source: str
     summary: str
     status: str
     what_is_being_built: str
@@ -2274,10 +2275,15 @@ class SupabaseStore:
             )
             records.append(
                 {
-                    "id": str(uuid4()),
+                    "id": existing_project.id if existing_project else str(uuid4()),
                     "user_id": str(user_id),
                     "project_key": project_key,
                     "project_name": project_name,
+                    "origin_source": (
+                        self._normalize_project_origin_source(existing_project.origin_source)
+                        if existing_project is not None
+                        else "memory"
+                    ),
                     "summary": summary,
                     "status": "Concluido" if manual_completion_locked else project.status.strip(),
                     "what_is_being_built": project.what_is_being_built.strip(),
@@ -2297,13 +2303,15 @@ class SupabaseStore:
             self.client.table("project_memories").upsert(records, on_conflict="user_id,project_key").execute()
         except Exception as exc:
             if not (
-                self._is_missing_column_error(exc, column_name="what_is_being_built", table_name="project_memories")
+                self._is_missing_column_error(exc, column_name="origin_source", table_name="project_memories")
+                or self._is_missing_column_error(exc, column_name="what_is_being_built", table_name="project_memories")
                 or self._is_missing_column_error(exc, column_name="built_for", table_name="project_memories")
             ):
                 raise
             legacy_records = []
             for record in records:
                 legacy_record = dict(record)
+                legacy_record.pop("origin_source", None)
                 legacy_record.pop("what_is_being_built", None)
                 legacy_record.pop("built_for", None)
                 legacy_records.append(legacy_record)
@@ -2315,7 +2323,7 @@ class SupabaseStore:
             response = (
                 self.client.table("project_memories")
                 .select(
-                    "id,user_id,project_key,project_name,summary,status,what_is_being_built,built_for,next_steps,evidence,"
+                    "id,user_id,project_key,project_name,origin_source,summary,status,what_is_being_built,built_for,next_steps,evidence,"
                     "source_snapshot_id,last_seen_at,completion_source,manual_completed_at,manual_completion_notes,updated_at"
                 )
                 .eq("user_id", str(user_id))
@@ -2325,7 +2333,8 @@ class SupabaseStore:
             )
         except Exception as exc:
             if not (
-                self._is_missing_column_error(exc, column_name="what_is_being_built", table_name="project_memories")
+                self._is_missing_column_error(exc, column_name="origin_source", table_name="project_memories")
+                or self._is_missing_column_error(exc, column_name="what_is_being_built", table_name="project_memories")
                 or self._is_missing_column_error(exc, column_name="built_for", table_name="project_memories")
                 or self._is_missing_column_error(exc, column_name="completion_source", table_name="project_memories")
                 or self._is_missing_column_error(exc, column_name="manual_completed_at", table_name="project_memories")
@@ -2355,6 +2364,7 @@ class SupabaseStore:
                     user_id=self._parse_uuid(row.get("user_id")) or user_id,
                     project_key=str(row.get("project_key") or ""),
                     project_name=str(row.get("project_name") or ""),
+                    origin_source=self._normalize_project_origin_source(row.get("origin_source")),
                     summary=str(row.get("summary") or ""),
                     status=str(row.get("status") or ""),
                     what_is_being_built=str(row.get("what_is_being_built") or ""),
@@ -2371,48 +2381,70 @@ class SupabaseStore:
             )
         return projects
 
-    def update_project_manual_completion(
+    def create_project_memory(
         self,
         *,
         user_id: UUID,
-        project_key: str,
-        completed: bool,
-        completion_notes: str,
-        changed_at: datetime,
-    ) -> ProjectMemoryRecord | None:
-        normalized_key = self._normalize_project_key(project_key)
-        if not normalized_key:
-            return None
+        project_name: str,
+        summary: str,
+        status: str,
+        what_is_being_built: str,
+        built_for: str,
+        next_steps: list[str],
+        evidence: list[str],
+        created_at: datetime,
+    ) -> ProjectMemoryRecord:
+        resolved_name = project_name.strip()
+        resolved_summary = summary.strip()
+        if not resolved_name or not resolved_summary:
+            raise ValueError("Projeto manual exige nome e resumo.")
+
+        project_key = self._normalize_project_key(resolved_name)
+        if not project_key:
+            raise ValueError("Nao foi possivel gerar uma chave canonica para esse projeto.")
 
         existing = next(
             (
                 project
-                for project in self.list_project_memories(user_id, limit=128)
-                if project.project_key == normalized_key
+                for project in self.list_project_memories(user_id, limit=256)
+                if project.project_key == project_key
             ),
             None,
         )
-        if existing is None:
-            return None
+        if existing is not None:
+            raise ValueError("Ja existe um projeto com esse nome canonico.")
 
-        payload: dict[str, Any] = {
-            "status": "Concluido" if completed else "Em andamento",
-            "completion_source": "manual" if completed else "",
-            "manual_completed_at": changed_at.isoformat() if completed else None,
-            "manual_completion_notes": completion_notes.strip() if completed else "",
-            "next_steps": [] if completed else existing.next_steps,
-            "updated_at": changed_at.isoformat(),
+        record = {
+            "id": str(uuid4()),
+            "user_id": str(user_id),
+            "project_key": project_key,
+            "project_name": resolved_name,
+            "origin_source": "manual",
+            "summary": resolved_summary,
+            "status": status.strip(),
+            "what_is_being_built": what_is_being_built.strip(),
+            "built_for": built_for.strip(),
+            "next_steps": self._clean_string_list(next_steps),
+            "evidence": self._clean_string_list(evidence),
+            "source_snapshot_id": None,
+            "last_seen_at": created_at.isoformat(),
+            "completion_source": "",
+            "manual_completed_at": None,
+            "manual_completion_notes": "",
+            "updated_at": created_at.isoformat(),
         }
-
-        self.client.table("project_memories").update(payload).eq("user_id", str(user_id)).eq("project_key", normalized_key).execute()
-        return next(
+        self.client.table("project_memories").insert(record).execute()
+        created = next(
             (
                 project
-                for project in self.list_project_memories(user_id, limit=128)
-                if project.project_key == normalized_key
+                for project in self.list_project_memories(user_id, limit=256)
+                if project.project_key == project_key
             ),
             None,
         )
+        if created is None:
+            raise RuntimeError("Projeto manual nao pode ser criado.")
+        return created
 
     def update_project_memory(
         self,
@@ -2478,6 +2510,49 @@ class SupabaseStore:
                 project
                 for project in self.list_project_memories(user_id, limit=128)
                 if project.id == existing.id
+            ),
+            None,
+        )
+
+    def update_project_manual_completion(
+        self,
+        *,
+        user_id: UUID,
+        project_key: str,
+        completed: bool,
+        completion_notes: str,
+        changed_at: datetime,
+    ) -> ProjectMemoryRecord | None:
+        normalized_key = self._normalize_project_key(project_key)
+        if not normalized_key:
+            return None
+
+        existing = next(
+            (
+                project
+                for project in self.list_project_memories(user_id, limit=128)
+                if project.project_key == normalized_key
+            ),
+            None,
+        )
+        if existing is None:
+            return None
+
+        payload: dict[str, Any] = {
+            "status": "Concluido" if completed else "Em andamento",
+            "completion_source": "manual" if completed else "",
+            "manual_completed_at": changed_at.isoformat() if completed else None,
+            "manual_completion_notes": completion_notes.strip() if completed else "",
+            "next_steps": [] if completed else existing.next_steps,
+            "updated_at": changed_at.isoformat(),
+        }
+
+        self.client.table("project_memories").update(payload).eq("user_id", str(user_id)).eq("project_key", normalized_key).execute()
+        return next(
+            (
+                project
+                for project in self.list_project_memories(user_id, limit=128)
+                if project.project_key == normalized_key
             ),
             None,
         )
@@ -3000,6 +3075,40 @@ class SupabaseStore:
             if parsed is not None:
                 events.append(parsed)
         return events
+
+    def create_agenda_event(
+        self,
+        *,
+        user_id: UUID,
+        titulo: str,
+        inicio: datetime,
+        fim: datetime,
+        status: str,
+        contato_origem: str | None,
+        reminder_offset_minutes: int,
+        created_at: datetime,
+    ) -> AgendaEventRecord:
+        record_id = str(uuid4())
+        record = {
+            "id": record_id,
+            "user_id": str(user_id),
+            "titulo": titulo.strip() or "Compromisso",
+            "inicio": inicio.astimezone(UTC).isoformat(),
+            "fim": fim.astimezone(UTC).isoformat(),
+            "status": "firme" if str(status).strip().lower() == "firme" else "tentativo",
+            "contato_origem": self._optional_text(contato_origem),
+            "message_id": f"manual:{record_id}",
+            "reminder_offset_minutes": max(0, int(reminder_offset_minutes)),
+            "pre_reminder_sent_at": None,
+            "reminder_sent_at": None,
+            "created_at": created_at.isoformat(),
+            "updated_at": created_at.isoformat(),
+        }
+        self.client.table("agenda").insert(record).execute()
+        created = self.get_agenda_event(user_id=user_id, event_id=record_id)
+        if created is None:
+            raise RuntimeError("Compromisso manual nao pode ser criado.")
+        return created
 
     def find_latest_upcoming_agenda_event_for_contact(
         self,
@@ -7376,6 +7485,12 @@ class SupabaseStore:
         while "--" in collapsed:
             collapsed = collapsed.replace("--", "-")
         return collapsed.strip("-")
+
+    def _normalize_project_origin_source(self, value: Any) -> str:
+        normalized = str(value or "").strip().lower()
+        if normalized == "manual":
+            return "manual"
+        return "memory"
 
     def build_person_key(
         self,

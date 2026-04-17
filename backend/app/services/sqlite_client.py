@@ -153,6 +153,11 @@ class SQLiteClient:
                 "admin_updated_at",
                 "ALTER TABLE whatsapp_known_contacts ADD COLUMN admin_updated_at TEXT",
             ),
+            (
+                "project_memories",
+                "origin_source",
+                "ALTER TABLE project_memories ADD COLUMN origin_source TEXT NOT NULL DEFAULT 'memory'",
+            ),
         ]
         with self._lock:
             for table_name, column_name, alter_sql in migrations:

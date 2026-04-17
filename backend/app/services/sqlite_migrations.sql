@@ -40,6 +40,27 @@ CREATE TABLE IF NOT EXISTS agenda (
   UNIQUE (user_id, message_id)
 );
 
+CREATE TABLE IF NOT EXISTS project_memories (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  project_key TEXT NOT NULL,
+  project_name TEXT NOT NULL,
+  origin_source TEXT NOT NULL DEFAULT 'memory',
+  summary TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT '',
+  what_is_being_built TEXT NOT NULL DEFAULT '',
+  built_for TEXT NOT NULL DEFAULT '',
+  next_steps TEXT NOT NULL DEFAULT '[]',
+  evidence TEXT NOT NULL DEFAULT '[]',
+  source_snapshot_id TEXT,
+  last_seen_at TEXT,
+  completion_source TEXT NOT NULL DEFAULT '',
+  manual_completed_at TEXT,
+  manual_completion_notes TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL,
+  UNIQUE (user_id, project_key)
+);
+
 CREATE TABLE IF NOT EXISTS important_messages (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,
