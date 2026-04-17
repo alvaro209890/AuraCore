@@ -643,11 +643,29 @@ class AgendaGuardianService:
         if not owner_target:
             self._log_debug("[Guardião do Tempo] Conflito detectado, mas o número conectado não foi localizado.")
             return False
+        alternatives = self._find_available_time_slots(
+            range_start=min(new_event.inicio, existing_event.inicio),
+            range_end=max(new_event.fim, existing_event.fim),
+            required_duration=max(
+                new_event.fim - new_event.inicio,
+                existing_event.fim - existing_event.inicio,
+                timedelta(minutes=30),
+            ),
+            exclude_event_ids={new_event.id, existing_event.id},
+            limit=3,
+        )
+        alternatives_text = ""
+        if alternatives:
+            alternatives_text = (
+                "\nSugestões livres: "
+                + "; ".join(self._format_time_slot_label(start_at, end_at) for start_at, end_at in alternatives)
+            )
         message_text = (
             "⚠️ AuraCore: conflito de agenda identificado.\n"
             f"O compromisso '{new_event.titulo}' para {self._format_local(new_event.inicio)} "
             f"se sobrepõe a '{existing_event.titulo}', já marcado para este horário.\n"
             "Revise os horários e me diga se quer manter, ajustar ou descartar um deles."
+            f"{alternatives_text}"
         )
         try:
             send_result = await self.agent_gateway.send_text_message(chat_jid=owner_target, message_text=message_text)
@@ -867,10 +885,13 @@ class AgendaGuardianService:
                 else "Entendi que você quer manter os dois compromissos, mas não consegui ajustar a agenda agora."
             )
         else:
+            alternatives_suffix = ""
+            if resolution.suggested_alternatives:
+                alternatives_suffix = " Alternativas livres: " + "; ".join(resolution.suggested_alternatives[:3]) + "."
             reply = (
                 "Ainda não ficou totalmente claro qual compromisso devo manter. "
                 f"Hoje tenho '{new_event.titulo}' e '{existing_event.titulo}' em conflito. "
-                "Me diga qual deles devo preservar."
+                f"Me diga qual deles devo preservar.{alternatives_suffix}"
             )
 
         metadata_update = {
@@ -903,6 +924,23 @@ class AgendaGuardianService:
         )
 
     def _build_conflict_context(self, *, new_event: AgendaEventRecord, existing_event: AgendaEventRecord) -> str:
+        alternatives = self._find_available_time_slots(
+            range_start=min(new_event.inicio, existing_event.inicio),
+            range_end=max(new_event.fim, existing_event.fim),
+            required_duration=max(
+                new_event.fim - new_event.inicio,
+                existing_event.fim - existing_event.inicio,
+                timedelta(minutes=30),
+            ),
+            exclude_event_ids={new_event.id, existing_event.id},
+            limit=3,
+        )
+        alternatives_block = ""
+        if alternatives:
+            alternatives_block = "\n\nHorarios alternativos livres:\n" + "\n".join(
+                f"- {self._format_time_slot_label(start_at, end_at)}"
+                for start_at, end_at in alternatives
+            )
         return (
             "Novo compromisso:\n"
             f"- titulo: {new_event.titulo}\n"
@@ -914,7 +952,66 @@ class AgendaGuardianService:
             f"- inicio: {self._format_local(existing_event.inicio)}\n"
             f"- fim: {self._format_local(existing_event.fim)}\n"
             f"- status: {existing_event.status}"
+            f"{alternatives_block}"
         )
+
+    def _find_available_time_slots(
+        self,
+        *,
+        range_start: datetime,
+        range_end: datetime,
+        required_duration: timedelta,
+        exclude_event_ids: set[str] | None = None,
+        limit: int = 3,
+    ) -> list[tuple[datetime, datetime]]:
+        resolved_duration = max(required_duration, timedelta(minutes=30))
+        exclude_ids = exclude_event_ids or set()
+        start_local = range_start.astimezone(DEFAULT_TIMEZONE).replace(hour=8, minute=0, second=0, microsecond=0)
+        end_local = (range_end.astimezone(DEFAULT_TIMEZONE) + timedelta(days=1)).replace(hour=21, minute=0, second=0, microsecond=0)
+        events = [
+            event
+            for event in self.store.list_agenda_events(
+                user_id=self.settings.default_user_id,
+                limit=120,
+                starts_after=start_local.astimezone(UTC),
+            )
+            if event.id not in exclude_ids and event.inicio < end_local.astimezone(UTC)
+        ]
+
+        slots: list[tuple[datetime, datetime]] = []
+        cursor_day = start_local.date()
+        end_day = end_local.date()
+        while cursor_day <= end_day and len(slots) < max(1, limit):
+            day_start_local = datetime.combine(cursor_day, datetime.min.time(), tzinfo=DEFAULT_TIMEZONE).replace(hour=8)
+            day_end_local = datetime.combine(cursor_day, datetime.min.time(), tzinfo=DEFAULT_TIMEZONE).replace(hour=21)
+            day_events = sorted(
+                [
+                    event
+                    for event in events
+                    if event.inicio.astimezone(DEFAULT_TIMEZONE) < day_end_local
+                    and event.fim.astimezone(DEFAULT_TIMEZONE) > day_start_local
+                ],
+                key=lambda event: event.inicio,
+            )
+            cursor = day_start_local
+            for event in day_events:
+                event_start = max(event.inicio.astimezone(DEFAULT_TIMEZONE), day_start_local)
+                event_end = min(event.fim.astimezone(DEFAULT_TIMEZONE), day_end_local)
+                if event_start - cursor >= resolved_duration:
+                    slots.append((cursor.astimezone(UTC), (cursor + resolved_duration).astimezone(UTC)))
+                    if len(slots) >= max(1, limit):
+                        return slots
+                if event_end > cursor:
+                    cursor = event_end
+            if day_end_local - cursor >= resolved_duration and len(slots) < max(1, limit):
+                slots.append((cursor.astimezone(UTC), (cursor + resolved_duration).astimezone(UTC)))
+            cursor_day += timedelta(days=1)
+        return slots[: max(1, limit)]
+
+    def _format_time_slot_label(self, start_at: datetime, end_at: datetime) -> str:
+        local_start = start_at.astimezone(DEFAULT_TIMEZONE)
+        local_end = end_at.astimezone(DEFAULT_TIMEZONE)
+        return f"{local_start.strftime('%d/%m %H:%M')}-{local_end.strftime('%H:%M')}"
 
     async def _send_due_reminder(self, *, event: AgendaEventRecord, phase: str) -> bool:
         owner_target = await self._resolve_owner_chat_target(preferred_channel="agent")

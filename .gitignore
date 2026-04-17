@@ -20,6 +20,8 @@ build/
 .firebase/
 .local-run/
 frontend/out/
+frontend/old_dashboard.tsx
+frontend/fix_*.py
 agent-frontend/out/
 *.tsbuildinfo
 whatsapp-gateway/dist/

@@ -11,6 +11,7 @@ from app.config import Settings
 from app.services.deepseek_service import DeepSeekAssistantSearchPlan, DeepSeekService
 from app.services.supabase_store import (
     AgendaEventRecord,
+    ImportantMessageRecord,
     MemorySnapshotRecord,
     PersonMemoryRecord,
     PersonaRecord,
@@ -476,9 +477,11 @@ class AssistantContextService:
         return DeepSeekAssistantSearchPlan(
             needs_retrieval=False,
             people_queries=[],
+            important_message_queries=[],
             project_queries=[],
             snapshot_queries=[],
             people_limit=0,
+            important_messages_limit=0,
             projects_limit=0,
             snapshots_limit=0,
             should_include_open_questions=False,
@@ -554,6 +557,20 @@ class AssistantContextService:
             if ranked_people:
                 sections.append("Pessoas relevantes:\n" + self._format_search_people(ranked_people))
 
+        if plan.important_message_queries and plan.important_messages_limit > 0:
+            important_messages = self.store.search_important_messages(
+                self.settings.default_user_id,
+                plan.important_message_queries,
+                limit=max(1, min(8, plan.important_messages_limit * 2)),
+            )
+            ranked_important = self._rank_important_messages(
+                important_messages,
+                queries=plan.important_message_queries,
+                limit=plan.important_messages_limit,
+            )
+            if ranked_important:
+                sections.append("Mensagens importantes:\n" + self._format_important_messages(ranked_important))
+
         if plan.project_queries and plan.projects_limit > 0:
             ranked_projects = self._rank_projects(projects, queries=plan.project_queries, limit=plan.projects_limit)
             if ranked_projects:
@@ -602,6 +619,24 @@ class AssistantContextService:
             reverse=True,
         )
         return [project for project in ranked[: max(1, limit)] if self._score_project(project, queries=queries) > 0]
+
+    def _rank_important_messages(
+        self,
+        messages: Sequence[ImportantMessageRecord],
+        *,
+        queries: Sequence[str],
+        limit: int,
+    ) -> list[ImportantMessageRecord]:
+        ranked = sorted(
+            messages,
+            key=lambda message: self._score_important_message(message, queries=queries),
+            reverse=True,
+        )
+        return [
+            message
+            for message in ranked[: max(1, limit)]
+            if self._score_important_message(message, queries=queries) > 0
+        ]
 
     def _rank_snapshots(
         self,
@@ -662,6 +697,20 @@ class AssistantContextService:
         )
         score = self._score_text_block(haystack, queries)
         score += self._recency_score(snapshot.created_at, half_life_days=45)
+        return score
+
+    def _score_important_message(self, message: ImportantMessageRecord, *, queries: Sequence[str]) -> float:
+        haystack = " ".join(
+            [
+                message.contact_name,
+                message.category,
+                message.importance_reason,
+                message.message_text,
+            ]
+        )
+        score = self._score_text_block(haystack, queries)
+        score += min(5.0, max(0.0, message.confidence / 25.0))
+        score += self._recency_score(message.message_timestamp, half_life_days=20)
         return score
 
     def _score_text_block(self, text: str, queries: Sequence[str]) -> float:
@@ -948,6 +997,18 @@ class AssistantContextService:
                 lines.append(f"  Fatos: {'; '.join(person.salient_facts[:4])}")
             if person.open_loops:
                 lines.append(f"  Pontos em aberto: {'; '.join(person.open_loops[:3])}")
+            blocks.append("\n".join(lines))
+        return "\n\n".join(blocks)
+
+    def _format_important_messages(self, messages: Sequence[ImportantMessageRecord]) -> str:
+        blocks: list[str] = []
+        for message in messages:
+            lines = [
+                f"- {message.contact_name or 'Contato'} [{message.category}]",
+                f"  Motivo: {self._summarize_text(message.importance_reason, 120)}",
+                f"  Conteudo: {self._summarize_text(message.message_text, 180)}",
+                f"  Quando: {message.message_timestamp.astimezone(UTC).strftime('%d/%m/%Y %H:%M UTC')}",
+            ]
             blocks.append("\n".join(lines))
         return "\n\n".join(blocks)
 

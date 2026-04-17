@@ -117,6 +117,7 @@ class ServiceBundleCache:
             proactive_assistant_service = ProactiveAssistantService(
                 settings=scoped_settings,
                 store=store,
+                deepseek_service=deepseek_service,
                 observer_gateway=observer_gateway,
                 agent_gateway=agent_gateway,
             )

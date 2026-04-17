@@ -21,6 +21,7 @@ from app.services.groq_service import GroqChatService
 from app.services.observer_gateway import ObserverGatewayService, WhatsAppAgentGatewayService
 from app.services.proactive_assistant_service import ProactiveAssistantService
 from app.services.supabase_store import (
+    ImportantMessageSeed,
     SupabaseStore,
     WhatsAppAgentContactMemoryRecord,
     WhatsAppAgentMessageRecord,
@@ -1108,6 +1109,17 @@ class WhatsAppAgentService:
                 error_text=error_text,
             )
 
+        important_saved = self._persist_important_message_if_needed(
+            inbound_message=inbound_message,
+            thread=thread,
+            decision=decision,
+            saved_at=datetime.now(UTC),
+        )
+        learning_metadata = {
+            **self._build_learning_metadata(decision),
+            "agent_saved_as_important": important_saved,
+        }
+
         if not self._decision_has_memory_update(decision):
             self.store.update_whatsapp_agent_message(
                 message_id=inbound_message.id,
@@ -1115,7 +1127,7 @@ class WhatsAppAgentService:
                 model_run_id=model_run_id,
                 metadata={
                     **inbound_message.metadata,
-                    "learning_explanation": decision.explanation,
+                    **learning_metadata,
                 },
             )
             return AgentLearningOutcome(
@@ -1141,7 +1153,7 @@ class WhatsAppAgentService:
             learned_at=learned_at,
             metadata={
                 **inbound_message.metadata,
-                "learning_explanation": decision.explanation,
+                **learning_metadata,
             },
         )
         return AgentLearningOutcome(
@@ -1187,7 +1199,42 @@ class WhatsAppAgentService:
             learned_message_count=learned_message_count,
             last_learned_at=learned_at,
             updated_at=learned_at,
+            )
+
+    def _persist_important_message_if_needed(
+        self,
+        *,
+        inbound_message: WhatsAppAgentMessageRecord,
+        thread: WhatsAppAgentThreadRecord,
+        decision: DeepSeekAgentMemoryDecision,
+        saved_at: datetime,
+    ) -> bool:
+        if not decision.should_save_as_important:
+            return False
+        reason = decision.importance_reason.strip()
+        if not reason:
+            return False
+        confidence = max(0, min(100, int(decision.importance_confidence or 0)))
+        if confidence <= 0:
+            confidence = 72
+        saved = self.store.upsert_important_messages(
+            user_id=self.settings.default_user_id,
+            messages=[
+                ImportantMessageSeed(
+                    source_message_id=inbound_message.id,
+                    contact_name=thread.contact_name or inbound_message.contact_phone or "Contato",
+                    contact_phone=inbound_message.contact_phone,
+                    direction=inbound_message.direction or "inbound",
+                    message_text=inbound_message.content,
+                    message_timestamp=inbound_message.message_timestamp,
+                    category=decision.importance_category,
+                    importance_reason=reason,
+                    confidence=confidence,
+                )
+            ],
+            saved_at=saved_at,
         )
+        return saved > 0
 
     def _merge_profile_summary(self, current_summary: str, incoming_summary: str) -> str:
         current = current_summary.strip()
@@ -1215,6 +1262,17 @@ class WhatsAppAgentService:
                 or decision.recurring_instructions
             )
         )
+
+    def _build_learning_metadata(self, decision: DeepSeekAgentMemoryDecision) -> dict[str, object]:
+        return {
+            "learning_explanation": decision.explanation,
+            "agent_mood_signals": decision.mood_signals[:4],
+            "agent_implied_urgency": decision.implied_urgency,
+            "agent_implied_tasks": decision.implied_tasks[:4],
+            "agent_important_reason": decision.importance_reason if decision.should_save_as_important else "",
+            "agent_important_category": decision.importance_category if decision.should_save_as_important else "",
+            "agent_important_confidence": decision.importance_confidence if decision.should_save_as_important else 0,
+        }
 
     def _should_extract_agent_memory(self, message_text: str) -> bool:
         normalized = " ".join(message_text.lower().split()).strip()

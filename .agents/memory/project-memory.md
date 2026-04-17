@@ -12,6 +12,7 @@
   - `agent-frontend`: Next.js 15 separado para o dashboard do agente global
   - `whatsapp-gateway`: Express + Baileys para observer e agent
 - Os frontends têm entrada mínima em `app/page.tsx`; a maior parte da UI está concentrada em `frontend/components/connection-dashboard.tsx` e `agent-frontend/components/global-agent-dashboard.tsx`
+- No frontend principal, o `connection-dashboard.tsx` passou a importar abas modulares em `frontend/components/dashboard/tabs/`, mas ainda concentra helpers compartilhados e orquestração de estado
 - A maior parte da lógica de domínio do backend está concentrada em `backend/app/services/supabase_store.py`, `memory_service.py`, `whatsapp_agent_service.py`, `agenda_guardian_service.py` e `deepseek_service.py`
 
 ## WhatsApp Agent / CLI
@@ -47,3 +48,7 @@
 - Em abril/2026 o `assistant_context_service` ganhou um caminho `structured-first` para intents de agenda e projetos: ele monta blocos compactos diretamente da agenda e de `project_memories` antes de recorrer a snapshots e contexto amplo
 - A tabela `project_memories` agora persiste `origin_source` (`memory` ou `manual`), o que permite preservar projetos criados manualmente na UI sem perdê-los em merges futuros
 - A agenda usa uma tabela unica para eventos automáticos e manuais; eventos criados manualmente entram em `agenda` com `message_id` sintético no formato `manual:{uuid}` e participam de conflito/lembrete igual aos demais
+- O `DeepSeekAssistantSearchPlan` do backend agora suporta também `important_message_queries` e `important_messages_limit`, alinhando o fluxo DeepSeek com a infraestrutura já existente de `important_messages`
+- O aprendizado do WhatsApp pode persistir `important_messages` direto do `extract_agent_memory`, usando a mesma rodada do modelo para classificar relevância global sem abrir outro pipeline paralelo
+- A proatividade de projetos agora pode enriquecer `project_nudge` com `suggested_actions` geradas pelo DeepSeek, com fallback heurístico local quando o modelo falhar
+- O `agenda_guardian_service` agora consegue calcular slots livres locais para sugerir alternativas em conflitos de agenda

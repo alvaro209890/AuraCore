@@ -94,14 +94,21 @@ class DeepSeekAgendaConflictResolutionResult(BaseModel):
     ] = "clarify"
     explanation: str = ""
     confidence: int = Field(default=0, ge=0, le=100)
+    suggested_alternatives: list[str] = Field(default_factory=list)
+
+
+class DeepSeekProjectActionHintsResult(BaseModel):
+    suggested_actions: list[str] = Field(default_factory=list)
 
 
 class DeepSeekAssistantSearchPlan(BaseModel):
     needs_retrieval: bool = False
     people_queries: list[str] = Field(default_factory=list)
+    important_message_queries: list[str] = Field(default_factory=list)
     project_queries: list[str] = Field(default_factory=list)
     snapshot_queries: list[str] = Field(default_factory=list)
     people_limit: int = 0
+    important_messages_limit: int = 0
     projects_limit: int = 0
     snapshots_limit: int = 0
     should_include_open_questions: bool = False
@@ -114,9 +121,11 @@ class DeepSeekAssistantSearchPlan(BaseModel):
         return cls(
             needs_retrieval=False,
             people_queries=[],
+            important_message_queries=[],
             project_queries=[],
             snapshot_queries=[],
             people_limit=0,
+            important_messages_limit=0,
             projects_limit=0,
             snapshots_limit=0,
             should_include_open_questions=False,
@@ -140,6 +149,10 @@ class DeepSeekAgentMemoryDecision(BaseModel):
     mentioned_relationships: list[str] = Field(default_factory=list)
     implied_tasks: list[str] = Field(default_factory=list)
     writing_style_hints: str = ""
+    should_save_as_important: bool = False
+    importance_reason: str = ""
+    importance_category: str = "other"
+    importance_confidence: int = Field(default=0, ge=0, le=100)
     explanation: str = ""
 
 
@@ -287,7 +300,8 @@ class DeepSeekService:
             "{\n"
             '  "decision": "keep_new_cancel_existing|keep_existing_cancel_new|keep_both|clarify",\n'
             '  "explanation": "string",\n'
-            '  "confidence": 0\n'
+            '  "confidence": 0,\n'
+            '  "suggested_alternatives": ["string"]\n'
             "}"
         )
         payload = self._build_completion_payload(
@@ -297,7 +311,8 @@ class DeepSeekService:
                 "Retorne somente JSON valido. "
                 "Identifique se o usuario quer manter o compromisso novo e cancelar o antigo, "
                 "manter o antigo e cancelar o novo, manter ambos, ou se ainda precisa de esclarecimento. "
-                "Se a mensagem for ambigua, use clarify."
+                "Se a mensagem for ambigua, use clarify. "
+                "Se o contexto ja trouxer horarios alternativos livres, voce pode devolve-los em suggested_alternatives."
             ),
             user_prompt=user_prompt,
             max_tokens=self._adaptive_max_tokens(
@@ -316,6 +331,49 @@ class DeepSeekService:
             parser=self._parse_agenda_conflict_resolution_result,
             validator=self._validate_agenda_conflict_resolution_result,
             operation="extract_agenda_conflict_resolution",
+        )
+
+    async def extract_project_action_hints(
+        self,
+        *,
+        project_context: str,
+        owner_context: str = "",
+    ) -> DeepSeekProjectActionHintsResult:
+        user_prompt = (
+            "Projeto em foco:\n"
+            f"{project_context.strip() or '(sem contexto de projeto)'}\n\n"
+            "Contexto adicional do dono:\n"
+            f"{owner_context.strip() or '(sem contexto adicional)'}\n\n"
+            "Retorne exatamente este formato:\n"
+            "{\n"
+            '  "suggested_actions": ["string"]\n'
+            "}"
+        )
+        payload = self._build_completion_payload(
+            system_prompt=(
+                "Voce sugere proximas acoes concretas para um projeto ativo do dono. "
+                "Retorne somente JSON valido. "
+                "Cada acao deve ser curta, executavel, especifica e preferencialmente caber em 10 a 30 minutos. "
+                "Evite conselhos genericos como 'revisar o projeto' ou 'avancar na tarefa'. "
+                "Devolva no maximo 3 sugestoes."
+            ),
+            user_prompt=user_prompt,
+            max_tokens=self._adaptive_max_tokens(
+                user_prompt,
+                ceiling_reasoning=220,
+                ceiling_standard=140,
+                floor_reasoning=140,
+                floor_standard=100,
+                chars_per_step=320,
+                step_tokens=14,
+                max_steps=4,
+            ),
+        )
+        return await self._request_parsed_completion(
+            payload=payload,
+            parser=self._parse_project_action_hints_result,
+            validator=self._validate_project_action_hints_result,
+            operation="extract_project_action_hints",
         )
 
     async def analyze_memory(
@@ -661,8 +719,8 @@ class DeepSeekService:
             system_prompt=(
                 "Voce decide qual contexto adicional deve ser recuperado para responder melhor uma mensagem do dono. "
                 "Responda EXCLUSIVAMENTE em JSON valido com as chaves: "
-                "needs_retrieval, people_queries, project_queries, snapshot_queries, "
-                "people_limit, projects_limit, snapshots_limit, "
+                "needs_retrieval, people_queries, important_message_queries, project_queries, snapshot_queries, "
+                "people_limit, important_messages_limit, projects_limit, snapshots_limit, "
                 "should_include_open_questions, should_include_contact_memory, requires_confirmation e explanation. "
                 "Use no maximo 3 consultas por categoria e limites pequenos. "
                 "needs_retrieval deve ser false para cumprimentos simples ou quando o contexto atual ja basta. "
@@ -711,7 +769,8 @@ class DeepSeekService:
                 "Ignore cumprimentos, recados efemeros e pedidos que so fazem sentido nesta unica resposta. "
                 "Responda EXCLUSIVAMENTE em JSON valido com as chaves: should_update, profile_summary, preferred_tone, "
                 "preferences, objectives, durable_facts, constraints, recurring_instructions, "
-                "mood_signals, implied_urgency, mentioned_relationships, implied_tasks, writing_style_hints e explanation. "
+                "mood_signals, implied_urgency, mentioned_relationships, implied_tasks, writing_style_hints, "
+                "should_save_as_important, importance_reason, importance_category, importance_confidence e explanation. "
                 "mood_signals: sinais de humor/estado emocional (ex: 'apressado', 'frustrado com X', 'animado com Y'). "
                 "Detecte tambem dinamica relacional: se o dono confia nesse contato, se cobra, se delega, se e casual. "
                 "Observe se o dono muda de tom com este contato especifico — isso informa como responder no futuro. "
@@ -719,6 +778,10 @@ class DeepSeekService:
                 "mentioned_relationships: nomes ou papeis de terceiros mencionados na mensagem. "
                 "implied_tasks: tarefas ou acoes que o dono parece esperar que sejam feitas. "
                 "writing_style_hints: pistas sobre como o dono escreve (formal, direto, usa abreviacoes, emocional). "
+                "should_save_as_important deve ser true quando a mensagem trouxer algo que vale manter vivo no radar global, "
+                "como prazo, risco, documento, cliente, dinheiro, acesso ou dependencia critica. "
+                "importance_reason deve resumir por que isso importa. "
+                "importance_category deve usar apenas: credential, access, project, money, client, deadline, document, risk, other. "
                 "Se nada for duravel, retorne should_update=false e listas vazias."
             ),
             user_prompt=user_prompt,
@@ -1798,12 +1861,22 @@ Regras:
         }:
             parsed.decision = "clarify"
         parsed.explanation = parsed.explanation.strip()
+        parsed.suggested_alternatives = [item.strip() for item in parsed.suggested_alternatives if item.strip()][:3]
+
+    def _validate_project_action_hints_result(self, parsed: DeepSeekProjectActionHintsResult) -> None:
+        parsed.suggested_actions = [
+            action.strip()
+            for action in parsed.suggested_actions
+            if action.strip()
+        ][:3]
 
     def _validate_assistant_search_plan(self, parsed: DeepSeekAssistantSearchPlan) -> None:
         parsed.people_limit = max(0, min(6, parsed.people_limit))
+        parsed.important_messages_limit = max(0, min(6, parsed.important_messages_limit))
         parsed.projects_limit = max(0, min(6, parsed.projects_limit))
         parsed.snapshots_limit = max(0, min(6, parsed.snapshots_limit))
         parsed.people_queries = parsed.people_queries[:3]
+        parsed.important_message_queries = parsed.important_message_queries[:3]
         parsed.project_queries = parsed.project_queries[:3]
         parsed.snapshot_queries = parsed.snapshot_queries[:3]
 
@@ -1821,6 +1894,11 @@ Regras:
         parsed.mood_signals = parsed.mood_signals[:8]
         parsed.mentioned_relationships = parsed.mentioned_relationships[:8]
         parsed.implied_tasks = parsed.implied_tasks[:8]
+        parsed.importance_reason = parsed.importance_reason.strip()
+        parsed.importance_category = self._normalize_importance_category(parsed.importance_category)
+        parsed.importance_confidence = max(0, min(100, parsed.importance_confidence))
+        if not parsed.importance_reason:
+            parsed.should_save_as_important = False
 
     def _validate_cli_plan(self, parsed: DeepSeekCliPlan) -> None:
         parsed.summary = parsed.summary.strip()
@@ -1970,6 +2048,17 @@ Regras:
             decision=self._as_text(raw.get("decision")),
             explanation=self._as_text(raw.get("explanation")),
             confidence=self._as_confidence(raw.get("confidence")),
+            suggested_alternatives=self._as_string_list(raw.get("suggested_alternatives")),
+        )
+
+    def _parse_project_action_hints_result(self, content: str) -> DeepSeekProjectActionHintsResult:
+        raw = self._parse_json_dict(
+            content,
+            error_message="DeepSeek retornou JSON invalido para as acoes de projeto.",
+            shape_error_message="DeepSeek retornou um payload inesperado para as acoes de projeto.",
+        )
+        return DeepSeekProjectActionHintsResult(
+            suggested_actions=self._as_string_list(raw.get("suggested_actions")),
         )
 
     def _parse_assistant_search_plan(self, content: str) -> DeepSeekAssistantSearchPlan:
@@ -1987,15 +2076,18 @@ Regras:
             return max(0, min(6, resolved))
 
         people_queries = self._as_string_list(raw.get("people_queries"))[:3]
+        important_message_queries = self._as_string_list(raw.get("important_message_queries"))[:3]
         project_queries = self._as_string_list(raw.get("project_queries"))[:3]
         snapshot_queries = self._as_string_list(raw.get("snapshot_queries"))[:3]
 
         return DeepSeekAssistantSearchPlan(
             needs_retrieval=bool(raw.get("needs_retrieval")),
             people_queries=people_queries,
+            important_message_queries=important_message_queries,
             project_queries=project_queries,
             snapshot_queries=snapshot_queries,
             people_limit=_limit(raw.get("people_limit"), 2 if people_queries else 0),
+            important_messages_limit=_limit(raw.get("important_messages_limit"), 3 if important_message_queries else 0),
             projects_limit=_limit(raw.get("projects_limit"), 2 if project_queries else 0),
             snapshots_limit=_limit(raw.get("snapshots_limit"), 2 if snapshot_queries else 0),
             should_include_open_questions=bool(raw.get("should_include_open_questions")),
@@ -2025,6 +2117,10 @@ Regras:
             mentioned_relationships=self._as_string_list(raw.get("mentioned_relationships")),
             implied_tasks=self._as_string_list(raw.get("implied_tasks")),
             writing_style_hints=self._as_text(raw.get("writing_style_hints")),
+            should_save_as_important=bool(raw.get("should_save_as_important")),
+            importance_reason=self._as_text(raw.get("importance_reason")),
+            importance_category=self._as_text(raw.get("importance_category")),
+            importance_confidence=self._as_confidence(raw.get("importance_confidence")),
             explanation=self._as_text(raw.get("explanation")),
         )
 

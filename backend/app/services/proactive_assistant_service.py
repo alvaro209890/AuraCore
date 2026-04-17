@@ -10,6 +10,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.config import Settings
+from app.services.deepseek_service import DeepSeekService
 from app.services.observer_gateway import ObserverGatewayService, WhatsAppAgentGatewayService
 from app.services.supabase_store import (
     ProjectMemoryRecord,
@@ -58,11 +59,13 @@ class ProactiveAssistantService:
         *,
         settings: Settings,
         store: SupabaseStore,
+        deepseek_service: DeepSeekService,
         observer_gateway: ObserverGatewayService,
         agent_gateway: WhatsAppAgentGatewayService,
     ) -> None:
         self.settings = settings
         self.store = store
+        self.deepseek_service = deepseek_service
         self.observer_gateway = observer_gateway
         self.agent_gateway = agent_gateway
         self._loop_task: asyncio.Task[None] | None = None
@@ -98,7 +101,7 @@ class ProactiveAssistantService:
             if not prefs.enabled:
                 return
             now = datetime.now(UTC)
-            self._seed_project_nudge_if_needed(prefs=prefs, now=now)
+            await self._seed_project_nudge_if_needed(prefs=prefs, now=now)
             await self._send_daily_digests_if_due(prefs=prefs, now=now)
             await self._send_due_candidates(prefs=prefs, now=now)
 
@@ -394,7 +397,7 @@ class ProactiveAssistantService:
             },
         }
 
-    def _seed_project_nudge_if_needed(self, *, prefs: ProactivePreferencesRecord, now: datetime) -> None:
+    async def _seed_project_nudge_if_needed(self, *, prefs: ProactivePreferencesRecord, now: datetime) -> None:
         if not prefs.projects_enabled:
             return
         active_candidates = self.store.list_proactive_candidates(
@@ -420,6 +423,7 @@ class ProactiveAssistantService:
         project = projects[0]
         next_step = project.next_steps[0] if project.next_steps else ""
         summary = next_step or project.summary or project.what_is_being_built or "Projeto ativo sem próximo passo manual definido."
+        suggested_actions = await self._generate_project_action_hints(project=project)
         self.store.create_proactive_candidate(
             user_id=self.settings.default_user_id,
             category="project_nudge",
@@ -441,6 +445,7 @@ class ProactiveAssistantService:
                 "project_key": project.project_key,
                 "project_name": project.project_name,
                 "next_step": next_step,
+                "suggested_actions": suggested_actions,
             },
             created_at=now,
             updated_at=now,
@@ -502,6 +507,8 @@ class ProactiveAssistantService:
             return
         if self._min_interval_active(prefs=prefs, now=now):
             return
+        moment_state = self._detect_moment_state(now=now)
+        logger.info("proactive_moment_state user_id=%s moment_state=%s", self.settings.default_user_id, moment_state)
 
         for candidate in self.store.list_due_proactive_candidates(
             user_id=self.settings.default_user_id,
@@ -527,7 +534,28 @@ class ProactiveAssistantService:
                 )
                 continue
 
-            score = self._score_candidate(candidate=candidate, now=now)
+            suppression = self._moment_suppression(candidate=candidate, moment_state=moment_state, now=now)
+            if suppression is not None:
+                reason_code, reason_text, cooldown_until = suppression
+                self.store.create_proactive_delivery_log(
+                    user_id=self.settings.default_user_id,
+                    candidate_id=candidate.id,
+                    category=candidate.category,
+                    decision="skipped",
+                    score=0,
+                    reason_code=reason_code,
+                    reason_text=reason_text,
+                    message_text="",
+                    message_id=None,
+                    sent_at=None,
+                )
+                self.store.update_proactive_candidate(
+                    candidate_id=candidate.id,
+                    cooldown_until=cooldown_until,
+                )
+                continue
+
+            score = self._score_candidate(candidate=candidate, now=now, moment_state=moment_state)
             if score < 55:
                 self.store.create_proactive_delivery_log(
                     user_id=self.settings.default_user_id,
@@ -555,7 +583,7 @@ class ProactiveAssistantService:
                 category=candidate.category,
                 message_text=message_text,
                 reason_code="candidate_due",
-                reason_text=candidate.summary or candidate.title,
+                reason_text=f"{candidate.summary or candidate.title} [moment={moment_state}]",
                 score=score,
                 candidate_id=candidate.id,
                 now=now,
@@ -594,7 +622,7 @@ class ProactiveAssistantService:
             return prefs.night_digest_enabled
         return True
 
-    def _score_candidate(self, *, candidate: ProactiveCandidateRecord, now: datetime) -> int:
+    def _score_candidate(self, *, candidate: ProactiveCandidateRecord, now: datetime, moment_state: str) -> int:
         score = round((candidate.confidence * 0.55) + (candidate.priority * 0.45))
         if candidate.status == "confirmed":
             score += 8
@@ -602,6 +630,17 @@ class ProactiveAssistantService:
             score += 6
         if candidate.category == "routine":
             score -= 4
+        if moment_state == "high_focus":
+            score -= 20
+        elif moment_state == "available":
+            score += 10
+        elif moment_state == "low_energy":
+            if candidate.category == "routine":
+                score += 5
+            if candidate.category == "project_nudge":
+                score -= 5
+        elif moment_state == "busy":
+            score -= 8
         return max(0, min(100, score))
 
     def _render_candidate_message(self, *, candidate: ProactiveCandidateRecord) -> str:
@@ -620,11 +659,25 @@ class ProactiveAssistantService:
         if candidate.category == "project_nudge":
             project_name = str(payload.get("project_name") or candidate.title).strip()
             next_step = str(payload.get("next_step") or candidate.summary).strip()
+            suggested_actions = [
+                str(item).strip()
+                for item in (payload.get("suggested_actions") or [])
+                if str(item).strip()
+            ][:3]
+            action_text = ""
+            if suggested_actions:
+                action_text = " Ações concretas agora: " + " | ".join(
+                    f"{index + 1}) {action[:80]}"
+                    for index, action in enumerate(suggested_actions[:2])
+                )
             if next_step:
                 return (
                     f"Projeto em radar: {project_name[:100]}. "
-                    f"O próximo passo mais claro parece ser {next_step[:120]}. Quer que eu te deixe um plano curto?"
+                    f"O próximo passo mais claro parece ser {next_step[:120]}."
+                    f"{action_text} Quer que eu te deixe um plano curto?"
                 )
+            if action_text:
+                return f"Projeto em radar: {project_name[:100]}.{action_text} Quer que eu te organize uma delas?"
             return f"Vale revisar {project_name[:100]} agora ou eu te monto um próximo passo enxuto?"
         if candidate.category == "routine":
             suggestion = str(payload.get("suggestion") or "Vale reorganizar o próximo bloco com mais leveza.").strip()
@@ -632,6 +685,157 @@ class ProactiveAssistantService:
         if candidate.category == "agenda_followup":
             return f"{candidate.summary[:180]} Quer que eu organize isso agora?"
         return candidate.summary[:220]
+
+    async def _generate_project_action_hints(self, *, project: ProjectMemoryRecord) -> list[str]:
+        fallback_actions = self._fallback_project_action_hints(project)
+        project_context = self._build_project_action_context(project)
+        owner_context = self._build_recent_owner_context()
+        try:
+            result = await self.deepseek_service.extract_project_action_hints(
+                project_context=project_context,
+                owner_context=owner_context,
+            )
+        except Exception as exc:
+            logger.warning("proactive_project_action_hints_failed project_key=%s detail=%s", project.project_key, exc)
+            return fallback_actions
+        if result.suggested_actions:
+            return result.suggested_actions[:3]
+        return fallback_actions
+
+    def _build_project_action_context(self, project: ProjectMemoryRecord) -> str:
+        lines = [
+            f"Projeto: {project.project_name}",
+            f"Resumo: {project.summary or '(sem resumo)'}",
+        ]
+        if project.status:
+            lines.append(f"Status: {project.status}")
+        if project.what_is_being_built:
+            lines.append(f"O que esta sendo desenvolvido: {project.what_is_being_built}")
+        if project.built_for:
+            lines.append(f"Para quem: {project.built_for}")
+        if project.next_steps:
+            lines.append("Proximos passos: " + "; ".join(project.next_steps[:3]))
+        if project.evidence:
+            lines.append("Evidencias: " + "; ".join(project.evidence[:2]))
+        return "\n".join(lines)
+
+    def _build_recent_owner_context(self) -> str:
+        owner_phone = self._resolve_owner_phone()
+        if not owner_phone:
+            return ""
+        messages = self.store.list_whatsapp_agent_messages_for_contact(
+            user_id=self.settings.default_user_id,
+            contact_phone=owner_phone,
+            limit=6,
+        )
+        lines: list[str] = []
+        for message in messages:
+            if message.direction != "inbound":
+                continue
+            content = " ".join(message.content.split()).strip()
+            if not content:
+                continue
+            lines.append(f"- {content[:140]}")
+            if len(lines) >= 3:
+                break
+        return "\n".join(lines)
+
+    def _fallback_project_action_hints(self, project: ProjectMemoryRecord) -> list[str]:
+        actions: list[str] = []
+        if project.next_steps:
+            actions.append(project.next_steps[0].strip())
+        if project.built_for:
+            actions.append(f"Escrever em 3 linhas a entrega exata para {project.built_for[:60]}.")
+        if project.what_is_being_built:
+            actions.append(f"Listar os 2 blocos que faltam para fechar {project.project_name[:60]}.")
+        if not actions:
+            actions.append(f"Definir o proximo passo executavel de {project.project_name[:60]} em uma frase.")
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for action in actions:
+            normalized = " ".join(action.split()).strip()
+            if not normalized:
+                continue
+            key = normalized.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(normalized[:120])
+            if len(deduped) >= 3:
+                break
+        return deduped
+
+    def _detect_moment_state(self, *, now: datetime) -> str:
+        owner_phone = self._resolve_owner_phone()
+        local_hour = now.astimezone(DEFAULT_TIMEZONE).hour
+        if not owner_phone:
+            return "low_energy" if local_hour >= 22 or local_hour < 7 else "available"
+
+        messages = self.store.list_whatsapp_agent_messages_for_contact(
+            user_id=self.settings.default_user_id,
+            contact_phone=owner_phone,
+            limit=12,
+        )
+        inbound_recent = [
+            message
+            for message in messages
+            if message.direction == "inbound" and message.message_timestamp >= now - timedelta(minutes=90)
+        ]
+        very_recent = [
+            message
+            for message in inbound_recent
+            if message.message_timestamp >= now - timedelta(minutes=12)
+        ]
+        mood_signals: list[str] = []
+        urgency_signals: list[str] = []
+        focus_markers = ("foco", "concentr", "mergulh", "finalizando", "codando", "escrevendo", "produzindo")
+        busy_markers = ("corrido", "ocupado", "sem tempo", "depois", "reuniao", "reunião", "call")
+        low_energy_markers = ("cans", "exaust", "sono", "sobrecarreg", "estress", "ansios")
+
+        for message in inbound_recent:
+            metadata = message.metadata if isinstance(message.metadata, dict) else {}
+            mood_signals.extend(str(item).strip().lower() for item in (metadata.get("agent_mood_signals") or []) if str(item).strip())
+            urgency = str(metadata.get("agent_implied_urgency") or "").strip().lower()
+            if urgency:
+                urgency_signals.append(urgency)
+
+        latest_content = " ".join((inbound_recent[0].content if inbound_recent else "").lower().split())
+        if any(marker in latest_content for marker in focus_markers) or any("alta" in item for item in urgency_signals):
+            return "high_focus"
+        if any(marker in latest_content for marker in low_energy_markers) or any(
+            any(marker in signal for marker in low_energy_markers)
+            for signal in mood_signals
+        ):
+            return "low_energy"
+        if len(very_recent) >= 3 or any(marker in latest_content for marker in busy_markers):
+            return "busy"
+        if not inbound_recent:
+            return "low_energy" if local_hour >= 22 or local_hour < 7 else "available"
+        last_message = inbound_recent[0]
+        if last_message.message_timestamp <= now - timedelta(minutes=25):
+            return "available"
+        return "available" if 9 <= local_hour < 20 else "low_energy"
+
+    def _moment_suppression(
+        self,
+        *,
+        candidate: ProactiveCandidateRecord,
+        moment_state: str,
+        now: datetime,
+    ) -> tuple[str, str, datetime] | None:
+        if moment_state == "high_focus" and candidate.category in {"project_nudge", "routine"}:
+            return (
+                "moment_state_high_focus",
+                "Momento atual sugere foco alto; melhor nao interromper com esse tipo de nudge.",
+                now + timedelta(minutes=90),
+            )
+        if moment_state == "busy" and candidate.category == "routine":
+            return (
+                "moment_state_busy",
+                "Momento atual parece corrido demais para nudge de rotina.",
+                now + timedelta(minutes=60),
+            )
+        return None
 
     async def _send_unsolicited_message(
         self,

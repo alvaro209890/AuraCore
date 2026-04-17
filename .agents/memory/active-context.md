@@ -138,3 +138,45 @@
   - `GET /api/memories/status` respondeu `{"detail":"Bearer token ausente."}`
   - `GET /api/whatsapp-agent/proactivity/settings` respondeu `{"detail":"Bearer token ausente."}`
   - isso confirma backend ativo e rotas protegidas carregadas após o restart
+
+## Atualização 2026-04-17 7
+
+- Nova rodada de melhoria da proatividade implementada no backend sem mexer no frontend
+- Ajustes aplicados:
+  - `assistant_context_service` agora consegue recuperar e formatar `important_messages` no contexto ativo quando o plano do DeepSeek pedir isso
+  - `deepseek_service` foi estendido para:
+    - `important_message_queries` no search plan
+    - ações concretas para `project_nudge`
+    - campos de importância no `extract_agent_memory`
+    - alternativas sugeridas na resolução de conflito de agenda
+  - `whatsapp_agent_service` agora pode salvar `important_messages` já no fluxo de aprendizado da mensagem inbound
+  - `proactive_assistant_service` agora:
+    - gera `suggested_actions` para nudges de projeto
+    - aplica `moment_state` heurístico (`high_focus`, `available`, `busy`, `low_energy`) antes de enviar
+    - registra esse contexto no scoring/log do envio
+  - `agenda_guardian_service` agora sugere slots livres quando detecta conflito
+- Validação local desta rodada:
+  - `python3 -m py_compile` dos serviços alterados: ok
+  - backend sincronizado para o runtime local
+  - `auracore-backend.service` reiniciado com sucesso
+    - `ExecMainPID=367297`
+    - `ActiveEnterTimestamp=Fri 2026-04-17 11:44:27 -03`
+  - `GET /api/whatsapp-agent/proactivity/settings` respondeu `{"detail":"Bearer token ausente."}`
+  - `GET /api/memories/status` respondeu `{"detail":"Bearer token ausente."}`
+- Limitação atual:
+  - nao houve smoke test funcional ponta a ponta com mensagens reais do WhatsApp nesta rodada; a validacao foi estrutural/operacional
+
+## Atualização 2026-04-17 8
+
+- Auditoria do frontend modular confirmou que a refatoração das abas estava ativa no app, mas ainda não estava segura para manter no repositório porque:
+  - `frontend/components/dashboard/tabs/` existia localmente e era usado pelo app atual
+  - essa pasta ainda não estava versionada no Git
+  - `frontend/old_dashboard.tsx` e scripts `frontend/fix_*.py` eram artefatos locais de refatoração
+- Ação aplicada:
+  - abas modulares preparadas para entrar no repositório principal
+  - artefatos locais de scratch passaram a ser ignorados por `.gitignore`
+- Validação local desta rodada:
+  - `npm run build` em `frontend`: ok
+  - `npx tsc --noEmit` em `frontend` após o build: ok
+  - frontend publicado novamente no Firebase Hosting:
+    - `https://auracore-82bf2.web.app`
