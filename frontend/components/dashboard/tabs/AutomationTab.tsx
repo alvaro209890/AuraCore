@@ -1,5 +1,18 @@
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
-import { Activity, Brain, Check, Clock3, Coins, RefreshCw, Settings2, Zap } from 'lucide-react';
+import {
+  Activity,
+  BarChart3,
+  Brain,
+  Check,
+  Clock3,
+  Coins,
+  RefreshCw,
+  Search,
+  Settings2,
+  Shield,
+  Sparkles,
+  Zap,
+} from 'lucide-react';
 import {
   formatShortDateTime,
   formatTokenCount,
@@ -8,13 +21,13 @@ import {
 } from '../../connection-dashboard';
 import type { AutomationDecision, AutomationSettings, AutomationStatus } from '@/lib/api';
 
-type AutomationDraft = Partial<AutomationSettings>;
+type Tone = 'emerald' | 'indigo' | 'amber';
 
 type ToggleField = {
   key: keyof AutomationSettings;
   title: string;
   description: string;
-  tone: 'emerald' | 'indigo' | 'amber';
+  tone: Tone;
 };
 
 const TOGGLE_FIELDS: ToggleField[] = [
@@ -38,6 +51,32 @@ const TOGGLE_FIELDS: ToggleField[] = [
   },
 ];
 
+const DETAIL_MODE_OPTIONS: Array<{
+  value: AutomationSettings['default_detail_mode'];
+  title: string;
+  description: string;
+  tone: Tone;
+}> = [
+  {
+    value: 'light',
+    title: 'Light',
+    description: 'Mais econômico e direto.',
+    tone: 'emerald',
+  },
+  {
+    value: 'balanced',
+    title: 'Balanced',
+    description: 'Leitura padrão para operação diária.',
+    tone: 'indigo',
+  },
+  {
+    value: 'deep',
+    title: 'Deep',
+    description: 'Mais profundidade quando a janela justificar.',
+    tone: 'amber',
+  },
+];
+
 function SettingField({
   label,
   hint,
@@ -50,11 +89,11 @@ function SettingField({
   children: ReactNode;
 }) {
   return (
-    <label className={`ops-field${full ? ' ops-field-full' : ''}`}>
+    <div className={`ops-field${full ? ' ops-field-full' : ''}`}>
       <span className="ops-field-label">{label}</span>
       {children}
       {hint ? <span className="ops-field-caption">{hint}</span> : null}
-    </label>
+    </div>
   );
 }
 
@@ -69,7 +108,7 @@ function ToggleCard({
   description: string;
   checked: boolean;
   onChange: (checked: boolean) => void;
-  tone: 'emerald' | 'indigo' | 'amber';
+  tone: Tone;
 }) {
   return (
     <label className={`ops-toggle-card ops-toggle-card-${tone}`}>
@@ -106,6 +145,58 @@ function HistoryItem({
         {badge ? <span className="micro-status micro-status-indigo">{badge}</span> : null}
       </div>
       <p>{detail}</p>
+    </div>
+  );
+}
+
+function ControlPanel({
+  eyebrow,
+  title,
+  description,
+  tone,
+  icon,
+  children,
+}: {
+  eyebrow: string;
+  title: string;
+  description: string;
+  tone: Tone;
+  icon: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <section className={`ops-control-panel ops-control-panel-${tone}`}>
+      <div className="ops-control-head">
+        <div className="ops-control-copy">
+          <span className="ops-control-kicker">{eyebrow}</span>
+          <strong>{title}</strong>
+          <p>{description}</p>
+        </div>
+        <div className="ops-control-icon">{icon}</div>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function InputShell({
+  icon,
+  tone = 'indigo',
+  hint,
+  children,
+}: {
+  icon: ReactNode;
+  tone?: Tone;
+  hint?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className={`ops-input-shell ops-input-shell-${tone}`}>
+      <span className="ops-input-shell-icon">{icon}</span>
+      <div className="ops-input-shell-body">
+        {children}
+        {hint ? <span className="ops-input-shell-hint">{hint}</span> : null}
+      </div>
     </div>
   );
 }
@@ -160,6 +251,16 @@ export default function AutomationTab({
     ...(automationDraft ?? {}),
   };
   const hasDraft = Boolean(automationDraft);
+  const budgetUsage = effectiveSettings.daily_budget_usd
+    ? Math.min(
+        999,
+        Math.round(((automationStatus?.daily_cost_usd ?? 0) / Math.max(effectiveSettings.daily_budget_usd, 0.0001)) * 100),
+      )
+    : 0;
+  const remainingJobs = Math.max(
+    0,
+    effectiveSettings.max_auto_jobs_per_day - (automationStatus?.daily_auto_jobs_count ?? 0),
+  );
 
   const patchDraft = (patch: Partial<AutomationSettings>): void => {
     onDraftChange((previous: any) => ({
@@ -177,29 +278,29 @@ export default function AutomationTab({
             <Settings2 size={14} />
             Loop operacional
           </div>
-          <h3>Automação sob controle, com leitura clara do que roda sozinho e do que ainda depende de contexto.</h3>
+          <h3>Automação com governança visual, thresholds legíveis e cadência clara antes de qualquer job rodar.</h3>
           <p>
-            Esta aba separa configuração, pulso do loop e histórico recente. A ideia é enxergar rapidamente limite,
-            cadência e custo antes de deixar o backend agir sozinho.
+            Esta aba agora separa o pulso do loop, os gatilhos de entrada, a janela padrão de análise e o teto diário
+            de custo e volume.
           </p>
-          <div className="hero-actions">
+          <div className="ops-hero-actions">
             <button
-              className="ac-button ac-button-outline"
+              className="ops-hero-button ops-hero-button-ghost"
               disabled={isTickingAutomation}
               onClick={onTick}
               type="button"
             >
-              <RefreshCw className={isTickingAutomation ? 'spin' : ''} size={15} />
+              <RefreshCw className={isTickingAutomation ? 'spin' : ''} size={16} />
               {isTickingAutomation ? 'Rodando tick...' : 'Rodar tick agora'}
             </button>
             <button
-              className="ac-button ac-button-primary"
+              className="ops-hero-button ops-hero-button-primary"
               disabled={isSavingAutomation || !hasDraft}
               onClick={onSave}
               type="button"
             >
-              <Check size={15} />
-              {isSavingAutomation ? 'Salvando...' : 'Salvar configuração'}
+              <Check size={16} />
+              {isSavingAutomation ? 'Salvando ajustes...' : 'Salvar configuração'}
             </button>
           </div>
         </div>
@@ -213,12 +314,12 @@ export default function AutomationTab({
           <div className="projects-hero-metric">
             <span>Jobs hoje</span>
             <strong>{automationStatus ? String(automationStatus.daily_auto_jobs_count) : '...'}</strong>
-            <small>Lotes automáticos concluídos no dia</small>
+            <small>{`${remainingJobs} restantes dentro do teto`}</small>
           </div>
           <div className="projects-hero-metric">
             <span>Custo diário</span>
             <strong>{automationStatus ? `$${automationStatus.daily_cost_usd.toFixed(2)}` : '...'}</strong>
-            <small>Comparado ao teto configurado</small>
+            <small>{`${budgetUsage}% do budget configurado`}</small>
           </div>
           <div className="projects-hero-metric">
             <span>Última decisão</span>
@@ -234,7 +335,7 @@ export default function AutomationTab({
 
       <div className="ops-surface">
         <SectionTitle
-          title="Configuração do Loop"
+          title="Governança da Automação"
           icon={Brain}
           action={
             effectiveSettings.updated_at ? (
@@ -243,156 +344,244 @@ export default function AutomationTab({
           }
         />
         <p className="support-copy">
-          Ajuste o comportamento automático sem perder previsibilidade. Os campos abaixo controlam entrada mínima,
-          janela de leitura, teto operacional e profundidade padrão das análises.
+          Os blocos abaixo tratam o loop como operação de produção: o que liga, o que dispara, até onde pode ir e quão
+          profunda fica a leitura automática.
         </p>
 
-        <div className="ops-toggle-grid">
-          {TOGGLE_FIELDS.map((field) => (
-            <ToggleCard
-              key={field.key}
-              checked={Boolean(effectiveSettings[field.key])}
-              description={field.description}
-              onChange={(checked) => patchDraft({ [field.key]: checked } as Partial<AutomationSettings>)}
-              title={field.title}
-              tone={field.tone}
-            />
-          ))}
+        <div className="ops-panel-grid">
+          <ControlPanel
+            description="Esses toggles controlam as camadas do pipeline. O bloco agora ficou explícito e menos parecido com um formulário técnico cru."
+            eyebrow="Estados"
+            icon={<Shield size={18} />}
+            title="O que roda sozinho"
+            tone="emerald"
+          >
+            <div className="ops-toggle-stack">
+              {TOGGLE_FIELDS.map((field) => (
+                <ToggleCard
+                  key={field.key}
+                  checked={Boolean(effectiveSettings[field.key])}
+                  description={field.description}
+                  onChange={(checked) => patchDraft({ [field.key]: checked } as Partial<AutomationSettings>)}
+                  title={field.title}
+                  tone={field.tone}
+                />
+              ))}
+            </div>
+          </ControlPanel>
+
+          <ControlPanel
+            description="Resumo operacional do loop para leitura rápida: fila, custo, budget e capacidade diária restante."
+            eyebrow="Pulso"
+            icon={<BarChart3 size={18} />}
+            title="Leitura instantânea"
+            tone="indigo"
+          >
+            <div className="ops-stat-ribbon">
+              <div className="ops-stat-chip">
+                <span>Fila</span>
+                <strong>{automationStatus ? automationStatus.queued_jobs_count : 0}</strong>
+              </div>
+              <div className="ops-stat-chip">
+                <span>Budget</span>
+                <strong>{`${budgetUsage}%`}</strong>
+              </div>
+              <div className="ops-stat-chip">
+                <span>Jobs restantes</span>
+                <strong>{remainingJobs}</strong>
+              </div>
+            </div>
+            <div className="ops-inline-note">
+              <strong>
+                {effectiveSettings.daily_budget_usd > 0
+                  ? `Teto de $${effectiveSettings.daily_budget_usd.toFixed(2)} por dia`
+                  : 'Budget diário zerado'}
+              </strong>
+              <span>
+                {operationalLatestJob
+                  ? `Último job: ${getIntentTitle(operationalLatestJob.intent as any)} em ${formatShortDateTime(operationalLatestJob.created_at)}.`
+                  : 'Ainda não existe job recente persistido para comparação.'}
+              </span>
+            </div>
+          </ControlPanel>
         </div>
 
-        <div className="ops-form-shell">
-          <div className="ops-form-grid">
-            <SettingField
-              hint="Quantidade mínima de mensagens novas antes de disparar uma análise econômica."
-              label="Novo volume mínimo"
-            >
-              <input
-                className="ops-input"
-                min="0"
-                onChange={(event) =>
-                  patchDraft({ min_new_messages_threshold: Math.max(0, Number(event.target.value) || 0) })
-                }
-                step="1"
-                type="number"
-                value={effectiveSettings.min_new_messages_threshold}
-              />
-            </SettingField>
+        <div className="ops-panel-grid">
+          <ControlPanel
+            description="Thresholds de entrada ficaram agrupados para facilitar leitura de sensibilidade do pipeline."
+            eyebrow="Gatilhos"
+            icon={<Zap size={18} />}
+            title="Quando vale abrir um job"
+            tone="amber"
+          >
+            <div className="ops-form-grid ops-form-grid-triple">
+              <SettingField
+                hint="Quantidade mínima de mensagens novas antes de disparar uma análise econômica."
+                label="Novo volume mínimo"
+              >
+                <InputShell hint="Entrada mínima para justificar custo." icon={<Sparkles size={16} />} tone="amber">
+                  <input
+                    className="ops-input"
+                    min="0"
+                    onChange={(event) =>
+                      patchDraft({ min_new_messages_threshold: Math.max(0, Number(event.target.value) || 0) })
+                    }
+                    step="1"
+                    type="number"
+                    value={effectiveSettings.min_new_messages_threshold}
+                  />
+                </InputShell>
+              </SettingField>
+
+              <SettingField
+                hint="Se o contexto estiver velho além disso, o sistema considera uma retomada."
+                label="Janela de estagnação (h)"
+              >
+                <InputShell hint="Quanto tempo o contexto pode ficar parado." icon={<Clock3 size={16} />} tone="indigo">
+                  <input
+                    className="ops-input"
+                    min="0"
+                    onChange={(event) =>
+                      patchDraft({ stale_hours_threshold: Math.max(0, Number(event.target.value) || 0) })
+                    }
+                    step="1"
+                    type="number"
+                    value={effectiveSettings.stale_hours_threshold}
+                  />
+                </InputShell>
+              </SettingField>
+
+              <SettingField
+                hint="Quando a fila de pruned messages passa disso, o loop fica mais conservador."
+                label="Pruned threshold"
+              >
+                <InputShell hint="Freio de segurança para contexto inflado." icon={<Activity size={16} />} tone="emerald">
+                  <input
+                    className="ops-input"
+                    min="0"
+                    onChange={(event) =>
+                      patchDraft({ pruned_messages_threshold: Math.max(0, Number(event.target.value) || 0) })
+                    }
+                    step="50"
+                    type="number"
+                    value={effectiveSettings.pruned_messages_threshold}
+                  />
+                </InputShell>
+              </SettingField>
+            </div>
+          </ControlPanel>
+
+          <ControlPanel
+            description="Esse bloco controla o tamanho da leitura e a profundidade padrão usada quando não houver override explícito."
+            eyebrow="Janela"
+            icon={<Search size={18} />}
+            title="Escopo da leitura automática"
+            tone="indigo"
+          >
+            <div className="ops-form-grid ops-form-grid-dual">
+              <SettingField hint="Quantidade alvo de mensagens por job automático." label="Mensagens por job">
+                <InputShell hint="Tamanho típico do recorte." icon={<Activity size={16} />} tone="indigo">
+                  <input
+                    className="ops-input"
+                    min="1"
+                    onChange={(event) =>
+                      patchDraft({ default_target_message_count: Math.max(1, Number(event.target.value) || 1) })
+                    }
+                    step="1"
+                    type="number"
+                    value={effectiveSettings.default_target_message_count}
+                  />
+                </InputShell>
+              </SettingField>
+
+              <SettingField hint="Quantas horas para trás o recorte automático pode olhar." label="Lookback padrão (h)">
+                <InputShell hint="Janela máxima do contexto padrão." icon={<Clock3 size={16} />} tone="amber">
+                  <input
+                    className="ops-input"
+                    min="1"
+                    onChange={(event) =>
+                      patchDraft({ default_lookback_hours: Math.max(1, Number(event.target.value) || 1) })
+                    }
+                    step="1"
+                    type="number"
+                    value={effectiveSettings.default_lookback_hours}
+                  />
+                </InputShell>
+              </SettingField>
+            </div>
 
             <SettingField
-              hint="Se o contexto estiver velho além disso, o sistema considera uma retomada."
-              label="Janela de estagnação (h)"
-            >
-              <input
-                className="ops-input"
-                min="0"
-                onChange={(event) =>
-                  patchDraft({ stale_hours_threshold: Math.max(0, Number(event.target.value) || 0) })
-                }
-                step="1"
-                type="number"
-                value={effectiveSettings.stale_hours_threshold}
-              />
-            </SettingField>
-
-            <SettingField
-              hint="Quando a fila de pruned messages passa disso, o loop fica mais conservador."
-              label="Pruned threshold"
-            >
-              <input
-                className="ops-input"
-                min="0"
-                onChange={(event) =>
-                  patchDraft({ pruned_messages_threshold: Math.max(0, Number(event.target.value) || 0) })
-                }
-                step="50"
-                type="number"
-                value={effectiveSettings.pruned_messages_threshold}
-              />
-            </SettingField>
-
-            <SettingField
-              hint="Quantidade alvo de mensagens por job automático."
-              label="Mensagens por job"
-            >
-              <input
-                className="ops-input"
-                min="1"
-                onChange={(event) =>
-                  patchDraft({ default_target_message_count: Math.max(1, Number(event.target.value) || 1) })
-                }
-                step="1"
-                type="number"
-                value={effectiveSettings.default_target_message_count}
-              />
-            </SettingField>
-
-            <SettingField
-              hint="Quantas horas para trás o recorte automático pode olhar."
-              label="Lookback padrão (h)"
-            >
-              <input
-                className="ops-input"
-                min="1"
-                onChange={(event) =>
-                  patchDraft({ default_lookback_hours: Math.max(1, Number(event.target.value) || 1) })
-                }
-                step="1"
-                type="number"
-                value={effectiveSettings.default_lookback_hours}
-              />
-            </SettingField>
-
-            <SettingField
-              hint="Limite máximo de execuções automáticas no mesmo dia."
-              label="Máximo de jobs por dia"
-            >
-              <input
-                className="ops-input"
-                min="0"
-                onChange={(event) =>
-                  patchDraft({ max_auto_jobs_per_day: Math.max(0, Number(event.target.value) || 0) })
-                }
-                step="1"
-                type="number"
-                value={effectiveSettings.max_auto_jobs_per_day}
-              />
-            </SettingField>
-
-            <SettingField
-              hint="Teto de custo para o orçamento diário do loop."
-              label="Budget diário (USD)"
-            >
-              <input
-                className="ops-input"
-                min="0"
-                onChange={(event) =>
-                  patchDraft({ daily_budget_usd: Math.max(0, Number(event.target.value) || 0) })
-                }
-                step="0.1"
-                type="number"
-                value={effectiveSettings.daily_budget_usd}
-              />
-            </SettingField>
-
-            <SettingField
-              hint="Define quanto detalhe o pipeline pede quando não houver override explícito."
+              hint="Troca a profundidade padrão sem depender de select simples demais. O estado fica mais legível."
               label="Detalhe padrão"
             >
-              <select
-                className="ops-select"
-                onChange={(event) =>
-                  patchDraft({
-                    default_detail_mode: event.target.value as AutomationSettings['default_detail_mode'],
-                  })
-                }
-                value={effectiveSettings.default_detail_mode}
-              >
-                <option value="light">Light</option>
-                <option value="balanced">Balanced</option>
-                <option value="deep">Deep</option>
-              </select>
+              <div className="ops-pill-grid">
+                {DETAIL_MODE_OPTIONS.map((option) => {
+                  const isActive = effectiveSettings.default_detail_mode === option.value;
+                  return (
+                    <button
+                      key={option.value}
+                      className={`ops-pill-button${isActive ? ` ops-pill-button-active ops-pill-button-active-${option.tone}` : ''}`}
+                      onClick={() => patchDraft({ default_detail_mode: option.value })}
+                      type="button"
+                    >
+                      <strong>{option.title}</strong>
+                      <span>{option.description}</span>
+                    </button>
+                  );
+                })}
+              </div>
             </SettingField>
-          </div>
+          </ControlPanel>
+        </div>
+
+        <div className="ops-panel-grid">
+          <ControlPanel
+            description="Budget e limite diário agora aparecem no mesmo bloco para evitar que um campo pareça isolado do outro."
+            eyebrow="Budget"
+            icon={<Coins size={18} />}
+            title="Teto financeiro e de volume"
+            tone="emerald"
+          >
+            <div className="ops-form-grid ops-form-grid-dual">
+              <SettingField hint="Teto de custo para o orçamento diário do loop." label="Budget diário (USD)">
+                <InputShell hint="Custo total permitido por dia." icon={<Coins size={16} />} tone="emerald">
+                  <input
+                    className="ops-input"
+                    min="0"
+                    onChange={(event) =>
+                      patchDraft({ daily_budget_usd: Math.max(0, Number(event.target.value) || 0) })
+                    }
+                    step="0.1"
+                    type="number"
+                    value={effectiveSettings.daily_budget_usd}
+                  />
+                </InputShell>
+              </SettingField>
+
+              <SettingField hint="Limite máximo de execuções automáticas no mesmo dia." label="Máximo de jobs por dia">
+                <InputShell hint="Teto de jobs automáticos diários." icon={<Zap size={16} />} tone="amber">
+                  <input
+                    className="ops-input"
+                    min="0"
+                    onChange={(event) =>
+                      patchDraft({ max_auto_jobs_per_day: Math.max(0, Number(event.target.value) || 0) })
+                    }
+                    step="1"
+                    type="number"
+                    value={effectiveSettings.max_auto_jobs_per_day}
+                  />
+                </InputShell>
+              </SettingField>
+            </div>
+            <div className="ops-inline-note">
+              <strong>{`${remainingJobs} jobs ainda cabem hoje dentro do limite configurado`}</strong>
+              <span>
+                {automationStatus
+                  ? `Custo acumulado hoje: $${automationStatus.daily_cost_usd.toFixed(3)}.`
+                  : 'Sem status atual disponível para custo acumulado.'}
+              </span>
+            </div>
+          </ControlPanel>
         </div>
       </div>
 
@@ -546,9 +735,7 @@ export default function AutomationTab({
                 <Coins size={16} />
                 <strong>Modelo e custo</strong>
               </div>
-              <span className="micro-badge">
-                teto ${effectiveSettings.daily_budget_usd.toFixed(2)}
-              </span>
+              <span className="micro-badge">teto ${effectiveSettings.daily_budget_usd.toFixed(2)}</span>
             </div>
             <div className="ops-history-stack">
               {(automationStatus?.model_runs ?? []).slice(0, 5).map((run) => (

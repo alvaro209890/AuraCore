@@ -242,3 +242,17 @@
     - `ActiveEnterTimestamp=Fri 2026-04-17 14:33:54 -03`
   - journal recente mostrou rotas reais do dashboard servindo `200 OK`
   - checagens locais sem token em `/api/memories/status` e `/api/whatsapp-agent/proactivity/settings` responderam `Bearer token ausente`, confirmando backend ativo e rotas protegidas carregadas
+
+## Atualização 2026-04-17 13
+
+- Refatoração visual profunda aplicada nas abas `Proatividade` e `Automação` do frontend principal
+- Ajustes aplicados:
+  - `ProactivityTab` foi reorganizada em painéis de presença, silêncio, cadência, digests e categorias
+  - `AutomationTab` foi reorganizada em painéis de estados automáticos, gatilhos, janela de leitura e budget
+  - `frontend/app/globals.css` recebeu shells escuros para `input/select/time/number`, botões `ops-hero-button`, pills segmentadas e painéis `ops-control-panel`
+  - o problema visual de campos simples/brancos ficou tratado no kit compartilhado, não só pontualmente em cada aba
+- Validação local desta rodada:
+  - `npm run build` em `frontend`: ok
+- Deploy:
+  - Firebase Hosting target `app` publicado novamente
+  - URL: `https://auracore-82bf2.web.app`

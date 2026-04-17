@@ -1,5 +1,21 @@
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
-import { BadgeCheck, Check, CheckCircle2, MessageSquare, RefreshCw, Send, Sparkles, X } from 'lucide-react';
+import {
+  BadgeCheck,
+  BellRing,
+  Check,
+  CheckCircle2,
+  Clock3,
+  Gauge,
+  LayoutGrid,
+  MessageSquare,
+  Moon,
+  RefreshCw,
+  Send,
+  Sparkles,
+  SunMedium,
+  TimerReset,
+  X,
+} from 'lucide-react';
 import {
   formatConfidence,
   formatRelativeTime,
@@ -13,11 +29,13 @@ import {
 import type { ProactiveCandidate, ProactiveDeliveryLog, ProactivePreferences } from '@/lib/api';
 import type { ProactivityDraft } from '../../connection-dashboard';
 
+type Tone = 'emerald' | 'indigo' | 'amber';
+
 type CategoryField = {
   key: keyof ProactivePreferences;
   title: string;
   description: string;
-  tone: 'emerald' | 'indigo' | 'amber';
+  tone: Tone;
 };
 
 const CATEGORY_FIELDS: CategoryField[] = [
@@ -59,21 +77,49 @@ const CATEGORY_FIELDS: CategoryField[] = [
   },
 ];
 
+const INTENSITY_OPTIONS: Array<{
+  value: ProactivePreferences['intensity'];
+  title: string;
+  description: string;
+  tone: Tone;
+}> = [
+  {
+    value: 'conservative',
+    title: 'Conservadora',
+    description: 'Interrompe menos e prioriza contexto forte.',
+    tone: 'emerald',
+  },
+  {
+    value: 'moderate',
+    title: 'Moderada',
+    description: 'Equilíbrio entre iniciativa e discrição.',
+    tone: 'indigo',
+  },
+  {
+    value: 'high',
+    title: 'Alta',
+    description: 'Mais presença, com mais oportunidades ao longo do dia.',
+    tone: 'amber',
+  },
+];
+
 function SettingField({
   label,
   hint,
+  full = false,
   children,
 }: {
   label: string;
   hint?: string;
+  full?: boolean;
   children: ReactNode;
 }) {
   return (
-    <label className="ops-field">
+    <div className={`ops-field${full ? ' ops-field-full' : ''}`}>
       <span className="ops-field-label">{label}</span>
       {children}
       {hint ? <span className="ops-field-caption">{hint}</span> : null}
-    </label>
+    </div>
   );
 }
 
@@ -88,7 +134,7 @@ function ToggleCard({
   description: string;
   checked: boolean;
   onChange: (checked: boolean) => void;
-  tone: 'emerald' | 'indigo' | 'amber';
+  tone: Tone;
 }) {
   return (
     <label className={`ops-toggle-card ops-toggle-card-${tone}`}>
@@ -102,6 +148,88 @@ function ToggleCard({
       </span>
     </label>
   );
+}
+
+function ControlPanel({
+  eyebrow,
+  title,
+  description,
+  tone,
+  icon,
+  children,
+}: {
+  eyebrow: string;
+  title: string;
+  description: string;
+  tone: Tone;
+  icon: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <section className={`ops-control-panel ops-control-panel-${tone}`}>
+      <div className="ops-control-head">
+        <div className="ops-control-copy">
+          <span className="ops-control-kicker">{eyebrow}</span>
+          <strong>{title}</strong>
+          <p>{description}</p>
+        </div>
+        <div className="ops-control-icon">{icon}</div>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function InputShell({
+  icon,
+  tone = 'indigo',
+  hint,
+  children,
+}: {
+  icon: ReactNode;
+  tone?: Tone;
+  hint?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className={`ops-input-shell ops-input-shell-${tone}`}>
+      <span className="ops-input-shell-icon">{icon}</span>
+      <div className="ops-input-shell-body">
+        {children}
+        {hint ? <span className="ops-input-shell-hint">{hint}</span> : null}
+      </div>
+    </div>
+  );
+}
+
+function formatWindowLabel(start: string, end: string): string {
+  if (!start || !end) {
+    return 'Janela incompleta';
+  }
+
+  const [startHour = '0', startMinute = '0'] = start.split(':');
+  const [endHour = '0', endMinute = '0'] = end.split(':');
+  const startTotal = Number(startHour) * 60 + Number(startMinute);
+  const endTotal = Number(endHour) * 60 + Number(endMinute);
+
+  if (Number.isNaN(startTotal) || Number.isNaN(endTotal)) {
+    return 'Janela inválida';
+  }
+
+  let duration = endTotal - startTotal;
+  if (duration <= 0) {
+    duration += 24 * 60;
+  }
+  const hours = Math.floor(duration / 60);
+  const minutes = duration % 60;
+
+  if (hours && minutes) {
+    return `${hours}h ${minutes}min de silêncio`;
+  }
+  if (hours) {
+    return `${hours}h de silêncio`;
+  }
+  return `${minutes}min de silêncio`;
 }
 
 export default function ProactivityTab({
@@ -164,6 +292,15 @@ export default function ProactivityTab({
     effectiveSettings.morning_digest_enabled,
     effectiveSettings.night_digest_enabled,
   ].filter(Boolean).length;
+  const quietWindowSummary = formatWindowLabel(
+    effectiveSettings.quiet_hours_start,
+    effectiveSettings.quiet_hours_end,
+  );
+  const digestSummary = `${effectiveSettings.morning_digest_time} / ${effectiveSettings.night_digest_time}`;
+  const proactiveCadenceSummary =
+    effectiveSettings.max_unsolicited_per_day > 0
+      ? `${effectiveSettings.max_unsolicited_per_day} iniciativas com pausa mínima de ${effectiveSettings.min_interval_minutes} min`
+      : 'Sem iniciativas espontâneas liberadas';
 
   const patchDraft = (patch: Partial<ProactivePreferences>): void => {
     onDraftChange((previous: any) => ({
@@ -181,29 +318,29 @@ export default function ProactivityTab({
             <Sparkles size={14} />
             Radar proativo
           </div>
-          <h3>Mensagens espontâneas com critério, janela de silêncio e categorias bem separadas.</h3>
+          <h3>Mensagens espontâneas com presença calibrada, janela de silêncio real e categorias bem separadas.</h3>
           <p>
-            A configuração abaixo deixa explícito quando o Orion pode iniciar conversa, o quanto ele pode insistir e
-            quais rotinas entram no radar ao longo do dia.
+            A configuração abaixo deixa explícito quando o Orion pode iniciar conversa, quanto espaço ele ocupa ao
+            longo do dia e quais rituais automáticos entram no radar.
           </p>
-          <div className="hero-actions">
+          <div className="ops-hero-actions">
             <button
-              className="ac-button ac-button-outline"
+              className="ops-hero-button ops-hero-button-ghost"
               disabled={isTickingProactivity}
               onClick={onTick}
               type="button"
             >
-              <RefreshCw className={isTickingProactivity ? 'spin' : ''} size={15} />
-              {isTickingProactivity ? 'Reavaliando...' : 'Rodar tick agora'}
+              <RefreshCw className={isTickingProactivity ? 'spin' : ''} size={16} />
+              {isTickingProactivity ? 'Reavaliando radar...' : 'Rodar tick agora'}
             </button>
             <button
-              className="ac-button ac-button-primary"
+              className="ops-hero-button ops-hero-button-primary"
               disabled={isSavingProactivity || !proactivityDraft}
               onClick={onSave}
               type="button"
             >
-              <Check size={15} />
-              {isSavingProactivity ? 'Salvando...' : 'Salvar configuração'}
+              <Check size={16} />
+              {isSavingProactivity ? 'Salvando ajustes...' : 'Salvar configuração'}
             </button>
           </div>
         </div>
@@ -215,9 +352,9 @@ export default function ProactivityTab({
             <small>{`Intensidade ${effectiveSettings.intensity}`}</small>
           </div>
           <div className="projects-hero-metric">
-            <span>Categorias</span>
-            <strong>{enabledCategoriesCount}</strong>
-            <small>Agenda, follow-up, projetos, rotina e digests</small>
+            <span>Silêncio</span>
+            <strong>{quietWindowSummary}</strong>
+            <small>{`${effectiveSettings.quiet_hours_start} → ${effectiveSettings.quiet_hours_end}`}</small>
           </div>
           <div className="projects-hero-metric">
             <span>Fila viva</span>
@@ -238,7 +375,7 @@ export default function ProactivityTab({
 
       <div className="ops-surface">
         <SectionTitle
-          title="Configuração da Proatividade"
+          title="Arquitetura da Proatividade"
           icon={Sparkles}
           action={
             effectiveSettings.updated_at ? (
@@ -247,114 +384,205 @@ export default function ProactivityTab({
           }
         />
         <p className="support-copy">
-          Os controles abaixo definem janela de silêncio, intensidade, frequência máxima e os tipos de nudges que o
-          sistema pode produzir.
+          Os painéis abaixo foram separados por presença, silêncio, cadência e rituais. A intenção é enxergar a lógica
+          operacional do motor antes mesmo de mexer em cada campo.
         </p>
 
-        <div className="ops-toggle-grid">
-          <ToggleCard
-            checked={effectiveSettings.enabled}
-            description="Permite mensagens não solicitadas com score, cooldown e checagem de momento."
-            onChange={(checked) => patchDraft({ enabled: checked })}
-            title="Ativar proatividade"
+        <div className="ops-panel-grid">
+          <ControlPanel
+            description="Liga o motor e define quão cedo ele pode tomar a frente numa conversa não solicitada."
+            eyebrow="Presença"
+            icon={<Gauge size={18} />}
+            title="Tom de iniciativa"
             tone="emerald"
-          />
-          <ToggleCard
-            checked={effectiveSettings.morning_digest_enabled}
-            description="Mantém o resumo da manhã como parte do ritual automático."
-            onChange={(checked) => patchDraft({ morning_digest_enabled: checked })}
-            title="Digest matinal"
+          >
+            <div className="ops-toggle-stack">
+              <ToggleCard
+                checked={effectiveSettings.enabled}
+                description="Permite mensagens não solicitadas com score, cooldown e checagem de momento."
+                onChange={(checked) => patchDraft({ enabled: checked })}
+                title="Ativar proatividade"
+                tone="emerald"
+              />
+            </div>
+
+            <SettingField
+              hint="Troca o perfil do motor sem depender de texto livre. O estado fica explícito e comparável."
+              label="Intensidade operacional"
+            >
+              <div className="ops-pill-grid">
+                {INTENSITY_OPTIONS.map((option) => {
+                  const isActive = effectiveSettings.intensity === option.value;
+                  return (
+                    <button
+                      key={option.value}
+                      className={`ops-pill-button${isActive ? ` ops-pill-button-active ops-pill-button-active-${option.tone}` : ''}`}
+                      onClick={() => patchDraft({ intensity: option.value })}
+                      type="button"
+                    >
+                      <strong>{option.title}</strong>
+                      <span>{option.description}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </SettingField>
+
+            <div className="ops-stat-ribbon">
+              <div className="ops-stat-chip">
+                <span>Categorias ligadas</span>
+                <strong>{enabledCategoriesCount}</strong>
+              </div>
+              <div className="ops-stat-chip">
+                <span>Cadência atual</span>
+                <strong>{effectiveSettings.max_unsolicited_per_day}/dia</strong>
+              </div>
+            </div>
+          </ControlPanel>
+
+          <ControlPanel
+            description="Horários sensíveis deixam de parecer um campo avulso e passam a funcionar como janela operacional real."
+            eyebrow="Silêncio"
+            icon={<Moon size={18} />}
+            title="Janela de retenção"
             tone="indigo"
-          />
-          <ToggleCard
-            checked={effectiveSettings.night_digest_enabled}
-            description="Mantém o fechamento do dia com retomada e replanejamento."
-            onChange={(checked) => patchDraft({ night_digest_enabled: checked })}
-            title="Digest noturno"
+          >
+            <div className="ops-form-grid ops-form-grid-dual">
+              <SettingField hint="Hora em que o motor para de sugerir nudges leves." label="Silêncio inicial">
+                <InputShell hint="Início do recolhimento automático." icon={<Moon size={16} />} tone="indigo">
+                  <input
+                    className="ops-input"
+                    onChange={(event) => patchDraft({ quiet_hours_start: event.target.value })}
+                    type="time"
+                    value={effectiveSettings.quiet_hours_start}
+                  />
+                </InputShell>
+              </SettingField>
+
+              <SettingField hint="Hora em que mensagens leves voltam a competir por atenção." label="Silêncio final">
+                <InputShell hint="Retorno seguro da janela ativa." icon={<SunMedium size={16} />} tone="amber">
+                  <input
+                    className="ops-input"
+                    onChange={(event) => patchDraft({ quiet_hours_end: event.target.value })}
+                    type="time"
+                    value={effectiveSettings.quiet_hours_end}
+                  />
+                </InputShell>
+              </SettingField>
+            </div>
+
+            <div className="ops-inline-note">
+              <strong>{quietWindowSummary}</strong>
+              <span>
+                Durante esse período, o sistema segura iniciativas leves e respeita só casos mais fortes do motor.
+              </span>
+            </div>
+          </ControlPanel>
+        </div>
+
+        <div className="ops-panel-grid">
+          <ControlPanel
+            description="Esses campos controlam o volume diário e o espaço mínimo entre nudges para evitar insistência artificial."
+            eyebrow="Cadência"
+            icon={<TimerReset size={18} />}
+            title="Pressão máxima por dia"
             tone="amber"
-          />
+          >
+            <div className="ops-form-grid ops-form-grid-dual">
+              <SettingField hint="Teto absoluto de mensagens espontâneas no mesmo dia." label="Máximo por dia">
+                <InputShell hint="Teto bruto de iniciativas." icon={<BellRing size={16} />} tone="amber">
+                  <input
+                    className="ops-input"
+                    min="0"
+                    onChange={(event) =>
+                      patchDraft({ max_unsolicited_per_day: Math.max(0, Number(event.target.value) || 0) })
+                    }
+                    step="1"
+                    type="number"
+                    value={effectiveSettings.max_unsolicited_per_day}
+                  />
+                </InputShell>
+              </SettingField>
+
+              <SettingField hint="Cooldown entre dois envios não solicitados." label="Intervalo mínimo (min)">
+                <InputShell hint="Tempo de respiro entre toques." icon={<Clock3 size={16} />} tone="indigo">
+                  <input
+                    className="ops-input"
+                    min="0"
+                    onChange={(event) =>
+                      patchDraft({ min_interval_minutes: Math.max(0, Number(event.target.value) || 0) })
+                    }
+                    step="5"
+                    type="number"
+                    value={effectiveSettings.min_interval_minutes}
+                  />
+                </InputShell>
+              </SettingField>
+            </div>
+
+            <div className="ops-inline-note">
+              <strong>{proactiveCadenceSummary}</strong>
+              <span>
+                O objetivo aqui é limitar a presença do agente sem perder as oportunidades que realmente valem a pena.
+              </span>
+            </div>
+          </ControlPanel>
+
+          <ControlPanel
+            description="Os digests ficam agrupados num mesmo bloco porque funcionam como ritual de abertura e fechamento do dia."
+            eyebrow="Rituais"
+            icon={<SunMedium size={18} />}
+            title="Manhã e noite"
+            tone="emerald"
+          >
+            <div className="ops-form-grid ops-form-grid-dual">
+              <SettingField hint="Horário padrão do resumo de abertura do dia." label="Digest da manhã">
+                <InputShell hint="Resumo de prioridades e agenda." icon={<SunMedium size={16} />} tone="emerald">
+                  <input
+                    className="ops-input"
+                    onChange={(event) => patchDraft({ morning_digest_time: event.target.value })}
+                    type="time"
+                    value={effectiveSettings.morning_digest_time}
+                  />
+                </InputShell>
+              </SettingField>
+
+              <SettingField hint="Horário padrão do fechamento com retomada." label="Digest da noite">
+                <InputShell hint="Fechamento do dia e replanejamento." icon={<Moon size={16} />} tone="amber">
+                  <input
+                    className="ops-input"
+                    onChange={(event) => patchDraft({ night_digest_time: event.target.value })}
+                    type="time"
+                    value={effectiveSettings.night_digest_time}
+                  />
+                </InputShell>
+              </SettingField>
+            </div>
+
+            <div className="ops-stat-ribbon">
+              <div className="ops-stat-chip">
+                <span>Digest manhã</span>
+                <strong>{effectiveSettings.morning_digest_enabled ? 'Ligado' : 'Desligado'}</strong>
+              </div>
+              <div className="ops-stat-chip">
+                <span>Digest noite</span>
+                <strong>{effectiveSettings.night_digest_enabled ? 'Ligado' : 'Desligado'}</strong>
+              </div>
+              <div className="ops-stat-chip">
+                <span>Horários</span>
+                <strong>{digestSummary}</strong>
+              </div>
+            </div>
+          </ControlPanel>
         </div>
+      </div>
 
-        <div className="ops-form-shell">
-          <div className="ops-form-grid">
-            <SettingField hint="Controla o quanto o agente pode insistir antes de esperar." label="Intensidade">
-              <select
-                className="ops-select"
-                onChange={(event) =>
-                  patchDraft({ intensity: event.target.value as ProactivePreferences['intensity'] })
-                }
-                value={effectiveSettings.intensity}
-              >
-                <option value="conservative">Conservadora</option>
-                <option value="moderate">Moderada</option>
-                <option value="high">Alta</option>
-              </select>
-            </SettingField>
-
-            <SettingField hint="Início do período em que nudges normais ficam retidos." label="Silêncio começa">
-              <input
-                className="ops-input"
-                onChange={(event) => patchDraft({ quiet_hours_start: event.target.value })}
-                type="time"
-                value={effectiveSettings.quiet_hours_start}
-              />
-            </SettingField>
-
-            <SettingField hint="Fim da janela em que os envios leves podem voltar." label="Silêncio termina">
-              <input
-                className="ops-input"
-                onChange={(event) => patchDraft({ quiet_hours_end: event.target.value })}
-                type="time"
-                value={effectiveSettings.quiet_hours_end}
-              />
-            </SettingField>
-
-            <SettingField hint="Teto de iniciativas espontâneas no mesmo dia." label="Máximo por dia">
-              <input
-                className="ops-input"
-                min="0"
-                onChange={(event) =>
-                  patchDraft({ max_unsolicited_per_day: Math.max(0, Number(event.target.value) || 0) })
-                }
-                step="1"
-                type="number"
-                value={effectiveSettings.max_unsolicited_per_day}
-              />
-            </SettingField>
-
-            <SettingField hint="Cooldown mínimo entre dois envios não solicitados." label="Intervalo mínimo (min)">
-              <input
-                className="ops-input"
-                min="0"
-                onChange={(event) =>
-                  patchDraft({ min_interval_minutes: Math.max(0, Number(event.target.value) || 0) })
-                }
-                step="5"
-                type="number"
-                value={effectiveSettings.min_interval_minutes}
-              />
-            </SettingField>
-
-            <SettingField hint="Horário padrão do resumo de abertura do dia." label="Digest da manhã">
-              <input
-                className="ops-input"
-                onChange={(event) => patchDraft({ morning_digest_time: event.target.value })}
-                type="time"
-                value={effectiveSettings.morning_digest_time}
-              />
-            </SettingField>
-
-            <SettingField hint="Horário padrão do resumo de fechamento." label="Digest da noite">
-              <input
-                className="ops-input"
-                onChange={(event) => patchDraft({ night_digest_time: event.target.value })}
-                type="time"
-                value={effectiveSettings.night_digest_time}
-              />
-            </SettingField>
-          </div>
-        </div>
-
+      <div className="ops-surface">
+        <SectionTitle title="Matriz de Categorias" icon={LayoutGrid} />
+        <p className="support-copy">
+          Cada cartão abaixo ativa um eixo da proatividade. Isso deixa claro o que o sistema pode iniciar sozinho e o
+          que deve continuar dependendo de contexto mais forte.
+        </p>
         <div className="ops-toggle-grid">
           {CATEGORY_FIELDS.map((field) => (
             <ToggleCard
@@ -420,9 +648,9 @@ export default function ProactivityTab({
                   </div>
                 </div>
 
-                <div className="hero-actions">
+                <div className="ops-hero-actions">
                   <button
-                    className="ac-button ac-button-outline"
+                    className="ops-hero-button ops-hero-button-ghost"
                     onClick={() => onDismissCandidate(candidate.id)}
                     type="button"
                   >
@@ -430,7 +658,7 @@ export default function ProactivityTab({
                     Dispensar
                   </button>
                   <button
-                    className="ac-button ac-button-outline"
+                    className="ops-hero-button ops-hero-button-ghost"
                     onClick={() => onConfirmCandidate(candidate.id)}
                     type="button"
                   >
@@ -438,7 +666,7 @@ export default function ProactivityTab({
                     Confirmar
                   </button>
                   <button
-                    className="ac-button ac-button-primary"
+                    className="ops-hero-button ops-hero-button-primary"
                     onClick={() => onCompleteCandidate(candidate.id)}
                     type="button"
                   >
