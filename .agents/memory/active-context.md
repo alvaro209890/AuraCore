@@ -237,6 +237,8 @@
   - `memory_service.py`
   - `deepseek_service.py`
 - Backend validado em execução:
-  - `auracore-backend.service` permaneceu `active/running` com `ExecMainPID=425502`
+  - `auracore-backend.service` reiniciado com sucesso e ficou `active/running`
+    - `ExecMainPID=427135`
+    - `ActiveEnterTimestamp=Fri 2026-04-17 14:33:54 -03`
   - journal recente mostrou rotas reais do dashboard servindo `200 OK`
   - checagens locais sem token em `/api/memories/status` e `/api/whatsapp-agent/proactivity/settings` responderam `Bearer token ausente`, confirmando backend ativo e rotas protegidas carregadas
