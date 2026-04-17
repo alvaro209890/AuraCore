@@ -39,6 +39,14 @@
 
 - Quando este arquivo crescer demais, resumir e manter apenas o contexto operacional realmente útil
 
+## Atualização 2026-04-15
+
+- Bot do WhatsApp agora só responde contatos pré-cadastrados ou o owner
+- Antes: `upsert_known_contact` registrava todo mundo antes de checar, o bot respondia qualquer um
+- Agora: `get_known_contact_by_phone` roda primeiro; se o contato não existe e não é owner/admin → `ignored_unknown_contact`
+- Backend reiniciado e rodando via Cloudflare tunnel (api.cursar.space)
+- Commit `ebcafb8` pushado no main
+
 ## Atualização recente
 
 - Abril/2026: o fluxo de memória do Orion foi enxugado para gastar menos tokens
@@ -47,3 +55,54 @@
   - mensagens curtas e diretas podem pular o `assistant_search_plan`
   - `memory_service` passou a compactar mais o contexto padrão de análise/refino antes de chamar o modelo
   - no incremental automático (`improve_memory`), o contexto agora é menor que o da primeira análise e o merge de projetos é pulado quando não há candidatos novos
+
+## Atualização 2026-04-17
+
+- Revisão arquitetural do sistema confirmou que o agente principal do WhatsApp ainda não executa campanhas ou sugestões proativas fora do fluxo reativo de entrada
+- Proatividade real existente hoje:
+  - lembretes e avisos de conflito da `agenda_guardian_service`
+  - respostas com memória do contato quando a mensagem atual justifica carregar esse contexto
+- Lacunas confirmadas para evolução:
+  - `important_messages` existe no store, mas não está integrado ao pipeline atual de resposta do `whatsapp_agent_service`
+  - a memória própria do contato é aprendida por mensagem e usada como contexto, mas ainda não há scoring de momento certo para enviar sugestões espontâneas
+  - a base já possui `analysis_jobs` e `automation_decisions`, o que favorece implementar um orquestrador de nudge/proatividade sem reinventar a infraestrutura
+
+## Atualização 2026-04-17 2
+
+- Implementado v1 do motor de proatividade do WhatsApp
+- Backend:
+  - novo `ProactiveAssistantService` roda em loop próprio no `warm_start`
+  - captura mensagens do owner para inferir follow-ups, rotina e nudges de projeto
+  - responde a confirmações/dispensas do owner sobre candidatos proativos
+  - registra outbound proativo no mesmo histórico do agente com `generated_by=proactive_assistant`
+- Persistência nova no SQLite:
+  - `important_messages`
+  - `proactive_preferences`
+  - `proactive_candidates`
+  - `proactive_delivery_log`
+  - `proactive_digest_state`
+- API nova em `/api/whatsapp-agent/proactivity/*` para settings, candidatos, deliveries e tick manual
+- Dashboard ganhou aba de Proatividade com configuração, fila ativa e histórico recente
+- Validação local concluída:
+  - `python3 -m py_compile` dos arquivos backend alterados
+  - `npm run build` no frontend
+- Pendência operacional antes de considerar pronto em runtime:
+  - aplicar migração/boot do backend em produção local e validar envio real de nudge/digest após restart
+
+## Atualização 2026-04-17 3
+
+- Análise estrutural do repositório confirmou alguns pontos práticos para próximos agentes:
+  - não apareceu suíte de testes rastreável em `backend`, `frontend`, `agent-frontend` ou `whatsapp-gateway`
+  - o repositório versiona artefatos de build e dependências locais como `.next`, `out`, `dist` e `node_modules`
+  - há forte concentração de código em poucos arquivos grandes:
+    - `frontend/components/connection-dashboard.tsx` ~8.3k linhas
+    - `backend/app/services/supabase_store.py` ~8k linhas
+    - `backend/app/services/memory_service.py` ~3.6k linhas
+    - `backend/app/services/deepseek_service.py` ~2.5k linhas
+- O worktree estava sujo durante a análise, principalmente nos arquivos do agente/proatividade; evitar assumir árvore limpa para deploy ou commits automáticos sem conferir `git status`
+
+## Atualização 2026-04-17 4
+
+- Frontend principal foi rebuildado localmente com `npm run build` em `frontend` e publicado no Firebase Hosting target `app`
+- URL publicada confirmada no deploy: `https://auracore-82bf2.web.app`
+- Backend da proatividade já estava rodando localmente; nesta etapa o publish visível entregue foi o dashboard principal do frontend

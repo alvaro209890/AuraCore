@@ -6,6 +6,13 @@
 - Branch principal usada em produção: `main`
 - Backend em produção local roda a partir do runtime em `/home/server/.local/share/auracore-runtime/repo/backend`
 - Repositório principal fica em `/media/server/HD Backup/Servidores_NAO_MEXA/AuraCore`
+- Stack atual do repositório:
+  - `backend`: FastAPI + SQLite local com `SupabaseStore` próprio sobre `sqlite3`
+  - `frontend`: Next.js 15 para o dashboard principal autenticado
+  - `agent-frontend`: Next.js 15 separado para o dashboard do agente global
+  - `whatsapp-gateway`: Express + Baileys para observer e agent
+- Os frontends têm entrada mínima em `app/page.tsx`; a maior parte da UI está concentrada em `frontend/components/connection-dashboard.tsx` e `agent-frontend/components/global-agent-dashboard.tsx`
+- A maior parte da lógica de domínio do backend está concentrada em `backend/app/services/supabase_store.py`, `memory_service.py`, `whatsapp_agent_service.py`, `agenda_guardian_service.py` e `deepseek_service.py`
 
 ## WhatsApp Agent / CLI
 
@@ -13,6 +20,9 @@
 - O Álvaro (`6684396232`) deve ser tratado como admin no fluxo do agente
 - O backend já suporta sessão terminal persistida, contexto CLI, progresso intermediário e mensagem final de conclusão
 - Quando mudanças do backend são feitas, normalmente é preciso sincronizar runtime e repositório principal antes de commitar
+- O agente conversacional do WhatsApp é majoritariamente reativo: hoje ele responde mensagens recebidas, usa memória própria por contato e tem proatividade nativa principalmente para agenda (conflitos e lembretes)
+- Já existe base de dados para evoluir proatividade mais rica: `whatsapp_agent_contact_memories`, `important_messages`, `analysis_jobs`, `automation_decisions` e snapshots/projetos da memória geral do usuário
+- Em abril/2026 foi introduzido um subsistema dedicado de proatividade do WhatsApp: `ProactiveAssistantService`, com preferências persistidas, candidatos proativos, log de entregas e digests de manhã/noite
 
 ## Deploy local
 

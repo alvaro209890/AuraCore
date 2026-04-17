@@ -14,6 +14,7 @@ from app.services.groq_service import GroqChatService
 from app.services.memory_job_service import MemoryJobService
 from app.services.memory_service import MemoryAnalysisService
 from app.services.observer_gateway import ObserverGatewayService, WhatsAppAgentGatewayService
+from app.services.proactive_assistant_service import ProactiveAssistantService
 from app.services.supabase_store import SupabaseStore
 from app.services.whatsapp_agent_service import WhatsAppAgentService
 
@@ -34,6 +35,7 @@ class ServiceBundle:
     automation_service: AutomationService
     whatsapp_agent_service: WhatsAppAgentService
     agenda_guardian_service: AgendaGuardianService
+    proactive_assistant_service: ProactiveAssistantService
 
 
 class ServiceBundleCache:
@@ -112,6 +114,12 @@ class ServiceBundleCache:
                 observer_gateway=observer_gateway,
                 agent_gateway=agent_gateway,
             )
+            proactive_assistant_service = ProactiveAssistantService(
+                settings=scoped_settings,
+                store=store,
+                observer_gateway=observer_gateway,
+                agent_gateway=agent_gateway,
+            )
             whatsapp_agent_service = WhatsAppAgentService(
                 settings=scoped_settings,
                 store=store,
@@ -121,6 +129,7 @@ class ServiceBundleCache:
                 observer_gateway=observer_gateway,
                 agent_gateway=agent_gateway,
                 agenda_guardian_service=agenda_guardian_service,
+                proactive_assistant_service=proactive_assistant_service,
             )
             bundle = ServiceBundle(
                 account=account,
@@ -137,6 +146,7 @@ class ServiceBundleCache:
                 automation_service=automation_service,
                 whatsapp_agent_service=whatsapp_agent_service,
                 agenda_guardian_service=agenda_guardian_service,
+                proactive_assistant_service=proactive_assistant_service,
             )
             self._bundles[cache_key] = bundle
             return bundle
@@ -149,5 +159,6 @@ class ServiceBundleCache:
                 return bundle
             bundle.automation_service.warm_start()
             bundle.agenda_guardian_service.warm_start()
+            bundle.proactive_assistant_service.warm_start()
             self._warmed_accounts.add(cache_key)
         return bundle

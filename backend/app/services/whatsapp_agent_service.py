@@ -19,6 +19,7 @@ from app.services.assistant_reply_service import AssistantReplyService
 from app.services.deepseek_service import DeepSeekAgentMemoryDecision, DeepSeekService
 from app.services.groq_service import GroqChatService
 from app.services.observer_gateway import ObserverGatewayService, WhatsAppAgentGatewayService
+from app.services.proactive_assistant_service import ProactiveAssistantService
 from app.services.supabase_store import (
     SupabaseStore,
     WhatsAppAgentContactMemoryRecord,
@@ -68,6 +69,7 @@ class WhatsAppAgentService:
         observer_gateway: ObserverGatewayService,
         agent_gateway: WhatsAppAgentGatewayService,
         agenda_guardian_service: AgendaGuardianService,
+        proactive_assistant_service: ProactiveAssistantService,
     ) -> None:
         self.settings = settings
         self.store = store
@@ -77,6 +79,7 @@ class WhatsAppAgentService:
         self.observer_gateway = observer_gateway
         self.agent_gateway = agent_gateway
         self.agenda_guardian_service = agenda_guardian_service
+        self.proactive_assistant_service = proactive_assistant_service
         self.cli_service = WhatsAppCliService(
             settings=settings,
             store=store,
@@ -477,15 +480,67 @@ class WhatsAppAgentService:
             occurred_at=payload.timestamp,
         )
 
+        proactive_reply_outcome = None
+        if owner_self_message:
+            learning_decision = learning_outcome.last_decision
+            await self.proactive_assistant_service.capture_owner_message(
+                thread_id=thread.id,
+                contact_phone=contact_phone,
+                chat_jid=delivery_chat_jid,
+                source_message_id=payload.message_id,
+                message_text=normalized_text,
+                occurred_at=payload.timestamp,
+                learning_signals=(
+                    {
+                        "mood_signals": learning_decision.mood_signals,
+                        "implied_urgency": learning_decision.implied_urgency,
+                        "implied_tasks": learning_decision.implied_tasks,
+                    }
+                    if learning_decision is not None
+                    else {}
+                ),
+            )
+            proactive_reply_outcome = self.proactive_assistant_service.handle_owner_reply(
+                contact_phone=contact_phone,
+                message_text=normalized_text,
+                occurred_at=payload.timestamp,
+            )
+
         if not settings_record.auto_reply_enabled:
             self.store.update_whatsapp_agent_message(
                 message_id=inbound_message.id,
-                processing_status="scheduled_no_reply" if agenda_outcome.detected else "auto_reply_disabled",
+                processing_status=(
+                    "scheduled_no_reply"
+                    if agenda_outcome.detected
+                    else "proactive_handled_no_reply"
+                    if proactive_reply_outcome is not None and proactive_reply_outcome.handled
+                    else "auto_reply_disabled"
+                ),
             )
             return WhatsAppAgentInboundMessageResponse(
-                action="scheduled_no_reply" if agenda_outcome.detected else "auto_reply_disabled",
+                action=(
+                    "scheduled_no_reply"
+                    if agenda_outcome.detected
+                    else "proactive_handled_no_reply"
+                    if proactive_reply_outcome is not None and proactive_reply_outcome.handled
+                    else "auto_reply_disabled"
+                ),
                 thread_id=thread.id,
                 inbound_message_id=inbound_message.id,
+            )
+
+        if proactive_reply_outcome is not None and proactive_reply_outcome.handled and proactive_reply_outcome.assistant_reply:
+            return await self._send_outbound_reply(
+                payload=payload,
+                inbound_message=inbound_message,
+                thread=thread,
+                session=session,
+                contact_phone=contact_phone,
+                delivery_chat_jid=delivery_chat_jid,
+                assistant_reply=proactive_reply_outcome.assistant_reply,
+                response_latency_ms=int((perf_counter() - reply_started) * 1000),
+                reply_model_run_id=None,
+                generated_by="proactive_assistant_reply",
             )
 
         reply_started = perf_counter()

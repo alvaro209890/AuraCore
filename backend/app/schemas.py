@@ -124,6 +124,85 @@ class UpdateWhatsAppAgentSettingsRequest(BaseModel):
     auto_reply_enabled: bool | None = None
 
 
+class ProactivePreferencesResponse(BaseModel):
+    user_id: str
+    enabled: bool
+    intensity: Literal["conservative", "moderate", "high"]
+    quiet_hours_start: str
+    quiet_hours_end: str
+    max_unsolicited_per_day: int = Field(ge=1, le=12)
+    min_interval_minutes: int = Field(ge=15, le=1440)
+    agenda_enabled: bool
+    followups_enabled: bool
+    projects_enabled: bool
+    routine_enabled: bool
+    morning_digest_enabled: bool
+    night_digest_enabled: bool
+    morning_digest_time: str
+    night_digest_time: str
+    updated_at: datetime
+
+
+class UpdateProactivePreferencesRequest(BaseModel):
+    enabled: bool | None = None
+    intensity: Literal["conservative", "moderate", "high"] | None = None
+    quiet_hours_start: str | None = Field(default=None, pattern=r"^\d{1,2}:\d{2}$")
+    quiet_hours_end: str | None = Field(default=None, pattern=r"^\d{1,2}:\d{2}$")
+    max_unsolicited_per_day: int | None = Field(default=None, ge=1, le=12)
+    min_interval_minutes: int | None = Field(default=None, ge=15, le=1440)
+    agenda_enabled: bool | None = None
+    followups_enabled: bool | None = None
+    projects_enabled: bool | None = None
+    routine_enabled: bool | None = None
+    morning_digest_enabled: bool | None = None
+    night_digest_enabled: bool | None = None
+    morning_digest_time: str | None = Field(default=None, pattern=r"^\d{1,2}:\d{2}$")
+    night_digest_time: str | None = Field(default=None, pattern=r"^\d{1,2}:\d{2}$")
+
+
+class ProactiveCandidateResponse(BaseModel):
+    id: str
+    category: Literal["agenda_followup", "followup", "project_nudge", "routine", "morning_digest", "night_digest"]
+    status: Literal["queued", "suggested", "sent", "dismissed", "confirmed", "done", "expired"]
+    source_message_id: str | None = None
+    source_kind: str
+    thread_id: str | None = None
+    contact_phone: str | None = None
+    chat_jid: str | None = None
+    title: str
+    summary: str = ""
+    confidence: int = Field(ge=0, le=100)
+    priority: int = Field(ge=0, le=100)
+    due_at: datetime | None = None
+    cooldown_until: datetime | None = None
+    last_nudged_at: datetime | None = None
+    payload_json: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProactiveCandidatesListResponse(BaseModel):
+    candidates: list[ProactiveCandidateResponse] = Field(default_factory=list)
+
+
+class ProactiveDeliveryLogResponse(BaseModel):
+    id: str
+    candidate_id: str | None = None
+    category: Literal["agenda_followup", "followup", "project_nudge", "routine", "morning_digest", "night_digest"]
+    decision: Literal["sent", "skipped", "suppressed", "failed"]
+    score: int = Field(ge=0, le=100)
+    reason_code: str
+    reason_text: str
+    message_text: str = ""
+    message_id: str | None = None
+    sent_at: datetime | None = None
+    created_at: datetime
+
+
+class ProactiveDeliveryLogsListResponse(BaseModel):
+    deliveries: list[ProactiveDeliveryLogResponse] = Field(default_factory=list)
+
+
 class WhatsAppAgentMessageResponse(BaseModel):
     id: str
     thread_id: str

@@ -2,8 +2,15 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
-from app.dependencies import get_whatsapp_agent_service
+from app.dependencies import get_proactive_assistant_service, get_whatsapp_agent_service
 from app.schemas import (
+    ProactiveCandidateResponse,
+    ProactiveDeliveryLogResponse,
+    ProactiveCandidatesListResponse,
+    ProactiveDeliveryLogsListResponse,
+    ProactivePreferencesResponse,
+    SimpleOkResponse,
+    UpdateProactivePreferencesRequest,
     UpdateWhatsAppAgentSettingsRequest,
     UpdateWhatsAppAgentAdminContactRequest,
     WhatsAppAgentMessagesListResponse,
@@ -14,6 +21,7 @@ from app.schemas import (
     WhatsAppAgentWorkspaceResponse,
 )
 from app.services.observer_gateway import ObserverGatewayError
+from app.services.proactive_assistant_service import ProactiveAssistantService
 from app.services.whatsapp_agent_service import WhatsAppAgentService
 
 router = APIRouter(prefix="/api/whatsapp-agent", tags=["whatsapp-agent"])
@@ -66,6 +74,98 @@ async def update_agent_settings(
     agent_service: WhatsAppAgentService = Depends(get_whatsapp_agent_service),
 ) -> WhatsAppAgentSettingsResponse:
     return agent_service.update_settings(auto_reply_enabled=payload.auto_reply_enabled)
+
+
+@router.get("/proactivity/settings", response_model=ProactivePreferencesResponse)
+async def get_proactive_settings(
+    proactive_service: ProactiveAssistantService = Depends(get_proactive_assistant_service),
+) -> ProactivePreferencesResponse:
+    return _to_proactive_preferences_response(proactive_service.get_preferences())
+
+
+@router.put("/proactivity/settings", response_model=ProactivePreferencesResponse)
+async def update_proactive_settings(
+    payload: UpdateProactivePreferencesRequest = Body(...),
+    proactive_service: ProactiveAssistantService = Depends(get_proactive_assistant_service),
+) -> ProactivePreferencesResponse:
+    settings = proactive_service.update_preferences(
+        enabled=payload.enabled,
+        intensity=payload.intensity,
+        quiet_hours_start=payload.quiet_hours_start,
+        quiet_hours_end=payload.quiet_hours_end,
+        max_unsolicited_per_day=payload.max_unsolicited_per_day,
+        min_interval_minutes=payload.min_interval_minutes,
+        agenda_enabled=payload.agenda_enabled,
+        followups_enabled=payload.followups_enabled,
+        projects_enabled=payload.projects_enabled,
+        routine_enabled=payload.routine_enabled,
+        morning_digest_enabled=payload.morning_digest_enabled,
+        night_digest_enabled=payload.night_digest_enabled,
+        morning_digest_time=payload.morning_digest_time,
+        night_digest_time=payload.night_digest_time,
+    )
+    return _to_proactive_preferences_response(settings)
+
+
+@router.get("/proactivity/candidates", response_model=ProactiveCandidatesListResponse)
+async def list_proactive_candidates(
+    limit: int = Query(default=30, ge=1, le=100),
+    status: list[str] | None = Query(default=None),
+    proactive_service: ProactiveAssistantService = Depends(get_proactive_assistant_service),
+) -> ProactiveCandidatesListResponse:
+    candidates = proactive_service.list_candidates(limit=limit, statuses=status)
+    return ProactiveCandidatesListResponse(
+        candidates=[_to_proactive_candidate_response(candidate) for candidate in candidates],
+    )
+
+
+@router.post("/proactivity/candidates/{candidate_id}/dismiss", response_model=SimpleOkResponse)
+async def dismiss_proactive_candidate(
+    candidate_id: str,
+    proactive_service: ProactiveAssistantService = Depends(get_proactive_assistant_service),
+) -> SimpleOkResponse:
+    if proactive_service.update_candidate_status(candidate_id=candidate_id, status="dismissed") is None:
+        raise HTTPException(status_code=404, detail="Candidato proativo não encontrado.")
+    return SimpleOkResponse()
+
+
+@router.post("/proactivity/candidates/{candidate_id}/confirm", response_model=SimpleOkResponse)
+async def confirm_proactive_candidate(
+    candidate_id: str,
+    proactive_service: ProactiveAssistantService = Depends(get_proactive_assistant_service),
+) -> SimpleOkResponse:
+    if proactive_service.update_candidate_status(candidate_id=candidate_id, status="confirmed") is None:
+        raise HTTPException(status_code=404, detail="Candidato proativo não encontrado.")
+    return SimpleOkResponse()
+
+
+@router.post("/proactivity/candidates/{candidate_id}/complete", response_model=SimpleOkResponse)
+async def complete_proactive_candidate(
+    candidate_id: str,
+    proactive_service: ProactiveAssistantService = Depends(get_proactive_assistant_service),
+) -> SimpleOkResponse:
+    if proactive_service.update_candidate_status(candidate_id=candidate_id, status="done") is None:
+        raise HTTPException(status_code=404, detail="Candidato proativo não encontrado.")
+    return SimpleOkResponse()
+
+
+@router.get("/proactivity/deliveries", response_model=ProactiveDeliveryLogsListResponse)
+async def list_proactive_deliveries(
+    limit: int = Query(default=20, ge=1, le=100),
+    proactive_service: ProactiveAssistantService = Depends(get_proactive_assistant_service),
+) -> ProactiveDeliveryLogsListResponse:
+    deliveries = proactive_service.list_deliveries(limit=limit)
+    return ProactiveDeliveryLogsListResponse(
+        deliveries=[_to_proactive_delivery_response(delivery) for delivery in deliveries],
+    )
+
+
+@router.post("/proactivity/tick", response_model=SimpleOkResponse)
+async def run_proactive_tick(
+    proactive_service: ProactiveAssistantService = Depends(get_proactive_assistant_service),
+) -> SimpleOkResponse:
+    await proactive_service.tick()
+    return SimpleOkResponse()
 
 
 @router.get("/admin-contacts", response_model=WhatsAppAgentAdminContactsListResponse)
@@ -271,3 +371,63 @@ def _to_terminal_session_response(session) -> dict | None:
         "created_at": session.created_at,
         "updated_at": session.updated_at,
     }
+
+
+def _to_proactive_preferences_response(settings) -> ProactivePreferencesResponse:
+    return ProactivePreferencesResponse(
+        user_id=str(settings.user_id),
+        enabled=settings.enabled,
+        intensity=settings.intensity,
+        quiet_hours_start=settings.quiet_hours_start,
+        quiet_hours_end=settings.quiet_hours_end,
+        max_unsolicited_per_day=settings.max_unsolicited_per_day,
+        min_interval_minutes=settings.min_interval_minutes,
+        agenda_enabled=settings.agenda_enabled,
+        followups_enabled=settings.followups_enabled,
+        projects_enabled=settings.projects_enabled,
+        routine_enabled=settings.routine_enabled,
+        morning_digest_enabled=settings.morning_digest_enabled,
+        night_digest_enabled=settings.night_digest_enabled,
+        morning_digest_time=settings.morning_digest_time,
+        night_digest_time=settings.night_digest_time,
+        updated_at=settings.updated_at,
+    )
+
+
+def _to_proactive_candidate_response(candidate) -> ProactiveCandidateResponse:
+    return ProactiveCandidateResponse(
+        id=candidate.id,
+        category=candidate.category,
+        status=candidate.status,
+        source_message_id=candidate.source_message_id,
+        source_kind=candidate.source_kind,
+        thread_id=candidate.thread_id,
+        contact_phone=candidate.contact_phone,
+        chat_jid=candidate.chat_jid,
+        title=candidate.title,
+        summary=candidate.summary,
+        confidence=candidate.confidence,
+        priority=candidate.priority,
+        due_at=candidate.due_at,
+        cooldown_until=candidate.cooldown_until,
+        last_nudged_at=candidate.last_nudged_at,
+        payload_json=candidate.payload_json,
+        created_at=candidate.created_at,
+        updated_at=candidate.updated_at,
+    )
+
+
+def _to_proactive_delivery_response(delivery) -> ProactiveDeliveryLogResponse:
+    return ProactiveDeliveryLogResponse(
+        id=delivery.id,
+        candidate_id=delivery.candidate_id,
+        category=delivery.category,
+        decision=delivery.decision,
+        score=delivery.score,
+        reason_code=delivery.reason_code,
+        reason_text=delivery.reason_text,
+        message_text=delivery.message_text,
+        message_id=delivery.message_id,
+        sent_at=delivery.sent_at,
+        created_at=delivery.created_at,
+    )

@@ -234,6 +234,10 @@ def get_internal_whatsapp_agent_service(bundle: ServiceBundle = Depends(get_inte
     return bundle.whatsapp_agent_service
 
 
+def get_proactive_assistant_service(bundle: ServiceBundle = Depends(get_service_bundle)):
+    return bundle.proactive_assistant_service
+
+
 def warm_registered_accounts() -> None:
     registry = get_account_registry()
     cache = get_service_bundle_cache()

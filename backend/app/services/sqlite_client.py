@@ -32,6 +32,16 @@ JSON_COLUMNS = {
     "recurring_instructions",
     "pending_plan_json",
     "context_metadata",
+    "payload_json",
+    "creds",
+    "value",
+}
+
+JSON_OBJECT_COLUMNS = {
+    "metadata",
+    "pending_plan_json",
+    "context_metadata",
+    "payload_json",
     "creds",
     "value",
 }
@@ -67,7 +77,7 @@ def _deserialize_value(column: str, value: Any) -> Any:
         try:
             return json.loads(value)
         except json.JSONDecodeError:
-            return [] if column != "metadata" else {}
+            return {} if column in JSON_OBJECT_COLUMNS else []
     return value
 
 

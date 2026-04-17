@@ -52,8 +52,14 @@ import {
   connectObserver,
   clearSavedDatabase,
   assistMemoryProjectEdit,
+  completeProactiveCandidate,
+  confirmProactiveCandidate,
   deleteAgendaEvent,
+  dismissProactiveCandidate,
   executeMemoryAnalysis,
+  getProactiveSettings,
+  listProactiveCandidates,
+  listProactiveDeliveries,
   updateMemoryRelation,
   RefineMemoryResponse,
   deleteMemoryProject,
@@ -72,6 +78,7 @@ import {
   refreshObserverMessages,
   resetAgent,
   resetObserver,
+  runProactiveTick,
   getAgendaEvents,
   updateAgentSettings,
   updateAgendaEvent,
@@ -79,6 +86,7 @@ import {
   updateMemoryGroupSelection,
   updateMemoryProject,
   updateMemoryProjectCompletion,
+  updateProactiveSettings,
   runAutomationTick,
   type AuthenticatedAccount,
   type AnalysisJob,
@@ -92,6 +100,9 @@ import {
   type ModelRun,
   type ObserverStatus,
   type AgendaEvent,
+  type ProactiveCandidate,
+  type ProactiveDeliveryLog,
+  type ProactivePreferences,
   type UpdateAgendaEventInput,
   type WhatsAppAgentMessage,
   type WhatsAppAgentContactMemory,
@@ -120,6 +131,7 @@ type TabId =
   | "projects"
   | "activity"
   | "automation"
+  | "proactivity"
   | "manual"
   | "account";
 type LogTone = "info" | "success" | "error";
@@ -162,6 +174,7 @@ type DisplayAgentState = AgentState & {
 };
 
 type AutomationDraft = Record<string, never> | null;
+type ProactivityDraft = Partial<ProactivePreferences> | null;
 
 type InsightMetric = {
   label: string;
@@ -200,6 +213,7 @@ const LIVE_REFRESH_INTERVALS: Record<TabId, number> = {
   projects: 20000,
   activity: 12000,
   automation: 12000,
+  proactivity: 12000,
   manual: 20000,
   account: 20000,
 };
@@ -236,6 +250,8 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { id: "agenda", label: "Agenda", icon: Clock },
       { id: "projects", label: "Projetos", icon: FolderGit2 },
+      { id: "automation", label: "Automação", icon: Zap },
+      { id: "proactivity", label: "Proatividade", icon: Sparkles },
     ],
   },
   {
@@ -431,6 +447,66 @@ function formatRelativeTime(value: string | null | undefined): string {
   }
   const deltaDays = Math.round(deltaHours / 24);
   return `${deltaDays} d`;
+}
+
+function formatConfidence(value: number | null | undefined): string {
+  const normalized = Math.max(0, Math.min(1, value ?? 0));
+  return `${Math.round(normalized * 100)}%`;
+}
+
+function getProactiveCategoryLabel(category: ProactiveCandidate["category"] | ProactiveDeliveryLog["category"]): string {
+  switch (category) {
+    case "agenda_followup":
+      return "Agenda";
+    case "followup":
+      return "Follow-up";
+    case "project_nudge":
+      return "Projeto";
+    case "routine":
+      return "Rotina";
+    case "morning_digest":
+      return "Digest manhã";
+    case "night_digest":
+      return "Digest noite";
+    default:
+      return category;
+  }
+}
+
+function getProactiveStatusLabel(status: ProactiveCandidate["status"]): string {
+  switch (status) {
+    case "queued":
+      return "Na fila";
+    case "suggested":
+      return "Sugerido";
+    case "sent":
+      return "Enviado";
+    case "dismissed":
+      return "Dispensado";
+    case "confirmed":
+      return "Confirmado";
+    case "done":
+      return "Concluído";
+    case "expired":
+      return "Expirado";
+    default:
+      return status;
+  }
+}
+
+function getProactiveDecisionLabel(decision: ProactiveDeliveryLog["decision"]): string {
+  switch (decision) {
+    case "sent":
+      return "Enviado";
+    case "skipped":
+      return "Ignorado";
+    case "suppressed":
+      return "Suprimido";
+    case "failed":
+      return "Falhou";
+    default:
+      return decision;
+  }
 }
 
 function truncateText(value: string | null | undefined, maxLength: number): string {
@@ -1376,6 +1452,13 @@ export function ConnectionDashboard({
   const [automationDraft, setAutomationDraft] = useState<AutomationDraft>(null);
   const [isSavingAutomation, setIsSavingAutomation] = useState(false);
   const [isTickingAutomation, setIsTickingAutomation] = useState(false);
+  const [proactiveSettings, setProactiveSettings] = useState<ProactivePreferences | null>(null);
+  const [proactiveCandidates, setProactiveCandidates] = useState<ProactiveCandidate[]>([]);
+  const [proactiveDeliveries, setProactiveDeliveries] = useState<ProactiveDeliveryLog[]>([]);
+  const [proactiveError, setProactiveError] = useState<string | null>(null);
+  const [proactivityDraft, setProactivityDraft] = useState<ProactivityDraft>(null);
+  const [isSavingProactivity, setIsSavingProactivity] = useState(false);
+  const [isTickingProactivity, setIsTickingProactivity] = useState(false);
 
   const liveRefreshIntervalMs = useMemo(() => getLiveRefreshInterval(activeTab), [activeTab]);
   const lastQrRefreshAtRef = useRef<number | null>(null);
@@ -2027,6 +2110,10 @@ export function ConnectionDashboard({
       resolvedActiveTab === "automation" ||
       queuedJobId !== null
     );
+    const shouldRefreshProactivity = !isTickingProactivity && (
+      resolvedActiveTab === "manual" ||
+      resolvedActiveTab === "proactivity"
+    );
     const shouldRefreshHeavyGroups = shouldRefreshHeavyResource("groups", analysisIsBusy);
     const shouldRefreshMemoryGroups = (resolvedActiveTab === "manual" || resolvedActiveTab === "groups") && shouldRefreshHeavyGroups;
 
@@ -2042,6 +2129,9 @@ export function ConnectionDashboard({
         memoryStatusResult,
         snapshotsResult,
         automationResult,
+        proactiveSettingsResult,
+        proactiveCandidatesResult,
+        proactiveDeliveriesResult,
       ] = await Promise.allSettled([
         shouldRefreshAgentWorkspace ? getAgentWorkspace(activeAgentThreadId ?? undefined) : Promise.resolve(null),
         shouldRefreshMemoryCurrent ? getCurrentMemory() : Promise.resolve(null),
@@ -2052,6 +2142,11 @@ export function ConnectionDashboard({
         shouldRefreshMemoryStatus ? getMemoryStatus() : Promise.resolve(null),
         shouldRefreshSnapshots ? getMemorySnapshots(resolvedActiveTab === "overview" ? 1 : 6) : Promise.resolve(null),
         shouldRefreshAutomation ? getAutomationStatus() : Promise.resolve(null),
+        shouldRefreshProactivity ? getProactiveSettings() : Promise.resolve(null),
+        shouldRefreshProactivity
+          ? listProactiveCandidates(20, ["suggested", "sent", "confirmed"])
+          : Promise.resolve(null),
+        shouldRefreshProactivity ? listProactiveDeliveries(12) : Promise.resolve(null),
       ]);
 
       if (agentWorkspaceResult.status === "fulfilled" && agentWorkspaceResult.value) {
@@ -2135,6 +2230,35 @@ export function ConnectionDashboard({
         syncQueuedJobFromAutomationSnapshot(nextAutomation);
       } else if (automationResult.status === "rejected" && shouldRefreshAutomation) {
         setAutomationError(getErrorMessage(automationResult.reason));
+      }
+
+      if (proactiveSettingsResult.status === "fulfilled" && proactiveSettingsResult.value) {
+        startTransition(() => {
+          setProactiveSettings(proactiveSettingsResult.value);
+          setProactiveError(null);
+        });
+      } else if (proactiveSettingsResult.status === "rejected" && shouldRefreshProactivity) {
+        setProactiveError(getErrorMessage(proactiveSettingsResult.reason));
+      }
+
+      if (proactiveCandidatesResult.status === "fulfilled" && Array.isArray(proactiveCandidatesResult.value)) {
+        const nextCandidates = proactiveCandidatesResult.value as ProactiveCandidate[];
+        startTransition(() => {
+          setProactiveCandidates(nextCandidates);
+          setProactiveError(null);
+        });
+      } else if (proactiveCandidatesResult.status === "rejected" && shouldRefreshProactivity) {
+        setProactiveError(getErrorMessage(proactiveCandidatesResult.reason));
+      }
+
+      if (proactiveDeliveriesResult.status === "fulfilled" && Array.isArray(proactiveDeliveriesResult.value)) {
+        const nextDeliveries = proactiveDeliveriesResult.value as ProactiveDeliveryLog[];
+        startTransition(() => {
+          setProactiveDeliveries(nextDeliveries);
+          setProactiveError(null);
+        });
+      } else if (proactiveDeliveriesResult.status === "rejected" && shouldRefreshProactivity) {
+        setProactiveError(getErrorMessage(proactiveDeliveriesResult.reason));
       }
     } finally {
       dashboardRefreshInFlightRef.current = false;
@@ -2337,6 +2461,7 @@ export function ConnectionDashboard({
     const shouldLoadAgenda = activeTab === "agenda";
     const shouldLoadSnapshots = activeTab === "overview" || activeTab === "memory" || activeTab === "manual";
     const shouldLoadAutomation = resolvedActiveTab === "memory" || resolvedActiveTab === "automation" || resolvedActiveTab === "manual" || queuedJobId !== null;
+    const shouldLoadProactivity = resolvedActiveTab === "proactivity" || resolvedActiveTab === "manual";
 
     const [
       statusResult,
@@ -2350,6 +2475,9 @@ export function ConnectionDashboard({
       memoryStatusResult,
       snapshotsResult,
       automationResult,
+      proactiveSettingsResult,
+      proactiveCandidatesResult,
+      proactiveDeliveriesResult,
     ] = await Promise.allSettled([
       getObserverStatus(false),
       Promise.resolve(null),
@@ -2362,6 +2490,11 @@ export function ConnectionDashboard({
       getMemoryStatus(),
       shouldLoadSnapshots ? getMemorySnapshots(activeTab === "overview" ? 1 : 6) : Promise.resolve([]),
       shouldLoadAutomation ? getAutomationStatus() : Promise.resolve(null),
+      shouldLoadProactivity ? getProactiveSettings() : Promise.resolve(null),
+      shouldLoadProactivity
+        ? listProactiveCandidates(20, ["suggested", "sent", "confirmed"])
+        : Promise.resolve([]),
+      shouldLoadProactivity ? listProactiveDeliveries(12) : Promise.resolve([]),
     ]);
 
     if (statusResult.status === "fulfilled") {
@@ -2443,6 +2576,33 @@ export function ConnectionDashboard({
       setAutomationError(getErrorMessage(automationResult.reason));
     }
 
+    if (proactiveSettingsResult.status === "fulfilled" && proactiveSettingsResult.value) {
+      setProactiveSettings(proactiveSettingsResult.value);
+      setProactiveError(null);
+    } else if (proactiveSettingsResult.status === "rejected" && shouldLoadProactivity) {
+      setProactiveError(getErrorMessage(proactiveSettingsResult.reason));
+    }
+
+    if (proactiveCandidatesResult.status === "fulfilled" && Array.isArray(proactiveCandidatesResult.value)) {
+      const nextCandidates = proactiveCandidatesResult.value as ProactiveCandidate[];
+      setProactiveCandidates(nextCandidates);
+      if (shouldLoadProactivity) {
+        setProactiveError(null);
+      }
+    } else if (proactiveCandidatesResult.status === "rejected" && shouldLoadProactivity) {
+      setProactiveError(getErrorMessage(proactiveCandidatesResult.reason));
+    }
+
+    if (proactiveDeliveriesResult.status === "fulfilled" && Array.isArray(proactiveDeliveriesResult.value)) {
+      const nextDeliveries = proactiveDeliveriesResult.value as ProactiveDeliveryLog[];
+      setProactiveDeliveries(nextDeliveries);
+      if (shouldLoadProactivity) {
+        setProactiveError(null);
+      }
+    } else if (proactiveDeliveriesResult.status === "rejected" && shouldLoadProactivity) {
+      setProactiveError(getErrorMessage(proactiveDeliveriesResult.reason));
+    }
+
     if (mode === "manual") {
       setIsRefreshing(false);
     } else {
@@ -2484,6 +2644,40 @@ export function ConnectionDashboard({
     }
   }
 
+  async function refreshProactivitySnapshot(): Promise<void> {
+    const [settings, candidates, deliveries] = await Promise.all([
+      getProactiveSettings(),
+      listProactiveCandidates(20, ["suggested", "sent", "confirmed"]),
+      listProactiveDeliveries(12),
+    ]);
+    setProactiveSettings(settings);
+    setProactiveCandidates(candidates);
+    setProactiveDeliveries(deliveries);
+  }
+
+  async function saveProactivityConfig(): Promise<void> {
+    if (!proactivityDraft) {
+      return;
+    }
+
+    setIsSavingProactivity(true);
+    setProactiveError(null);
+    try {
+      const nextSettings = await updateProactiveSettings(proactivityDraft);
+      setProactiveSettings(nextSettings);
+      setProactivityDraft(null);
+      pushAgentLog("success", "Configuração da proatividade salva no backend.");
+      toast.success("Proatividade atualizada.");
+    } catch (error) {
+      const message = getErrorMessage(error);
+      setProactiveError(message);
+      pushAgentLog("error", `Falha ao salvar proatividade: ${message}`);
+      toast.error(message);
+    } finally {
+      setIsSavingProactivity(false);
+    }
+  }
+
   async function triggerAutomationNow(): Promise<void> {
     setIsTickingAutomation(true);
     setAutomationError(null);
@@ -2497,6 +2691,49 @@ export function ConnectionDashboard({
       pushAgentLog("error", `Falha ao rodar o tick manual: ${message}`);
     } finally {
       setIsTickingAutomation(false);
+    }
+  }
+
+  async function triggerProactivityNow(): Promise<void> {
+    setIsTickingProactivity(true);
+    setProactiveError(null);
+    try {
+      await runProactiveTick();
+      await refreshProactivitySnapshot();
+      pushAgentLog("info", "Tick manual da proatividade executado. O backend reavaliou digests e nudges pendentes.");
+      toast.success("Tick da proatividade executado.");
+    } catch (error) {
+      const message = getErrorMessage(error);
+      setProactiveError(message);
+      pushAgentLog("error", `Falha ao rodar o tick proativo: ${message}`);
+      toast.error(message);
+    } finally {
+      setIsTickingProactivity(false);
+    }
+  }
+
+  async function updateCandidateState(candidateId: string, action: "dismiss" | "confirm" | "complete"): Promise<void> {
+    setProactiveError(null);
+    try {
+      if (action === "dismiss") {
+        await dismissProactiveCandidate(candidateId);
+      } else if (action === "confirm") {
+        await confirmProactiveCandidate(candidateId);
+      } else {
+        await completeProactiveCandidate(candidateId);
+      }
+      await refreshProactivitySnapshot();
+      toast.success(
+        action === "dismiss"
+          ? "Sugestão dispensada."
+          : action === "confirm"
+            ? "Sugestão confirmada."
+            : "Sugestão concluída.",
+      );
+    } catch (error) {
+      const message = getErrorMessage(error);
+      setProactiveError(message);
+      toast.error(message);
     }
   }
 
@@ -3105,6 +3342,24 @@ export function ConnectionDashboard({
                   onDraftChange={setAutomationDraft}
                   onSave={() => void saveAutomationConfig()}
                   onTick={() => void triggerAutomationNow()}
+                />
+              ) : null}
+
+              {resolvedActiveTab === "proactivity" ? (
+                <ProactivityTab
+                  proactiveSettings={proactiveSettings}
+                  proactivityDraft={proactivityDraft}
+                  proactiveCandidates={proactiveCandidates}
+                  proactiveDeliveries={proactiveDeliveries}
+                  proactiveError={proactiveError}
+                  isSavingProactivity={isSavingProactivity}
+                  isTickingProactivity={isTickingProactivity}
+                  onDraftChange={setProactivityDraft}
+                  onSave={() => void saveProactivityConfig()}
+                  onTick={() => void triggerProactivityNow()}
+                  onDismissCandidate={(candidateId) => void updateCandidateState(candidateId, "dismiss")}
+                  onConfirmCandidate={(candidateId) => void updateCandidateState(candidateId, "confirm")}
+                  onCompleteCandidate={(candidateId) => void updateCandidateState(candidateId, "complete")}
                 />
               ) : null}
 
@@ -7165,6 +7420,343 @@ function AutomationTab({
       </Card>
 
       {automationError ? <InlineError title="Falha na automacao" message={automationError} /> : null}
+    </div>
+  );
+}
+
+function ProactivityTab({
+  proactiveSettings,
+  proactivityDraft,
+  proactiveCandidates,
+  proactiveDeliveries,
+  proactiveError,
+  isSavingProactivity,
+  isTickingProactivity,
+  onDraftChange,
+  onSave,
+  onTick,
+  onDismissCandidate,
+  onConfirmCandidate,
+  onCompleteCandidate,
+}: {
+  proactiveSettings: ProactivePreferences | null;
+  proactivityDraft: ProactivityDraft | null;
+  proactiveCandidates: ProactiveCandidate[];
+  proactiveDeliveries: ProactiveDeliveryLog[];
+  proactiveError: string | null;
+  isSavingProactivity: boolean;
+  isTickingProactivity: boolean;
+  onDraftChange: React.Dispatch<React.SetStateAction<ProactivityDraft | null>>;
+  onSave: () => void;
+  onTick: () => void;
+  onDismissCandidate: (candidateId: string) => void;
+  onConfirmCandidate: (candidateId: string) => void;
+  onCompleteCandidate: (candidateId: string) => void;
+}) {
+  const effectiveSettings: ProactivePreferences = {
+    user_id: proactiveSettings?.user_id ?? "",
+    enabled: proactiveSettings?.enabled ?? false,
+    intensity: proactiveSettings?.intensity ?? "moderate",
+    quiet_hours_start: proactiveSettings?.quiet_hours_start ?? "22:00",
+    quiet_hours_end: proactiveSettings?.quiet_hours_end ?? "08:00",
+    max_unsolicited_per_day: proactiveSettings?.max_unsolicited_per_day ?? 4,
+    min_interval_minutes: proactiveSettings?.min_interval_minutes ?? 90,
+    agenda_enabled: proactiveSettings?.agenda_enabled ?? true,
+    followups_enabled: proactiveSettings?.followups_enabled ?? true,
+    projects_enabled: proactiveSettings?.projects_enabled ?? true,
+    routine_enabled: proactiveSettings?.routine_enabled ?? true,
+    morning_digest_enabled: proactiveSettings?.morning_digest_enabled ?? true,
+    night_digest_enabled: proactiveSettings?.night_digest_enabled ?? true,
+    morning_digest_time: proactiveSettings?.morning_digest_time ?? "08:30",
+    night_digest_time: proactiveSettings?.night_digest_time ?? "20:30",
+    updated_at: proactiveSettings?.updated_at ?? "",
+    ...(proactivityDraft ?? {}),
+  };
+  const activeCandidates = proactiveCandidates.filter((candidate) => candidate.status !== "done" && candidate.status !== "dismissed");
+  const lastDelivery = proactiveDeliveries[0] ?? null;
+  const enabledCategoriesCount = [
+    effectiveSettings?.agenda_enabled,
+    effectiveSettings?.followups_enabled,
+    effectiveSettings?.projects_enabled,
+    effectiveSettings?.routine_enabled,
+    effectiveSettings?.morning_digest_enabled,
+    effectiveSettings?.night_digest_enabled,
+  ].filter(Boolean).length;
+
+  const patchDraft = (patch: Partial<ProactivePreferences>): void => {
+    onDraftChange((previous) => ({
+      ...(proactiveSettings ?? {}),
+      ...(previous ?? {}),
+      ...patch,
+    }));
+  };
+
+  return (
+    <div className="page-stack">
+      <Card>
+        <SectionTitle
+          title="Proatividade do Assistente"
+          icon={Sparkles}
+          action={
+            effectiveSettings.updated_at ? (
+              <span className="micro-badge">{formatShortDateTime(effectiveSettings.updated_at)}</span>
+            ) : null
+          }
+        />
+        <p className="support-copy">
+          Aqui voce controla quando o Orion pode abrir conversa sozinho, quais tipos de ajuda entram no radar e com
+          qual intensidade o motor proativo pode insistir.
+        </p>
+
+        <div className="automation-top-grid">
+          <MemorySignalCard
+            label="Proatividade"
+            value={effectiveSettings.enabled ? "Ativa" : "Desligada"}
+            meta={proactiveSettings ? `Intensidade ${effectiveSettings.intensity}` : "Carregando preferencias"}
+            accent
+          />
+          <MemorySignalCard
+            label="Categorias ligadas"
+            value={String(enabledCategoriesCount)}
+            meta="Agenda, follow-up, projetos, rotina e digests"
+            tone="indigo"
+          />
+          <MemorySignalCard
+            label="Fila ativa"
+            value={String(activeCandidates.length)}
+            meta={activeCandidates[0] ? getProactiveCategoryLabel(activeCandidates[0].category) : "Sem item aguardando"}
+            tone="emerald"
+          />
+          <MemorySignalCard
+            label="Ultimo envio"
+            value={lastDelivery ? getProactiveDecisionLabel(lastDelivery.decision) : "..."}
+            meta={lastDelivery ? formatShortDateTime(lastDelivery.created_at) : "Sem log de entrega"}
+            tone="amber"
+          />
+        </div>
+
+        <div className="hero-actions">
+          <button className="ac-secondary-button" onClick={onTick} disabled={isTickingProactivity} type="button">
+            <RefreshCw size={15} className={isTickingProactivity ? "spin" : ""} />
+            {isTickingProactivity ? "Reavaliando..." : "Rodar Tick Agora"}
+          </button>
+          <button className="ac-success-button" onClick={onSave} disabled={isSavingProactivity || !proactivityDraft} type="button">
+            <Check size={15} />
+            {isSavingProactivity ? "Salvando..." : "Salvar Configuração"}
+          </button>
+        </div>
+      </Card>
+
+      <Card>
+        <SectionTitle title="Configuração" icon={Settings} />
+        {proactiveSettings ? (
+          <div className="page-stack" style={{ gap: "1rem" }}>
+            <div className="manual-grid">
+              <label className="manual-info-card manual-info-card-emerald" style={{ cursor: "pointer" }}>
+                <div className="manual-info-card-content">
+                  <strong>Ativar proatividade</strong>
+                  <p>Permite mensagens não solicitadas com score, cooldown e horário de silêncio.</p>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={effectiveSettings.enabled}
+                  onChange={(event) => patchDraft({ enabled: event.target.checked })}
+                />
+              </label>
+              <label className="manual-info-card manual-info-card-indigo">
+                <div className="manual-info-card-content">
+                  <strong>Intensidade</strong>
+                  <p>Controla o quanto o agente pode insistir em nudges e retomadas.</p>
+                </div>
+                <select
+                  value={effectiveSettings.intensity}
+                  onChange={(event) => patchDraft({ intensity: event.target.value as ProactivePreferences["intensity"] })}
+                  style={{ minWidth: "150px" }}
+                >
+                  <option value="conservative">Conservadora</option>
+                  <option value="moderate">Moderada</option>
+                  <option value="high">Alta</option>
+                </select>
+              </label>
+            </div>
+
+            <div className="manual-grid">
+              <label className="manual-info-card manual-info-card-zinc">
+                <div className="manual-info-card-content">
+                  <strong>Silêncio inicial</strong>
+                  <p>Horário local em Brasília para começar a segurar nudges normais.</p>
+                </div>
+                <input
+                  type="time"
+                  value={effectiveSettings.quiet_hours_start}
+                  onChange={(event) => patchDraft({ quiet_hours_start: event.target.value })}
+                />
+              </label>
+              <label className="manual-info-card manual-info-card-zinc">
+                <div className="manual-info-card-content">
+                  <strong>Silêncio final</strong>
+                  <p>Quando o agente pode retomar envios não urgentes.</p>
+                </div>
+                <input
+                  type="time"
+                  value={effectiveSettings.quiet_hours_end}
+                  onChange={(event) => patchDraft({ quiet_hours_end: event.target.value })}
+                />
+              </label>
+            </div>
+
+            <div className="manual-grid">
+              <AutomationNumberField
+                label="Máximo por dia"
+                value={effectiveSettings.max_unsolicited_per_day}
+                onChange={(value) => patchDraft({ max_unsolicited_per_day: Math.max(0, value) })}
+              />
+              <AutomationNumberField
+                label="Intervalo mínimo em minutos"
+                value={effectiveSettings.min_interval_minutes}
+                onChange={(value) => patchDraft({ min_interval_minutes: Math.max(0, value) })}
+              />
+            </div>
+
+            <div className="manual-grid">
+              {[
+                ["agenda_enabled", "Agenda", "Lembretes e preparação de compromisso."],
+                ["followups_enabled", "Follow-ups", "Cobrança leve de promessas e respostas pendentes."],
+                ["projects_enabled", "Projetos", "Retomada de frentes abertas e próximos passos."],
+                ["routine_enabled", "Rotina", "Ajustes leves de foco, carga e organização."],
+                ["morning_digest_enabled", "Digest manhã", "Resumo curto para abrir o dia."],
+                ["night_digest_enabled", "Digest noite", "Fechamento com pendências e replanejamento."],
+              ].map(([field, label, description]) => {
+                const checked = Boolean(effectiveSettings[field as keyof ProactivePreferences]);
+                return (
+                  <label key={field} className="manual-info-card manual-info-card-zinc" style={{ cursor: "pointer" }}>
+                    <div className="manual-info-card-content">
+                      <strong>{label}</strong>
+                      <p>{description}</p>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(event) => patchDraft({ [field]: event.target.checked } as Partial<ProactivePreferences>)}
+                    />
+                  </label>
+                );
+              })}
+            </div>
+
+            <div className="manual-grid">
+              <label className="manual-info-card manual-info-card-amber">
+                <div className="manual-info-card-content">
+                  <strong>Digest da manhã</strong>
+                  <p>Horário padrão para agenda, focos e risco do dia.</p>
+                </div>
+                <input
+                  type="time"
+                  value={effectiveSettings.morning_digest_time}
+                  onChange={(event) => patchDraft({ morning_digest_time: event.target.value })}
+                />
+              </label>
+              <label className="manual-info-card manual-info-card-indigo">
+                <div className="manual-info-card-content">
+                  <strong>Digest da noite</strong>
+                  <p>Horário para fechamento e retomada de pendências.</p>
+                </div>
+                <input
+                  type="time"
+                  value={effectiveSettings.night_digest_time}
+                  onChange={(event) => patchDraft({ night_digest_time: event.target.value })}
+                />
+              </label>
+            </div>
+          </div>
+        ) : (
+          <p className="support-copy">Carregando preferências de proatividade...</p>
+        )}
+      </Card>
+
+      <Card>
+        <SectionTitle title="Candidatos Ativos" icon={MessageSquare} />
+        {activeCandidates.length === 0 ? (
+          <p className="support-copy">Nenhuma sugestão ativa no momento. O motor proativo ainda não viu motivo forte para incomodar.</p>
+        ) : (
+          <div className="page-stack" style={{ gap: "0.9rem" }}>
+            {activeCandidates.map((candidate) => (
+              <div key={candidate.id} className="activity-persist-block">
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    gap: "0.75rem",
+                    flexWrap: "wrap",
+                    alignItems: "center",
+                    marginBottom: "0.65rem",
+                  }}
+                >
+                  <div>
+                    <strong>{candidate.title}</strong>
+                    <p className="support-copy" style={{ marginTop: "0.35rem" }}>{candidate.summary}</p>
+                  </div>
+                  <span className="micro-badge">{getProactiveStatusLabel(candidate.status)}</span>
+                </div>
+
+                <div className="activity-meta-row">
+                  <span>{getProactiveCategoryLabel(candidate.category)}</span>
+                  <span>Confiança {formatConfidence(candidate.confidence)}</span>
+                  <span>Prioridade {candidate.priority}/100</span>
+                </div>
+                <div className="activity-meta-row">
+                  <span>Vence {candidate.due_at ? formatShortDateTime(candidate.due_at) : "sem prazo"}</span>
+                  <span>Último nudge {candidate.last_nudged_at ? formatRelativeTime(candidate.last_nudged_at) : "ainda não enviado"}</span>
+                  <span>Atualizado {formatRelativeTime(candidate.updated_at)}</span>
+                </div>
+
+                <div className="hero-actions" style={{ marginTop: "0.9rem" }}>
+                  <button className="ac-secondary-button" onClick={() => onDismissCandidate(candidate.id)} type="button">
+                    <X size={15} />
+                    Dispensar
+                  </button>
+                  <button className="ac-secondary-button" onClick={() => onConfirmCandidate(candidate.id)} type="button">
+                    <BadgeCheck size={15} />
+                    Confirmar
+                  </button>
+                  <button className="ac-success-button" onClick={() => onCompleteCandidate(candidate.id)} type="button">
+                    <CheckCircle2 size={15} />
+                    Concluir
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      <Card>
+        <SectionTitle title="Entregas Recentes" icon={Send} />
+        {proactiveDeliveries.length === 0 ? (
+          <p className="support-copy">Ainda não existe histórico de entrega da proatividade.</p>
+        ) : (
+          <div className="automation-history-grid">
+            {proactiveDeliveries.map((delivery) => (
+              <div key={delivery.id} className="activity-persist-block">
+                <strong>{getProactiveCategoryLabel(delivery.category)}</strong>
+                <div className="activity-meta-row">
+                  <span>{getProactiveDecisionLabel(delivery.decision)}</span>
+                  <span>Score {delivery.score.toFixed(2)}</span>
+                  <span>{formatShortDateTime(delivery.created_at)}</span>
+                </div>
+                <p className="support-copy" style={{ marginTop: "0.65rem" }}>{delivery.reason_text || delivery.reason_code}</p>
+                {delivery.message_text ? (
+                  <p className="support-copy" style={{ marginTop: "0.45rem" }}>
+                    “{truncateText(delivery.message_text, 180)}”
+                  </p>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      {proactiveError ? <InlineError title="Falha na proatividade" message={proactiveError} /> : null}
     </div>
   );
 }

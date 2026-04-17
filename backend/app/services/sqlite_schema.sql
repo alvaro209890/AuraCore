@@ -475,6 +475,102 @@ CREATE TABLE IF NOT EXISTS model_runs (
 
 CREATE INDEX IF NOT EXISTS model_runs_user_created_idx ON model_runs (user_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS important_messages (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  source_message_id TEXT NOT NULL,
+  contact_name TEXT NOT NULL DEFAULT '',
+  contact_phone TEXT,
+  direction TEXT NOT NULL DEFAULT 'inbound',
+  message_text TEXT NOT NULL,
+  message_timestamp TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT 'other',
+  importance_reason TEXT NOT NULL DEFAULT '',
+  confidence INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'active',
+  review_notes TEXT,
+  saved_at TEXT NOT NULL,
+  last_reviewed_at TEXT,
+  discarded_at TEXT,
+  UNIQUE (user_id, source_message_id)
+);
+
+CREATE INDEX IF NOT EXISTS important_messages_user_timestamp_idx ON important_messages (user_id, message_timestamp DESC);
+CREATE INDEX IF NOT EXISTS important_messages_user_status_timestamp_idx ON important_messages (user_id, status, message_timestamp DESC);
+CREATE INDEX IF NOT EXISTS important_messages_user_contact_idx ON important_messages (user_id, contact_phone, message_timestamp DESC);
+
+CREATE TABLE IF NOT EXISTS proactive_preferences (
+  user_id TEXT PRIMARY KEY,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  intensity TEXT NOT NULL DEFAULT 'moderate',
+  quiet_hours_start TEXT NOT NULL DEFAULT '22:00',
+  quiet_hours_end TEXT NOT NULL DEFAULT '08:00',
+  max_unsolicited_per_day INTEGER NOT NULL DEFAULT 4,
+  min_interval_minutes INTEGER NOT NULL DEFAULT 90,
+  agenda_enabled INTEGER NOT NULL DEFAULT 1,
+  followups_enabled INTEGER NOT NULL DEFAULT 1,
+  projects_enabled INTEGER NOT NULL DEFAULT 1,
+  routine_enabled INTEGER NOT NULL DEFAULT 1,
+  morning_digest_enabled INTEGER NOT NULL DEFAULT 1,
+  night_digest_enabled INTEGER NOT NULL DEFAULT 1,
+  morning_digest_time TEXT NOT NULL DEFAULT '08:30',
+  night_digest_time TEXT NOT NULL DEFAULT '20:30',
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS proactive_candidates (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  category TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'suggested',
+  source_message_id TEXT,
+  source_kind TEXT NOT NULL DEFAULT 'heuristic',
+  thread_id TEXT,
+  contact_phone TEXT,
+  chat_jid TEXT,
+  title TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  confidence INTEGER NOT NULL DEFAULT 0,
+  priority INTEGER NOT NULL DEFAULT 0,
+  due_at TEXT,
+  cooldown_until TEXT,
+  last_nudged_at TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS proactive_candidates_user_status_due_idx ON proactive_candidates (user_id, status, due_at ASC);
+CREATE INDEX IF NOT EXISTS proactive_candidates_user_category_updated_idx ON proactive_candidates (user_id, category, updated_at DESC);
+CREATE INDEX IF NOT EXISTS proactive_candidates_user_contact_updated_idx ON proactive_candidates (user_id, contact_phone, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS proactive_delivery_log (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  candidate_id TEXT,
+  category TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  score INTEGER NOT NULL DEFAULT 0,
+  reason_code TEXT NOT NULL DEFAULT '',
+  reason_text TEXT NOT NULL DEFAULT '',
+  message_text TEXT NOT NULL DEFAULT '',
+  message_id TEXT,
+  sent_at TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS proactive_delivery_log_user_created_idx ON proactive_delivery_log (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS proactive_delivery_log_user_category_created_idx ON proactive_delivery_log (user_id, category, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS proactive_digest_state (
+  user_id TEXT PRIMARY KEY,
+  last_morning_digest_at TEXT,
+  last_night_digest_at TEXT,
+  last_morning_digest_signature TEXT NOT NULL DEFAULT '',
+  last_night_digest_signature TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS wa_sessions (
   session_id TEXT PRIMARY KEY,
   creds TEXT NOT NULL,

@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 import json
 import logging
 from pathlib import Path
+import re
 from typing import Any, Sequence
 from uuid import UUID, uuid4
 
@@ -15,6 +16,7 @@ observer_ingest_logger = logging.getLogger("auracore.observer_ingest")
 contact_resolution_logger = logging.getLogger("auracore.contact_resolution")
 
 OPERATIVE_MESSAGE_LIMIT = 150
+_CLOCK_TIME_REGEX = re.compile(r"^(?P<hour>\d{1,2}):(?P<minute>\d{2})$")
 
 SQLITE_LEGACY_COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
     "mensagens": {
@@ -575,6 +577,75 @@ class ImportantMessageRecord:
     saved_at: datetime
     last_reviewed_at: datetime | None
     discarded_at: datetime | None
+
+
+@dataclass(slots=True)
+class ProactivePreferencesRecord:
+    user_id: UUID
+    enabled: bool
+    intensity: str
+    quiet_hours_start: str
+    quiet_hours_end: str
+    max_unsolicited_per_day: int
+    min_interval_minutes: int
+    agenda_enabled: bool
+    followups_enabled: bool
+    projects_enabled: bool
+    routine_enabled: bool
+    morning_digest_enabled: bool
+    night_digest_enabled: bool
+    morning_digest_time: str
+    night_digest_time: str
+    updated_at: datetime
+
+
+@dataclass(slots=True)
+class ProactiveCandidateRecord:
+    id: str
+    user_id: UUID
+    category: str
+    status: str
+    source_message_id: str | None
+    source_kind: str
+    thread_id: str | None
+    contact_phone: str | None
+    chat_jid: str | None
+    title: str
+    summary: str
+    confidence: int
+    priority: int
+    due_at: datetime | None
+    cooldown_until: datetime | None
+    last_nudged_at: datetime | None
+    payload_json: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(slots=True)
+class ProactiveDeliveryLogRecord:
+    id: str
+    user_id: UUID
+    candidate_id: str | None
+    category: str
+    decision: str
+    score: int
+    reason_code: str
+    reason_text: str
+    message_text: str
+    message_id: str | None
+    sent_at: datetime | None
+    created_at: datetime
+
+
+@dataclass(slots=True)
+class ProactiveDigestStateRecord:
+    user_id: UUID
+    last_morning_digest_at: datetime | None
+    last_night_digest_at: datetime | None
+    last_morning_digest_signature: str
+    last_night_digest_signature: str
+    updated_at: datetime
 
 
 class SupabaseStore:
@@ -3159,6 +3230,503 @@ class SupabaseStore:
                 raise
             return self._parse_whatsapp_agent_settings(payload, fallback_user_id=user_id) or self._default_whatsapp_agent_settings(user_id=user_id)
         return self._parse_whatsapp_agent_settings(payload, fallback_user_id=user_id) or self._default_whatsapp_agent_settings(user_id=user_id)
+
+    def get_proactive_preferences(self, user_id: UUID) -> ProactivePreferencesRecord:
+        try:
+            response = (
+                self.client.table("proactive_preferences")
+                .select(
+                    "user_id,enabled,intensity,quiet_hours_start,quiet_hours_end,max_unsolicited_per_day,"
+                    "min_interval_minutes,agenda_enabled,followups_enabled,projects_enabled,routine_enabled,"
+                    "morning_digest_enabled,night_digest_enabled,morning_digest_time,night_digest_time,updated_at"
+                )
+                .eq("user_id", str(user_id))
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "proactive_preferences"):
+                raise
+            return self._default_proactive_preferences(user_id=user_id)
+
+        rows = response.data or []
+        if not rows or not isinstance(rows[0], dict):
+            return self._default_proactive_preferences(user_id=user_id)
+        parsed = self._parse_proactive_preferences(rows[0], fallback_user_id=user_id)
+        return parsed or self._default_proactive_preferences(user_id=user_id)
+
+    def update_proactive_preferences(
+        self,
+        *,
+        user_id: UUID,
+        enabled: bool | None = None,
+        intensity: str | None | object = _UNSET,
+        quiet_hours_start: str | None | object = _UNSET,
+        quiet_hours_end: str | None | object = _UNSET,
+        max_unsolicited_per_day: int | None = None,
+        min_interval_minutes: int | None = None,
+        agenda_enabled: bool | None = None,
+        followups_enabled: bool | None = None,
+        projects_enabled: bool | None = None,
+        routine_enabled: bool | None = None,
+        morning_digest_enabled: bool | None = None,
+        night_digest_enabled: bool | None = None,
+        morning_digest_time: str | None | object = _UNSET,
+        night_digest_time: str | None | object = _UNSET,
+        updated_at: datetime | None = None,
+    ) -> ProactivePreferencesRecord:
+        current = self.get_proactive_preferences(user_id)
+        resolved_updated_at = updated_at or datetime.now(UTC)
+        payload = {
+            "user_id": str(user_id),
+            "enabled": current.enabled if enabled is None else bool(enabled),
+            "intensity": (
+                current.intensity
+                if intensity is _UNSET
+                else self._normalize_proactive_intensity(intensity if isinstance(intensity, str) else None)
+            ),
+            "quiet_hours_start": (
+                current.quiet_hours_start
+                if quiet_hours_start is _UNSET
+                else self._normalize_clock_time(quiet_hours_start if isinstance(quiet_hours_start, str) else None, fallback=current.quiet_hours_start)
+            ),
+            "quiet_hours_end": (
+                current.quiet_hours_end
+                if quiet_hours_end is _UNSET
+                else self._normalize_clock_time(quiet_hours_end if isinstance(quiet_hours_end, str) else None, fallback=current.quiet_hours_end)
+            ),
+            "max_unsolicited_per_day": (
+                current.max_unsolicited_per_day
+                if max_unsolicited_per_day is None
+                else max(1, min(12, int(max_unsolicited_per_day)))
+            ),
+            "min_interval_minutes": (
+                current.min_interval_minutes
+                if min_interval_minutes is None
+                else max(15, min(1440, int(min_interval_minutes)))
+            ),
+            "agenda_enabled": current.agenda_enabled if agenda_enabled is None else bool(agenda_enabled),
+            "followups_enabled": current.followups_enabled if followups_enabled is None else bool(followups_enabled),
+            "projects_enabled": current.projects_enabled if projects_enabled is None else bool(projects_enabled),
+            "routine_enabled": current.routine_enabled if routine_enabled is None else bool(routine_enabled),
+            "morning_digest_enabled": current.morning_digest_enabled if morning_digest_enabled is None else bool(morning_digest_enabled),
+            "night_digest_enabled": current.night_digest_enabled if night_digest_enabled is None else bool(night_digest_enabled),
+            "morning_digest_time": (
+                current.morning_digest_time
+                if morning_digest_time is _UNSET
+                else self._normalize_clock_time(morning_digest_time if isinstance(morning_digest_time, str) else None, fallback=current.morning_digest_time)
+            ),
+            "night_digest_time": (
+                current.night_digest_time
+                if night_digest_time is _UNSET
+                else self._normalize_clock_time(night_digest_time if isinstance(night_digest_time, str) else None, fallback=current.night_digest_time)
+            ),
+            "updated_at": resolved_updated_at.isoformat(),
+        }
+        try:
+            self.client.table("proactive_preferences").upsert(payload, on_conflict="user_id").execute()
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "proactive_preferences"):
+                raise
+            return self._parse_proactive_preferences(payload, fallback_user_id=user_id) or self._default_proactive_preferences(user_id=user_id)
+        return self._parse_proactive_preferences(payload, fallback_user_id=user_id) or self._default_proactive_preferences(user_id=user_id)
+
+    def get_proactive_digest_state(self, *, user_id: UUID) -> ProactiveDigestStateRecord:
+        try:
+            response = (
+                self.client.table("proactive_digest_state")
+                .select(
+                    "user_id,last_morning_digest_at,last_night_digest_at,last_morning_digest_signature,"
+                    "last_night_digest_signature,updated_at"
+                )
+                .eq("user_id", str(user_id))
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "proactive_digest_state"):
+                raise
+            return self._default_proactive_digest_state(user_id=user_id)
+        rows = response.data or []
+        if not rows or not isinstance(rows[0], dict):
+            return self._default_proactive_digest_state(user_id=user_id)
+        parsed = self._parse_proactive_digest_state(rows[0], fallback_user_id=user_id)
+        return parsed or self._default_proactive_digest_state(user_id=user_id)
+
+    def update_proactive_digest_state(
+        self,
+        *,
+        user_id: UUID,
+        last_morning_digest_at: datetime | None | object = _UNSET,
+        last_night_digest_at: datetime | None | object = _UNSET,
+        last_morning_digest_signature: str | None | object = _UNSET,
+        last_night_digest_signature: str | None | object = _UNSET,
+        updated_at: datetime | None = None,
+    ) -> ProactiveDigestStateRecord:
+        current = self.get_proactive_digest_state(user_id=user_id)
+        resolved_updated_at = updated_at or datetime.now(UTC)
+        payload = {
+            "user_id": str(user_id),
+            "last_morning_digest_at": (
+                current.last_morning_digest_at.isoformat()
+                if last_morning_digest_at is _UNSET and current.last_morning_digest_at is not None
+                else last_morning_digest_at.isoformat()
+                if isinstance(last_morning_digest_at, datetime)
+                else None
+            ),
+            "last_night_digest_at": (
+                current.last_night_digest_at.isoformat()
+                if last_night_digest_at is _UNSET and current.last_night_digest_at is not None
+                else last_night_digest_at.isoformat()
+                if isinstance(last_night_digest_at, datetime)
+                else None
+            ),
+            "last_morning_digest_signature": (
+                current.last_morning_digest_signature
+                if last_morning_digest_signature is _UNSET
+                else self._optional_text(last_morning_digest_signature if isinstance(last_morning_digest_signature, str) else None) or ""
+            ),
+            "last_night_digest_signature": (
+                current.last_night_digest_signature
+                if last_night_digest_signature is _UNSET
+                else self._optional_text(last_night_digest_signature if isinstance(last_night_digest_signature, str) else None) or ""
+            ),
+            "updated_at": resolved_updated_at.isoformat(),
+        }
+        try:
+            self.client.table("proactive_digest_state").upsert(payload, on_conflict="user_id").execute()
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "proactive_digest_state"):
+                raise
+            return self._parse_proactive_digest_state(payload, fallback_user_id=user_id) or self._default_proactive_digest_state(user_id=user_id)
+        return self._parse_proactive_digest_state(payload, fallback_user_id=user_id) or self._default_proactive_digest_state(user_id=user_id)
+
+    def get_proactive_candidate(self, *, user_id: UUID, candidate_id: str) -> ProactiveCandidateRecord | None:
+        try:
+            response = (
+                self.client.table("proactive_candidates")
+                .select(
+                    "id,user_id,category,status,source_message_id,source_kind,thread_id,contact_phone,chat_jid,"
+                    "title,summary,confidence,priority,due_at,cooldown_until,last_nudged_at,payload_json,created_at,updated_at"
+                )
+                .eq("user_id", str(user_id))
+                .eq("id", candidate_id)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "proactive_candidates"):
+                raise
+            return None
+        rows = response.data or []
+        if not rows or not isinstance(rows[0], dict):
+            return None
+        return self._parse_proactive_candidate(rows[0], fallback_user_id=user_id)
+
+    def create_proactive_candidate(
+        self,
+        *,
+        user_id: UUID,
+        category: str,
+        status: str,
+        source_message_id: str | None,
+        source_kind: str,
+        thread_id: str | None,
+        contact_phone: str | None,
+        chat_jid: str | None,
+        title: str,
+        summary: str,
+        confidence: int,
+        priority: int,
+        due_at: datetime | None,
+        cooldown_until: datetime | None,
+        last_nudged_at: datetime | None,
+        payload_json: dict[str, Any] | None,
+        created_at: datetime | None = None,
+        updated_at: datetime | None = None,
+    ) -> ProactiveCandidateRecord:
+        now = created_at or datetime.now(UTC)
+        record_id = str(uuid4())
+        record = {
+            "id": record_id,
+            "user_id": str(user_id),
+            "category": self._normalize_proactive_category(category),
+            "status": self._normalize_proactive_candidate_status(status),
+            "source_message_id": self._optional_text(source_message_id),
+            "source_kind": self._optional_text(source_kind) or "heuristic",
+            "thread_id": self._optional_text(thread_id),
+            "contact_phone": self.normalize_contact_phone(contact_phone),
+            "chat_jid": self._optional_text(chat_jid),
+            "title": title.strip(),
+            "summary": summary.strip(),
+            "confidence": max(0, min(100, int(confidence))),
+            "priority": max(0, min(100, int(priority))),
+            "due_at": due_at.isoformat() if isinstance(due_at, datetime) else None,
+            "cooldown_until": cooldown_until.isoformat() if isinstance(cooldown_until, datetime) else None,
+            "last_nudged_at": last_nudged_at.isoformat() if isinstance(last_nudged_at, datetime) else None,
+            "payload_json": payload_json or {},
+            "created_at": now.isoformat(),
+            "updated_at": (updated_at or now).isoformat(),
+        }
+        try:
+            self.client.table("proactive_candidates").insert(record).execute()
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "proactive_candidates"):
+                raise
+            parsed = self._parse_proactive_candidate(record, fallback_user_id=user_id)
+            if parsed is None:
+                raise RuntimeError("Proactive candidate could not be created.")
+            return parsed
+        created = self.get_proactive_candidate(user_id=user_id, candidate_id=record_id)
+        if created is None:
+            raise RuntimeError("Proactive candidate could not be created.")
+        return created
+
+    def update_proactive_candidate(
+        self,
+        *,
+        candidate_id: str,
+        status: str | None | object = _UNSET,
+        source_message_id: str | None | object = _UNSET,
+        source_kind: str | None | object = _UNSET,
+        thread_id: str | None | object = _UNSET,
+        contact_phone: str | None | object = _UNSET,
+        chat_jid: str | None | object = _UNSET,
+        title: str | None | object = _UNSET,
+        summary: str | None | object = _UNSET,
+        confidence: int | None = None,
+        priority: int | None = None,
+        due_at: datetime | None | object = _UNSET,
+        cooldown_until: datetime | None | object = _UNSET,
+        last_nudged_at: datetime | None | object = _UNSET,
+        payload_json: dict[str, Any] | object = _UNSET,
+        updated_at: datetime | None = None,
+    ) -> ProactiveCandidateRecord | None:
+        current = self.get_proactive_candidate(user_id=self.default_user_id, candidate_id=candidate_id)
+        if current is None:
+            return None
+        payload: dict[str, Any] = {"updated_at": (updated_at or datetime.now(UTC)).isoformat()}
+        if status is not _UNSET:
+            payload["status"] = self._normalize_proactive_candidate_status(status if isinstance(status, str) else None)
+        if source_message_id is not _UNSET:
+            payload["source_message_id"] = self._optional_text(source_message_id if isinstance(source_message_id, str) else None)
+        if source_kind is not _UNSET:
+            payload["source_kind"] = self._optional_text(source_kind if isinstance(source_kind, str) else None) or current.source_kind
+        if thread_id is not _UNSET:
+            payload["thread_id"] = self._optional_text(thread_id if isinstance(thread_id, str) else None)
+        if contact_phone is not _UNSET:
+            payload["contact_phone"] = self.normalize_contact_phone(contact_phone if isinstance(contact_phone, str) else None)
+        if chat_jid is not _UNSET:
+            payload["chat_jid"] = self._optional_text(chat_jid if isinstance(chat_jid, str) else None)
+        if title is not _UNSET:
+            payload["title"] = self._optional_text(title if isinstance(title, str) else None) or current.title
+        if summary is not _UNSET:
+            payload["summary"] = self._optional_text(summary if isinstance(summary, str) else None) or ""
+        if confidence is not None:
+            payload["confidence"] = max(0, min(100, int(confidence)))
+        if priority is not None:
+            payload["priority"] = max(0, min(100, int(priority)))
+        if due_at is not _UNSET:
+            payload["due_at"] = due_at.isoformat() if isinstance(due_at, datetime) else None
+        if cooldown_until is not _UNSET:
+            payload["cooldown_until"] = cooldown_until.isoformat() if isinstance(cooldown_until, datetime) else None
+        if last_nudged_at is not _UNSET:
+            payload["last_nudged_at"] = last_nudged_at.isoformat() if isinstance(last_nudged_at, datetime) else None
+        if payload_json is not _UNSET:
+            payload["payload_json"] = payload_json if isinstance(payload_json, dict) else {}
+        try:
+            self.client.table("proactive_candidates").update(payload).eq("id", candidate_id).execute()
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "proactive_candidates"):
+                raise
+            return self._parse_proactive_candidate({**current.__dict__, **payload}, fallback_user_id=current.user_id)
+        return self.get_proactive_candidate(user_id=current.user_id, candidate_id=candidate_id)
+
+    def list_proactive_candidates(
+        self,
+        *,
+        user_id: UUID,
+        limit: int = 20,
+        statuses: Sequence[str] | None = None,
+        categories: Sequence[str] | None = None,
+        contact_phone: str | None = None,
+    ) -> list[ProactiveCandidateRecord]:
+        try:
+            query = (
+                self.client.table("proactive_candidates")
+                .select(
+                    "id,user_id,category,status,source_message_id,source_kind,thread_id,contact_phone,chat_jid,"
+                    "title,summary,confidence,priority,due_at,cooldown_until,last_nudged_at,payload_json,created_at,updated_at"
+                )
+                .eq("user_id", str(user_id))
+            )
+            normalized_statuses = [
+                self._normalize_proactive_candidate_status(item)
+                for item in (statuses or [])
+                if isinstance(item, str) and item.strip()
+            ]
+            if normalized_statuses:
+                query = query.in_("status", normalized_statuses)
+            normalized_categories = [
+                self._normalize_proactive_category(item)
+                for item in (categories or [])
+                if isinstance(item, str) and item.strip()
+            ]
+            if normalized_categories:
+                query = query.in_("category", normalized_categories)
+            normalized_phone = self.normalize_contact_phone(contact_phone)
+            if normalized_phone:
+                query = query.eq("contact_phone", normalized_phone)
+            response = query.order("updated_at", desc=True).limit(limit).execute()
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "proactive_candidates"):
+                raise
+            return []
+        rows = response.data or []
+        candidates: list[ProactiveCandidateRecord] = []
+        for row in rows:
+            parsed = self._parse_proactive_candidate(row, fallback_user_id=user_id)
+            if parsed is not None:
+                candidates.append(parsed)
+        return candidates
+
+    def list_due_proactive_candidates(
+        self,
+        *,
+        user_id: UUID,
+        due_before: datetime,
+        limit: int = 20,
+    ) -> list[ProactiveCandidateRecord]:
+        try:
+            response = (
+                self.client.table("proactive_candidates")
+                .select(
+                    "id,user_id,category,status,source_message_id,source_kind,thread_id,contact_phone,chat_jid,"
+                    "title,summary,confidence,priority,due_at,cooldown_until,last_nudged_at,payload_json,created_at,updated_at"
+                )
+                .eq("user_id", str(user_id))
+                .in_("status", ["suggested", "confirmed"])
+                .order("due_at", desc=False)
+                .limit(limit)
+                .execute()
+            )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "proactive_candidates"):
+                raise
+            return []
+        rows = response.data or []
+        candidates: list[ProactiveCandidateRecord] = []
+        for row in rows:
+            parsed = self._parse_proactive_candidate(row, fallback_user_id=user_id)
+            if parsed is None or parsed.due_at is None or parsed.due_at > due_before:
+                continue
+            if parsed.cooldown_until is not None and parsed.cooldown_until > due_before:
+                continue
+            candidates.append(parsed)
+        candidates.sort(
+            key=lambda candidate: (
+                candidate.due_at or datetime.max.replace(tzinfo=UTC),
+                -candidate.priority,
+                -candidate.confidence,
+            )
+        )
+        return candidates[:limit]
+
+    def create_proactive_delivery_log(
+        self,
+        *,
+        user_id: UUID,
+        candidate_id: str | None,
+        category: str,
+        decision: str,
+        score: int,
+        reason_code: str,
+        reason_text: str,
+        message_text: str,
+        message_id: str | None,
+        sent_at: datetime | None,
+        created_at: datetime | None = None,
+    ) -> ProactiveDeliveryLogRecord:
+        resolved_created_at = created_at or datetime.now(UTC)
+        record_id = str(uuid4())
+        record = {
+            "id": record_id,
+            "user_id": str(user_id),
+            "candidate_id": self._optional_text(candidate_id),
+            "category": self._normalize_proactive_category(category),
+            "decision": self._normalize_proactive_delivery_decision(decision),
+            "score": max(0, min(100, int(score))),
+            "reason_code": self._optional_text(reason_code) or "",
+            "reason_text": self._optional_text(reason_text) or "",
+            "message_text": message_text.strip(),
+            "message_id": self._optional_text(message_id),
+            "sent_at": sent_at.isoformat() if isinstance(sent_at, datetime) else None,
+            "created_at": resolved_created_at.isoformat(),
+        }
+        try:
+            self.client.table("proactive_delivery_log").insert(record).execute()
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "proactive_delivery_log"):
+                raise
+        parsed = self._parse_proactive_delivery_log(record, fallback_user_id=user_id)
+        if parsed is None:
+            raise RuntimeError("Proactive delivery log could not be created.")
+        return parsed
+
+    def list_recent_proactive_deliveries(self, *, user_id: UUID, limit: int = 20) -> list[ProactiveDeliveryLogRecord]:
+        try:
+            response = (
+                self.client.table("proactive_delivery_log")
+                .select(
+                    "id,user_id,candidate_id,category,decision,score,reason_code,reason_text,message_text,"
+                    "message_id,sent_at,created_at"
+                )
+                .eq("user_id", str(user_id))
+                .order("created_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "proactive_delivery_log"):
+                raise
+            return []
+        rows = response.data or []
+        logs: list[ProactiveDeliveryLogRecord] = []
+        for row in rows:
+            parsed = self._parse_proactive_delivery_log(row, fallback_user_id=user_id)
+            if parsed is not None:
+                logs.append(parsed)
+        return logs
+
+    def count_proactive_deliveries_since(
+        self,
+        *,
+        user_id: UUID,
+        since: datetime,
+        decisions: Sequence[str] | None = None,
+    ) -> int:
+        try:
+            query = (
+                self.client.table("proactive_delivery_log")
+                .select("id,decision")
+                .eq("user_id", str(user_id))
+                .gte("created_at", since.isoformat())
+                .limit(500)
+            )
+            normalized_decisions = [
+                self._normalize_proactive_delivery_decision(item)
+                for item in (decisions or [])
+                if isinstance(item, str) and item.strip()
+            ]
+            if normalized_decisions:
+                query = query.in_("decision", normalized_decisions)
+            response = query.execute()
+            rows = response.data or []
+            return sum(1 for row in rows if isinstance(row, dict))
+        except Exception as exc:
+            if not self._is_missing_table_error(exc, "proactive_delivery_log"):
+                raise
+            return 0
 
     def get_whatsapp_agent_thread(self, *, user_id: UUID, thread_id: str) -> WhatsAppAgentThreadRecord | None:
         try:
@@ -6209,6 +6777,11 @@ class SupabaseStore:
             PRAGMA foreign_keys = OFF;
             DELETE FROM analysis_job_messages;
             DELETE FROM model_runs;
+            DELETE FROM proactive_delivery_log;
+            DELETE FROM proactive_candidates;
+            DELETE FROM proactive_digest_state;
+            DELETE FROM proactive_preferences;
+            DELETE FROM important_messages;
             DELETE FROM analysis_jobs;
             DELETE FROM automation_decisions;
             DELETE FROM wa_sync_runs;
@@ -6299,6 +6872,51 @@ class SupabaseStore:
         )
         if parsed is None:
             raise RuntimeError("Could not build default WhatsApp agent settings.")
+        return parsed
+
+    def _default_proactive_preferences_record(self, *, user_id: UUID, updated_at: datetime) -> dict[str, Any]:
+        return {
+            "user_id": str(user_id),
+            "enabled": True,
+            "intensity": "moderate",
+            "quiet_hours_start": "22:00",
+            "quiet_hours_end": "08:00",
+            "max_unsolicited_per_day": 4,
+            "min_interval_minutes": 90,
+            "agenda_enabled": True,
+            "followups_enabled": True,
+            "projects_enabled": True,
+            "routine_enabled": True,
+            "morning_digest_enabled": True,
+            "night_digest_enabled": True,
+            "morning_digest_time": "08:30",
+            "night_digest_time": "20:30",
+            "updated_at": updated_at.isoformat(),
+        }
+
+    def _default_proactive_preferences(self, *, user_id: UUID) -> ProactivePreferencesRecord:
+        parsed = self._parse_proactive_preferences(
+            self._default_proactive_preferences_record(user_id=user_id, updated_at=datetime.now(UTC)),
+            fallback_user_id=user_id,
+        )
+        if parsed is None:
+            raise RuntimeError("Could not build default proactive preferences.")
+        return parsed
+
+    def _default_proactive_digest_state(self, *, user_id: UUID) -> ProactiveDigestStateRecord:
+        parsed = self._parse_proactive_digest_state(
+            {
+                "user_id": str(user_id),
+                "last_morning_digest_at": None,
+                "last_night_digest_at": None,
+                "last_morning_digest_signature": "",
+                "last_night_digest_signature": "",
+                "updated_at": datetime.now(UTC).isoformat(),
+            },
+            fallback_user_id=user_id,
+        )
+        if parsed is None:
+            raise RuntimeError("Could not build default proactive digest state.")
         return parsed
 
     def _get_latest_running_sync_run_row(self, user_id: UUID) -> dict[str, Any] | None:
@@ -6704,6 +7322,51 @@ class SupabaseStore:
         phone_digits = "".join(char for char in phone if char.isdigit())
         return not text_digits or text_digits != phone_digits
 
+    def _normalize_proactive_intensity(self, value: str | None) -> str:
+        normalized = (value or "moderate").strip().lower()
+        if normalized in {"alta", "high"}:
+            return "high"
+        if normalized in {"conservative", "conservadora", "conservative_low"}:
+            return "conservative"
+        return "moderate"
+
+    def _normalize_proactive_category(self, value: str | None) -> str:
+        normalized = (value or "followup").strip().lower()
+        if normalized in {"agenda_followup", "agenda", "digest_morning", "digest_night", "morning_digest", "night_digest", "followup", "project", "routine"}:
+            mapping = {
+                "agenda": "agenda_followup",
+                "digest_morning": "morning_digest",
+                "digest_night": "night_digest",
+                "project": "project_nudge",
+            }
+            return mapping.get(normalized, normalized)
+        if normalized == "project_nudge":
+            return normalized
+        return "followup"
+
+    def _normalize_proactive_candidate_status(self, value: str | None) -> str:
+        normalized = (value or "suggested").strip().lower()
+        if normalized in {"queued", "suggested", "sent", "dismissed", "confirmed", "done", "expired"}:
+            return normalized
+        return "suggested"
+
+    def _normalize_proactive_delivery_decision(self, value: str | None) -> str:
+        normalized = (value or "sent").strip().lower()
+        if normalized in {"sent", "skipped", "suppressed", "failed"}:
+            return normalized
+        return "sent"
+
+    def _normalize_clock_time(self, value: str | None, *, fallback: str) -> str:
+        text = (value or "").strip()
+        if not text:
+            return fallback
+        match = _CLOCK_TIME_REGEX.match(text)
+        if not match:
+            return fallback
+        hour = max(0, min(23, int(match.group("hour"))))
+        minute = max(0, min(59, int(match.group("minute"))))
+        return f"{hour:02d}:{minute:02d}"
+
     def _normalize_project_key(self, value: str) -> str:
         normalized_chars = [
             char.lower() if char.isalnum() else "-"
@@ -6886,6 +7549,89 @@ class SupabaseStore:
             user_id=self._parse_uuid(value.get("user_id")) or fallback_user_id,
             auto_reply_enabled=self._parse_bool(value.get("auto_reply_enabled")) if self._parse_bool(value.get("auto_reply_enabled")) is not None else False,
             allowed_contact_phone=self.normalize_contact_phone(self._optional_text(value.get("allowed_contact_phone"))),
+            updated_at=self._parse_datetime(value.get("updated_at")) or datetime.now(UTC),
+        )
+
+    def _parse_proactive_preferences(self, value: Any, *, fallback_user_id: UUID) -> ProactivePreferencesRecord | None:
+        if not isinstance(value, dict):
+            return None
+        return ProactivePreferencesRecord(
+            user_id=self._parse_uuid(value.get("user_id")) or fallback_user_id,
+            enabled=self._parse_bool(value.get("enabled")) if self._parse_bool(value.get("enabled")) is not None else True,
+            intensity=self._normalize_proactive_intensity(self._optional_text(value.get("intensity"))),
+            quiet_hours_start=self._normalize_clock_time(self._optional_text(value.get("quiet_hours_start")), fallback="22:00"),
+            quiet_hours_end=self._normalize_clock_time(self._optional_text(value.get("quiet_hours_end")), fallback="08:00"),
+            max_unsolicited_per_day=max(1, min(12, self._parse_int(value.get("max_unsolicited_per_day")) or 4)),
+            min_interval_minutes=max(15, min(1440, self._parse_int(value.get("min_interval_minutes")) or 90)),
+            agenda_enabled=self._parse_bool(value.get("agenda_enabled")) if self._parse_bool(value.get("agenda_enabled")) is not None else True,
+            followups_enabled=self._parse_bool(value.get("followups_enabled")) if self._parse_bool(value.get("followups_enabled")) is not None else True,
+            projects_enabled=self._parse_bool(value.get("projects_enabled")) if self._parse_bool(value.get("projects_enabled")) is not None else True,
+            routine_enabled=self._parse_bool(value.get("routine_enabled")) if self._parse_bool(value.get("routine_enabled")) is not None else True,
+            morning_digest_enabled=self._parse_bool(value.get("morning_digest_enabled")) if self._parse_bool(value.get("morning_digest_enabled")) is not None else True,
+            night_digest_enabled=self._parse_bool(value.get("night_digest_enabled")) if self._parse_bool(value.get("night_digest_enabled")) is not None else True,
+            morning_digest_time=self._normalize_clock_time(self._optional_text(value.get("morning_digest_time")), fallback="08:30"),
+            night_digest_time=self._normalize_clock_time(self._optional_text(value.get("night_digest_time")), fallback="20:30"),
+            updated_at=self._parse_datetime(value.get("updated_at")) or datetime.now(UTC),
+        )
+
+    def _parse_proactive_candidate(self, value: Any, *, fallback_user_id: UUID) -> ProactiveCandidateRecord | None:
+        if not isinstance(value, dict):
+            return None
+        title = self._optional_text(value.get("title"))
+        if not title:
+            return None
+        payload_json = value.get("payload_json")
+        if not isinstance(payload_json, dict):
+            payload_json = {}
+        return ProactiveCandidateRecord(
+            id=str(value.get("id") or ""),
+            user_id=self._parse_uuid(value.get("user_id")) or fallback_user_id,
+            category=self._normalize_proactive_category(self._optional_text(value.get("category"))),
+            status=self._normalize_proactive_candidate_status(self._optional_text(value.get("status"))),
+            source_message_id=self._optional_text(value.get("source_message_id")),
+            source_kind=self._optional_text(value.get("source_kind")) or "heuristic",
+            thread_id=self._optional_text(value.get("thread_id")),
+            contact_phone=self.normalize_contact_phone(self._optional_text(value.get("contact_phone"))),
+            chat_jid=self._optional_text(value.get("chat_jid")),
+            title=title,
+            summary=self._optional_text(value.get("summary")) or "",
+            confidence=max(0, min(100, self._parse_int(value.get("confidence")) or 0)),
+            priority=max(0, min(100, self._parse_int(value.get("priority")) or 0)),
+            due_at=self._parse_datetime(value.get("due_at")),
+            cooldown_until=self._parse_datetime(value.get("cooldown_until")),
+            last_nudged_at=self._parse_datetime(value.get("last_nudged_at")),
+            payload_json=payload_json,
+            created_at=self._parse_datetime(value.get("created_at")) or datetime.now(UTC),
+            updated_at=self._parse_datetime(value.get("updated_at")) or datetime.now(UTC),
+        )
+
+    def _parse_proactive_delivery_log(self, value: Any, *, fallback_user_id: UUID) -> ProactiveDeliveryLogRecord | None:
+        if not isinstance(value, dict):
+            return None
+        return ProactiveDeliveryLogRecord(
+            id=str(value.get("id") or ""),
+            user_id=self._parse_uuid(value.get("user_id")) or fallback_user_id,
+            candidate_id=self._optional_text(value.get("candidate_id")),
+            category=self._normalize_proactive_category(self._optional_text(value.get("category"))),
+            decision=self._normalize_proactive_delivery_decision(self._optional_text(value.get("decision"))),
+            score=max(0, min(100, self._parse_int(value.get("score")) or 0)),
+            reason_code=self._optional_text(value.get("reason_code")) or "",
+            reason_text=self._optional_text(value.get("reason_text")) or "",
+            message_text=self._optional_text(value.get("message_text")) or "",
+            message_id=self._optional_text(value.get("message_id")),
+            sent_at=self._parse_datetime(value.get("sent_at")),
+            created_at=self._parse_datetime(value.get("created_at")) or datetime.now(UTC),
+        )
+
+    def _parse_proactive_digest_state(self, value: Any, *, fallback_user_id: UUID) -> ProactiveDigestStateRecord | None:
+        if not isinstance(value, dict):
+            return None
+        return ProactiveDigestStateRecord(
+            user_id=self._parse_uuid(value.get("user_id")) or fallback_user_id,
+            last_morning_digest_at=self._parse_datetime(value.get("last_morning_digest_at")),
+            last_night_digest_at=self._parse_datetime(value.get("last_night_digest_at")),
+            last_morning_digest_signature=self._optional_text(value.get("last_morning_digest_signature")) or "",
+            last_night_digest_signature=self._optional_text(value.get("last_night_digest_signature")) or "",
             updated_at=self._parse_datetime(value.get("updated_at")) or datetime.now(UTC),
         )
 

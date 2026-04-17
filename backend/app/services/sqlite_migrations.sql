@@ -39,3 +39,88 @@ CREATE TABLE IF NOT EXISTS agenda (
   updated_at TEXT NOT NULL,
   UNIQUE (user_id, message_id)
 );
+
+CREATE TABLE IF NOT EXISTS important_messages (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  source_message_id TEXT NOT NULL,
+  contact_name TEXT NOT NULL DEFAULT '',
+  contact_phone TEXT,
+  direction TEXT NOT NULL DEFAULT 'inbound',
+  message_text TEXT NOT NULL,
+  message_timestamp TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT 'other',
+  importance_reason TEXT NOT NULL DEFAULT '',
+  confidence INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'active',
+  review_notes TEXT,
+  saved_at TEXT NOT NULL,
+  last_reviewed_at TEXT,
+  discarded_at TEXT,
+  UNIQUE (user_id, source_message_id)
+);
+
+CREATE TABLE IF NOT EXISTS proactive_preferences (
+  user_id TEXT PRIMARY KEY,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  intensity TEXT NOT NULL DEFAULT 'moderate',
+  quiet_hours_start TEXT NOT NULL DEFAULT '22:00',
+  quiet_hours_end TEXT NOT NULL DEFAULT '08:00',
+  max_unsolicited_per_day INTEGER NOT NULL DEFAULT 4,
+  min_interval_minutes INTEGER NOT NULL DEFAULT 90,
+  agenda_enabled INTEGER NOT NULL DEFAULT 1,
+  followups_enabled INTEGER NOT NULL DEFAULT 1,
+  projects_enabled INTEGER NOT NULL DEFAULT 1,
+  routine_enabled INTEGER NOT NULL DEFAULT 1,
+  morning_digest_enabled INTEGER NOT NULL DEFAULT 1,
+  night_digest_enabled INTEGER NOT NULL DEFAULT 1,
+  morning_digest_time TEXT NOT NULL DEFAULT '08:30',
+  night_digest_time TEXT NOT NULL DEFAULT '20:30',
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS proactive_candidates (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  category TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'suggested',
+  source_message_id TEXT,
+  source_kind TEXT NOT NULL DEFAULT 'heuristic',
+  thread_id TEXT,
+  contact_phone TEXT,
+  chat_jid TEXT,
+  title TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  confidence INTEGER NOT NULL DEFAULT 0,
+  priority INTEGER NOT NULL DEFAULT 0,
+  due_at TEXT,
+  cooldown_until TEXT,
+  last_nudged_at TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS proactive_delivery_log (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  candidate_id TEXT,
+  category TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  score INTEGER NOT NULL DEFAULT 0,
+  reason_code TEXT NOT NULL DEFAULT '',
+  reason_text TEXT NOT NULL DEFAULT '',
+  message_text TEXT NOT NULL DEFAULT '',
+  message_id TEXT,
+  sent_at TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS proactive_digest_state (
+  user_id TEXT PRIMARY KEY,
+  last_morning_digest_at TEXT,
+  last_night_digest_at TEXT,
+  last_morning_digest_signature TEXT NOT NULL DEFAULT '',
+  last_night_digest_signature TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL
+);

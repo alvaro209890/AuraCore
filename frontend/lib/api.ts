@@ -59,6 +59,77 @@ export type WhatsAppAgentSettings = {
   updated_at: string;
 };
 
+export type ProactiveIntensity = "conservative" | "moderate" | "high";
+export type ProactiveCategory =
+  | "agenda_followup"
+  | "followup"
+  | "project_nudge"
+  | "routine"
+  | "morning_digest"
+  | "night_digest";
+export type ProactiveCandidateStatus =
+  | "queued"
+  | "suggested"
+  | "sent"
+  | "dismissed"
+  | "confirmed"
+  | "done"
+  | "expired";
+
+export type ProactivePreferences = {
+  user_id: string;
+  enabled: boolean;
+  intensity: ProactiveIntensity;
+  quiet_hours_start: string;
+  quiet_hours_end: string;
+  max_unsolicited_per_day: number;
+  min_interval_minutes: number;
+  agenda_enabled: boolean;
+  followups_enabled: boolean;
+  projects_enabled: boolean;
+  routine_enabled: boolean;
+  morning_digest_enabled: boolean;
+  night_digest_enabled: boolean;
+  morning_digest_time: string;
+  night_digest_time: string;
+  updated_at: string;
+};
+
+export type ProactiveCandidate = {
+  id: string;
+  category: ProactiveCategory;
+  status: ProactiveCandidateStatus;
+  source_message_id: string | null;
+  source_kind: string;
+  thread_id: string | null;
+  contact_phone: string | null;
+  chat_jid: string | null;
+  title: string;
+  summary: string;
+  confidence: number;
+  priority: number;
+  due_at: string | null;
+  cooldown_until: string | null;
+  last_nudged_at: string | null;
+  payload_json: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ProactiveDeliveryLog = {
+  id: string;
+  candidate_id: string | null;
+  category: ProactiveCategory;
+  decision: "sent" | "skipped" | "suppressed" | "failed";
+  score: number;
+  reason_code: string;
+  reason_text: string;
+  message_text: string;
+  message_id: string | null;
+  sent_at: string | null;
+  created_at: string;
+};
+
 export type WhatsAppAgentSession = {
   id: string;
   thread_id: string;
@@ -696,6 +767,61 @@ export async function updateAgentSettings(input: Partial<WhatsAppAgentSettings>)
   });
 }
 
+export async function getProactiveSettings(): Promise<ProactivePreferences> {
+  return request<ProactivePreferences>("/api/whatsapp-agent/proactivity/settings");
+}
+
+export async function updateProactiveSettings(input: Partial<ProactivePreferences>): Promise<ProactivePreferences> {
+  return request<ProactivePreferences>("/api/whatsapp-agent/proactivity/settings", {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function listProactiveCandidates(
+  limit = 30,
+  statuses: ProactiveCandidateStatus[] = [],
+): Promise<ProactiveCandidate[]> {
+  const params = new URLSearchParams();
+  params.set("limit", String(limit));
+  statuses.forEach((status) => params.append("status", status));
+  const response = await request<{ candidates: ProactiveCandidate[] }>(
+    `/api/whatsapp-agent/proactivity/candidates?${params.toString()}`,
+  );
+  return response.candidates;
+}
+
+export async function dismissProactiveCandidate(candidateId: string): Promise<SimpleOkResponse> {
+  return request<SimpleOkResponse>(`/api/whatsapp-agent/proactivity/candidates/${encodeURIComponent(candidateId)}/dismiss`, {
+    method: "POST",
+  });
+}
+
+export async function confirmProactiveCandidate(candidateId: string): Promise<SimpleOkResponse> {
+  return request<SimpleOkResponse>(`/api/whatsapp-agent/proactivity/candidates/${encodeURIComponent(candidateId)}/confirm`, {
+    method: "POST",
+  });
+}
+
+export async function completeProactiveCandidate(candidateId: string): Promise<SimpleOkResponse> {
+  return request<SimpleOkResponse>(`/api/whatsapp-agent/proactivity/candidates/${encodeURIComponent(candidateId)}/complete`, {
+    method: "POST",
+  });
+}
+
+export async function listProactiveDeliveries(limit = 20): Promise<ProactiveDeliveryLog[]> {
+  const response = await request<{ deliveries: ProactiveDeliveryLog[] }>(
+    `/api/whatsapp-agent/proactivity/deliveries?limit=${limit}`,
+  );
+  return response.deliveries;
+}
+
+export async function runProactiveTick(): Promise<SimpleOkResponse> {
+  return request<SimpleOkResponse>("/api/whatsapp-agent/proactivity/tick", {
+    method: "POST",
+  });
+}
+
 export async function listAgentThreads(limit = 24): Promise<WhatsAppAgentThread[]> {
   const response = await request<{ threads: WhatsAppAgentThread[] }>(`/api/whatsapp-agent/threads?limit=${limit}`);
   return response.threads;
@@ -913,4 +1039,3 @@ export async function runAutomationTick(): Promise<AutomationStatus> {
     method: "POST",
   });
 }
-
