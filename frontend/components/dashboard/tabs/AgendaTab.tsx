@@ -1,8 +1,109 @@
 import toast from 'react-hot-toast';
-import { AlertCircle, BarChart3, Brain, Check, CheckCircle2, ChevronRight, Clock, Database, Edit2, Fingerprint, MessageSquare, Pause, Play, Plus, RefreshCw, Send, Settings, Terminal, Trash2, Users, X, Zap } from 'lucide-react';
-import { hasEstablishedMemory, buildActivityThinking, buildActivityTrace, getIntentTitle, getStepVisualState, MemorySignalCard, formatTokenCount, formatShortDateTime, formatRelativeTime, SectionTitle, ModernStatCard, ProgressBar, getProactiveStatusLabel, getProactiveCategoryLabel, formatConfidence, getProactiveDecisionLabel, truncateText, isProjectManuallyCompleted, getProjectStrength, normalizeProjectSearchText, getProjectStatusTone, getProjectStatusLabel, getAudienceLabel, ProjectInfoBlock, SegmentedControl, getRelationSortPriority, normalizeRelationType, getRelationTypeLabel, getRelationTone, getRelationStrength, AutomationNumberField, formatBrazilDateTimeInput, parseBrazilDateTimeInput, formatAgendaReminderRule } from '../../connection-dashboard';
+import type { ReactNode } from 'react';
+import { AlertCircle, Check, Clock, Edit2, Plus, RefreshCw, Trash2, X } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import {
+  formatAgendaReminderRule,
+  formatBrazilDateTimeInput,
+  formatRelativeTime,
+  formatShortDateTime,
+  parseBrazilDateTimeInput,
+  SectionTitle,
+} from '../../connection-dashboard';
 import type { AgendaEvent, CreateAgendaEventInput, UpdateAgendaEventInput } from '@/lib/api';
+
+type AgendaEditDraft = {
+  titulo: string;
+  inicio: string;
+  fim: string;
+  status: 'firme' | 'tentativo';
+  contato_origem: string;
+  reminder_offset_minutes: string;
+};
+
+function AgendaField({
+  label,
+  hint,
+  full = false,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  full?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <label className={`ops-field${full ? ' ops-field-full' : ''}`}>
+      <span className="ops-field-label">{label}</span>
+      {children}
+      {hint ? <span className="ops-field-caption">{hint}</span> : null}
+    </label>
+  );
+}
+
+function buildEventDraft(event: AgendaEvent): AgendaEditDraft {
+  return {
+    titulo: event.titulo,
+    inicio: formatBrazilDateTimeInput(event.inicio),
+    fim: formatBrazilDateTimeInput(event.fim),
+    status: event.status,
+    contato_origem: event.contato_origem ?? '',
+    reminder_offset_minutes: String(event.reminder_offset_minutes ?? 0),
+  };
+}
+
+function buildEmptyDraft(): AgendaEditDraft {
+  const start = new Date();
+  start.setSeconds(0, 0);
+  const roundedMinutes = Math.ceil(start.getMinutes() / 15) * 15;
+  start.setMinutes(roundedMinutes >= 60 ? 0 : roundedMinutes);
+  if (roundedMinutes >= 60) {
+    start.setHours(start.getHours() + 1);
+  }
+  const end = new Date(start.getTime() + 60 * 60 * 1000);
+
+  return {
+    titulo: '',
+    inicio: formatBrazilDateTimeInput(start.toISOString()),
+    fim: formatBrazilDateTimeInput(end.toISOString()),
+    status: 'firme',
+    contato_origem: '',
+    reminder_offset_minutes: '0',
+  };
+}
+
+function parseDraftPayload(draft: AgendaEditDraft): CreateAgendaEventInput | null {
+  const titulo = draft.titulo.trim();
+  const inicio = parseBrazilDateTimeInput(draft.inicio);
+  const fim = parseBrazilDateTimeInput(draft.fim);
+  const reminderOffsetMinutes = Number.parseInt(draft.reminder_offset_minutes || '0', 10);
+
+  if (!titulo) {
+    toast.error('Informe um título para o compromisso.');
+    return null;
+  }
+  if (Number.isNaN(inicio.getTime()) || Number.isNaN(fim.getTime())) {
+    toast.error('Preencha início e fim com datas válidas.');
+    return null;
+  }
+  if (fim.getTime() <= inicio.getTime()) {
+    toast.error('O horário final precisa ser depois do início.');
+    return null;
+  }
+  if (Number.isNaN(reminderOffsetMinutes) || reminderOffsetMinutes < 0) {
+    toast.error('A antecedência do lembrete precisa ser um número igual ou maior que zero.');
+    return null;
+  }
+
+  return {
+    titulo,
+    inicio: inicio.toISOString(),
+    fim: fim.toISOString(),
+    status: draft.status,
+    contato_origem: draft.contato_origem.trim() || undefined,
+    reminder_offset_minutes: reminderOffsetMinutes,
+  };
+}
 
 export default function AgendaTab({
   events,
@@ -27,19 +128,12 @@ export default function AgendaTab({
   deletingAgendaIds: string[];
   isCreatingEvent: boolean;
 }) {
-  type AgendaEditDraft = {
-    titulo: string;
-    inicio: string;
-    fim: string;
-    status: "firme" | "tentativo";
-    contato_origem: string;
-    reminder_offset_minutes: string;
-  };
-
-  const [filter, setFilter] = useState<"all" | "upcoming" | "firm" | "tentative" | "conflicts">("all");
+  const [filter, setFilter] = useState<'all' | 'upcoming' | 'firm' | 'tentative' | 'conflicts'>('all');
   const [editingEventId, setEditingEventId] = useState<string | null>(null);
   const [agendaDrafts, setAgendaDrafts] = useState<Record<string, AgendaEditDraft>>({});
   const [creatingEvent, setCreatingEvent] = useState(events.length === 0);
+  const [createDraft, setCreateDraft] = useState<AgendaEditDraft>(() => buildEmptyDraft());
+
   const now = Date.now();
   const sortedEvents = useMemo(
     () => [...events].sort((left, right) => new Date(left.inicio).getTime() - new Date(right.inicio).getTime()),
@@ -49,67 +143,39 @@ export default function AgendaTab({
     () => sortedEvents.filter((event) => new Date(event.fim).getTime() >= now),
     [now, sortedEvents],
   );
-  const firmCount = events.filter((event) => event.status === "firme").length;
-  const tentativeCount = events.filter((event) => event.status !== "firme").length;
+  const firmCount = events.filter((event) => event.status === 'firme').length;
+  const tentativeCount = events.length - firmCount;
   const conflictCount = events.filter((event) => event.has_conflict).length;
   const nextEvent = upcomingEvents[0] ?? null;
 
+  const filterOptions = [
+    { id: 'all' as const, label: 'Todos', count: sortedEvents.length },
+    { id: 'upcoming' as const, label: 'Próximos', count: upcomingEvents.length },
+    { id: 'firm' as const, label: 'Firmes', count: firmCount },
+    { id: 'tentative' as const, label: 'Tentativos', count: tentativeCount },
+    { id: 'conflicts' as const, label: 'Conflitos', count: conflictCount },
+  ];
+
   const filteredEvents = useMemo(() => {
     switch (filter) {
-      case "upcoming":
+      case 'upcoming':
         return upcomingEvents;
-      case "firm":
-        return sortedEvents.filter((event) => event.status === "firme");
-      case "tentative":
-        return sortedEvents.filter((event) => event.status !== "firme");
-      case "conflicts":
+      case 'firm':
+        return sortedEvents.filter((event) => event.status === 'firme');
+      case 'tentative':
+        return sortedEvents.filter((event) => event.status !== 'firme');
+      case 'conflicts':
         return sortedEvents.filter((event) => event.has_conflict);
       default:
         return sortedEvents;
     }
   }, [filter, sortedEvents, upcomingEvents]);
 
-  const filterOptions = [
-    { id: "all" as const, label: "Todos", count: sortedEvents.length },
-    { id: "upcoming" as const, label: "Próximos", count: upcomingEvents.length },
-    { id: "firm" as const, label: "Firmes", count: firmCount },
-    { id: "tentative" as const, label: "Tentativos", count: tentativeCount },
-    { id: "conflicts" as const, label: "Conflitos", count: conflictCount },
-  ];
-
-  const buildDraft = (event: AgendaEvent): AgendaEditDraft => ({
-    titulo: event.titulo,
-    inicio: formatBrazilDateTimeInput(event.inicio),
-    fim: formatBrazilDateTimeInput(event.fim),
-    status: event.status,
-    contato_origem: event.contato_origem ?? "",
-    reminder_offset_minutes: String(event.reminder_offset_minutes ?? 0),
-  });
-  const buildEmptyDraft = (): AgendaEditDraft => {
-    const start = new Date();
-    start.setSeconds(0, 0);
-    const roundedMinutes = Math.ceil(start.getMinutes() / 15) * 15;
-    start.setMinutes(roundedMinutes >= 60 ? 0 : roundedMinutes);
-    if (roundedMinutes >= 60) {
-      start.setHours(start.getHours() + 1);
-    }
-    const end = new Date(start.getTime() + 60 * 60 * 1000);
-    return {
-      titulo: "",
-      inicio: formatBrazilDateTimeInput(start.toISOString()),
-      fim: formatBrazilDateTimeInput(end.toISOString()),
-      status: "firme",
-      contato_origem: "",
-      reminder_offset_minutes: "0",
-    };
-  };
-  const [createDraft, setCreateDraft] = useState<AgendaEditDraft>(() => buildEmptyDraft());
-
   const openEdit = (event: AgendaEvent): void => {
     setEditingEventId(event.id);
     setAgendaDrafts((current) => ({
       ...current,
-      [event.id]: current[event.id] ?? buildDraft(event),
+      [event.id]: current[event.id] ?? buildEventDraft(event),
     }));
   };
 
@@ -128,208 +194,61 @@ export default function AgendaTab({
   };
 
   async function handleCreate(): Promise<void> {
-    const titulo = createDraft.titulo.trim();
-    const inicio = parseBrazilDateTimeInput(createDraft.inicio);
-    const fim = parseBrazilDateTimeInput(createDraft.fim);
-    const reminderOffsetMinutes = Number.parseInt(createDraft.reminder_offset_minutes || "0", 10);
-
-    if (!titulo) {
-      toast.error("Informe um título para o compromisso.");
-      return;
-    }
-    if (Number.isNaN(inicio.getTime()) || Number.isNaN(fim.getTime())) {
-      toast.error("Preencha início e fim com datas válidas.");
-      return;
-    }
-    if (fim.getTime() <= inicio.getTime()) {
-      toast.error("O horário final precisa ser depois do início.");
-      return;
-    }
-    if (Number.isNaN(reminderOffsetMinutes) || reminderOffsetMinutes < 0) {
-      toast.error("A antecedência do lembrete precisa ser um número igual ou maior que zero.");
+    const payload = parseDraftPayload(createDraft);
+    if (!payload) {
       return;
     }
 
     try {
-      await onCreateEvent({
-        titulo,
-        inicio: inicio.toISOString(),
-        fim: fim.toISOString(),
-        status: createDraft.status,
-        contato_origem: createDraft.contato_origem.trim() || undefined,
-        reminder_offset_minutes: reminderOffsetMinutes,
-      });
+      await onCreateEvent(payload);
       setCreateDraft(buildEmptyDraft());
       setCreatingEvent(false);
-      toast.success("Compromisso criado.");
+      toast.success('Compromisso criado.');
     } catch {
-      // Camada superior já registra e expõe erro.
+      // O estado de erro já é controlado na camada superior.
     }
   }
 
   async function handleSave(event: AgendaEvent): Promise<void> {
-    const draft = agendaDrafts[event.id] ?? buildDraft(event);
-    const titulo = draft.titulo.trim();
-    const inicio = parseBrazilDateTimeInput(draft.inicio);
-    const fim = parseBrazilDateTimeInput(draft.fim);
-    const reminderOffsetMinutes = Number.parseInt(draft.reminder_offset_minutes || "0", 10);
-
-    if (!titulo) {
-      toast.error("Informe um título para o compromisso.");
-      return;
-    }
-    if (Number.isNaN(inicio.getTime()) || Number.isNaN(fim.getTime())) {
-      toast.error("Preencha início e fim com datas válidas.");
-      return;
-    }
-    if (fim.getTime() <= inicio.getTime()) {
-      toast.error("O horário final precisa ser depois do início.");
-      return;
-    }
-    if (Number.isNaN(reminderOffsetMinutes) || reminderOffsetMinutes < 0) {
-      toast.error("A antecedência do lembrete precisa ser um número igual ou maior que zero.");
+    const payload = parseDraftPayload(agendaDrafts[event.id] ?? buildEventDraft(event));
+    if (!payload) {
       return;
     }
 
     try {
-      await onSaveEvent(event, {
-        titulo,
-        inicio: inicio.toISOString(),
-        fim: fim.toISOString(),
-        status: draft.status,
-        contato_origem: draft.contato_origem.trim() || undefined,
-        reminder_offset_minutes: reminderOffsetMinutes,
-      });
-      closeEdit();
-      toast.success("Compromisso atualizado.");
+      await onSaveEvent(event, payload);
+      setEditingEventId(null);
+      toast.success('Compromisso atualizado.');
     } catch {
-      // A camada superior já registra o erro e mantém a UI em edição.
+      // O estado de erro já é controlado na camada superior.
     }
-  }
-
-  if (events.length === 0) {
-    return (
-      <div className="page-stack">
-        <div className="bg-white rounded-xl border border-zinc-200 p-6 shadow-sm proj-empty-hero">
-          <div className="proj-empty-icon">
-            <Clock size={40} />
-          </div>
-          <h3>Nenhum compromisso detectado ainda</h3>
-          <p>
-            Assim que o Guardião do Tempo encontrar uma combinação de data e horário nas mensagens recebidas pelo Observador
-            ou pelo agente do WhatsApp, os compromissos aparecem aqui.
-          </p>
-          <div className="hero-actions">
-            <button className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 bg-zinc-900 text-zinc-50 hover:bg-zinc-900/90 h-9 px-4 py-2" onClick={toggleCreate} type="button">
-              <Plus size={15} />
-              {creatingEvent ? "Fechar criação manual" : "Novo compromisso"}
-            </button>
-            <button className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 border border-zinc-200 bg-white text-zinc-900 hover:bg-zinc-100 hover:text-zinc-900 h-9 px-4 py-2" onClick={onRefresh} type="button">
-              <RefreshCw size={15} />
-              Atualizar agenda
-            </button>
-          </div>
-          {creatingEvent ? (
-            <div className="project-inline-editor" style={{ marginTop: "1.5rem", width: "100%" }}>
-              <div className="project-inline-grid">
-                <label className="project-inline-field project-inline-field-full">
-                  <span>Título</span>
-                  <input
-                    className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
-                    type="text"
-                    value={createDraft.titulo}
-                    onChange={(event) => setCreateDraft((current) => ({ ...current, titulo: event.target.value }))}
-                  />
-                </label>
-                <label className="project-inline-field">
-                  <span>Início</span>
-                  <input
-                    className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
-                    type="datetime-local"
-                    value={createDraft.inicio}
-                    onChange={(event) => setCreateDraft((current) => ({ ...current, inicio: event.target.value }))}
-                  />
-                </label>
-                <label className="project-inline-field">
-                  <span>Fim</span>
-                  <input
-                    className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
-                    type="datetime-local"
-                    value={createDraft.fim}
-                    onChange={(event) => setCreateDraft((current) => ({ ...current, fim: event.target.value }))}
-                  />
-                </label>
-                <label className="project-inline-field">
-                  <span>Status</span>
-                  <select
-                    className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
-                    value={createDraft.status}
-                    onChange={(event) =>
-                      setCreateDraft((current) => ({
-                        ...current,
-                        status: event.target.value === "tentativo" ? "tentativo" : "firme",
-                      }))
-                    }
-                  >
-                    <option value="firme">Firme</option>
-                    <option value="tentativo">Tentativo</option>
-                  </select>
-                </label>
-                <label className="project-inline-field">
-                  <span>Origem / contato</span>
-                  <input
-                    className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
-                    type="text"
-                    value={createDraft.contato_origem}
-                    onChange={(event) => setCreateDraft((current) => ({ ...current, contato_origem: event.target.value }))}
-                  />
-                </label>
-                <label className="project-inline-field">
-                  <span>Antecedência do lembrete</span>
-                  <input
-                    className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
-                    type="number"
-                    min="0"
-                    step="1"
-                    value={createDraft.reminder_offset_minutes}
-                    onChange={(event) =>
-                      setCreateDraft((current) => ({ ...current, reminder_offset_minutes: event.target.value }))
-                    }
-                  />
-                </label>
-              </div>
-              <div className="project-inline-actions">
-                <button className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 bg-zinc-900 text-zinc-50 hover:bg-zinc-900/90 h-9 px-4 py-2" disabled={isCreatingEvent} onClick={() => void handleCreate()} type="button">
-                  {isCreatingEvent ? <RefreshCw size={14} className="spin" /> : <Check size={14} />}
-                  {isCreatingEvent ? "Criando..." : "Salvar compromisso"}
-                </button>
-                <button className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 border border-zinc-200 bg-white text-zinc-900 hover:bg-zinc-100 hover:text-zinc-900 h-9 px-4 py-2" disabled={isCreatingEvent} onClick={toggleCreate} type="button">
-                  Cancelar
-                </button>
-              </div>
-            </div>
-          ) : null}
-          {error ? <div className="bg-red-50 text-red-600 border border-red-200 rounded-lg p-4 mb-4"><strong>Falha na agenda</strong><p>{error}</p></div> : null}
-          {actionError ? <div className="bg-red-50 text-red-600 border border-red-200 rounded-lg p-4 mb-4"><strong>Falha na edição da agenda</strong><p>{actionError}</p></div> : null}
-        </div>
-      </div>
-    );
   }
 
   return (
     <div className="page-stack">
-      <div className="bg-white rounded-xl border border-zinc-200 p-6 shadow-sm projects-hero-card">
+      <div className="projects-hero-card agenda-hero-card">
         <div className="projects-hero-copy">
           <div className="hero-kicker">
             <Clock size={14} />
             Guardião do Tempo
           </div>
-          <h3>Compromissos detectados no WhatsApp</h3>
+          <h3>Agenda mais clara, com criação manual melhor resolvida e leitura rápida dos conflitos.</h3>
           <p>
-            Esta visão concentra os eventos extraídos pelo backend, já com status, contato de origem, lembrete automático e
-            marcação de conflito quando houver sobreposição de horário.
+            Esta visão reúne compromissos detectados nas mensagens e os que foram adicionados manualmente. O foco aqui
+            é deixar status, lembretes e edição bem mais legíveis.
           </p>
+          <div className="hero-actions">
+            <button className="ac-button ac-button-primary" onClick={toggleCreate} type="button">
+              <Plus size={15} />
+              {creatingEvent ? 'Fechar criação' : 'Novo compromisso'}
+            </button>
+            <button className="ac-button ac-button-outline" onClick={onRefresh} type="button">
+              <RefreshCw size={15} />
+              Atualizar agenda
+            </button>
+          </div>
         </div>
+
         <div className="projects-hero-metrics">
           <div className="projects-hero-metric">
             <span>Total</span>
@@ -344,119 +263,33 @@ export default function AgendaTab({
           <div className="projects-hero-metric">
             <span>Conflitos</span>
             <strong>{conflictCount}</strong>
-            <small>{conflictCount > 0 ? "requerem atenção" : "sem sobreposição agora"}</small>
+            <small>{conflictCount > 0 ? 'pedem revisão' : 'sem sobreposição agora'}</small>
           </div>
           <div className="projects-hero-metric">
             <span>Próximo</span>
-            <strong>{nextEvent ? formatShortDateTime(nextEvent.inicio) : "Sem próximo"}</strong>
-            <small>{nextEvent ? nextEvent.titulo : "Nenhum compromisso futuro detectado"}</small>
+            <strong>{nextEvent ? formatShortDateTime(nextEvent.inicio) : 'Sem próximo'}</strong>
+            <small>{nextEvent ? nextEvent.titulo : 'Nenhum evento futuro detectado'}</small>
           </div>
         </div>
       </div>
 
-      <div className="bg-white rounded-xl border border-zinc-200 p-6 shadow-sm">
+      <div className="ops-surface">
         <SectionTitle
-          title="Agenda"
+          title="Compromissos"
           icon={Clock}
           action={
             <div className="hero-actions" style={{ margin: 0 }}>
-              <button className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 bg-zinc-900 text-zinc-50 hover:bg-zinc-900/90 h-9 px-4 py-2" onClick={toggleCreate} type="button">
-                <Plus size={14} />
-                {creatingEvent ? "Fechar criação" : "Novo compromisso"}
-              </button>
-              <button className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 border border-zinc-200 bg-white text-zinc-900 hover:bg-zinc-100 hover:text-zinc-900 h-9 px-4 py-2" onClick={onRefresh} type="button">
-                <RefreshCw size={14} />
-                Atualizar
-              </button>
+              <span className="micro-badge">Formulário em horário de Brasília</span>
             </div>
           }
         />
-        {creatingEvent ? (
-          <div className="project-inline-editor" style={{ marginBottom: "1rem" }}>
-            <div className="project-inline-grid">
-              <label className="project-inline-field project-inline-field-full">
-                <span>Título</span>
-                <input
-                  className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
-                  type="text"
-                  value={createDraft.titulo}
-                  onChange={(event) => setCreateDraft((current) => ({ ...current, titulo: event.target.value }))}
-                />
-              </label>
-              <label className="project-inline-field">
-                <span>Início</span>
-                <input
-                  className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
-                  type="datetime-local"
-                  value={createDraft.inicio}
-                  onChange={(event) => setCreateDraft((current) => ({ ...current, inicio: event.target.value }))}
-                />
-              </label>
-              <label className="project-inline-field">
-                <span>Fim</span>
-                <input
-                  className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
-                  type="datetime-local"
-                  value={createDraft.fim}
-                  onChange={(event) => setCreateDraft((current) => ({ ...current, fim: event.target.value }))}
-                />
-              </label>
-              <label className="project-inline-field">
-                <span>Status</span>
-                <select
-                  className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
-                  value={createDraft.status}
-                  onChange={(event) =>
-                    setCreateDraft((current) => ({
-                      ...current,
-                      status: event.target.value === "tentativo" ? "tentativo" : "firme",
-                    }))
-                  }
-                >
-                  <option value="firme">Firme</option>
-                  <option value="tentativo">Tentativo</option>
-                </select>
-              </label>
-              <label className="project-inline-field">
-                <span>Origem / contato</span>
-                <input
-                  className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
-                  type="text"
-                  value={createDraft.contato_origem}
-                  onChange={(event) => setCreateDraft((current) => ({ ...current, contato_origem: event.target.value }))}
-                />
-              </label>
-              <label className="project-inline-field">
-                <span>Antecedência do lembrete</span>
-                <input
-                  className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
-                  type="number"
-                  min="0"
-                  step="1"
-                  value={createDraft.reminder_offset_minutes}
-                  onChange={(event) =>
-                    setCreateDraft((current) => ({ ...current, reminder_offset_minutes: event.target.value }))
-                  }
-                />
-              </label>
-            </div>
-            <div className="project-inline-actions">
-              <button className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 bg-zinc-900 text-zinc-50 hover:bg-zinc-900/90 h-9 px-4 py-2" disabled={isCreatingEvent} onClick={() => void handleCreate()} type="button">
-                {isCreatingEvent ? <RefreshCw size={14} className="spin" /> : <Check size={14} />}
-                {isCreatingEvent ? "Criando..." : "Salvar compromisso"}
-              </button>
-              <button className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 border border-zinc-200 bg-white text-zinc-900 hover:bg-zinc-100 hover:text-zinc-900 h-9 px-4 py-2" disabled={isCreatingEvent} onClick={toggleCreate} type="button">
-                Cancelar
-              </button>
-            </div>
-          </div>
-        ) : null}
+
         <div className="projects-toolbar">
           <div className="projects-filter-pills">
             {filterOptions.map((option) => (
               <button
                 key={option.id}
-                className={`projects-filter-pill${filter === option.id ? " projects-filter-pill-active" : ""}`}
+                className={`projects-filter-pill${filter === option.id ? ' projects-filter-pill-active' : ''}`}
                 onClick={() => setFilter(option.id)}
                 type="button"
               >
@@ -467,17 +300,114 @@ export default function AgendaTab({
           </div>
         </div>
 
+        {creatingEvent ? (
+          <div className="ops-form-shell">
+            <div className="ops-form-head">
+              <div>
+                <strong>Novo compromisso manual</strong>
+                <p>Preencha título, faixa de horário, origem e regra de lembrete num bloco único e mais limpo.</p>
+              </div>
+            </div>
+            <div className="ops-form-grid">
+              <AgendaField full hint="Use um título objetivo para o compromisso." label="Título">
+                <input
+                  className="ops-input"
+                  onChange={(event) => setCreateDraft((current) => ({ ...current, titulo: event.target.value }))}
+                  placeholder="Ex.: Reunião com cliente X"
+                  type="text"
+                  value={createDraft.titulo}
+                />
+              </AgendaField>
+
+              <AgendaField label="Início">
+                <input
+                  className="ops-input"
+                  onChange={(event) => setCreateDraft((current) => ({ ...current, inicio: event.target.value }))}
+                  type="datetime-local"
+                  value={createDraft.inicio}
+                />
+              </AgendaField>
+
+              <AgendaField label="Fim">
+                <input
+                  className="ops-input"
+                  onChange={(event) => setCreateDraft((current) => ({ ...current, fim: event.target.value }))}
+                  type="datetime-local"
+                  value={createDraft.fim}
+                />
+              </AgendaField>
+
+              <AgendaField hint="Firme entra como compromisso consolidado; tentativo mantém incerteza." label="Status">
+                <select
+                  className="ops-select"
+                  onChange={(event) =>
+                    setCreateDraft((current) => ({
+                      ...current,
+                      status: event.target.value === 'tentativo' ? 'tentativo' : 'firme',
+                    }))
+                  }
+                  value={createDraft.status}
+                >
+                  <option value="firme">Firme</option>
+                  <option value="tentativo">Tentativo</option>
+                </select>
+              </AgendaField>
+
+              <AgendaField hint="Contato, grupo ou origem livre do compromisso." label="Origem / contato">
+                <input
+                  className="ops-input"
+                  onChange={(event) =>
+                    setCreateDraft((current) => ({ ...current, contato_origem: event.target.value }))
+                  }
+                  placeholder="Ex.: WhatsApp, cliente, equipe"
+                  type="text"
+                  value={createDraft.contato_origem}
+                />
+              </AgendaField>
+
+              <AgendaField hint="Quantos minutos antes o lembrete deve sair." label="Antecedência do lembrete">
+                <input
+                  className="ops-input"
+                  min="0"
+                  onChange={(event) =>
+                    setCreateDraft((current) => ({ ...current, reminder_offset_minutes: event.target.value }))
+                  }
+                  step="1"
+                  type="number"
+                  value={createDraft.reminder_offset_minutes}
+                />
+              </AgendaField>
+            </div>
+
+            <div className="project-inline-actions">
+              <button
+                className="ac-button ac-button-primary"
+                disabled={isCreatingEvent}
+                onClick={() => void handleCreate()}
+                type="button"
+              >
+                {isCreatingEvent ? <RefreshCw className="spin" size={15} /> : <Check size={15} />}
+                {isCreatingEvent ? 'Criando...' : 'Salvar compromisso'}
+              </button>
+              <button className="ac-button ac-button-outline" disabled={isCreatingEvent} onClick={toggleCreate} type="button">
+                <X size={15} />
+                Cancelar
+              </button>
+            </div>
+          </div>
+        ) : null}
+
         <div className="project-list-modern">
           {filteredEvents.map((event) => {
             const isEditing = editingEventId === event.id;
-            const draft = agendaDrafts[event.id] ?? buildDraft(event);
+            const draft = agendaDrafts[event.id] ?? buildEventDraft(event);
             const isSaving = savingAgendaIds.includes(event.id);
             const isDeleting = deletingAgendaIds.includes(event.id);
 
             return (
               <div
                 key={event.id}
-                className={`project-card-modern${event.has_conflict ? " project-card-modern-attention" : ""}`}
+                className={`project-card-modern agenda-event-card${event.has_conflict ? ' project-card-modern-attention' : ''}`}
               >
                 <div className="project-card-head">
                   <div>
@@ -487,12 +417,10 @@ export default function AgendaTab({
                     </span>
                   </div>
                   <div className="project-card-actions">
-                    <span className={`micro-status micro-status-${event.status === "firme" ? "emerald" : "amber"}`}>
-                      {event.status === "firme" ? "Firme" : "Tentativo"}
+                    <span className={`micro-status micro-status-${event.status === 'firme' ? 'emerald' : 'amber'}`}>
+                      {event.status === 'firme' ? 'Firme' : 'Tentativo'}
                     </span>
-                    {event.has_conflict ? (
-                      <span className="micro-status micro-status-amber">Conflito</span>
-                    ) : null}
+                    {event.has_conflict ? <span className="micro-status micro-status-amber">Conflito</span> : null}
                     <button
                       className="ac-button ac-button-outline ac-button-sm"
                       disabled={isSaving || isDeleting}
@@ -502,7 +430,7 @@ export default function AgendaTab({
                       {isEditing ? <X size={14} /> : <Edit2 size={14} />}
                     </button>
                     <button
-                      className="ac-button ac-button-outline ac-button-sm"
+                      className="ac-button ac-button-outline ac-button-sm project-delete-button"
                       disabled={isSaving || isDeleting}
                       onClick={() => void onDeleteEvent(event)}
                       type="button"
@@ -513,26 +441,25 @@ export default function AgendaTab({
                 </div>
 
                 {isEditing ? (
-                  <div className="project-summary-stack" style={{ gap: "0.85rem" }}>
-                    <label>
-                      <span className="support-copy">Título</span>
-                      <input
-                        className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
-                        onChange={(editEvent) =>
-                          setAgendaDrafts((current) => ({
-                            ...current,
-                            [event.id]: { ...draft, titulo: editEvent.target.value },
-                          }))
-                        }
-                        type="text"
-                        value={draft.titulo}
-                      />
-                    </label>
-                    <div className="dual-column-grid" style={{ marginTop: 0 }}>
-                      <label>
-                        <span className="support-copy">Início</span>
+                  <div className="ops-form-shell">
+                    <div className="ops-form-grid">
+                      <AgendaField full label="Título">
                         <input
-                          className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
+                          className="ops-input"
+                          onChange={(editEvent) =>
+                            setAgendaDrafts((current) => ({
+                              ...current,
+                              [event.id]: { ...draft, titulo: editEvent.target.value },
+                            }))
+                          }
+                          type="text"
+                          value={draft.titulo}
+                        />
+                      </AgendaField>
+
+                      <AgendaField label="Início">
+                        <input
+                          className="ops-input"
                           onChange={(editEvent) =>
                             setAgendaDrafts((current) => ({
                               ...current,
@@ -542,11 +469,11 @@ export default function AgendaTab({
                           type="datetime-local"
                           value={draft.inicio}
                         />
-                      </label>
-                      <label>
-                        <span className="support-copy">Fim</span>
+                      </AgendaField>
+
+                      <AgendaField label="Fim">
                         <input
-                          className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
+                          className="ops-input"
                           onChange={(editEvent) =>
                             setAgendaDrafts((current) => ({
                               ...current,
@@ -556,19 +483,17 @@ export default function AgendaTab({
                           type="datetime-local"
                           value={draft.fim}
                         />
-                      </label>
-                    </div>
-                    <div className="dual-column-grid" style={{ marginTop: 0 }}>
-                      <label>
-                        <span className="support-copy">Status</span>
+                      </AgendaField>
+
+                      <AgendaField label="Status">
                         <select
-                          className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
+                          className="ops-select"
                           onChange={(editEvent) =>
                             setAgendaDrafts((current) => ({
                               ...current,
                               [event.id]: {
                                 ...draft,
-                                status: editEvent.target.value === "firme" ? "firme" : "tentativo",
+                                status: editEvent.target.value === 'firme' ? 'firme' : 'tentativo',
                               },
                             }))
                           }
@@ -577,11 +502,11 @@ export default function AgendaTab({
                           <option value="firme">Firme</option>
                           <option value="tentativo">Tentativo</option>
                         </select>
-                      </label>
-                      <label>
-                        <span className="support-copy">Origem</span>
+                      </AgendaField>
+
+                      <AgendaField label="Origem / contato">
                         <input
-                          className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
+                          className="ops-input"
                           onChange={(editEvent) =>
                             setAgendaDrafts((current) => ({
                               ...current,
@@ -591,13 +516,11 @@ export default function AgendaTab({
                           type="text"
                           value={draft.contato_origem}
                         />
-                      </label>
-                    </div>
-                    <div className="dual-column-grid" style={{ marginTop: 0 }}>
-                      <label>
-                        <span className="support-copy">Antecedência do lembrete em Brasília</span>
+                      </AgendaField>
+
+                      <AgendaField hint="Minutos antes do evento." label="Antecedência do lembrete">
                         <input
-                          className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
+                          className="ops-input"
                           min="0"
                           onChange={(editEvent) =>
                             setAgendaDrafts((current) => ({
@@ -609,67 +532,73 @@ export default function AgendaTab({
                           type="number"
                           value={draft.reminder_offset_minutes}
                         />
-                      </label>
-                      <div className="support-copy" style={{ alignSelf: "end", paddingBottom: "0.75rem" }}>
-                        Horário do formulário: Brasília (UTC-3)
-                      </div>
+                      </AgendaField>
                     </div>
-                    <div className="hero-actions">
+
+                    <div className="project-inline-actions">
                       <button
-                        className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 bg-zinc-900 text-zinc-50 hover:bg-zinc-900/90 h-9 px-4 py-2"
+                        className="ac-button ac-button-primary"
                         disabled={isSaving || isDeleting}
                         onClick={() => void handleSave(event)}
                         type="button"
                       >
-                        <Check size={14} />
-                        {isSaving ? "Salvando..." : "Salvar alterações"}
+                        {isSaving ? <RefreshCw className="spin" size={15} /> : <Check size={15} />}
+                        {isSaving ? 'Salvando...' : 'Salvar alterações'}
                       </button>
-                      <button className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 border border-zinc-200 bg-white text-zinc-900 hover:bg-zinc-100 hover:text-zinc-900 h-9 px-4 py-2" disabled={isSaving} onClick={closeEdit} type="button">
-                        <X size={14} />
+                      <button className="ac-button ac-button-outline" disabled={isSaving} onClick={closeEdit} type="button">
+                        <X size={15} />
                         Cancelar
                       </button>
                     </div>
                   </div>
                 ) : (
-                  <div className="project-summary-stack">
-                    <p className="support-copy">
-                      {event.contato_origem ? `Origem: ${event.contato_origem}.` : "Origem não identificada."}
-                    </p>
-                    <p className="support-copy">
-                      ID da mensagem: <code>{event.message_id}</code>
-                    </p>
-                    <p className="support-copy">
-                      Regra de lembrete: {formatAgendaReminderRule(event)}
-                    </p>
-                    <p className="support-copy">
-                      {event.pre_reminder_at
-                        ? event.pre_reminder_sent_at
-                          ? `Lembrete antecipado enviado em ${formatShortDateTime(event.pre_reminder_sent_at)}.`
-                          : `Lembrete antecipado programado para ${formatShortDateTime(event.pre_reminder_at)}.`
-                        : event.reminder_eligible
-                          ? "Sem lembrete antecipado configurado."
-                          : "Lembretes automáticos desativados para este evento."}
-                    </p>
-                    <p className="support-copy">
-                      {event.reminder_sent_at
-                        ? `Lembrete do horário enviado em ${formatShortDateTime(event.reminder_sent_at)}.`
-                        : event.reminder_eligible
-                          ? "Lembrete do horário ainda pendente."
-                          : "Evento não elegível para lembrete no horário."}
-                    </p>
-                    {event.conflict ? (
-                      <div className="danger-box" style={{ marginTop: 12 }}>
-                        <h4>
-                          <AlertCircle size={16} />
-                          Possível conflito
-                        </h4>
-                        <p>
-                          Já existe <strong>{event.conflict.titulo}</strong> em {formatShortDateTime(event.conflict.inicio)} até{" "}
-                          {formatShortDateTime(event.conflict.fim)}.
-                        </p>
+                  <>
+                    <div className="ops-meta-grid">
+                      <div className="ops-meta-card">
+                        <span>Origem</span>
+                        <strong>{event.contato_origem || 'Não identificada'}</strong>
+                        <small>Atualizado {formatRelativeTime(event.updated_at)}</small>
                       </div>
-                    ) : null}
-                  </div>
+                      <div className="ops-meta-card">
+                        <span>Lembrete</span>
+                        <strong>{formatAgendaReminderRule(event)}</strong>
+                        <small>
+                          {event.pre_reminder_at
+                            ? `Pré-lembrete ${event.pre_reminder_sent_at ? 'enviado' : 'programado'}`
+                            : event.reminder_eligible
+                              ? 'Sem pré-lembrete configurado'
+                              : 'Lembretes automáticos desativados'}
+                        </small>
+                      </div>
+                      <div className="ops-meta-card">
+                        <span>Mensagem de origem</span>
+                        <strong>{event.message_id.startsWith('manual:') ? 'Manual' : 'WhatsApp'}</strong>
+                        <small>{event.message_id}</small>
+                      </div>
+                    </div>
+
+                    <div className="project-summary-stack">
+                      <p className="support-copy">
+                        {event.reminder_sent_at
+                          ? `Lembrete principal enviado em ${formatShortDateTime(event.reminder_sent_at)}.`
+                          : event.reminder_eligible
+                            ? 'Lembrete principal ainda pendente.'
+                            : 'Evento não elegível para lembrete no horário.'}
+                      </p>
+                      {event.conflict ? (
+                        <div className="danger-box">
+                          <h4>
+                            <AlertCircle size={16} />
+                            Possível conflito
+                          </h4>
+                          <p>
+                            Já existe <strong>{event.conflict.titulo}</strong> em{' '}
+                            {formatShortDateTime(event.conflict.inicio)} até {formatShortDateTime(event.conflict.fim)}.
+                          </p>
+                        </div>
+                      ) : null}
+                    </div>
+                  </>
                 )}
               </div>
             );
@@ -677,15 +606,22 @@ export default function AgendaTab({
         </div>
 
         {filteredEvents.length === 0 ? (
-          <div className="empty-hint">
-            <Clock size={18} />
-            <p>Nenhum compromisso bate com o filtro atual.</p>
-          </div>
+          <div className="ops-empty-state">Nenhum compromisso bate com o filtro atual.</div>
         ) : null}
       </div>
 
-      {error ? <div className="bg-red-50 text-red-600 border border-red-200 rounded-lg p-4 mb-4"><strong>Falha na agenda</strong><p>{error}</p></div> : null}
-      {actionError ? <div className="bg-red-50 text-red-600 border border-red-200 rounded-lg p-4 mb-4"><strong>Falha na edição da agenda</strong><p>{actionError}</p></div> : null}
+      {error ? (
+        <div className="danger-box">
+          <h4>Falha na agenda</h4>
+          <p>{error}</p>
+        </div>
+      ) : null}
+      {actionError ? (
+        <div className="danger-box">
+          <h4>Falha na edição da agenda</h4>
+          <p>{actionError}</p>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -13,6 +13,7 @@
   - `whatsapp-gateway`: Express + Baileys para observer e agent
 - Os frontends têm entrada mínima em `app/page.tsx`; a maior parte da UI está concentrada em `frontend/components/connection-dashboard.tsx` e `agent-frontend/components/global-agent-dashboard.tsx`
 - No frontend principal, o `connection-dashboard.tsx` passou a importar abas modulares em `frontend/components/dashboard/tabs/`, mas ainda concentra helpers compartilhados e orquestração de estado
+- As abas `Agenda`, `Automação` e `Proatividade` do frontend principal agora compartilham uma linguagem visual e controles próprios via classes `ops-*` em `frontend/app/globals.css`, mantendo o mesmo tema escuro do restante do dashboard
 - A maior parte da lógica de domínio do backend está concentrada em `backend/app/services/supabase_store.py`, `memory_service.py`, `whatsapp_agent_service.py`, `agenda_guardian_service.py` e `deepseek_service.py`
 
 ## WhatsApp Agent / CLI
@@ -24,6 +25,7 @@
 - O agente conversacional do WhatsApp é majoritariamente reativo: hoje ele responde mensagens recebidas, usa memória própria por contato e tem proatividade nativa principalmente para agenda (conflitos e lembretes)
 - Já existe base de dados para evoluir proatividade mais rica: `whatsapp_agent_contact_memories`, `important_messages`, `analysis_jobs`, `automation_decisions` e snapshots/projetos da memória geral do usuário
 - Em abril/2026 foi introduzido um subsistema dedicado de proatividade do WhatsApp: `ProactiveAssistantService`, com preferências persistidas, candidatos proativos, log de entregas e digests de manhã/noite
+- O roteamento outbound para o dono no backend agora deve priorizar o owner do `observer` da conta atual; em `ProactiveAssistantService` e `agenda_guardian_service`, fallback vindo do `agent` só deve ser aceito se bater com o owner esperado ou com o phone configurado do Álvaro
 
 ## Deploy local
 
@@ -45,6 +47,7 @@
 - Mensagens simples/curtas podem pular a etapa de `assistant_search_plan` e cair direto no fallback heurístico para reduzir custo e latência
 - O pipeline `improve_memory` usa um contexto próprio mais enxuto que o da `first_analysis`, para reduzir tokens nos lotes automáticos sem mexer no bootstrap inicial
 - O merge incremental de projetos pode ser pulado quando o lote novo não trouxe candidatos de projeto; nesse caso os projetos existentes são preservados sem nova chamada ao modelo
+- A extração de `active_projects` agora combina prompt mais rígido no `deepseek_service` com refinamento local em `memory_service`, enriquecendo resumo/evidências/próximos passos a partir das mensagens-fonte e descartando projetos vagos
 - Em abril/2026 o `assistant_context_service` ganhou um caminho `structured-first` para intents de agenda e projetos: ele monta blocos compactos diretamente da agenda e de `project_memories` antes de recorrer a snapshots e contexto amplo
 - A tabela `project_memories` agora persiste `origin_source` (`memory` ou `manual`), o que permite preservar projetos criados manualmente na UI sem perdê-los em merges futuros
 - A agenda usa uma tabela unica para eventos automáticos e manuais; eventos criados manualmente entram em `agenda` com `message_id` sintético no formato `manual:{uuid}` e participam de conflito/lembrete igual aos demais

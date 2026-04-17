@@ -46,6 +46,74 @@ BOOTSTRAP_BUCKET_WEIGHTS: tuple[tuple[str, float], ...] = (
     ("older", 0.2),
 )
 
+PROJECT_KEYWORD_STOPWORDS: set[str] = {
+    "agora",
+    "ainda",
+    "ajuda",
+    "algum",
+    "alguma",
+    "assim",
+    "cliente",
+    "coisa",
+    "como",
+    "com",
+    "contato",
+    "contra",
+    "dados",
+    "dela",
+    "dele",
+    "demandas",
+    "depois",
+    "dessa",
+    "desse",
+    "deste",
+    "direto",
+    "entrega",
+    "esse",
+    "essa",
+    "esta",
+    "este",
+    "fazer",
+    "frente",
+    "hoje",
+    "isso",
+    "item",
+    "mais",
+    "mesmo",
+    "muito",
+    "nada",
+    "para",
+    "pra",
+    "pro",
+    "porque",
+    "projeto",
+    "quando",
+    "real",
+    "sistema",
+    "site",
+    "sobre",
+    "tarefa",
+    "tema",
+    "tem",
+    "tipo",
+    "uma",
+    "umas",
+    "uns",
+    "usuario",
+}
+
+PROJECT_ACTION_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"\b(?:preciso|precisamos|vou|vamos|falta|tem que|tenho que|precisa|quero|precisaria)\b[^?!.]{8,160}",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:ajustar|alinhar|atualizar|corrigir|definir|documentar|entregar|finalizar|implementar|montar|"
+        r"organizar|publicar|refatorar|revisar|resolver|rodar|subir|testar|validar)\b[^?!.]{6,150}",
+        re.IGNORECASE,
+    ),
+)
+
 
 @dataclass(slots=True)
 class MemoryAnalysisOutcome:
@@ -2281,6 +2349,224 @@ class MemoryAnalysisService:
                 sanitized.append(cleaned)
         return sanitized[:limit]
 
+    def _normalize_project_match_text(self, value: str | None) -> str:
+        normalized = re.sub(r"[^0-9a-zà-ÿ]+", " ", str(value or "").casefold())
+        return " ".join(normalized.split()).strip()
+
+    def _extract_project_keywords(self, project: DeepSeekProjectMemory) -> list[str]:
+        keywords: list[str] = []
+        seen: set[str] = set()
+        for raw_value in [
+            project.name,
+            project.summary,
+            project.status,
+            project.what_is_being_built,
+            project.built_for,
+            *project.next_steps,
+            *project.evidence,
+        ]:
+            for token in self._normalize_project_match_text(raw_value).split():
+                if len(token) < 4 or token in PROJECT_KEYWORD_STOPWORDS or token.isdigit():
+                    continue
+                if token in seen:
+                    continue
+                seen.add(token)
+                keywords.append(token)
+        return keywords[:14]
+
+    def _select_project_support_messages(
+        self,
+        *,
+        project: DeepSeekProjectMemory,
+        source_messages: list[StoredMessageRecord],
+        limit: int = 4,
+    ) -> list[StoredMessageRecord]:
+        normalized_name = self._normalize_project_match_text(project.name)
+        name_tokens = [token for token in normalized_name.split() if len(token) >= 4]
+        keywords = self._extract_project_keywords(project)
+        scored: list[tuple[int, datetime, StoredMessageRecord]] = []
+        seen_messages: set[str] = set()
+
+        for message in source_messages:
+            text = self._normalize_project_match_text(message.message_text)
+            if not text:
+                continue
+            score = 0
+            if normalized_name and normalized_name in text:
+                score += 8
+            score += sum(2 for token in name_tokens if token in text)
+            score += sum(1 for token in keywords if token not in name_tokens and token in text)
+            if score <= 0:
+                continue
+            if message.direction == "outbound":
+                score += 1
+            if len(text) >= 80:
+                score += 1
+            message_key = text[:220]
+            if message_key in seen_messages:
+                continue
+            seen_messages.add(message_key)
+            scored.append((score, message.timestamp, message))
+
+        scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return [message for _, _, message in scored[: max(1, limit)]]
+
+    def _project_message_snippet(self, message: StoredMessageRecord) -> str:
+        snippet = self._summarize_message_text(message.message_text, 150)
+        if not snippet:
+            return ""
+        prefix = "Dono" if message.direction == "outbound" else "Mensagem"
+        return f"{prefix}: {snippet}"
+
+    def _is_weak_project_text(self, value: str | None, *, min_chars: int = 28) -> bool:
+        normalized = " ".join(str(value or "").split()).strip()
+        if len(normalized) < min_chars:
+            return True
+        lowered = normalized.casefold()
+        generic_prefixes = (
+            "projeto ativo",
+            "frente ativa",
+            "tema recorrente",
+            "demanda em andamento",
+            "assunto em aberto",
+            "projeto em andamento",
+            "frente em andamento",
+        )
+        if lowered.startswith(generic_prefixes):
+            return True
+        return len(set(self._normalize_project_match_text(normalized).split())) < 4
+
+    def _extract_project_action_candidate(self, text: str) -> str | None:
+        compact = " ".join(text.split()).strip(" .,:;")
+        if len(compact) < 12 or len(compact) > 180 or "?" in compact:
+            return None
+        for pattern in PROJECT_ACTION_PATTERNS:
+            match = pattern.search(compact)
+            if match:
+                action = " ".join(match.group(0).split()).strip(" .,:;")
+                if len(action) >= 12:
+                    return action
+        return None
+
+    def _merge_project_next_steps(
+        self,
+        *,
+        project: DeepSeekProjectMemory,
+        support_messages: list[StoredMessageRecord],
+    ) -> list[str]:
+        merged: list[str] = []
+        seen: set[str] = set()
+        for item in project.next_steps:
+            cleaned = " ".join(item.split()).strip(" .,:;")
+            if not cleaned:
+                continue
+            key = cleaned.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(cleaned)
+
+        for message in support_messages:
+            if message.direction != "outbound":
+                continue
+            candidate = self._extract_project_action_candidate(message.message_text)
+            if not candidate:
+                continue
+            key = candidate.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(candidate)
+            if len(merged) >= 4:
+                break
+
+        return merged[:4]
+
+    def _compose_project_summary(
+        self,
+        *,
+        project: DeepSeekProjectMemory,
+        what_is_being_built: str,
+        next_steps: list[str],
+        evidence: list[str],
+    ) -> str:
+        clauses: list[str] = []
+        if what_is_being_built:
+            clauses.append(what_is_being_built.rstrip("."))
+        elif evidence:
+            raw_evidence = evidence[0].split(":", 1)[-1].strip()
+            clauses.append(f"Frente recorrente ligada a {raw_evidence.rstrip('.')}")
+        if project.built_for.strip():
+            clauses.append(f"Direcionado para {project.built_for.strip().rstrip('.')}")
+        if project.status.strip():
+            clauses.append(f"Status percebido: {project.status.strip().rstrip('.')}")
+        if next_steps:
+            clauses.append(f"Proximo passo mais concreto: {next_steps[0].rstrip('.')}")
+        summary = ". ".join(clause for clause in clauses if clause).strip(" .")
+        if not summary:
+            return ""
+        return self._summarize_message_text(summary + ".", 240)
+
+    def _project_has_minimum_detail(self, project: DeepSeekProjectMemory) -> bool:
+        strong_signals = 0
+        if not self._is_weak_project_text(project.summary, min_chars=36):
+            strong_signals += 1
+        if not self._is_weak_project_text(project.what_is_being_built, min_chars=24):
+            strong_signals += 1
+        if project.built_for.strip():
+            strong_signals += 1
+        if len(project.next_steps) >= 1:
+            strong_signals += 1
+        if len(project.evidence) >= 2:
+            strong_signals += 1
+        return strong_signals >= 2
+
+    def _refine_project_candidate(
+        self,
+        *,
+        project: DeepSeekProjectMemory,
+        source_messages: list[StoredMessageRecord],
+    ) -> DeepSeekProjectMemory | None:
+        support_messages = self._select_project_support_messages(project=project, source_messages=source_messages)
+        evidence = self._sanitize_project_string_list(project.evidence, {}, limit=8)
+        for message in support_messages:
+            snippet = self._project_message_snippet(message)
+            if snippet and snippet.casefold() not in {item.casefold() for item in evidence}:
+                evidence.append(snippet)
+            if len(evidence) >= 4:
+                break
+
+        what_is_being_built = project.what_is_being_built.strip()
+        if self._is_weak_project_text(what_is_being_built, min_chars=24):
+            if not self._is_weak_project_text(project.summary, min_chars=36):
+                what_is_being_built = self._summarize_message_text(project.summary, 160)
+            elif support_messages:
+                what_is_being_built = self._summarize_message_text(support_messages[0].message_text, 160)
+
+        next_steps = self._merge_project_next_steps(project=project, support_messages=support_messages)
+        summary = project.summary.strip()
+        if self._is_weak_project_text(summary, min_chars=36):
+            summary = self._compose_project_summary(
+                project=project,
+                what_is_being_built=what_is_being_built,
+                next_steps=next_steps,
+                evidence=evidence,
+            )
+
+        refined = project.model_copy(
+            update={
+                "summary": summary,
+                "what_is_being_built": what_is_being_built,
+                "next_steps": next_steps,
+                "evidence": evidence[:4],
+            }
+        )
+        if not refined.name.strip() or not refined.summary.strip():
+            return None
+        if not self._project_has_minimum_detail(refined):
+            return None
+        return refined
+
     def _sanitize_project_candidates(
         self,
         projects: list[DeepSeekProjectMemory],
@@ -2303,13 +2589,17 @@ class MemoryAnalysisService:
                 next_steps=self._sanitize_project_string_list(project.next_steps, replacements, limit=6),
                 evidence=self._sanitize_project_string_list(project.evidence, replacements, limit=8),
             )
-            if not sanitized_project.name or not sanitized_project.summary:
+            refined_project = self._refine_project_candidate(
+                project=sanitized_project,
+                source_messages=source_messages,
+            )
+            if refined_project is None:
                 continue
-            dedupe_key = sanitized_project.name.casefold()
+            dedupe_key = refined_project.name.casefold()
             if dedupe_key in seen_names:
                 continue
             seen_names.add(dedupe_key)
-            sanitized_projects.append(sanitized_project)
+            sanitized_projects.append(refined_project)
 
         if replacements:
             logger.info(
@@ -3286,7 +3576,7 @@ class MemoryAnalysisService:
             project_key = project_name.casefold()
             if project_key in seen_project_names:
                 continue
-            if len(project.summary.strip()) < 20 and not project.next_steps and not project.evidence:
+            if not self._project_has_minimum_detail(project):
                 continue
             seen_project_names.add(project_key)
             unique_projects.append(project)

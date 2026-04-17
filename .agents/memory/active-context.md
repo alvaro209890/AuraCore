@@ -180,3 +180,63 @@
   - `npx tsc --noEmit` em `frontend` após o build: ok
   - frontend publicado novamente no Firebase Hosting:
     - `https://auracore-82bf2.web.app`
+
+## Atualização 2026-04-17 9
+
+- Refatoração visual forte entregue nas abas `Agenda`, `Automação` e `Proatividade` do frontend principal
+- Ajustes aplicados:
+  - `AgendaTab` ganhou formulário de criação/edição mais moderno, cards mais legíveis e melhor hierarquia para conflitos, origem e lembretes
+  - `AutomationTab` deixou de ser só leitura parcial e passou a expor configuração operacional real do loop com toggles, campos numéricos e histórico reorganizado
+  - `ProactivityTab` foi reestruturada com configuração mais clara de janelas, intensidade, categorias, fila ativa e entregas recentes
+  - `frontend/app/globals.css` recebeu um conjunto compartilhado de estilos `ops-*` para inputs, selects, toggles e superfícies operacionais dessas abas
+- Validação local desta rodada:
+  - `npm run build` em `frontend`: ok
+
+## Atualização 2026-04-17 10
+
+- Corrigido bug de roteamento da proatividade no backend
+- Causa identificada:
+  - `ProactiveAssistantService` resolvia o owner target preferindo `agent_status`/`agent_session`
+  - se o agent global estivesse conectado em outro número, a proatividade podia mandar o nudge para esse owner errado em vez do owner do `observer` da conta atual
+- Ajuste aplicado:
+  - proatividade agora resolve primeiro o owner do `observer`
+  - usa o phone configurado do Álvaro como fallback seguro
+  - fallback vindo do `agent` só é aceito se bater com o owner esperado; caso contrário gera warning e é ignorado
+- Hardening adicional:
+  - `agenda_guardian_service` recebeu a mesma proteção de owner target para lembretes e conflitos não repetirem o mesmo bug de roteamento
+- Validação local desta rodada:
+  - `python3 -m py_compile backend/app/services/proactive_assistant_service.py backend/app/services/agenda_guardian_service.py`: ok
+  - backend sincronizado para o runtime local
+  - `auracore-backend.service` reiniciado com sucesso
+    - `ExecMainPID=423461`
+    - `ActiveEnterTimestamp=Fri 2026-04-17 14:25:42 -03`
+
+## Atualização 2026-04-17 11
+
+- Endurecida a criação de projetos vinda da análise do observador
+- Ajustes aplicados:
+  - `deepseek_service` agora exige menos projetos vagos e mais detalhe concreto em `summary`, `what_is_being_built`, `built_for`, `next_steps` e `evidence`
+  - `memory_service` passou a refinar candidatos de projeto com base nas mensagens-fonte, puxando evidências/snippets reais, próximos passos acionáveis e recompondo resumos fracos
+  - projetos sem detalhe mínimo útil agora são descartados antes de persistir ou estabilizar o resultado da análise
+- Validação local desta rodada:
+  - `python3 -m py_compile backend/app/services/memory_service.py backend/app/services/deepseek_service.py`: ok
+  - backend sincronizado para o runtime local
+  - `auracore-backend.service` em execução após restart
+    - `ExecMainPID=425502`
+    - `ActiveEnterTimestamp=Fri 2026-04-17 14:30:42 -03`
+
+## Atualização 2026-04-17 12
+
+- Consolidação final da rodada para publicação
+- Validação repetida antes do commit:
+  - `python3 -m py_compile` dos serviços alterados de backend: ok
+  - `npm run build` em `frontend`: ok
+- Runtime local alinhado novamente com os serviços alterados:
+  - `proactive_assistant_service.py`
+  - `agenda_guardian_service.py`
+  - `memory_service.py`
+  - `deepseek_service.py`
+- Backend validado em execução:
+  - `auracore-backend.service` permaneceu `active/running` com `ExecMainPID=425502`
+  - journal recente mostrou rotas reais do dashboard servindo `200 OK`
+  - checagens locais sem token em `/api/memories/status` e `/api/whatsapp-agent/proactivity/settings` responderam `Bearer token ausente`, confirmando backend ativo e rotas protegidas carregadas

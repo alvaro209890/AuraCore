@@ -1103,6 +1103,7 @@ class DeepSeekService:
 - Esta e a primeira analise persistida do dono; trate a memoria como bootstrap inicial, nao como retrato definitivo.
 - Em updated_life_summary, seja prudente: prefira descrever direcoes gerais e responsabilidades visiveis em vez de interpretar demais a personalidade.
 - Em active_projects, mantenha no maximo 4 itens e inclua apenas frentes que tenham sinais repetidos, impacto operacional ou evidencia concreta.
+- Em active_projects, prefira 2-4 projetos fortes com descricao rica a listar muitos projetos vagos.
 - Use open_questions para registrar duvidas importantes que precisarao de mais conversa futura em vez de fechar conclusoes cedo demais.
 - Se houver conflito entre um sinal forte mas isolado e o restante do contexto, reduza a forca da afirmacao e explicite a incerteza nas listas.
 """.strip()
@@ -1203,6 +1204,13 @@ Regras:
 - Preencha active_projects apenas com projetos, trabalhos, produtos, operacoes ou frentes reais que parecam recorrentes ou importantes para o dono.
 - Em cada item de active_projects, explicite o que esta sendo desenvolvido e para quem a entrega, sistema ou servico parece ser direcionado.
 - Em active_projects, use no maximo 6 itens e descarte assuntos soltos sem continuidade.
+- Em active_projects, use nomes especificos. Evite nomes vagos como "projeto", "site", "cliente", "sistema" ou "automacao" sem qualificador concreto.
+- Em active_projects.summary, escreva um resumo assertivo de 1-2 frases curtas dizendo: objetivo real, momento atual e por que isso importa agora.
+- Em active_projects.what_is_being_built, descreva a entrega concreta ou o bloco de trabalho em andamento; nao repita so o nome do projeto.
+- Em active_projects.built_for, identifique publico, cliente, time, operacao ou uso final. Se nao der para saber com seguranca, deixe generico mas util, sem inventar nome proprio.
+- Em active_projects.next_steps, prefira de 1 a 4 passos executaveis, curtos e observaveis; evite abstrações como "avancar projeto" ou "seguir com isso".
+- Em active_projects.evidence, traga de 2 a 4 evidencias concretas baseadas nas mensagens, em formato curto e objetivo; nao use evidencias genericas como "foi mencionado".
+- So mantenha um projeto quando for possivel preencher pelo menos 3 entre summary, what_is_being_built, built_for, next_steps e evidence com conteudo realmente concreto.
 - So use nomes de pessoas em active_projects, built_for, evidence, people_and_relationships ou contact_memories quando o nome estiver explicitamente no texto das mensagens ou ja estiver sustentado pela memoria anterior da mesma person_key. Nomes que aparecem apenas no rotulo tecnico da conversa nao bastam.
 - Mantenha updated_life_summary factual, claro, conciso e util para um assistente pessoal futuro. Dê mais peso ao que aparece repetido, ao que tem impacto operacional e ao que altera o comportamento do dono.
 - Use os campos de lista para aprendizados concretos, padroes de comportamento e sinais incertos.
@@ -1228,6 +1236,7 @@ Regras:
 - Observe o arco emocional da janela: o dono comecou frustrado e terminou satisfeito? Ou o inverso? Isso importa tanto quanto o conteudo factual.
 - Mapeie tomadores de decisao: quando uma escolha depende de alguem externo, quem e? O dono delega, decide sozinho, ou precisa de validacao? Isso define como um assistente deve se posicionar.
 - Em active_projects, detecte sinais de ciclo de vida: inicio (exploracao, duvidas), meio (execucao, entregas), fim (conclusao, abandono, pivot). Regresse o status acorde.
+- Em active_projects, se houver sinais concretos de escopo, gargalo, dependencia externa, prazo ou entrega ja prometida, inclua isso no resumo ou nos proximos passos.
 - Para cada contato, va alem do superficial: qual e o nivel de confianca do dono nesse contato? O dono busca conselho, da ordens, pede favor, ou divide responsabilidades?
 - Se a mesma pessoa aparece em multiplas conversas com tom diferente, isso revela nuance — registre em relationship_summary.
 - Em key_learnings, priorize: (1) mudancas de comportamento/prioridade, (2) padroes que se repetem em 2+ conversas, (3) descobertas sobre como o dono opera. Evite listar fatos isolados.
@@ -1285,6 +1294,9 @@ Regras:
 - Se algo estiver fraco ou pouco sustentado, enfraqueça ou remova em vez de inventar complemento.
 - Em active_projects, mantenha so projetos realmente importantes e atuais.
 - Sempre preencha, quando possivel, o que esta sendo desenvolvido e para quem cada projeto e direcionado.
+- Em active_projects, nao aceite resumos vagos: deixe claro escopo, fase atual e entrega esperada.
+- Em active_projects.next_steps, prefira passos curtos, acionaveis e verificaveis; descarte placeholders genericos.
+- Em active_projects.evidence, preserve 2-4 sinais concretos que justifiquem o projeto continuar na memoria.
 - Faca cross-validacao entre snapshots: o que aparece consistente em 2+ analises e sinal forte — o que aparece em apenas 1 pode ser ruido ou contexto momentaneo.
 - Padroes recorrentes merecem mais peso no resumo final; sinais isolados merecem ceticismo ou mencao como hipotese.
 - Se um projeto sumiu de snapshots recentes, considere que pode estar concluido ou abandonado — atualize o status acorde.
@@ -1463,6 +1475,10 @@ Regras:
 - Nao invente projeto novo se o sinal estiver fraco.
 - Prefira poucos projetos fortes a muitos projetos vagos.
 - Sempre que possivel, explique o que esta sendo construido e para quem.
+- Em cada projeto final, deixe summary mais detalhado e assertivo que o texto de origem: objetivo real, fase atual e tensao operacional principal.
+- Em next_steps, mantenha de 1 a 4 passos executaveis e sem placeholders genericos.
+- Em evidence, mantenha 2-4 evidencias curtas que sustentem por que o projeto continua ativo.
+- Se um item nao tiver detalhe suficiente para ficar util, remova em vez de manter um projeto vago.
 - Nunca trate o proprio dono como cliente, contato ou publico do projeto.
 - So mantenha nomes de pessoas se eles estiverem explicitamente citados no texto das mensagens ou sustentados por memoria anterior confiavel.
 - Mantenha no maximo 8 projetos.

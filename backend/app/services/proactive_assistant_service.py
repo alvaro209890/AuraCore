@@ -848,7 +848,7 @@ class ProactiveAssistantService:
         candidate_id: str | None,
         now: datetime,
     ) -> bool:
-        owner_target = await self._resolve_owner_chat_target(preferred_channel="agent")
+        owner_target = await self._resolve_owner_chat_target(preferred_channel="observer")
         if not owner_target:
             self.store.create_proactive_delivery_log(
                 user_id=self.settings.default_user_id,
@@ -1162,10 +1162,13 @@ class ProactiveAssistantService:
         return now_time >= start or now_time < end
 
     def _resolve_owner_phone(self) -> str | None:
-        owner_phone = self.store.get_whatsapp_session_owner_phone(session_id=f"{self.settings.default_user_id}:agent")
+        owner_phone = self.store.get_whatsapp_session_owner_phone(session_id=f"{self.settings.default_user_id}:observer")
         if owner_phone:
             return self._normalize_chat_target(owner_phone)
-        owner_phone = self.store.get_whatsapp_session_owner_phone(session_id=f"{self.settings.default_user_id}:observer")
+        configured_owner_phone = self.settings.normalized_whatsapp_cli_owner_phone
+        if configured_owner_phone:
+            return self._normalize_chat_target(configured_owner_phone)
+        owner_phone = self.store.get_whatsapp_session_owner_phone(session_id=f"{self.settings.default_user_id}:agent")
         if owner_phone:
             return self._normalize_chat_target(owner_phone)
         return None
@@ -1175,10 +1178,11 @@ class ProactiveAssistantService:
         if preferred_channel == "agent":
             attempts.extend(
                 [
-                    ("agent_status", "agent"),
-                    ("agent_session", "agent"),
                     ("observer_status", "observer"),
                     ("observer_session", "observer"),
+                    ("configured_owner", "config"),
+                    ("agent_status", "agent"),
+                    ("agent_session", "agent"),
                 ]
             )
         else:
@@ -1186,11 +1190,13 @@ class ProactiveAssistantService:
                 [
                     ("observer_status", "observer"),
                     ("observer_session", "observer"),
+                    ("configured_owner", "config"),
                     ("agent_status", "agent"),
                     ("agent_session", "agent"),
                 ]
             )
 
+        expected_owner = self._resolve_owner_phone()
         for source_kind, _channel in attempts:
             target: str | None = None
             try:
@@ -1202,9 +1208,24 @@ class ProactiveAssistantService:
                     target = self._normalize_chat_target(self.store.get_whatsapp_session_owner_phone(session_id=f"{self.settings.default_user_id}:agent"))
                 elif source_kind == "observer_session":
                     target = self._normalize_chat_target(self.store.get_whatsapp_session_owner_phone(session_id=f"{self.settings.default_user_id}:observer"))
+                elif source_kind == "configured_owner":
+                    target = self._normalize_chat_target(self.settings.normalized_whatsapp_cli_owner_phone)
             except Exception:
                 target = None
             if target:
+                if (
+                    source_kind.startswith("agent_")
+                    and expected_owner
+                    and not self.store.phone_matches(target, expected_owner)
+                ):
+                    logger.warning(
+                        "proactive_owner_target_mismatch user_id=%s source=%s target=%s expected=%s",
+                        self.settings.default_user_id,
+                        source_kind,
+                        target,
+                        expected_owner,
+                    )
+                    continue
                 return target
         return None
 

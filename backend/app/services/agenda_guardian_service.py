@@ -1070,10 +1070,11 @@ class AgendaGuardianService:
         if preferred_channel == "agent":
             attempts.extend(
                 [
-                    ("agent_status", "agent"),
-                    ("agent_session", "agent"),
                     ("observer_status", "observer"),
                     ("observer_session", "observer"),
+                    ("configured_owner", "config"),
+                    ("agent_status", "agent"),
+                    ("agent_session", "agent"),
                 ]
             )
         else:
@@ -1081,11 +1082,13 @@ class AgendaGuardianService:
                 [
                     ("observer_status", "observer"),
                     ("observer_session", "observer"),
+                    ("configured_owner", "config"),
                     ("agent_status", "agent"),
                     ("agent_session", "agent"),
                 ]
             )
 
+        expected_owner = self._resolve_expected_owner_target()
         for source_kind, channel in attempts:
             target: str | None = None
             try:
@@ -1101,9 +1104,24 @@ class AgendaGuardianService:
                     target = self._normalize_chat_target(
                         self.store.get_whatsapp_session_owner_phone(session_id=f"{self.settings.default_user_id}:observer")
                     )
+                elif source_kind == "configured_owner":
+                    target = self._normalize_chat_target(self.settings.normalized_whatsapp_cli_owner_phone)
             except Exception:
                 target = None
             if target:
+                if (
+                    source_kind.startswith("agent_")
+                    and expected_owner
+                    and not self.store.phone_matches(target, expected_owner)
+                ):
+                    logger.warning(
+                        "agenda_owner_target_mismatch user_id=%s source=%s target=%s expected=%s",
+                        self.settings.default_user_id,
+                        source_kind,
+                        target,
+                        expected_owner,
+                    )
+                    continue
                 logger.info(
                     "agenda_owner_target_resolved user_id=%s channel=%s source=%s",
                     self.settings.default_user_id,
@@ -1112,6 +1130,19 @@ class AgendaGuardianService:
                 )
                 return target
         return None
+
+    def _resolve_expected_owner_target(self) -> str | None:
+        observer_owner = self._normalize_chat_target(
+            self.store.get_whatsapp_session_owner_phone(session_id=f"{self.settings.default_user_id}:observer")
+        )
+        if observer_owner:
+            return observer_owner
+        configured_owner = self._normalize_chat_target(self.settings.normalized_whatsapp_cli_owner_phone)
+        if configured_owner:
+            return configured_owner
+        return self._normalize_chat_target(
+            self.store.get_whatsapp_session_owner_phone(session_id=f"{self.settings.default_user_id}:agent")
+        )
 
     def _normalize_chat_target(self, value: str | None) -> str | None:
         raw = (value or "").strip()

@@ -3705,6 +3705,368 @@ textarea {
   gap: 10px;
 }
 
+.agenda-hero-card {
+  background:
+    radial-gradient(circle at top left, rgba(14, 165, 233, 0.2), transparent 42%),
+    radial-gradient(circle at bottom right, rgba(16, 185, 129, 0.14), transparent 36%),
+    linear-gradient(180deg, rgba(8, 17, 31, 0.94), rgba(10, 18, 32, 0.84));
+}
+
+.automation-hero-card {
+  background:
+    radial-gradient(circle at top left, rgba(59, 130, 246, 0.22), transparent 42%),
+    radial-gradient(circle at bottom right, rgba(99, 102, 241, 0.14), transparent 32%),
+    linear-gradient(180deg, rgba(9, 16, 31, 0.94), rgba(11, 17, 31, 0.84));
+}
+
+.proactivity-hero-card {
+  background:
+    radial-gradient(circle at top left, rgba(34, 197, 94, 0.16), transparent 42%),
+    radial-gradient(circle at top right, rgba(250, 204, 21, 0.14), transparent 28%),
+    radial-gradient(circle at bottom right, rgba(59, 130, 246, 0.16), transparent 32%),
+    linear-gradient(180deg, rgba(9, 16, 30, 0.94), rgba(11, 18, 32, 0.84));
+}
+
+.ops-surface {
+  display: grid;
+  gap: 18px;
+  padding: 22px;
+  border-radius: 24px;
+  border: 1px solid rgba(59, 130, 246, 0.16);
+  background:
+    radial-gradient(circle at top right, rgba(59, 130, 246, 0.08), transparent 32%),
+    linear-gradient(180deg, rgba(7, 12, 22, 0.96), rgba(9, 15, 26, 0.86));
+  box-shadow: 0 22px 48px rgba(2, 6, 23, 0.24);
+}
+
+.ops-form-shell,
+.ops-list-card,
+.ops-history-item {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 20px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: rgba(7, 12, 22, 0.76);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.ops-form-head,
+.ops-list-card-head,
+.ops-history-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ops-form-head strong,
+.ops-list-card-title strong,
+.ops-history-head strong {
+  display: block;
+  color: #f8fbff;
+  font-size: 0.98rem;
+}
+
+.ops-form-head p,
+.ops-history-item p,
+.ops-empty-state,
+.ops-quote-box {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.ops-list-card-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: #bfdbfe;
+}
+
+.ops-list-card-title svg {
+  color: #7dd3fc;
+}
+
+.ops-history-head span,
+.ops-list-row span,
+.ops-field-caption,
+.ops-meta-card span,
+.ops-meta-card small {
+  color: var(--muted-soft);
+}
+
+.ops-form-grid,
+.ops-toggle-grid,
+.ops-dual-grid,
+.ops-meta-grid,
+.ops-history-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.ops-form-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.ops-toggle-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.ops-dual-grid,
+.ops-meta-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.ops-history-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.ops-field {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ops-field-full {
+  grid-column: 1 / -1;
+}
+
+.ops-field-label {
+  color: #dbeafe;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.ops-field-caption {
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.ops-input,
+.ops-select,
+.ops-textarea {
+  width: 100%;
+  min-width: 0;
+  border-radius: 16px;
+  border: 1px solid rgba(96, 165, 250, 0.16);
+  background:
+    linear-gradient(180deg, rgba(8, 14, 25, 0.98), rgba(10, 18, 31, 0.88));
+  color: #f8fafc;
+  padding: 13px 14px;
+  font: inherit;
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease, background 160ms ease;
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.03);
+}
+
+.ops-select {
+  appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, #93c5fd 50%),
+    linear-gradient(135deg, #93c5fd 50%, transparent 50%);
+  background-position:
+    calc(100% - 20px) calc(50% - 2px),
+    calc(100% - 14px) calc(50% - 2px);
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+  padding-right: 38px;
+}
+
+.ops-input::placeholder,
+.ops-textarea::placeholder {
+  color: rgba(191, 219, 254, 0.44);
+}
+
+.ops-input:focus,
+.ops-select:focus,
+.ops-textarea:focus {
+  outline: none;
+  border-color: rgba(125, 211, 252, 0.42);
+  background:
+    linear-gradient(180deg, rgba(9, 16, 28, 1), rgba(12, 21, 36, 0.94));
+  box-shadow: 0 0 0 4px rgba(14, 165, 233, 0.12);
+  transform: translateY(-1px);
+}
+
+.ops-textarea {
+  min-height: 110px;
+  resize: vertical;
+}
+
+.ops-toggle-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 16px;
+  border-radius: 20px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: rgba(7, 12, 22, 0.76);
+  cursor: pointer;
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.ops-toggle-card:hover {
+  transform: translateY(-1px);
+}
+
+.ops-toggle-card-emerald:hover {
+  border-color: rgba(52, 211, 153, 0.28);
+}
+
+.ops-toggle-card-indigo:hover {
+  border-color: rgba(129, 140, 248, 0.28);
+}
+
+.ops-toggle-card-amber:hover {
+  border-color: rgba(251, 191, 36, 0.28);
+}
+
+.ops-toggle-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.ops-toggle-copy strong {
+  color: #f8fbff;
+  font-size: 0.95rem;
+}
+
+.ops-toggle-copy p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.55;
+  font-size: 0.86rem;
+}
+
+.ops-toggle-switch {
+  position: relative;
+  width: 56px;
+  height: 32px;
+  display: inline-flex;
+}
+
+.ops-toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.ops-toggle-slider {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: rgba(51, 65, 85, 0.92);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  transition: background 160ms ease, border-color 160ms ease;
+}
+
+.ops-toggle-slider::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #f8fafc, #cbd5e1);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.28);
+  transition: transform 160ms ease;
+}
+
+.ops-toggle-switch input:checked + .ops-toggle-slider {
+  background: linear-gradient(135deg, rgba(14, 165, 233, 0.78), rgba(59, 130, 246, 0.84));
+  border-color: rgba(125, 211, 252, 0.36);
+}
+
+.ops-toggle-switch input:checked + .ops-toggle-slider::before {
+  transform: translateX(24px);
+}
+
+.ops-list-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(96, 165, 250, 0.1);
+  background: rgba(9, 15, 26, 0.72);
+}
+
+.ops-list-row strong {
+  display: block;
+  color: #eff6ff;
+  font-size: 0.9rem;
+}
+
+.ops-list-row span {
+  display: block;
+  margin-top: 3px;
+  font-size: 0.8rem;
+}
+
+.ops-list-row-meta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  color: #cbd5e1;
+  font-size: 0.8rem;
+  text-align: right;
+}
+
+.ops-history-stack {
+  display: grid;
+  gap: 10px;
+}
+
+.ops-history-item strong {
+  color: #eff6ff;
+}
+
+.ops-meta-card {
+  display: grid;
+  gap: 7px;
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(96, 165, 250, 0.12);
+  background: rgba(9, 15, 26, 0.72);
+}
+
+.ops-meta-card strong {
+  color: #eff6ff;
+  font-size: 0.95rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.ops-meta-card small {
+  line-height: 1.5;
+}
+
+.ops-empty-state {
+  padding: 18px 20px;
+  border-radius: 18px;
+  border: 1px dashed rgba(148, 163, 184, 0.22);
+  background: rgba(9, 15, 26, 0.48);
+}
+
+.ops-quote-box {
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(96, 165, 250, 0.14);
+  background: rgba(9, 15, 26, 0.72);
+  color: #dbeafe;
+}
+
+.agenda-event-card,
+.proactivity-candidate-card {
+  gap: 18px;
+}
+
 .project-ai-messages {
   display: grid;
   gap: 10px;
@@ -6533,6 +6895,11 @@ textarea {
   .automation-top-grid,
   .automation-settings-grid,
   .automation-history-grid,
+  .ops-form-grid,
+  .ops-toggle-grid,
+  .ops-dual-grid,
+  .ops-meta-grid,
+  .ops-history-grid,
   .important-top-grid,
   .important-overview-grid,
   .important-list,
