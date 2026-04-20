@@ -89,6 +89,8 @@ def _sync_observer_owner_phone(
     account: AccountRecord,
     status: ObserverStatusResponse,
 ) -> None:
+    if not status.owner_number:
+        return
     try:
         registry.set_observer_owner_phone(
             app_user_id=account.app_user_id,

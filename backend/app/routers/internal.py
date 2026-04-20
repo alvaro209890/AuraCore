@@ -43,10 +43,11 @@ async def ingest_messages(
     try:
         observer_status = await observer_gateway.get_status()
         blocked_contact_phone = store.normalize_contact_phone(observer_status.owner_number)
-        registry.set_observer_owner_phone(
-            app_user_id=account.app_user_id,
-            phone=observer_status.owner_number,
-        )
+        if observer_status.owner_number:
+            registry.set_observer_owner_phone(
+                app_user_id=account.app_user_id,
+                phone=observer_status.owner_number,
+            )
     except Exception:
         blocked_contact_phone = None
     if not blocked_contact_phone:
