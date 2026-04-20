@@ -57,6 +57,8 @@ class Settings(BaseSettings):
     groq_api_key: str | None = Field(default=None, alias="GROQ_API_KEY")
     groq_model: str = Field("llama-3.1-8b-instant", alias="GROQ_MODEL")
     whatsapp_agent_groq_model: str = Field("llama-3.3-70b-versatile", alias="WHATSAPP_AGENT_GROQ_MODEL")
+    groq_transcription_model: str = Field("whisper-large-v3-turbo", alias="GROQ_TRANSCRIPTION_MODEL")
+    groq_transcription_fallback_model: str = Field("whisper-large-v3", alias="GROQ_TRANSCRIPTION_FALLBACK_MODEL")
     groq_api_base_url: str = Field("https://api.groq.com/openai/v1", alias="GROQ_API_BASE_URL")
     groq_timeout_seconds: float = Field(45.0, alias="GROQ_TIMEOUT_SECONDS")
     memory_analysis_max_messages: int = Field(200, alias="MEMORY_ANALYSIS_MAX_MESSAGES")

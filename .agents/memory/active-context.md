@@ -243,6 +243,22 @@
 
 ## Atualização 2026-04-20 2
 
+- Confirmado por código e runtime que o bot conversacional do WhatsApp usa Groq, não DeepSeek
+- Ajustes aplicados:
+  - `backend/app/config.py` ganhou `GROQ_TRANSCRIPTION_MODEL` e `GROQ_TRANSCRIPTION_FALLBACK_MODEL`
+  - `backend/app/services/groq_service.py` deixou de hardcodear os modelos de transcrição
+  - `backend/.env.example` passou a documentar `WHATSAPP_AGENT_GROQ_MODEL` e os modelos de transcrição
+- Runtime local atualizado fora do Git com:
+  - `GROQ_MODEL=llama-3.1-8b-instant`
+  - `WHATSAPP_AGENT_GROQ_MODEL=llama-3.3-70b-versatile`
+  - `GROQ_TRANSCRIPTION_MODEL=whisper-large-v3-turbo`
+  - `GROQ_TRANSCRIPTION_FALLBACK_MODEL=whisper-large-v3`
+- Backend reiniciado novamente com sucesso
+  - `ExecMainPID=2424249`
+  - `ActiveEnterTimestamp=Mon 2026-04-20 10:07:17 -03`
+
+## Atualização 2026-04-20 2
+
 - Corrigido crash real no frontend publicado em `https://auracore-82bf2.web.app`
 - Causa observada:
   - o dashboard assumia que alguns campos vindos da API eram sempre `string`

@@ -92,7 +92,16 @@ class GroqChatService:
         if not audio_bytes:
             raise GroqChatError("Payload de audio vazio para transcricao.")
 
-        models = ("whisper-large-v3-turbo", "whisper-large-v3")
+        models = tuple(
+            model_name.strip()
+            for model_name in (
+                self.settings.groq_transcription_model,
+                self.settings.groq_transcription_fallback_model,
+            )
+            if isinstance(model_name, str) and model_name.strip()
+        )
+        if not models:
+            models = ("whisper-large-v3-turbo", "whisper-large-v3")
         last_error: GroqChatError | None = None
         for model_name in models:
             try:

@@ -73,3 +73,4 @@
 - A aba `Agenda` agora usa shells visuais `ops-*` e botões/pills do dashboard para criação e edição, com status em pills e presets de lembrete em vez de campos crus e `select` simples
 - A aba `Memória` do frontend principal usa `memoryActivity` como fonte primária para pipeline, jobs, syncs e decisões recentes; `automationStatus` fica como fallback quando esse snapshot específico não vier carregado
 - O backend de agenda agora expõe endpoints para consulta textual e confirmação pendente (`POST /api/agenda/query`, `GET /api/agenda/pending-confirmation`, `POST /api/agenda/pending-confirmation/resolve`) e a agenda manual já persiste `recurrence_rule`/`excluded_dates`
+- O canal conversacional do WhatsApp usa Groq via `WHATSAPP_AGENT_GROQ_MODEL`; a transcrição de áudio do observer/agente também usa Groq e agora aceita configuração explícita por `GROQ_TRANSCRIPTION_MODEL` e `GROQ_TRANSCRIPTION_FALLBACK_MODEL`
