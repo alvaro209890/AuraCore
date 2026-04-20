@@ -12,13 +12,13 @@ from app.dependencies import (
     get_internal_observer_gateway_service,
     get_internal_service_bundle,
     get_internal_supabase_store,
-    get_internal_whatsapp_agent_gateway_service,
 )
 from app.schemas import (
     GroupMetadataUpdateRequest,
     IngestMessagesRequest,
     IngestMessagesResponse,
     SimpleOkResponse,
+    WhatsAppAgentInboundMessageRequest,
 )
 from app.services.account_registry import AccountRecord, AccountRegistry
 from app.services.service_bundle import ServiceBundle
@@ -37,29 +37,19 @@ async def ingest_messages(
     store: SupabaseStore = Depends(get_internal_supabase_store),
     automation_service = Depends(get_internal_automation_service),
     observer_gateway = Depends(get_internal_observer_gateway_service),
-    agent_gateway = Depends(get_internal_whatsapp_agent_gateway_service),
 ) -> IngestMessagesResponse:
-    blocked_contact_phone: str | None = None
     try:
         observer_status = await observer_gateway.get_status()
-        blocked_contact_phone = store.normalize_contact_phone(observer_status.owner_number)
         registry.set_observer_owner_phone(
             app_user_id=account.app_user_id,
             phone=observer_status.owner_number,
         )
     except Exception:
-        blocked_contact_phone = None
-    if not blocked_contact_phone:
-        try:
-            agent_status = await agent_gateway.get_agent_status()
-            blocked_contact_phone = store.normalize_contact_phone(agent_status.owner_number)
-        except Exception:
-            blocked_contact_phone = None
+        pass
 
     normalized_messages, skipped_audio_count = await _build_records(
         payload,
         store,
-        blocked_contact_phone,
         bundle,
     )
     save_result = await run_in_threadpool(store.save_ingested_messages, normalized_messages)
@@ -71,6 +61,19 @@ async def ingest_messages(
                 "agenda_guardian_processing_failed message_id=%s contact_phone=%s detail=%s",
                 message.message_id,
                 message.contact_phone,
+                str(exc),
+            )
+    for item in payload.messages:
+        reply_payload = _build_reply_payload(item=item, store=store)
+        if reply_payload is None:
+            continue
+        try:
+            await bundle.whatsapp_agent_service.handle_inbound_message(reply_payload)
+        except Exception as exc:
+            logger.warning(
+                "observer_reply_processing_failed message_id=%s contact_phone=%s detail=%s",
+                item.message_id,
+                item.contact_phone,
                 str(exc),
             )
     ignored_count = max(0, len(payload.messages) - len(normalized_messages) - skipped_audio_count) + save_result.ignored_count + skipped_audio_count
@@ -120,7 +123,6 @@ async def upsert_groups(
 async def _build_records(
     payload: IngestMessagesRequest,
     store: SupabaseStore,
-    blocked_contact_phone: str | None,
     bundle: ServiceBundle,
 ) -> tuple[list[IngestedMessageRecord], int]:
     persona = await run_in_threadpool(store.get_persona, store.default_user_id)
@@ -211,8 +213,6 @@ async def _build_records(
         ):
             continue
         normalized_phone = store.normalize_contact_phone(contact_phone)
-        if blocked_contact_phone and normalized_phone and store.phone_matches(normalized_phone, blocked_contact_phone):
-            continue
 
         records.append(
             IngestedMessageRecord(
@@ -236,3 +236,36 @@ async def _build_records(
             )
         )
     return records, skipped_audio_count
+
+
+def _build_reply_payload(
+    *,
+    item,
+    store: SupabaseStore,
+) -> WhatsAppAgentInboundMessageRequest | None:
+    if item.chat_type != "direct":
+        return None
+    if item.direction != "inbound" or bool(item.from_me):
+        return None
+    chat_jid = item.chat_jid.strip()
+    if not chat_jid or not store.is_direct_chat_jid(chat_jid):
+        return None
+    normalized_phone = store.normalize_contact_phone(item.contact_phone)
+    if not normalized_phone:
+        return None
+    return WhatsAppAgentInboundMessageRequest(
+        message_id=item.message_id.strip(),
+        direction=item.direction,
+        from_me=bool(item.from_me),
+        contact_name=(item.contact_name or normalized_phone).strip(),
+        contact_name_source=(item.contact_name_source or "unknown").strip() or "unknown",
+        chat_jid=chat_jid,
+        contact_phone=normalized_phone,
+        message_text=item.message_text,
+        media_type=item.media_type,
+        audio_data_url=item.audio_data_url,
+        audio_mime_type=item.audio_mime_type,
+        timestamp=item.timestamp,
+        source=item.source,
+        source_event=item.source_event,
+    )

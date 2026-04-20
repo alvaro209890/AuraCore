@@ -89,25 +89,25 @@ class WhatsAppAgentService:
 
     async def get_status(self) -> WhatsAppAgentStatusResponse:
         self._ensure_cli_admin_defaults()
-        agent_status = await self.agent_gateway.get_agent_status()
+        agent_status = await self.observer_gateway.get_observer_status(refresh_qr=False)
         _, settings_record = await self._load_observer_context()
         return self._build_status_response(agent_status=agent_status, settings=settings_record)
 
     async def connect_agent(self) -> WhatsAppAgentStatusResponse:
         self._ensure_cli_admin_defaults()
-        agent_status = await self.agent_gateway.connect_agent()
+        agent_status = await self.observer_gateway.connect_observer()
         _, settings_record = await self._load_observer_context()
         return self._build_status_response(agent_status=agent_status, settings=settings_record)
 
     async def reset_agent(self) -> WhatsAppAgentStatusResponse:
         self._ensure_cli_admin_defaults()
-        agent_status = await self.agent_gateway.reset_agent()
+        agent_status = await self.observer_gateway.reset_observer()
         _, settings_record = await self._load_observer_context()
         return self._build_status_response(agent_status=agent_status, settings=settings_record)
 
     async def build_workspace(self, *, thread_id: str | None = None) -> AgentWorkspaceSnapshot:
         self._ensure_cli_admin_defaults()
-        agent_status = await self.agent_gateway.get_agent_status()
+        agent_status = await self.observer_gateway.get_observer_status(refresh_qr=False)
         observer_status, settings_record = await self._load_observer_context()
 
         threads = self.store.list_whatsapp_agent_threads(user_id=self.settings.default_user_id, limit=24)
@@ -274,19 +274,13 @@ class WhatsAppAgentService:
         ):
             return WhatsAppAgentInboundMessageResponse(action="duplicate_message")
 
-        agent_owner_number = await self._get_agent_owner_number()
-        owner_self_message = bool(agent_owner_number and self.store.phone_matches(contact_phone, agent_owner_number))
+        owner_number = await self._get_owner_number()
+        owner_self_message = bool(owner_number and self.store.phone_matches(contact_phone, owner_number))
 
-        # Only reply to pre-registered contacts or the agent owner
         known_contact = self.store.get_known_contact_by_phone(
             user_id=self.settings.default_user_id,
             contact_phone=contact_phone,
         )
-        is_owner_or_admin = bool(
-            agent_owner_number and self.store.phone_matches(contact_phone, agent_owner_number)
-        )
-        if known_contact is None and not is_owner_or_admin:
-            return WhatsAppAgentInboundMessageResponse(action="ignored_unknown_contact")
 
         observer_status, settings_record = await self._load_observer_context()
         self.store.upsert_known_contact(
@@ -373,7 +367,10 @@ class WhatsAppAgentService:
                 inbound_message_id=inbound_message.id,
             )
 
-        if self.cli_service.is_eligible_contact(contact_phone=contact_phone):
+        terminal_session = self.cli_service.get_terminal_session_for_thread(thread_id=thread.id)
+        cli_requested = normalized_text.startswith("/")
+        cli_active = bool(terminal_session is not None and terminal_session.cli_mode_enabled)
+        if self.cli_service.is_eligible_contact(contact_phone=contact_phone) and (cli_requested or cli_active):
             cli_result = await self.cli_service.handle_message(
                 message_text=normalized_text,
                 inbound_message=inbound_message,
@@ -571,6 +568,9 @@ class WhatsAppAgentService:
                     context_hint=None,
                     priority_context=None,
                     contact_memory_context=contact_memory_context,
+                    additional_rules=[
+                        "No WhatsApp, responda como um assistente pessoal de elite: elegante, rapido, preciso e calmo, com energia de JARVIS moderno, sem teatralidade nem bordoes.",
+                    ],
                     channel="whatsapp_agent",
                 )
             except Exception as error:
@@ -647,12 +647,12 @@ class WhatsAppAgentService:
             )
             return observer_status, self.store.get_whatsapp_agent_settings(self.settings.default_user_id)
 
-    async def _get_agent_owner_number(self) -> str | None:
+    async def _get_owner_number(self) -> str | None:
         try:
-            agent_status = await self.agent_gateway.get_agent_status()
+            observer_status = await self.observer_gateway.get_observer_status(refresh_qr=False)
         except Exception:
             return None
-        return self.store.normalize_contact_phone(agent_status.owner_number)
+        return self.store.normalize_contact_phone(observer_status.owner_number)
 
     async def _send_outbound_reply(
         self,
@@ -755,7 +755,7 @@ class WhatsAppAgentService:
             stored_messages.append(outbound_record)
 
             try:
-                send_result = await self.agent_gateway.send_text_message(
+                send_result = await self.observer_gateway.send_text_message(
                     chat_jid=delivery_chat_jid,
                     message_text=outbound.text,
                 )
@@ -920,7 +920,7 @@ class WhatsAppAgentService:
             created_at=datetime.now(UTC),
         )
         try:
-            send_result = await self.agent_gateway.send_text_message(
+            send_result = await self.observer_gateway.send_text_message(
                 chat_jid=delivery_chat_jid,
                 message_text=outbound.text,
             )

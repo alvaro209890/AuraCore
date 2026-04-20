@@ -273,6 +273,7 @@ class IngestMessageRequestItem(BaseModel):
     chat_type: Literal["direct", "group"] = "direct"
     chat_name: str | None = None
     direction: Literal["inbound", "outbound"]
+    from_me: bool = False
     contact_name: str | None = None
     contact_name_source: str | None = None
     chat_jid: str = Field(min_length=1)
