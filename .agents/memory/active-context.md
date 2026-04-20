@@ -218,6 +218,28 @@
 ## Atualização 2026-04-20
 
 - Removido o arquivo `backend/app/services/whatsapp_cli_service.py` e toda a interceptação de CLI no `WhatsAppAgentService`
+
+## Atualização 2026-04-20 2
+
+- Nova rodada focada em custo de memória e proatividade do WhatsApp concluída no backend
+- Memória:
+  - jobs incrementais automáticos e backlog drain agora enfileiram lote fixo via `plan_next_batch()` em vez de executar a janela automática larga na rodada real
+  - `refine_saved_memory()` passou a usar contexto mais compacto e a refinar só os contatos mais relevantes, reduzindo tokens recorrentes sem perder o núcleo útil
+  - prompt de refinamento de contatos foi alinhado para explicitar `relationship_type` no JSON esperado
+- Proatividade:
+  - `ProactiveAssistantService` agora semeia followups a partir de `important_messages`
+  - project nudges passaram a escolher projeto por score contextual, considerando também sinais recentes importantes
+  - envio deixou de ser “primeiro candidato vencido” e passou a selecionar o melhor candidato devido por score/intensidade/momento
+  - digests da manhã/noite agora trazem também um foco de projeto além de agenda, pendências e sinais importantes
+- Validação local desta rodada:
+  - `python3 -m py_compile` em `automation_service.py`, `memory_service.py`, `deepseek_service.py` e `proactive_assistant_service.py`: ok
+- Runtime local:
+  - backend sincronizado para `/home/server/.local/share/auracore-runtime/repo/backend`
+  - `auracore-backend.service` precisou de `SIGKILL` após ficar preso em `stop-sigterm` durante o restart
+  - serviço voltou `active/running`
+    - `ExecMainPID=2331469`
+    - `ActiveEnterTimestamp=Mon 2026-04-20 08:29:37 -03`
+  - `GET /api/memories/status` local respondeu `{"detail":"Bearer token ausente."}`, confirmando backend ativo e rotas protegidas carregadas
 - `internal_agent` já roteava por `observer_owner_phone`; agora o `WhatsAppAgentService` também só aceita o owner do `observer` da conta e não depende mais de `whatsapp_known_contacts`/admins
 - `ProactiveAssistantService` e `agenda_guardian_service` passaram a resolver o alvo apenas pelo `observer` e enviar somente via `agent_gateway`
 - APIs `/api/global-agent/admin-contacts` e `/api/whatsapp-agent/admin-contacts` foram removidas; `workspace` do agente não expõe mais `terminal_session`
@@ -292,3 +314,26 @@
 - Frontend:
   - `firebase deploy --only hosting:app`: ok
   - URL publicada: `https://auracore-82bf2.web.app`
+
+## Atualização 2026-04-20 3
+
+- Auditoria funcional da aba `Proatividade` concluída:
+  - `npm run build` em `frontend`: ok
+  - handlers do dashboard para `get/update settings`, `tick`, `dismiss/confirm/complete` estavam conectados e sem erro estrutural
+- Ajustes novos no backend:
+  - `ProactiveAssistantService` agora prefere o thread mais recente do WhatsApp Agent para resolver `chat_jid`/telefone do dono, em vez de depender só do `owner_number` do observer
+  - heurística de envio ficou mais permissiva: score mínimo menor, mais peso para `important_source`/`recent_signal`, cooldown mínimo por intensidade e bypass para nudges fortes/confirmados
+  - defaults de novas preferências proativas passaram para `high`, `6/dia` e `45 min`
+  - correção final: `_send_unsolicited_message()` agora usa primeiro o telefone canônico resolvido do thread recente e só cai no `chat_jid` normalizado como fallback
+- Validação operacional:
+  - backend sincronizado para `/home/server/.local/share/auracore-runtime/repo/backend`
+  - `auracore-backend.service` reiniciado e está `active/running`
+    - `ExecMainPID=2385232`
+    - `ActiveEnterTimestamp=Mon 2026-04-20 08:47:48 -03`
+  - `GET /api/memories/status` local segue respondendo `Bearer token ausente`, confirmando backend ativo
+- Teste real da proatividade:
+  - conta ativa identificada: `alvaro` (`app_user_id=af16ed7c-aec0-4159-bffe-6ca79e65bc32`)
+  - thread recente correto do agente: contato `Álvaro`, telefone `6684396232`, `chat_jid=71756035416162@lid`
+  - envio proativo manual executado com sucesso via esse `chat_jid`
+  - delivery log registrado como `decision=sent`, `reason_code=manual_recent_thread_test`
+  - o usuário respondeu `ok` em seguida e o thread ficou novamente consolidado com `contact_name='Álvaro'`

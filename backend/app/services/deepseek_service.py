@@ -1551,18 +1551,19 @@ Projetos recentes:
 Lista de contatos para refinar:
 {contact_memories_block.strip() or "(nenhum contato)"}
 
-Retorne um JSON com exatamente este formato:
-{{
-  "contact_memories": [
-    {{
-      "person_key": "string",
-      "contact_name": "string",
-      "profile_summary": "string",
-      "relationship_summary": "string",
-      "salient_facts": ["string"],
-      "open_loops": ["string"],
-      "recent_topics": ["string"]
-    }}
+        Retorne um JSON com exatamente este formato:
+        {{
+          "contact_memories": [
+            {{
+              "person_key": "string",
+              "contact_name": "string",
+              "profile_summary": "string",
+              "relationship_type": "partner|family|friend|work|client|service|acquaintance|other|unknown",
+              "relationship_summary": "string",
+              "salient_facts": ["string"],
+              "open_loops": ["string"],
+              "recent_topics": ["string"]
+            }}
   ]
 }}
 

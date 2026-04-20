@@ -57,6 +57,7 @@ import AgendaTab from './dashboard/tabs/AgendaTab';
 import ProjectsTab from './dashboard/tabs/ProjectsTab';
 import ActivityTab from './dashboard/tabs/ActivityTab';
 import AutomationTab from './dashboard/tabs/AutomationTab';
+import ProactivityTab from './dashboard/tabs/ProactivityTab';
 import ManualTab from './dashboard/tabs/ManualTab';
 import AccountTab from './dashboard/tabs/AccountTab';
 
@@ -268,6 +269,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "agenda", label: "Agenda", icon: Clock },
       { id: "projects", label: "Projetos", icon: FolderGit2 },
       { id: "automation", label: "Automação", icon: Zap },
+      { id: "proactivity", label: "Proatividade", icon: Sparkles },
     ],
   },
   {
@@ -1401,7 +1403,7 @@ export function ConnectionDashboard({
   onLogout: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<TabId>("overview");
-  const resolvedActiveTab: TabId = activeTab === "activity" ? "memory" : activeTab === "agent" || activeTab === "proactivity" ? "overview" : activeTab;
+  const resolvedActiveTab: TabId = activeTab === "activity" ? "memory" : activeTab === "agent" ? "overview" : activeTab;
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [status, setStatus] = useState<ObserverStatus | null>(null);
   const [viewState, setViewState] = useState<ViewState>("idle");
@@ -2171,7 +2173,7 @@ export function ConnectionDashboard({
       resolvedActiveTab === "automation" ||
       queuedJobId !== null
     );
-    const shouldRefreshProactivity = false;
+    const shouldRefreshProactivity = !isTickingProactivity && resolvedActiveTab === "proactivity";
     const shouldRefreshHeavyGroups = shouldRefreshHeavyResource("groups", analysisIsBusy);
     const shouldRefreshMemoryGroups = (resolvedActiveTab === "manual" || resolvedActiveTab === "groups") && shouldRefreshHeavyGroups;
 
@@ -2519,7 +2521,7 @@ export function ConnectionDashboard({
     const shouldLoadAgenda = activeTab === "agenda";
     const shouldLoadSnapshots = activeTab === "overview" || activeTab === "memory" || activeTab === "manual";
     const shouldLoadAutomation = resolvedActiveTab === "memory" || resolvedActiveTab === "automation" || resolvedActiveTab === "manual" || queuedJobId !== null;
-    const shouldLoadProactivity = false;
+    const shouldLoadProactivity = resolvedActiveTab === "proactivity";
 
     const [
       statusResult,
@@ -2794,6 +2796,18 @@ export function ConnectionDashboard({
       setProactiveError(message);
       toast.error(message);
     }
+  }
+
+  async function dismissCandidate(candidateId: string): Promise<void> {
+    await updateCandidateState(candidateId, "dismiss");
+  }
+
+  async function confirmCandidate(candidateId: string): Promise<void> {
+    await updateCandidateState(candidateId, "confirm");
+  }
+
+  async function completeCandidate(candidateId: string): Promise<void> {
+    await updateCandidateState(candidateId, "complete");
   }
 
   function pushAgentLog(tone: LogTone, message: string): void {
@@ -3405,6 +3419,24 @@ export function ConnectionDashboard({
                   onDraftChange={setAutomationDraft}
                   onSave={() => void saveAutomationConfig()}
                   onTick={() => void triggerAutomationNow()}
+                />
+              ) : null}
+
+              {resolvedActiveTab === "proactivity" ? (
+                <ProactivityTab
+                  proactiveSettings={proactiveSettings}
+                  proactivityDraft={proactivityDraft}
+                  proactiveCandidates={proactiveCandidates}
+                  proactiveDeliveries={proactiveDeliveries}
+                  proactiveError={proactiveError}
+                  isSavingProactivity={isSavingProactivity}
+                  isTickingProactivity={isTickingProactivity}
+                  onDraftChange={setProactivityDraft}
+                  onSave={() => void saveProactivityConfig()}
+                  onTick={() => void triggerProactivityNow()}
+                  onDismissCandidate={(id) => void dismissCandidate(id)}
+                  onConfirmCandidate={(id) => void confirmCandidate(id)}
+                  onCompleteCandidate={(id) => void completeCandidate(id)}
                 />
               ) : null}
 

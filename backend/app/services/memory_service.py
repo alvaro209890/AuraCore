@@ -1623,6 +1623,21 @@ class MemoryAnalysisService:
             open_questions_context=self._compact_context_block(context.open_questions_context, char_budget=160, max_lines=3),
         )
 
+    def _build_refinement_prompt_context(
+        self,
+        context: AnalyzeMemoryPromptContext,
+    ) -> AnalyzeMemoryPromptContext:
+        return AnalyzeMemoryPromptContext(
+            transcript="",
+            conversation_context="",
+            people_memory_context="",
+            current_life_summary=self._compact_context_block(context.current_life_summary, char_budget=620, max_lines=7),
+            prior_analyses_context=self._compact_context_block(context.prior_analyses_context, char_budget=520, max_lines=6),
+            project_context=self._compact_context_block(context.project_context, char_budget=560, max_lines=6),
+            chat_context=self._compact_context_block(context.chat_context, char_budget=180, max_lines=3),
+            open_questions_context="",
+        )
+
     def _compact_context_block(
         self,
         text: str,
@@ -2991,7 +3006,7 @@ class MemoryAnalysisService:
             )
 
         # Passo 1: Refinamento da Persona e Projetos
-        refinement_context = self._build_default_analysis_prompt_context(
+        refinement_context = self._build_refinement_prompt_context(
             AnalyzeMemoryPromptContext(
                 transcript="",
                 conversation_context="",
@@ -3046,9 +3061,16 @@ class MemoryAnalysisService:
         )
 
         # Passo 2: Refinamento dos Contatos (Pessoas)
-        contact_records = self.store.list_person_memories(self.settings.default_user_id, limit=24)
+        contact_records = self._select_contacts_for_refinement(
+            self.store.list_person_memories(self.settings.default_user_id, limit=24),
+            limit=10,
+        )
         if contact_records:
-            contact_block = self._build_contact_memories_block(contact_records)
+            contact_block = self._build_contact_memories_block(
+                contact_records,
+                max_contacts=10,
+                char_budget=2400,
+            )
             refined_contacts = await self.deepseek_service.refine_contact_memories(
                 current_life_summary=self._build_persona_context(persona),
                 project_context=self._build_project_context(updated_projects),
@@ -3088,12 +3110,20 @@ class MemoryAnalysisService:
 
         return MemoryRefinementOutcome(persona=persona, projects=updated_projects)
 
-    def _build_contact_memories_block(self, memories: list[PersonMemoryRecord]) -> str:
+    def _build_contact_memories_block(
+        self,
+        memories: list[PersonMemoryRecord],
+        *,
+        max_contacts: int | None = None,
+        char_budget: int | None = None,
+    ) -> str:
         if not memories:
             return ""
 
         sections: list[str] = []
-        for memory in memories:
+        current_size = 0
+        selected_memories = memories[: max_contacts or len(memories)]
+        for memory in selected_memories:
             lines = [
                 f"- person_key: {memory.person_key}",
                 f"  Contato: {memory.contact_name}",
@@ -3101,19 +3131,69 @@ class MemoryAnalysisService:
             if memory.relationship_type:
                 lines.append(f"  Tipo de relacao: {memory.relationship_type}")
             if memory.profile_summary:
-                lines.append(f"  Quem e: {memory.profile_summary}")
+                lines.append(f"  Quem e: {self._summarize_message_text(memory.profile_summary, 140)}")
             if memory.relationship_summary:
-                lines.append(f"  Relacao com o dono: {memory.relationship_summary}")
+                lines.append(f"  Relacao com o dono: {self._summarize_message_text(memory.relationship_summary, 140)}")
             if memory.salient_facts:
-                lines.append(f"  Fatos marcantes: {'; '.join(memory.salient_facts[:6])}")
+                lines.append(
+                    "  Fatos marcantes: "
+                    + "; ".join(self._summarize_list_items(memory.salient_facts, item_limit=4, item_chars=72))
+                )
             if memory.open_loops:
-                lines.append(f"  Pendencias abertas: {'; '.join(memory.open_loops[:5])}")
+                lines.append(
+                    "  Pendencias abertas: "
+                    + "; ".join(self._summarize_list_items(memory.open_loops, item_limit=4, item_chars=72))
+                )
             if memory.recent_topics:
-                lines.append(f"  Topicos recentes: {'; '.join(memory.recent_topics[:5])}")
+                lines.append(
+                    "  Topicos recentes: "
+                    + "; ".join(self._summarize_list_items(memory.recent_topics, item_limit=4, item_chars=72))
+                )
 
-            sections.append("\n".join(lines))
+            section = "\n".join(lines)
+            projected_size = current_size + len(section) + 2
+            if char_budget is not None and sections and projected_size > max(400, char_budget):
+                break
+            sections.append(section)
+            current_size = projected_size
 
         return "\n\n".join(sections)
+
+    def _select_contacts_for_refinement(
+        self,
+        memories: list[PersonMemoryRecord],
+        *,
+        limit: int,
+    ) -> list[PersonMemoryRecord]:
+        if len(memories) <= limit:
+            return memories
+
+        now = datetime.now(UTC)
+
+        def _pivot(memory: PersonMemoryRecord) -> datetime:
+            return memory.last_message_at or memory.last_analyzed_at or memory.updated_at
+
+        def _score(memory: PersonMemoryRecord) -> tuple[int, float]:
+            score = 0
+            if memory.open_loops:
+                score += 24 + min(12, len(memory.open_loops) * 3)
+            if memory.recent_topics:
+                score += 16 + min(8, len(memory.recent_topics) * 2)
+            if memory.salient_facts:
+                score += min(10, len(memory.salient_facts) * 2)
+            score += min(18, max(0, memory.source_message_count))
+            pivot = _pivot(memory)
+            hours_since_pivot = max(0.0, (now - pivot).total_seconds() / 3600)
+            if hours_since_pivot <= 72:
+                score += 18
+            elif hours_since_pivot <= 24 * 14:
+                score += 10
+            elif hours_since_pivot <= 24 * 45:
+                score += 4
+            return score, pivot.timestamp()
+
+        ranked = sorted(memories, key=lambda memory: _score(memory), reverse=True)
+        return ranked[: max(1, limit)]
 
     def _build_prior_analyses_context(self) -> str:
         limit = max(0, self.settings.memory_analysis_context_snapshots)

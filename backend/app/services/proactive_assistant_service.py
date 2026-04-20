@@ -13,17 +13,23 @@ from app.config import Settings
 from app.services.deepseek_service import DeepSeekService
 from app.services.observer_gateway import ObserverGatewayService, WhatsAppAgentGatewayService
 from app.services.supabase_store import (
+    ImportantMessageRecord,
     ProjectMemoryRecord,
     ProactiveCandidateRecord,
+    ProactiveDeliveryLogRecord,
     ProactivePreferencesRecord,
     SupabaseStore,
+    WhatsAppAgentThreadRecord,
 )
 
 DEFAULT_TIMEZONE = ZoneInfo("America/Sao_Paulo")
 PROACTIVE_LOOP_INTERVAL_SECONDS = 45
 RECENT_REPLY_WINDOW_HOURS = 36
-RECENT_PROJECT_NUDGE_HOURS = 24
+RECENT_PROJECT_NUDGE_HOURS = 14
 RECENT_DIGEST_ACTIVITY_MINUTES = 25
+IMPORTANT_MESSAGE_CANDIDATE_HOURS = 96
+PROJECT_STALE_NUDGE_HOURS = 12
+RECENT_OWNER_THREAD_LOOKBACK_DAYS = 14
 FOLLOWUP_KEYWORDS = ("responder", "mandar", "enviar", "ver", "fazer", "cobrar", "retornar", "ajustar")
 FUTURE_MARKERS = ("amanha", "amanhã", "mais tarde", "depois", "hoje", "semana", "mais tarde", "na volta")
 ROUTINE_PATTERNS = (
@@ -101,6 +107,7 @@ class ProactiveAssistantService:
             if not prefs.enabled:
                 return
             now = datetime.now(UTC)
+            self._seed_important_followups_if_needed(prefs=prefs, now=now)
             await self._seed_project_nudge_if_needed(prefs=prefs, now=now)
             await self._send_daily_digests_if_due(prefs=prefs, now=now)
             await self._send_due_candidates(prefs=prefs, now=now)
@@ -420,10 +427,19 @@ class ProactiveAssistantService:
         ]
         if not projects:
             return
-        project = projects[0]
+        important_messages = self.store.list_important_messages(self.settings.default_user_id, limit=8)
+        selected_project = self._select_project_for_nudge(
+            projects=projects,
+            important_messages=important_messages,
+            now=now,
+        )
+        if selected_project is None:
+            return
+        project, related_signals, project_score = selected_project
         next_step = project.next_steps[0] if project.next_steps else ""
         summary = next_step or project.summary or project.what_is_being_built or "Projeto ativo sem próximo passo manual definido."
         suggested_actions = await self._generate_project_action_hints(project=project)
+        signal_reason = self._describe_project_signal(project=project, related_signals=related_signals)
         self.store.create_proactive_candidate(
             user_id=self.settings.default_user_id,
             category="project_nudge",
@@ -432,13 +448,13 @@ class ProactiveAssistantService:
             source_kind="project_memory",
             thread_id=None,
             contact_phone=self._resolve_owner_phone(),
-            chat_jid=None,
+            chat_jid=self._resolve_recent_owner_chat_target(now=now),
             title=f"Revisar projeto: {project.project_name[:72]}",
-            summary=summary[:220],
-            confidence=74,
-            priority=64,
-            due_at=now + timedelta(minutes=25),
-            cooldown_until=now + timedelta(minutes=20),
+            summary=summary[:220] if not signal_reason else f"{summary[:140]} | {signal_reason[:72]}",
+            confidence=max(74, min(96, 64 + round(project_score * 0.28))),
+            priority=max(64, min(94, 58 + round(project_score * 0.34))),
+            due_at=now + timedelta(minutes=15 if related_signals else 25),
+            cooldown_until=now + timedelta(minutes=15),
             last_nudged_at=None,
             payload_json={
                 "dedupe_key": f"project:{self._dedupe_token(project.project_name)}",
@@ -446,6 +462,8 @@ class ProactiveAssistantService:
                 "project_name": project.project_name,
                 "next_step": next_step,
                 "suggested_actions": suggested_actions,
+                "project_reason": signal_reason,
+                "recent_signal": bool(related_signals),
             },
             created_at=now,
             updated_at=now,
@@ -505,10 +523,13 @@ class ProactiveAssistantService:
             return
         if self._daily_send_budget_exhausted(prefs=prefs, now=now):
             return
-        if self._min_interval_active(prefs=prefs, now=now):
-            return
         moment_state = self._detect_moment_state(now=now)
+        last_sent_delivery = self._last_sent_delivery()
         logger.info("proactive_moment_state user_id=%s moment_state=%s", self.settings.default_user_id, moment_state)
+
+        best_candidate: ProactiveCandidateRecord | None = None
+        best_score = -1
+        best_due_at: datetime | None = None
 
         for candidate in self.store.list_due_proactive_candidates(
             user_id=self.settings.default_user_id,
@@ -555,8 +576,40 @@ class ProactiveAssistantService:
                 )
                 continue
 
-            score = self._score_candidate(candidate=candidate, now=now, moment_state=moment_state)
-            if score < 55:
+            interval_suppression = self._min_interval_suppression(
+                candidate=candidate,
+                prefs=prefs,
+                now=now,
+                last_sent_delivery=last_sent_delivery,
+            )
+            if interval_suppression is not None:
+                reason_code, reason_text, cooldown_until = interval_suppression
+                self.store.create_proactive_delivery_log(
+                    user_id=self.settings.default_user_id,
+                    candidate_id=candidate.id,
+                    category=candidate.category,
+                    decision="skipped",
+                    score=0,
+                    reason_code=reason_code,
+                    reason_text=reason_text,
+                    message_text="",
+                    message_id=None,
+                    sent_at=None,
+                )
+                self.store.update_proactive_candidate(
+                    candidate_id=candidate.id,
+                    cooldown_until=cooldown_until,
+                )
+                continue
+
+            score = self._score_candidate(
+                candidate=candidate,
+                now=now,
+                moment_state=moment_state,
+                prefs=prefs,
+            )
+            minimum_score = self._minimum_candidate_score(candidate=candidate, prefs=prefs)
+            if score < minimum_score:
                 self.store.create_proactive_delivery_log(
                     user_id=self.settings.default_user_id,
                     candidate_id=candidate.id,
@@ -564,7 +617,7 @@ class ProactiveAssistantService:
                     decision="skipped",
                     score=score,
                     reason_code="low_score",
-                    reason_text="Valor da interrupção abaixo do limiar.",
+                    reason_text=f"Valor da interrupção abaixo do limiar atual ({minimum_score}).",
                     message_text="",
                     message_id=None,
                     sent_at=None,
@@ -575,37 +628,49 @@ class ProactiveAssistantService:
                 )
                 continue
 
-            message_text = self._render_candidate_message(candidate=candidate)
-            if not message_text:
-                continue
+            candidate_due_at = candidate.due_at or datetime.max.replace(tzinfo=UTC)
+            if (
+                best_candidate is None
+                or score > best_score
+                or (score == best_score and candidate_due_at < (best_due_at or datetime.max.replace(tzinfo=UTC)))
+            ):
+                best_candidate = candidate
+                best_score = score
+                best_due_at = candidate_due_at
 
-            sent = await self._send_unsolicited_message(
-                category=candidate.category,
-                message_text=message_text,
-                reason_code="candidate_due",
-                reason_text=f"{candidate.summary or candidate.title} [moment={moment_state}]",
-                score=score,
-                candidate_id=candidate.id,
-                now=now,
-            )
-            if not sent:
-                self.store.update_proactive_candidate(
-                    candidate_id=candidate.id,
-                    cooldown_until=now + timedelta(minutes=45),
-                )
-                return
+        if best_candidate is None:
+            return
 
-            next_status = "sent"
-            next_cooldown = now + timedelta(hours=12)
-            if candidate.status == "confirmed":
-                next_cooldown = now + timedelta(hours=18)
+        message_text = self._render_candidate_message(candidate=best_candidate)
+        if not message_text:
+            return
+
+        sent = await self._send_unsolicited_message(
+            category=best_candidate.category,
+            message_text=message_text,
+            reason_code="candidate_due",
+            reason_text=f"{best_candidate.summary or best_candidate.title} [moment={moment_state}]",
+            score=best_score,
+            candidate_id=best_candidate.id,
+            now=now,
+        )
+        if not sent:
             self.store.update_proactive_candidate(
-                candidate_id=candidate.id,
-                status=next_status,
-                last_nudged_at=now,
-                cooldown_until=next_cooldown,
+                candidate_id=best_candidate.id,
+                cooldown_until=now + timedelta(minutes=45),
             )
             return
+
+        next_status = "sent"
+        next_cooldown = now + timedelta(hours=12)
+        if best_candidate.status == "confirmed":
+            next_cooldown = now + timedelta(hours=18)
+        self.store.update_proactive_candidate(
+            candidate_id=best_candidate.id,
+            status=next_status,
+            last_nudged_at=now,
+            cooldown_until=next_cooldown,
+        )
 
     def _candidate_enabled(self, *, candidate: ProactiveCandidateRecord, prefs: ProactivePreferencesRecord) -> bool:
         if candidate.category == "agenda_followup":
@@ -622,31 +687,96 @@ class ProactiveAssistantService:
             return prefs.night_digest_enabled
         return True
 
-    def _score_candidate(self, *, candidate: ProactiveCandidateRecord, now: datetime, moment_state: str) -> int:
-        score = round((candidate.confidence * 0.55) + (candidate.priority * 0.45))
+    def _score_candidate(
+        self,
+        *,
+        candidate: ProactiveCandidateRecord,
+        now: datetime,
+        moment_state: str,
+        prefs: ProactivePreferencesRecord,
+    ) -> int:
+        payload = candidate.payload_json if isinstance(candidate.payload_json, dict) else {}
+        score = round((candidate.confidence * 0.5) + (candidate.priority * 0.5))
         if candidate.status == "confirmed":
-            score += 8
+            score += 10
         if candidate.due_at is not None and candidate.due_at <= now:
-            score += 6
+            score += 8
+        if candidate.category == "followup" and payload.get("important_source"):
+            score += 14
+        if candidate.category == "project_nudge" and payload.get("recent_signal"):
+            score += 10
         if candidate.category == "routine":
-            score -= 4
+            score -= 2
         if moment_state == "high_focus":
-            score -= 20
+            score -= 14
         elif moment_state == "available":
             score += 10
         elif moment_state == "low_energy":
             if candidate.category == "routine":
-                score += 5
+                score += 6
             if candidate.category == "project_nudge":
-                score -= 5
+                score -= 2
         elif moment_state == "busy":
-            score -= 8
+            score -= 4
+        if prefs.intensity == "high":
+            if candidate.category in {"followup", "project_nudge"}:
+                score += 10
+            elif candidate.category == "routine":
+                score += 5
+        elif prefs.intensity == "conservative":
+            if candidate.category == "routine":
+                score -= 10
+            elif candidate.category == "project_nudge":
+                score -= 4
         return max(0, min(100, score))
+
+    def _minimum_candidate_score(
+        self,
+        *,
+        candidate: ProactiveCandidateRecord,
+        prefs: ProactivePreferencesRecord,
+    ) -> int:
+        payload = candidate.payload_json if isinstance(candidate.payload_json, dict) else {}
+        base = 50
+        if prefs.intensity == "high":
+            base -= 10
+        elif prefs.intensity == "conservative":
+            base += 8
+        if candidate.category == "routine":
+            base += 4
+        if candidate.category == "project_nudge" and prefs.intensity == "conservative":
+            base += 2
+        if candidate.category == "followup" and payload.get("important_source"):
+            base -= 8
+        if candidate.status == "confirmed":
+            base -= 5
+        if candidate.priority >= 88:
+            base -= 3
+        if candidate.category == "project_nudge" and payload.get("recent_signal"):
+            base -= 4
+        return max(34, min(70, base))
 
     def _render_candidate_message(self, *, candidate: ProactiveCandidateRecord) -> str:
         payload = candidate.payload_json if isinstance(candidate.payload_json, dict) else {}
         if candidate.category == "followup":
             task_text = str(payload.get("task_text") or candidate.title).strip()
+            important_reason = str(payload.get("source_reason") or "").strip()
+            source_excerpt = str(payload.get("source_excerpt") or "").strip()
+            important_source = bool(payload.get("important_source"))
+            if important_source:
+                intro = important_reason[:140] or task_text[:140]
+                support = ""
+                if source_excerpt:
+                    support = f" Sinal que ficou no radar: {source_excerpt[:110]}."
+                if candidate.status == "confirmed":
+                    return (
+                        f"Isso continua importante e ainda parece aberto: {intro}."
+                        f"{support} Quer que eu te cobre isso depois ou destrave agora?"
+                    )
+                return (
+                    f"Tem um ponto importante em aberto: {intro}."
+                    f"{support} Quer que eu te organize o próximo passo agora?"
+                )
             if candidate.status == "confirmed":
                 return (
                     f"Isso continua aberto: {task_text[:140]}. "
@@ -659,6 +789,7 @@ class ProactiveAssistantService:
         if candidate.category == "project_nudge":
             project_name = str(payload.get("project_name") or candidate.title).strip()
             next_step = str(payload.get("next_step") or candidate.summary).strip()
+            project_reason = str(payload.get("project_reason") or "").strip()
             suggested_actions = [
                 str(item).strip()
                 for item in (payload.get("suggested_actions") or [])
@@ -670,14 +801,19 @@ class ProactiveAssistantService:
                     f"{index + 1}) {action[:80]}"
                     for index, action in enumerate(suggested_actions[:2])
                 )
+            reason_text = f" Sinal de prioridade: {project_reason[:100]}." if project_reason else ""
             if next_step:
                 return (
                     f"Projeto em radar: {project_name[:100]}. "
                     f"O próximo passo mais claro parece ser {next_step[:120]}."
+                    f"{reason_text}"
                     f"{action_text} Quer que eu te deixe um plano curto?"
                 )
             if action_text:
-                return f"Projeto em radar: {project_name[:100]}.{action_text} Quer que eu te organize uma delas?"
+                return (
+                    f"Projeto em radar: {project_name[:100]}.{reason_text}"
+                    f"{action_text} Quer que eu te organize uma delas?"
+                )
             return f"Vale revisar {project_name[:100]} agora ou eu te monto um próximo passo enxuto?"
         if candidate.category == "routine":
             suggestion = str(payload.get("suggestion") or "Vale reorganizar o próximo bloco com mais leveza.").strip()
@@ -765,6 +901,242 @@ class ProactiveAssistantService:
                 break
         return deduped
 
+    def _seed_important_followups_if_needed(
+        self,
+        *,
+        prefs: ProactivePreferencesRecord,
+        now: datetime,
+    ) -> None:
+        if not prefs.followups_enabled:
+            return
+
+        open_candidates = self.store.list_proactive_candidates(
+            user_id=self.settings.default_user_id,
+            limit=80,
+            statuses=["suggested", "sent", "confirmed"],
+            categories=["followup"],
+        )
+        closed_candidates = self.store.list_proactive_candidates(
+            user_id=self.settings.default_user_id,
+            limit=80,
+            statuses=["dismissed", "done", "expired"],
+            categories=["followup"],
+        )
+        refreshable_candidates = [candidate for candidate in open_candidates if candidate.status == "suggested"]
+        important_messages = self.store.list_important_messages(self.settings.default_user_id, limit=10)
+        if not important_messages:
+            return
+
+        created = 0
+        for message in important_messages:
+            candidate_data = self._build_important_followup_candidate(message=message, now=now)
+            if candidate_data is None:
+                continue
+            payload = candidate_data.get("payload_json") if isinstance(candidate_data.get("payload_json"), dict) else {}
+            dedupe_key = str(payload.get("dedupe_key") or "").strip()
+            existing = self._find_candidate_by_dedupe_key(
+                candidates=[*open_candidates, *closed_candidates],
+                dedupe_key=dedupe_key,
+            )
+            if existing is not None:
+                if existing.status == "suggested":
+                    updated = self._create_or_refresh_candidate(
+                        active_candidates=refreshable_candidates,
+                        candidate_data=candidate_data,
+                    )
+                    refreshable_candidates = [
+                        updated if candidate.id == updated.id else candidate
+                        for candidate in refreshable_candidates
+                    ]
+                continue
+            created_candidate = self._create_or_refresh_candidate(
+                active_candidates=refreshable_candidates,
+                candidate_data=candidate_data,
+            )
+            refreshable_candidates.append(created_candidate)
+            open_candidates.append(created_candidate)
+            created += 1
+            if created >= 3:
+                break
+
+    def _build_important_followup_candidate(
+        self,
+        *,
+        message: ImportantMessageRecord,
+        now: datetime,
+    ) -> dict[str, Any] | None:
+        if message.status != "active":
+            return None
+        if message.message_timestamp < now - timedelta(hours=IMPORTANT_MESSAGE_CANDIDATE_HOURS):
+            return None
+        reason = message.importance_reason.strip()
+        if not reason:
+            return None
+
+        normalized_category = str(message.category or "").strip().lower()
+        confidence = max(68, min(96, int(message.confidence or 0)))
+        priority = self._important_priority_for_category(normalized_category)
+        due_delay = self._important_due_delay(normalized_category)
+        due_at = message.message_timestamp + due_delay
+
+        task_text = reason[:180]
+        excerpt = self._summarize_text(message.message_text, 160)
+        return {
+            "category": "followup",
+            "status": "suggested",
+            "source_message_id": message.source_message_id,
+            "source_kind": "important_message",
+            "thread_id": None,
+            "contact_phone": self._resolve_owner_phone(),
+            "chat_jid": self._resolve_recent_owner_chat_target(now=now),
+            "title": f"Prioridade em aberto: {task_text[:88]}".strip(),
+            "summary": f"{reason[:160]} | {excerpt[:80]}".strip(" |"),
+            "confidence": confidence,
+            "priority": priority,
+            "due_at": due_at,
+            "cooldown_until": due_at,
+            "last_nudged_at": None,
+            "payload_json": {
+                "dedupe_key": f"important:{message.source_message_id}",
+                "task_text": task_text,
+                "source_category": normalized_category,
+                "source_reason": reason[:180],
+                "source_excerpt": excerpt,
+                "important_source": True,
+            },
+        }
+
+    def _important_priority_for_category(self, category: str) -> int:
+        if category in {"deadline", "risk"}:
+            return 92
+        if category in {"money", "access"}:
+            return 86
+        if category in {"document", "client", "project"}:
+            return 80
+        return 72
+
+    def _important_due_delay(self, category: str) -> timedelta:
+        if category in {"deadline", "risk"}:
+            return timedelta(minutes=35)
+        if category in {"money", "access"}:
+            return timedelta(hours=1)
+        if category in {"document", "client", "project"}:
+            return timedelta(hours=2)
+        return timedelta(hours=4)
+
+    def _select_project_for_nudge(
+        self,
+        *,
+        projects: list[ProjectMemoryRecord],
+        important_messages: list[ImportantMessageRecord],
+        now: datetime,
+    ) -> tuple[ProjectMemoryRecord, list[ImportantMessageRecord], int] | None:
+        ranked: list[tuple[int, ProjectMemoryRecord, list[ImportantMessageRecord]]] = []
+        for project in projects:
+            related_signals = [
+                message
+                for message in important_messages
+                if self._important_message_relates_to_project(message=message, project=project)
+            ]
+            score = 0
+            status = project.status.strip().lower()
+            if project.next_steps:
+                score += 24
+            if project.what_is_being_built:
+                score += 14
+            if project.built_for:
+                score += 8
+            if project.evidence:
+                score += min(10, len(project.evidence) * 3)
+            if any(marker in status for marker in ("ativo", "andamento", "fazendo", "aberto", "execu")):
+                score += 14
+            if any(marker in status for marker in ("concl", "finaliz", "done", "encerr")):
+                score -= 18
+            pivot = project.last_seen_at or project.updated_at
+            if pivot is not None:
+                hours_since_pivot = max(0.0, (now - pivot).total_seconds() / 3600)
+                if hours_since_pivot >= PROJECT_STALE_NUDGE_HOURS:
+                    score += 18
+                elif hours_since_pivot >= 8:
+                    score += 10
+                else:
+                    score += 4
+            if related_signals:
+                score += min(24, len(related_signals) * 8)
+                if any(message.category in {"deadline", "risk", "client"} for message in related_signals):
+                    score += 10
+            if score > 0:
+                ranked.append((score, project, related_signals))
+
+        if not ranked:
+            return None
+        ranked.sort(
+            key=lambda item: (
+                item[0],
+                item[1].last_seen_at or item[1].updated_at,
+            ),
+            reverse=True,
+        )
+        top_score, top_project, top_related_signals = ranked[0]
+        return top_project, top_related_signals[:2], top_score
+
+    def _describe_project_signal(
+        self,
+        *,
+        project: ProjectMemoryRecord,
+        related_signals: list[ImportantMessageRecord],
+    ) -> str:
+        if related_signals:
+            top_signal = related_signals[0]
+            return f"houve sinal recente de {top_signal.category}: {top_signal.importance_reason[:90]}"
+        if project.next_steps:
+            return f"ja existe proximo passo claro: {project.next_steps[0][:90]}"
+        if project.last_seen_at is not None:
+            local_seen = project.last_seen_at.astimezone(DEFAULT_TIMEZONE).strftime("%d/%m %H:%M")
+            return f"frente ativa sem revisao recente desde {local_seen}"
+        return "frente ativa pedindo fechamento do proximo passo"
+
+    def _important_message_relates_to_project(
+        self,
+        *,
+        message: ImportantMessageRecord,
+        project: ProjectMemoryRecord,
+    ) -> bool:
+        haystack = f"{message.importance_reason} {message.message_text}".lower()
+        project_name = project.project_name.strip().lower()
+        if project_name and project_name in haystack:
+            return True
+        tokens = [
+            token
+            for token in re.split(r"[^a-z0-9]+", project_name)
+            if len(token) >= 4 and token not in {"projeto", "sistema", "site", "painel", "app", "api"}
+        ]
+        if not tokens:
+            return False
+        matches = sum(1 for token in tokens if token in haystack)
+        return matches >= min(2, len(tokens))
+
+    def _summarize_text(self, value: str, max_chars: int) -> str:
+        normalized = " ".join(str(value or "").split()).strip()
+        if len(normalized) <= max_chars:
+            return normalized
+        return normalized[: max(0, max_chars - 3)].rstrip() + "..."
+
+    def _find_candidate_by_dedupe_key(
+        self,
+        *,
+        candidates: list[ProactiveCandidateRecord],
+        dedupe_key: str,
+    ) -> ProactiveCandidateRecord | None:
+        normalized_key = dedupe_key.strip()
+        if not normalized_key:
+            return None
+        for candidate in candidates:
+            payload = candidate.payload_json if isinstance(candidate.payload_json, dict) else {}
+            if str(payload.get("dedupe_key") or "").strip() == normalized_key:
+                return candidate
+        return None
+
     def _detect_moment_state(self, *, now: datetime) -> str:
         owner_phone = self._resolve_owner_phone()
         local_hour = now.astimezone(DEFAULT_TIMEZONE).hour
@@ -829,6 +1201,14 @@ class ProactiveAssistantService:
                 "Momento atual sugere foco alto; melhor nao interromper com esse tipo de nudge.",
                 now + timedelta(minutes=90),
             )
+        if moment_state == "busy" and candidate.category == "project_nudge":
+            payload = candidate.payload_json if isinstance(candidate.payload_json, dict) else {}
+            if not payload.get("recent_signal"):
+                return (
+                    "moment_state_busy_project",
+                    "Momento atual parece corrido; nudge de projeto sem urgencia concreta foi adiado.",
+                    now + timedelta(minutes=75),
+                )
         if moment_state == "busy" and candidate.category == "routine":
             return (
                 "moment_state_busy",
@@ -836,6 +1216,53 @@ class ProactiveAssistantService:
                 now + timedelta(minutes=60),
             )
         return None
+
+    def _min_interval_suppression(
+        self,
+        *,
+        candidate: ProactiveCandidateRecord,
+        prefs: ProactivePreferencesRecord,
+        now: datetime,
+        last_sent_delivery: ProactiveDeliveryLogRecord | None,
+    ) -> tuple[str, str, datetime] | None:
+        if last_sent_delivery is None:
+            return None
+        effective_interval = prefs.min_interval_minutes
+        if prefs.intensity == "high":
+            effective_interval = max(20, int(round(effective_interval * 0.65)))
+        elif prefs.intensity == "conservative":
+            effective_interval = min(240, int(round(effective_interval * 1.2)))
+        if last_sent_delivery.created_at < now - timedelta(minutes=effective_interval):
+            return None
+
+        payload = candidate.payload_json if isinstance(candidate.payload_json, dict) else {}
+        can_bypass = (
+            candidate.status == "confirmed"
+            or bool(payload.get("important_source"))
+            or candidate.priority >= 88
+            or (
+                candidate.category == "project_nudge"
+                and bool(payload.get("recent_signal"))
+                and prefs.intensity != "conservative"
+            )
+        )
+        if can_bypass:
+            return None
+
+        remaining_minutes = max(
+            10,
+            int(
+                (
+                    (last_sent_delivery.created_at + timedelta(minutes=effective_interval)) - now
+                ).total_seconds()
+                // 60
+            ),
+        )
+        return (
+            "min_interval_active",
+            f"A última iniciativa foi recente demais; esse nudge volta a competir em cerca de {remaining_minutes} min.",
+            now + timedelta(minutes=min(remaining_minutes, max(20, effective_interval // 2))),
+        )
 
     async def _send_unsolicited_message(
         self,
@@ -864,7 +1291,7 @@ class ProactiveAssistantService:
             )
             return False
 
-        owner_phone = self._normalize_chat_target(owner_target)
+        owner_phone = self._resolve_owner_phone() or self.store.normalize_contact_phone(owner_target)
         if not owner_phone:
             return False
 
@@ -1035,6 +1462,10 @@ class ProactiveAssistantService:
             lines.append("Pendências em radar: " + "; ".join(top_candidates))
         if important:
             lines.append("Importante recente: " + "; ".join(item.importance_reason[:80] for item in important[:1]))
+        top_project = self._select_project_for_digest()
+        if top_project is not None:
+            project_name, next_step = top_project
+            lines.append(f"Projeto para destravar: {project_name[:72]} -> {next_step[:88]}")
         if len(lines) == 1:
             return "", ""
         signature = self._signature_for(lines)
@@ -1070,6 +1501,10 @@ class ProactiveAssistantService:
                     for event in tomorrow_events
                 )
             )
+        top_project = self._select_project_for_digest()
+        if top_project is not None:
+            project_name, next_step = top_project
+            lines.append(f"Projeto mais vivo agora: {project_name[:72]} -> {next_step[:88]}")
         if len(lines) == 1:
             return "", ""
         signature = self._signature_for(lines)
@@ -1143,6 +1578,24 @@ class ProactiveAssistantService:
     def _signature_for(self, lines: list[str]) -> str:
         return hashlib.sha1("\n".join(lines).encode("utf-8")).hexdigest()
 
+    def _select_project_for_digest(self) -> tuple[str, str] | None:
+        projects = [
+            project
+            for project in self.store.list_project_memories(self.settings.default_user_id, limit=6)
+            if project.project_name.strip() and project.completion_source != "manual"
+        ]
+        if not projects:
+            return None
+        for project in projects:
+            next_step = (project.next_steps[0] if project.next_steps else "").strip()
+            if next_step:
+                return project.project_name, next_step
+        project = projects[0]
+        fallback = project.what_is_being_built.strip() or project.summary.strip()
+        if not fallback:
+            return None
+        return project.project_name, self._summarize_text(fallback, 88)
+
     def _parse_local_time(self, value: str) -> time:
         normalized = (value or "08:30").strip()
         try:
@@ -1162,12 +1615,19 @@ class ProactiveAssistantService:
         return now_time >= start or now_time < end
 
     def _resolve_owner_phone(self) -> str | None:
-        owner_phone = self.store.get_whatsapp_session_owner_phone(session_id=f"{self.settings.default_user_id}:observer")
-        if owner_phone:
-            return self._normalize_chat_target(owner_phone)
-        return None
+        recent_thread = self._select_recent_owner_thread()
+        if recent_thread is not None:
+            recent_phone = self.store.normalize_contact_phone(recent_thread.contact_phone or recent_thread.chat_jid)
+            if recent_phone:
+                return recent_phone
+        return self.store.normalize_contact_phone(
+            self.store.get_whatsapp_session_owner_phone(session_id=f"{self.settings.default_user_id}:observer")
+        )
 
     async def _resolve_owner_chat_target(self) -> str | None:
+        recent_target = self._resolve_recent_owner_chat_target()
+        if recent_target:
+            return recent_target
         try:
             observer_target = self._normalize_chat_target(
                 (await self.observer_gateway.get_observer_status(refresh_qr=False)).owner_number
@@ -1176,7 +1636,29 @@ class ProactiveAssistantService:
             observer_target = None
         if observer_target:
             return observer_target
-        return self._resolve_owner_phone()
+        return self._normalize_chat_target(self._resolve_owner_phone())
+
+    def _resolve_recent_owner_chat_target(self, *, now: datetime | None = None) -> str | None:
+        recent_thread = self._select_recent_owner_thread(now=now)
+        if recent_thread is None:
+            return None
+        if recent_thread.chat_jid and self.store.is_direct_chat_jid(recent_thread.chat_jid):
+            return recent_thread.chat_jid
+        return self._normalize_chat_target(recent_thread.contact_phone)
+
+    def _select_recent_owner_thread(self, *, now: datetime | None = None) -> WhatsAppAgentThreadRecord | None:
+        reference_now = now or datetime.now(UTC)
+        recent_cutoff = reference_now - timedelta(days=RECENT_OWNER_THREAD_LOOKBACK_DAYS)
+        fallback_thread: WhatsAppAgentThreadRecord | None = None
+        for thread in self.store.list_whatsapp_agent_threads(user_id=self.settings.default_user_id, limit=8):
+            if not self.store.normalize_contact_phone(thread.contact_phone or thread.chat_jid):
+                continue
+            activity_at = thread.last_inbound_at or thread.last_outbound_at or thread.last_message_at or thread.updated_at
+            if fallback_thread is None:
+                fallback_thread = thread
+            if activity_at >= recent_cutoff:
+                return thread
+        return fallback_thread
 
     def _normalize_chat_target(self, value: str | None) -> str | None:
         text = str(value or "").strip()
@@ -1192,3 +1674,11 @@ class ProactiveAssistantService:
         if 8 <= len(digits) <= 11:
             return f"{digits}@s.whatsapp.net"
         return None
+
+    def _last_sent_delivery(self) -> ProactiveDeliveryLogRecord | None:
+        deliveries = self.store.list_recent_proactive_deliveries(
+            user_id=self.settings.default_user_id,
+            limit=1,
+            decisions=["sent"],
+        )
+        return deliveries[0] if deliveries else None

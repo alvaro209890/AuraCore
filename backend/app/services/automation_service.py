@@ -381,6 +381,27 @@ class AutomationService:
                 f"O proximo lote automatico dispara quando a conta atingir {incremental_threshold} mensagens novas."
             )
 
+        if should_analyze and intent == "improve_memory" and job_plan is None:
+            try:
+                job_plan = self.memory_service.plan_next_batch()
+            except MemoryAnalysisError as error:
+                action = "skip"
+                should_analyze = False
+                reason_code = "low_change"
+                explanation = str(error)
+                selected_message_count = 0
+                estimated_total_tokens = 0
+                estimated_cost_ceiling_usd = 0.0
+            else:
+                selected_message_count = len(job_plan.source_messages)
+                estimated_total_tokens = job_plan.estimated_input_tokens + job_plan.estimated_output_tokens
+                estimated_cost_ceiling_usd = job_plan.estimated_cost_ceiling_usd
+                explanation = (
+                    f"Existem {memory_status.pending_new_message_count} mensagens novas pendentes. "
+                    f"O backend vai atualizar a memoria automaticamente com um lote incremental fixo de "
+                    f"{selected_message_count} mensagens recentes relevantes."
+                )
+
         decision = self.store.create_automation_decision(
             user_id=self.settings.default_user_id,
             sync_run_id=sync_run_id,
@@ -1028,20 +1049,15 @@ class AutomationService:
         pending_message_count: int,
         trigger_source: str,
     ) -> AnalysisJobRecord | None:
-        automation_settings = self._get_automation_settings()
         try:
-            preview = await self._build_automatic_incremental_preview(
-                automation_settings=automation_settings,
-            )
+            plan = self.memory_service.plan_next_batch()
         except MemoryAnalysisError:
-            logger.exception("follow_up_incremental_preview_failed")
+            logger.exception("follow_up_incremental_plan_failed")
             return None
-        if preview.selected_message_count <= 0:
+        if not plan.source_messages:
             logger.info(
-                "follow_up_incremental_skipped_empty_window pending=%s lookback=%s target=%s",
+                "follow_up_incremental_skipped_empty_plan pending=%s",
                 pending_message_count,
-                automation_settings.default_lookback_hours,
-                automation_settings.default_target_message_count,
             )
             return None
         created_at = datetime.now(UTC)
@@ -1054,15 +1070,15 @@ class AutomationService:
             score=100,
             should_analyze=True,
             available_message_count=max(0, pending_message_count),
-            selected_message_count=preview.selected_message_count,
+            selected_message_count=len(plan.source_messages),
             new_message_count=max(0, pending_message_count),
             replaced_message_count=0,
-            estimated_total_tokens=preview.estimated_total_tokens,
-            estimated_cost_ceiling_usd=preview.estimated_cost_total_ceiling_usd,
+            estimated_total_tokens=plan.estimated_input_tokens + plan.estimated_output_tokens,
+            estimated_cost_ceiling_usd=plan.estimated_cost_ceiling_usd,
             explanation=(
                 f"Ainda restam {pending_message_count} mensagens novas pendentes depois do lote anterior. "
-                f"O backend vai continuar a melhoria da memoria automaticamente com a janela padrao de "
-                f"{preview.max_lookback_hours}h e ate {preview.target_message_count} mensagens."
+                f"O backend vai continuar a melhoria da memoria automaticamente com um lote incremental fixo "
+                f"de {len(plan.source_messages)} mensagens recentes relevantes."
             ),
             created_at=created_at,
         )
@@ -1073,15 +1089,15 @@ class AutomationService:
             trigger_source=trigger_source,
             decision_id=decision.id,
             sync_run_id=None,
-            target_message_count=preview.target_message_count,
-            max_lookback_hours=preview.max_lookback_hours,
-            detail_mode=preview.detail_mode,
-            selected_message_count=preview.selected_message_count,
-            selected_transcript_chars=preview.selected_transcript_chars,
-            estimated_input_tokens=preview.estimated_input_tokens,
-            estimated_output_tokens=preview.estimated_output_tokens,
-            estimated_cost_floor_usd=preview.estimated_cost_total_floor_usd,
-            estimated_cost_ceiling_usd=preview.estimated_cost_total_ceiling_usd,
+            target_message_count=len(plan.source_messages),
+            max_lookback_hours=0,
+            detail_mode="balanced",
+            selected_message_count=len(plan.source_messages),
+            selected_transcript_chars=plan.selected_transcript_chars,
+            estimated_input_tokens=plan.estimated_input_tokens,
+            estimated_output_tokens=plan.estimated_output_tokens,
+            estimated_cost_floor_usd=plan.estimated_cost_floor_usd,
+            estimated_cost_ceiling_usd=plan.estimated_cost_ceiling_usd,
             created_at=created_at,
         )
 
