@@ -257,6 +257,24 @@
   - `ExecMainPID=2424249`
   - `ActiveEnterTimestamp=Mon 2026-04-20 10:07:17 -03`
 
+## Atualização 2026-04-20 3
+
+- Melhorias na proatividade do WhatsApp aplicadas em `proactive_assistant_service`
+- Ajustes principais:
+  - novos nudges proativos agora são segurados quando o dono mandou inbound muito recentemente, evitando interrupção no meio de conversa ativa
+  - followups passaram a entender melhor janelas de retorno como `daqui a X`, dias da semana e marcadores de manhã/tarde/noite
+  - extração do texto da pendência foi limpada para reduzir candidatos genéricos ou poluídos
+- Validação local:
+  - `python3 -m py_compile backend/app/services/proactive_assistant_service.py`: ok
+  - `npm run build` em `frontend`: ok
+- Runtime:
+  - backend sincronizado para `/home/server/.local/share/auracore-runtime/repo/backend`
+  - restart confirmado por journal
+    - `ExecMainPID=2430568`
+    - `ActiveEnterTimestamp=Mon 2026-04-20 10:25:18 -03`
+  - log de startup já refletiu a heurística nova:
+    - `proactive_moment_state ... recent_owner_inbound=False`
+
 ## Atualização 2026-04-20 2
 
 - Corrigido crash real no frontend publicado em `https://auracore-82bf2.web.app`

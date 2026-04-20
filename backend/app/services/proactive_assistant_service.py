@@ -27,6 +27,7 @@ PROACTIVE_LOOP_INTERVAL_SECONDS = 45
 RECENT_REPLY_WINDOW_HOURS = 36
 RECENT_PROJECT_NUDGE_HOURS = 14
 RECENT_DIGEST_ACTIVITY_MINUTES = 25
+RECENT_OWNER_ACTIVITY_SUPPRESSION_MINUTES = 12
 IMPORTANT_MESSAGE_CANDIDATE_HOURS = 96
 PROJECT_STALE_NUDGE_HOURS = 12
 RECENT_OWNER_THREAD_LOOKBACK_DAYS = 14
@@ -49,6 +50,10 @@ AFFIRMATIVE_REGEX = re.compile(r"\b(?:sim|pode|quero|bora|ok|beleza|manda|lembra
 NEGATIVE_REGEX = re.compile(r"\b(?:nao|não|deixa|ignora|dispensa|cancela|pare|agora nao|agora não)\b", re.IGNORECASE)
 DONE_REGEX = re.compile(r"\b(?:ja fiz|já fiz|resolvi|conclui|concluí|feito|finalizei|terminei)\b", re.IGNORECASE)
 REMINDER_REQUEST_REGEX = re.compile(r"(?:me\s+lembra|me\s+lembre)\s+(?:de\s+)?(?P<task>.+)", re.IGNORECASE)
+RELATIVE_DELAY_REGEX = re.compile(
+    r"\bdaqui\s+a?\s*(?P<amount>\d{1,3}|uma|um|meia)\s*(?P<unit>min(?:uto)?s?|h(?:ora)?s?|dia?s?)\b",
+    re.IGNORECASE,
+)
 logger = logging.getLogger("auracore.proactive_assistant")
 
 
@@ -344,6 +349,9 @@ class ProactiveAssistantService:
             return None
 
         due_at = self._resolve_followup_due_at(message_text=normalized, occurred_at=occurred_at)
+        if "deadline" in normalized or "prazo" in normalized or "urgente" in normalized:
+            confidence = max(confidence, 86)
+            priority = max(priority, 82)
         title = f"Pendente sugerida: {task_text[:88]}".strip()
         dedupe_key = f"followup:{self._dedupe_token(task_text)}"
         return {
@@ -546,8 +554,14 @@ class ProactiveAssistantService:
         if self._daily_send_budget_exhausted(prefs=prefs, now=now):
             return
         moment_state = self._detect_moment_state(now=now)
+        recent_owner_inbound = self._recent_owner_inbound_activity(now=now)
         last_sent_delivery = self._last_sent_delivery()
-        logger.info("proactive_moment_state user_id=%s moment_state=%s", self.settings.default_user_id, moment_state)
+        logger.info(
+            "proactive_moment_state user_id=%s moment_state=%s recent_owner_inbound=%s",
+            self.settings.default_user_id,
+            moment_state,
+            recent_owner_inbound,
+        )
 
         best_candidate: ProactiveCandidateRecord | None = None
         best_score = -1
@@ -580,6 +594,31 @@ class ProactiveAssistantService:
             suppression = self._moment_suppression(candidate=candidate, moment_state=moment_state, now=now)
             if suppression is not None:
                 reason_code, reason_text, cooldown_until = suppression
+                self.store.create_proactive_delivery_log(
+                    user_id=self.settings.default_user_id,
+                    candidate_id=candidate.id,
+                    category=candidate.category,
+                    decision="skipped",
+                    score=0,
+                    reason_code=reason_code,
+                    reason_text=reason_text,
+                    message_text="",
+                    message_id=None,
+                    sent_at=None,
+                )
+                self.store.update_proactive_candidate(
+                    candidate_id=candidate.id,
+                    cooldown_until=cooldown_until,
+                )
+                continue
+
+            recent_activity_suppression = self._recent_owner_activity_suppression(
+                candidate=candidate,
+                now=now,
+                recent_owner_inbound=recent_owner_inbound,
+            )
+            if recent_activity_suppression is not None:
+                reason_code, reason_text, cooldown_until = recent_activity_suppression
                 self.store.create_proactive_delivery_log(
                     user_id=self.settings.default_user_id,
                     candidate_id=candidate.id,
@@ -1284,6 +1323,30 @@ class ProactiveAssistantService:
             )
         return None
 
+    def _recent_owner_activity_suppression(
+        self,
+        *,
+        candidate: ProactiveCandidateRecord,
+        now: datetime,
+        recent_owner_inbound: bool,
+    ) -> tuple[str, str, datetime] | None:
+        if not recent_owner_inbound:
+            return None
+        payload = candidate.payload_json if isinstance(candidate.payload_json, dict) else {}
+        can_bypass = (
+            candidate.status == "confirmed"
+            or bool(payload.get("important_source"))
+            or candidate.priority >= 92
+        )
+        if can_bypass:
+            return None
+        delay_minutes = 12 if candidate.category == "followup" else 18
+        return (
+            "recent_owner_activity",
+            "O dono ainda está ativo na conversa agora; melhor esperar um respiro antes de um novo nudge.",
+            now + timedelta(minutes=delay_minutes),
+        )
+
     def _min_interval_suppression(
         self,
         *,
@@ -1491,6 +1554,21 @@ class ProactiveAssistantService:
         threshold = now - timedelta(minutes=RECENT_DIGEST_ACTIVITY_MINUTES)
         return any(message.message_timestamp >= threshold for message in messages)
 
+    def _recent_owner_inbound_activity(self, *, now: datetime) -> bool:
+        owner_phone = self._resolve_owner_phone()
+        if not owner_phone:
+            return False
+        messages = self.store.list_whatsapp_agent_messages_for_contact(
+            user_id=self.settings.default_user_id,
+            contact_phone=owner_phone,
+            limit=8,
+        )
+        threshold = now - timedelta(minutes=RECENT_OWNER_ACTIVITY_SUPPRESSION_MINUTES)
+        return any(
+            message.direction == "inbound" and message.message_timestamp >= threshold
+            for message in messages
+        )
+
     def _digest_is_due(self, *, local_now: datetime, last_sent_at: datetime | None, target_time: str) -> bool:
         digest_time = self._parse_local_time(target_time)
         if local_now.time() < digest_time:
@@ -1622,23 +1700,99 @@ class ProactiveAssistantService:
 
     def _resolve_followup_due_at(self, *, message_text: str, occurred_at: datetime) -> datetime:
         local_occurred = occurred_at.astimezone(DEFAULT_TIMEZONE)
+        relative_match = RELATIVE_DELAY_REGEX.search(message_text)
+        if relative_match:
+            amount_text = str(relative_match.group("amount") or "").strip().lower()
+            unit = str(relative_match.group("unit") or "").strip().lower()
+            amount = 1
+            if amount_text == "meia":
+                amount = 30
+                unit = "min"
+            elif amount_text not in {"um", "uma"}:
+                try:
+                    amount = max(1, int(amount_text))
+                except ValueError:
+                    amount = 1
+            if unit.startswith("min"):
+                return occurred_at + timedelta(minutes=amount)
+            if unit.startswith("h"):
+                return occurred_at + timedelta(hours=amount)
+            return occurred_at + timedelta(days=amount)
         if "amanha" in message_text or "amanhã" in message_text:
-            return datetime.combine(local_occurred.date() + timedelta(days=1), time(hour=10, minute=0), tzinfo=DEFAULT_TIMEZONE).astimezone(UTC)
+            target_hour = 10
+            if "cedo" in message_text or "manh" in message_text:
+                target_hour = 9
+            elif "tarde" in message_text:
+                target_hour = 15
+            elif "noite" in message_text:
+                target_hour = 19
+            return datetime.combine(
+                local_occurred.date() + timedelta(days=1),
+                time(hour=target_hour, minute=0),
+                tzinfo=DEFAULT_TIMEZONE,
+            ).astimezone(UTC)
         if "hoje" in message_text:
             return occurred_at + timedelta(hours=3)
+        weekday_due = self._resolve_followup_weekday_due_at(message_text=message_text, occurred_at=occurred_at)
+        if weekday_due is not None:
+            return weekday_due
         if "mais tarde" in message_text or "depois" in message_text:
             return occurred_at + timedelta(hours=4)
         return occurred_at + timedelta(hours=6)
 
     def _extract_followup_task(self, message_text: str) -> str:
         compact = " ".join(message_text.split()).strip()
+        reminder_match = REMINDER_REQUEST_REGEX.search(compact)
+        if reminder_match:
+            compact = str(reminder_match.group("task") or "").strip(" .,:;") or compact
         lowered = compact.lower()
         for keyword in FOLLOWUP_KEYWORDS:
             marker = f"{keyword} "
             index = lowered.find(marker)
             if index >= 0:
-                return compact[index:].strip(" .,:;")
+                compact = compact[index:].strip(" .,:;")
+                break
+        compact = re.sub(
+            r"^(?:preciso(?:\s+de)?|tenho\s+que|tenho\s+de|nao\s+esquecer(?:\s+de)?|não\s+esquecer(?:\s+de)?|vou)\s+",
+            "",
+            compact,
+            flags=re.IGNORECASE,
+        ).strip(" .,:;")
+        compact = re.sub(r"\s+", " ", compact).strip()
         return compact[:160]
+
+    def _resolve_followup_weekday_due_at(self, *, message_text: str, occurred_at: datetime) -> datetime | None:
+        weekdays = {
+            "segunda": 0,
+            "terca": 1,
+            "terça": 1,
+            "quarta": 2,
+            "quinta": 3,
+            "sexta": 4,
+            "sabado": 5,
+            "sábado": 5,
+            "domingo": 6,
+        }
+        lowered = message_text.lower()
+        target_hour = 10
+        if "cedo" in lowered or "manh" in lowered:
+            target_hour = 9
+        elif "tarde" in lowered:
+            target_hour = 15
+        elif "noite" in lowered:
+            target_hour = 19
+        local_occurred = occurred_at.astimezone(DEFAULT_TIMEZONE)
+        for label, weekday_index in weekdays.items():
+            if label not in lowered:
+                continue
+            days_ahead = (weekday_index - local_occurred.weekday()) % 7
+            if days_ahead == 0:
+                days_ahead = 7
+            if "proxim" in lowered or "próxim" in lowered:
+                days_ahead = days_ahead if days_ahead > 0 else 7
+            target_date = local_occurred.date() + timedelta(days=days_ahead)
+            return datetime.combine(target_date, time(hour=target_hour, minute=0), tzinfo=DEFAULT_TIMEZONE).astimezone(UTC)
+        return None
 
     def _dedupe_token(self, value: str) -> str:
         compact = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
