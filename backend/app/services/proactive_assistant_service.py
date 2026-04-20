@@ -1040,6 +1040,8 @@ class ProactiveAssistantService:
             ]
             score = 0
             status = project.status.strip().lower()
+            stage = project.stage.strip().lower()
+            priority = project.priority.strip().lower()
             if project.next_steps:
                 score += 24
             if project.what_is_being_built:
@@ -1048,11 +1050,22 @@ class ProactiveAssistantService:
                 score += 8
             if project.evidence:
                 score += min(10, len(project.evidence) * 3)
+            if project.blockers:
+                score += min(14, len(project.blockers) * 5)
+            score += min(16, max(0, project.confidence_score) // 6)
             if any(marker in status for marker in ("ativo", "andamento", "fazendo", "aberto", "execu")):
                 score += 14
             if any(marker in status for marker in ("concl", "finaliz", "done", "encerr")):
                 score -= 18
-            pivot = project.last_seen_at or project.updated_at
+            if stage == "blocked":
+                score += 10
+            elif stage in {"review", "active"}:
+                score += 6
+            if priority == "high":
+                score += 10
+            elif priority == "medium":
+                score += 4
+            pivot = project.last_material_update_at or project.last_seen_at or project.updated_at
             if pivot is not None:
                 hours_since_pivot = max(0.0, (now - pivot).total_seconds() / 3600)
                 if hours_since_pivot >= PROJECT_STALE_NUDGE_HOURS:

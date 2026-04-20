@@ -272,10 +272,16 @@ export type ProjectMemory = {
   status: string;
   what_is_being_built: string;
   built_for: string;
+  aliases: string[];
+  stage: string;
+  priority: string;
+  blockers: string[];
+  confidence_score: number;
   next_steps: string[];
   evidence: string[];
   source_snapshot_id: string | null;
   last_seen_at: string | null;
+  last_material_update_at: string | null;
   completion_source: string;
   manual_completed_at: string | null;
   manual_completion_notes: string;
@@ -341,6 +347,10 @@ export type CreateProjectMemoryInput = {
   status?: string;
   what_is_being_built?: string;
   built_for?: string;
+  aliases?: string[];
+  stage?: string;
+  priority?: string;
+  blockers?: string[];
   next_steps?: string[];
   evidence?: string[];
 };
@@ -919,6 +929,10 @@ export async function createMemoryProject(input: CreateProjectMemoryInput): Prom
       status: input.status ?? "",
       what_is_being_built: input.what_is_being_built ?? "",
       built_for: input.built_for ?? "",
+      aliases: input.aliases ?? [],
+      stage: input.stage ?? "",
+      priority: input.priority ?? "",
+      blockers: input.blockers ?? [],
       next_steps: input.next_steps ?? [],
       evidence: input.evidence ?? [],
     }),
@@ -965,6 +979,10 @@ export async function updateMemoryProject(
     status?: string;
     what_is_being_built?: string;
     built_for?: string;
+    aliases?: string[];
+    stage?: string;
+    priority?: string;
+    blockers?: string[];
     next_steps?: string[];
     evidence?: string[];
   },

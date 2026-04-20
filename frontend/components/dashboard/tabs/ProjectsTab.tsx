@@ -29,6 +29,10 @@ export default function ProjectsTab({
       status: string;
       what_is_being_built: string;
       built_for: string;
+      aliases: string[];
+      stage: string;
+      priority: string;
+      blockers: string[];
       next_steps: string[];
       evidence: string[];
     },
@@ -48,6 +52,10 @@ export default function ProjectsTab({
     status: string;
     what_is_being_built: string;
     built_for: string;
+    aliases_text: string;
+    stage: string;
+    priority: string;
+    blockers_text: string;
     next_steps_text: string;
     evidence_text: string;
   };
@@ -204,6 +212,32 @@ export default function ProjectsTab({
           ? "Todos os projetos ativos já têm próximos passos."
           : "Nada para mostrar com o filtro atual.";
 
+  function getStageLabel(stage: string): string {
+    const normalized = stage.trim().toLowerCase();
+    if (normalized === "planning") return "Planejamento";
+    if (normalized === "active") return "Ativo";
+    if (normalized === "review") return "Revisão";
+    if (normalized === "blocked") return "Bloqueado";
+    if (normalized === "completed") return "Concluído";
+    return stage || "Sem etapa";
+  }
+
+  function getPriorityLabel(priority: string): string {
+    const normalized = priority.trim().toLowerCase();
+    if (normalized === "high") return "Alta";
+    if (normalized === "medium") return "Média";
+    if (normalized === "low") return "Baixa";
+    return priority || "Sem prioridade";
+  }
+
+  function getPriorityTone(priority: string): "emerald" | "amber" | "indigo" | "zinc" {
+    const normalized = priority.trim().toLowerCase();
+    if (normalized === "high") return "amber";
+    if (normalized === "medium") return "indigo";
+    if (normalized === "low") return "zinc";
+    return "zinc";
+  }
+
   function buildProjectDraft(project: ProjectMemory): ProjectEditDraft {
     return {
       project_name: project.project_name,
@@ -211,6 +245,10 @@ export default function ProjectsTab({
       status: project.status,
       what_is_being_built: project.what_is_being_built,
       built_for: project.built_for,
+      aliases_text: project.aliases.join("\n"),
+      stage: project.stage,
+      priority: project.priority,
+      blockers_text: project.blockers.join("\n"),
       next_steps_text: project.next_steps.join("\n"),
       evidence_text: project.evidence.join("\n"),
     };
@@ -223,6 +261,10 @@ export default function ProjectsTab({
       status: "",
       what_is_being_built: "",
       built_for: "",
+      aliases_text: "",
+      stage: "",
+      priority: "",
+      blockers_text: "",
       next_steps_text: "",
       evidence_text: "",
     };
@@ -258,15 +300,7 @@ export default function ProjectsTab({
     setProjectDrafts((current) => ({
       ...current,
       [projectId]: {
-        ...(current[projectId] ?? {
-          project_name: "",
-          summary: "",
-          status: "",
-          what_is_being_built: "",
-          built_for: "",
-          next_steps_text: "",
-          evidence_text: "",
-        }),
+        ...(current[projectId] ?? buildEmptyProjectDraft()),
         [field]: value,
       },
     }));
@@ -292,6 +326,10 @@ export default function ProjectsTab({
         status: draft.status.trim(),
         what_is_being_built: draft.what_is_being_built.trim(),
         built_for: draft.built_for.trim(),
+        aliases: parseProjectLines(draft.aliases_text),
+        stage: draft.stage.trim(),
+        priority: draft.priority.trim(),
+        blockers: parseProjectLines(draft.blockers_text),
         next_steps: parseProjectLines(draft.next_steps_text),
         evidence: parseProjectLines(draft.evidence_text),
       });
@@ -311,6 +349,10 @@ export default function ProjectsTab({
       status: draft.status.trim(),
       what_is_being_built: draft.what_is_being_built.trim(),
       built_for: draft.built_for.trim(),
+      aliases: parseProjectLines(draft.aliases_text),
+      stage: draft.stage.trim(),
+      priority: draft.priority.trim(),
+      blockers: parseProjectLines(draft.blockers_text),
       next_steps: parseProjectLines(draft.next_steps_text),
       evidence: parseProjectLines(draft.evidence_text),
     });
@@ -448,6 +490,14 @@ export default function ProjectsTab({
             <span>Status</span>
             <input className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50" type="text" value={draft.status} onChange={(event) => updateProjectDraft(project.id, "status", event.target.value)} />
           </label>
+          <label className="project-inline-field">
+            <span>Etapa</span>
+            <input className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50" type="text" value={draft.stage} onChange={(event) => updateProjectDraft(project.id, "stage", event.target.value)} />
+          </label>
+          <label className="project-inline-field">
+            <span>Prioridade</span>
+            <input className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50" type="text" value={draft.priority} onChange={(event) => updateProjectDraft(project.id, "priority", event.target.value)} />
+          </label>
           <label className="project-inline-field project-inline-field-full">
             <span>Resumo</span>
             <textarea className="ac-input project-inline-textarea" value={draft.summary} onChange={(event) => updateProjectDraft(project.id, "summary", event.target.value)} />
@@ -459,6 +509,14 @@ export default function ProjectsTab({
           <label className="project-inline-field">
             <span>Público</span>
             <textarea className="ac-input project-inline-textarea" value={draft.built_for} onChange={(event) => updateProjectDraft(project.id, "built_for", event.target.value)} />
+          </label>
+          <label className="project-inline-field">
+            <span>Aliases</span>
+            <textarea className="ac-input project-inline-textarea project-inline-list" value={draft.aliases_text} onChange={(event) => updateProjectDraft(project.id, "aliases_text", event.target.value)} />
+          </label>
+          <label className="project-inline-field">
+            <span>Bloqueios</span>
+            <textarea className="ac-input project-inline-textarea project-inline-list" value={draft.blockers_text} onChange={(event) => updateProjectDraft(project.id, "blockers_text", event.target.value)} />
           </label>
           <label className="project-inline-field">
             <span>Próximos passos</span>
@@ -549,6 +607,14 @@ export default function ProjectsTab({
                   <span>Status</span>
                   <input className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50" type="text" value={createProjectDraft.status} onChange={(event) => setCreateProjectDraft((current) => ({ ...current, status: event.target.value }))} />
                 </label>
+                <label className="project-inline-field">
+                  <span>Etapa</span>
+                  <input className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50" type="text" value={createProjectDraft.stage} onChange={(event) => setCreateProjectDraft((current) => ({ ...current, stage: event.target.value }))} />
+                </label>
+                <label className="project-inline-field">
+                  <span>Prioridade</span>
+                  <input className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50" type="text" value={createProjectDraft.priority} onChange={(event) => setCreateProjectDraft((current) => ({ ...current, priority: event.target.value }))} />
+                </label>
                 <label className="project-inline-field project-inline-field-full">
                   <span>Resumo</span>
                   <textarea className="ac-input project-inline-textarea" value={createProjectDraft.summary} onChange={(event) => setCreateProjectDraft((current) => ({ ...current, summary: event.target.value }))} />
@@ -560,6 +626,14 @@ export default function ProjectsTab({
                 <label className="project-inline-field">
                   <span>Público</span>
                   <textarea className="ac-input project-inline-textarea" value={createProjectDraft.built_for} onChange={(event) => setCreateProjectDraft((current) => ({ ...current, built_for: event.target.value }))} />
+                </label>
+                <label className="project-inline-field">
+                  <span>Aliases</span>
+                  <textarea className="ac-input project-inline-textarea project-inline-list" value={createProjectDraft.aliases_text} onChange={(event) => setCreateProjectDraft((current) => ({ ...current, aliases_text: event.target.value }))} />
+                </label>
+                <label className="project-inline-field">
+                  <span>Bloqueios</span>
+                  <textarea className="ac-input project-inline-textarea project-inline-list" value={createProjectDraft.blockers_text} onChange={(event) => setCreateProjectDraft((current) => ({ ...current, blockers_text: event.target.value }))} />
                 </label>
                 <label className="project-inline-field">
                   <span>Próximos passos</span>
@@ -681,6 +755,14 @@ export default function ProjectsTab({
                 <span>Status</span>
                 <input className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50" type="text" value={createProjectDraft.status} onChange={(event) => setCreateProjectDraft((current) => ({ ...current, status: event.target.value }))} />
               </label>
+              <label className="project-inline-field">
+                <span>Etapa</span>
+                <input className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50" type="text" value={createProjectDraft.stage} onChange={(event) => setCreateProjectDraft((current) => ({ ...current, stage: event.target.value }))} />
+              </label>
+              <label className="project-inline-field">
+                <span>Prioridade</span>
+                <input className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50" type="text" value={createProjectDraft.priority} onChange={(event) => setCreateProjectDraft((current) => ({ ...current, priority: event.target.value }))} />
+              </label>
               <label className="project-inline-field project-inline-field-full">
                 <span>Resumo</span>
                 <textarea className="ac-input project-inline-textarea" value={createProjectDraft.summary} onChange={(event) => setCreateProjectDraft((current) => ({ ...current, summary: event.target.value }))} />
@@ -692,6 +774,14 @@ export default function ProjectsTab({
               <label className="project-inline-field">
                 <span>Público</span>
                 <textarea className="ac-input project-inline-textarea" value={createProjectDraft.built_for} onChange={(event) => setCreateProjectDraft((current) => ({ ...current, built_for: event.target.value }))} />
+              </label>
+              <label className="project-inline-field">
+                <span>Aliases</span>
+                <textarea className="ac-input project-inline-textarea project-inline-list" value={createProjectDraft.aliases_text} onChange={(event) => setCreateProjectDraft((current) => ({ ...current, aliases_text: event.target.value }))} />
+              </label>
+              <label className="project-inline-field">
+                <span>Bloqueios</span>
+                <textarea className="ac-input project-inline-textarea project-inline-list" value={createProjectDraft.blockers_text} onChange={(event) => setCreateProjectDraft((current) => ({ ...current, blockers_text: event.target.value }))} />
               </label>
               <label className="project-inline-field">
                 <span>Próximos passos</span>
@@ -758,6 +848,8 @@ export default function ProjectsTab({
                     </div>
                     <div className="project-modern-actions">
                       <div className={`micro-status micro-status-${statusTone}`}>{getProjectStatusLabel(project)}</div>
+                      {project.stage ? <div className="micro-status micro-status-zinc">{getStageLabel(project.stage)}</div> : null}
+                      {project.priority ? <div className={`micro-status micro-status-${getPriorityTone(project.priority)}`}>{getPriorityLabel(project.priority)}</div> : null}
                       {project.origin_source === "manual" ? <div className="micro-status micro-status-zinc">Manual</div> : null}
                       <div className="project-action-row">
                         {renderProjectAiAction(project)}
@@ -798,7 +890,7 @@ export default function ProjectsTab({
                   <div className="project-modern-meta">
                     <ProjectInfoBlock label="Público" value={getAudienceLabel(project)} />
                     <ProjectInfoBlock label="Construindo" value={project.what_is_being_built || "Ainda não consolidado"} />
-                    <ProjectInfoBlock label="Último sinal" value={project.last_seen_at ? formatRelativeTime(project.last_seen_at) : "Sem data"} />
+                    <ProjectInfoBlock label="Último sinal" value={project.last_material_update_at ? formatRelativeTime(project.last_material_update_at) : project.last_seen_at ? formatRelativeTime(project.last_seen_at) : "Sem data"} />
                     <ProjectInfoBlock label="Atualizado" value={formatRelativeTime(project.updated_at)} />
                   </div>
 
@@ -835,6 +927,16 @@ export default function ProjectsTab({
                         <span>Resumo operacional</span>
                         <p>{project.what_is_being_built || "Sem descrição detalhada ainda."}</p>
                       </div>
+                      {project.blockers.length > 0 ? (
+                        <div className="project-modern-panel">
+                          <span>Bloqueios</span>
+                          <ul>
+                            {project.blockers.slice(0, 3).map((blocker, index) => (
+                              <li key={`${project.id}-blocker-${index}`}>{blocker}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
                       {project.manual_completion_notes ? (
                         <div className="project-modern-panel">
                           <span>Notas de fechamento</span>
@@ -874,6 +976,8 @@ export default function ProjectsTab({
                   </div>
                   <div className="project-detail-modern-actions">
                     <div className={`micro-status micro-status-${statusTone}`}>{getProjectStatusLabel(project)}</div>
+                    {project.stage ? <div className="micro-status micro-status-zinc">{getStageLabel(project.stage)}</div> : null}
+                    {project.priority ? <div className={`micro-status micro-status-${getPriorityTone(project.priority)}`}>{getPriorityLabel(project.priority)}</div> : null}
                     {project.origin_source === "manual" ? <div className="micro-status micro-status-zinc">Manual</div> : null}
                     <div className="project-action-row">
                       {renderProjectAiAction(project)}
@@ -924,6 +1028,23 @@ export default function ProjectsTab({
                       </div>
                     </div>
 
+                    {project.blockers.length > 0 ? (
+                      <div className="proj-detail-section">
+                        <div className="proj-detail-section-title">
+                          <AlertCircle size={14} />
+                          <span>Bloqueios ({project.blockers.length})</span>
+                        </div>
+                        <ul className="proj-evidence-list">
+                          {project.blockers.map((blocker, index) => (
+                            <li key={`${project.id}-detail-blocker-${index}`}>
+                              <AlertCircle size={12} />
+                              <span>{blocker}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+
                     <div className="proj-detail-section">
                       <div className="proj-detail-section-title">
                         <ChevronRight size={14} />
@@ -965,7 +1086,7 @@ export default function ProjectsTab({
                     <div className="proj-detail-footer-meta">
                       <div>
                         <Clock size={12} />
-                        <span>Visto: {project.last_seen_at ? formatShortDateTime(project.last_seen_at) : "—"}</span>
+                        <span>Visto: {project.last_material_update_at ? formatShortDateTime(project.last_material_update_at) : project.last_seen_at ? formatShortDateTime(project.last_seen_at) : "—"}</span>
                       </div>
                       <div>
                         <RefreshCw size={12} />
@@ -1079,5 +1200,3 @@ export default function ProjectsTab({
     </div>
   );
 }
-
-

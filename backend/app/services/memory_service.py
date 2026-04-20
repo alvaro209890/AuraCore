@@ -342,11 +342,19 @@ class MemoryAnalysisService:
 
         current_summary = self._build_persona_context(current_persona)
         prior_analyses_context = self._build_prior_analyses_context()
+        has_memory = bool(current_persona.last_analyzed_at or current_persona.last_snapshot_id)
+        existing_projects = self.store.list_project_memories(
+            self.settings.default_user_id,
+            limit=max(1, self.settings.context_max_projects),
+        )
         project_context = self._build_project_context(
-            self.store.list_project_memories(
-                self.settings.default_user_id,
-                limit=max(1, self.settings.context_max_projects),
+            self._select_related_projects_for_messages(
+                projects=existing_projects,
+                messages=included_messages,
+                limit=4,
             )
+            if has_memory
+            else existing_projects
         )
         chat_context = self._build_chat_context()
         open_questions_context = self._build_open_questions_context(current_persona)
@@ -470,11 +478,19 @@ class MemoryAnalysisService:
 
         current_summary = self._build_persona_context(current_persona)
         prior_analyses_context = self._build_prior_analyses_context()
+        has_memory = bool(current_persona.last_analyzed_at or current_persona.last_snapshot_id)
+        existing_projects = self.store.list_project_memories(
+            self.settings.default_user_id,
+            limit=max(1, self.settings.context_max_projects),
+        )
         project_context = self._build_project_context(
-            self.store.list_project_memories(
-                self.settings.default_user_id,
-                limit=max(1, self.settings.context_max_projects),
+            self._select_related_projects_for_messages(
+                projects=existing_projects,
+                messages=included_messages,
+                limit=4,
             )
+            if has_memory
+            else existing_projects
         )
         chat_context = self._build_chat_context()
         open_questions_context = self._build_open_questions_context(current_persona)
@@ -599,11 +615,18 @@ class MemoryAnalysisService:
         average_selected_message_tokens = round(selected_transcript_tokens / selected_message_count) if selected_message_count else 0
 
         prior_analyses_context = self._build_prior_analyses_context()
+        existing_projects = self.store.list_project_memories(
+            self.settings.default_user_id,
+            limit=max(1, self.settings.context_max_projects),
+        )
         project_context = self._build_project_context(
-            self.store.list_project_memories(
-                self.settings.default_user_id,
-                limit=max(1, self.settings.context_max_projects),
+            self._select_related_projects_for_messages(
+                projects=existing_projects,
+                messages=included_messages,
+                limit=4,
             )
+            if has_memory
+            else existing_projects
         )
         chat_context = self._build_chat_context()
         open_questions_context = self._build_open_questions_context(current_persona)
@@ -1272,12 +1295,20 @@ class MemoryAnalysisService:
         window_hours = max(1, ceil(max(0.0, (window_end - window_start).total_seconds()) / 3600))
         current_persona = self.get_current_persona()
         prior_analyses_context = self._build_prior_analyses_context()
-        project_context = self._build_project_context(
-            self.store.list_project_memories(
-                self.settings.default_user_id,
-                limit=max(1, self.settings.context_max_projects),
-            )
+        existing_projects = self.store.list_project_memories(
+            self.settings.default_user_id,
+            limit=max(1, self.settings.context_max_projects),
         )
+        project_context_projects = (
+            self._select_related_projects_for_messages(
+                projects=existing_projects,
+                messages=selected_messages,
+                limit=4,
+            )
+            if intent == "improve_memory"
+            else existing_projects
+        )
+        project_context = self._build_project_context(project_context_projects)
         chat_context = self._build_chat_context()
         open_questions_context = self._build_open_questions_context(current_persona)
         prompt_context = self._build_analysis_prompt_context_for_intent(
@@ -1362,13 +1393,22 @@ class MemoryAnalysisService:
             self.settings.default_user_id,
             limit=max(1, self.settings.context_max_projects),
         )
+        project_context_projects = (
+            self._select_related_projects_for_messages(
+                projects=existing_projects,
+                messages=plan.source_messages,
+                limit=4,
+            )
+            if plan.intent == "improve_memory"
+            else existing_projects
+        )
         prompt_context = AnalyzeMemoryPromptContext(
             transcript=plan.transcript,
             conversation_context=plan.conversation_context,
             people_memory_context=plan.people_memory_context,
             current_life_summary=self._build_persona_context(current_persona),
             prior_analyses_context=prior_analyses_context,
-            project_context=self._build_project_context(existing_projects),
+            project_context=self._build_project_context(project_context_projects),
             chat_context=self._build_chat_context(),
             open_questions_context=self._build_open_questions_context(current_persona),
         )
@@ -1574,13 +1614,13 @@ class MemoryAnalysisService:
     ) -> AnalyzeMemoryPromptContext:
         return AnalyzeMemoryPromptContext(
             transcript=context.transcript,
-            conversation_context=self._compact_context_block(context.conversation_context, char_budget=520, max_lines=6),
-            people_memory_context=self._compact_context_block(context.people_memory_context, char_budget=420, max_lines=5),
-            current_life_summary=self._compact_context_block(context.current_life_summary, char_budget=620, max_lines=7),
-            prior_analyses_context=self._compact_context_block(context.prior_analyses_context, char_budget=520, max_lines=6),
-            project_context=self._compact_context_block(context.project_context, char_budget=420, max_lines=5),
-            chat_context=self._compact_context_block(context.chat_context, char_budget=160, max_lines=3),
-            open_questions_context=self._compact_context_block(context.open_questions_context, char_budget=140, max_lines=2),
+            conversation_context=self._compact_context_block(context.conversation_context, char_budget=420, max_lines=5),
+            people_memory_context=self._compact_context_block(context.people_memory_context, char_budget=340, max_lines=4),
+            current_life_summary=self._compact_context_block(context.current_life_summary, char_budget=520, max_lines=6),
+            prior_analyses_context=self._compact_context_block(context.prior_analyses_context, char_budget=420, max_lines=5),
+            project_context=self._compact_context_block(context.project_context, char_budget=320, max_lines=4),
+            chat_context=self._compact_context_block(context.chat_context, char_budget=120, max_lines=2),
+            open_questions_context=self._compact_context_block(context.open_questions_context, char_budget=120, max_lines=2),
         )
 
     def _build_minimal_analysis_prompt_context(
@@ -2625,6 +2665,285 @@ class MemoryAnalysisService:
             )
         return sanitized_projects[:6]
 
+    def _project_record_terms(self, project: ProjectMemoryRecord) -> str:
+        return " ".join(
+            [
+                project.project_name,
+                project.summary,
+                project.status,
+                project.what_is_being_built,
+                project.built_for,
+                *project.aliases,
+                *project.next_steps,
+                *project.evidence,
+                *project.blockers,
+            ]
+        )
+
+    def _candidate_match_terms(self, project: DeepSeekProjectMemory) -> str:
+        return " ".join(
+            [
+                project.name,
+                project.summary,
+                project.status,
+                project.what_is_being_built,
+                project.built_for,
+                *project.next_steps,
+                *project.evidence,
+            ]
+        )
+
+    def _text_token_overlap_score(self, left: str, right: str) -> int:
+        left_tokens = {
+            token
+            for token in self._normalize_project_match_text(left).split()
+            if len(token) >= 4 and token not in PROJECT_KEYWORD_STOPWORDS
+        }
+        right_tokens = {
+            token
+            for token in self._normalize_project_match_text(right).split()
+            if len(token) >= 4 and token not in PROJECT_KEYWORD_STOPWORDS
+        }
+        if not left_tokens or not right_tokens:
+            return 0
+        return len(left_tokens & right_tokens)
+
+    def _resolve_candidate_project_match(
+        self,
+        *,
+        candidate: DeepSeekProjectMemory,
+        existing_projects: Sequence[ProjectMemoryRecord],
+    ) -> tuple[ProjectMemoryRecord | None, bool]:
+        candidate_name = self._normalize_project_match_text(candidate.name)
+        candidate_terms = self._candidate_match_terms(candidate)
+        ranked: list[tuple[int, ProjectMemoryRecord]] = []
+        for project in existing_projects:
+            score = 0
+            normalized_names = [
+                self._normalize_project_match_text(project.project_name),
+                *[
+                    self._normalize_project_match_text(alias)
+                    for alias in project.aliases
+                ],
+            ]
+            if candidate_name and candidate_name in normalized_names:
+                score += 16
+            elif candidate_name and any(candidate_name and candidate_name in alias for alias in normalized_names if alias):
+                score += 11
+            elif candidate_name and any(alias and alias in candidate_name for alias in normalized_names if alias):
+                score += 9
+            score += min(10, self._text_token_overlap_score(candidate_terms, self._project_record_terms(project)) * 2)
+            if project.last_material_update_at or project.last_seen_at:
+                score += 1
+            if score > 0:
+                ranked.append((score, project))
+
+        if not ranked:
+            return None, False
+
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        best_score, best_project = ranked[0]
+        second_score = ranked[1][0] if len(ranked) > 1 else -999
+        if best_score < 10:
+            return None, False
+        ambiguous = best_score < second_score + 3 and best_score < 16
+        if ambiguous:
+            return None, True
+        return best_project, False
+
+    def _merge_unique_project_items(
+        self,
+        primary: Sequence[str],
+        secondary: Sequence[str],
+        *,
+        limit: int,
+    ) -> list[str]:
+        merged: list[str] = []
+        seen: set[str] = set()
+        for item in [*primary, *secondary]:
+            normalized = " ".join(str(item or "").split()).strip(" .,:;")
+            if not normalized:
+                continue
+            key = normalized.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(normalized)
+            if len(merged) >= limit:
+                break
+        return merged
+
+    def _prefer_project_text(
+        self,
+        preferred: str,
+        fallback: str,
+        *,
+        min_chars: int,
+        max_chars: int,
+    ) -> str:
+        preferred_clean = " ".join(preferred.split()).strip()
+        fallback_clean = " ".join(fallback.split()).strip()
+        if preferred_clean and not self._is_weak_project_text(preferred_clean, min_chars=min_chars):
+            return self._summarize_message_text(preferred_clean, max_chars)
+        if fallback_clean:
+            return self._summarize_message_text(fallback_clean, max_chars)
+        return preferred_clean or fallback_clean
+
+    def _seed_from_project_candidate(
+        self,
+        *,
+        project: DeepSeekProjectMemory,
+        aliases: Sequence[str] | None = None,
+    ) -> ProjectMemorySeed | None:
+        if not project.name.strip() or not project.summary.strip():
+            return None
+        return ProjectMemorySeed(
+            project_name=project.name,
+            summary=project.summary,
+            status=project.status,
+            what_is_being_built=project.what_is_being_built,
+            built_for=project.built_for,
+            next_steps=project.next_steps,
+            evidence=project.evidence,
+            aliases=list(aliases or []),
+        )
+
+    def _merge_existing_project_with_candidate(
+        self,
+        *,
+        existing: ProjectMemoryRecord,
+        candidate: DeepSeekProjectMemory,
+    ) -> ProjectMemorySeed:
+        return ProjectMemorySeed(
+            project_name=existing.project_name,
+            summary=self._prefer_project_text(candidate.summary, existing.summary, min_chars=36, max_chars=220),
+            status=candidate.status.strip() or existing.status,
+            what_is_being_built=self._prefer_project_text(
+                candidate.what_is_being_built,
+                existing.what_is_being_built or candidate.summary,
+                min_chars=24,
+                max_chars=180,
+            ),
+            built_for=candidate.built_for.strip() or existing.built_for,
+            next_steps=self._merge_unique_project_items(candidate.next_steps, existing.next_steps, limit=4),
+            evidence=self._merge_unique_project_items(candidate.evidence, existing.evidence, limit=4),
+            aliases=self._merge_unique_project_items(existing.aliases, [candidate.name], limit=8),
+            blockers=self._merge_unique_project_items(existing.blockers, [], limit=4),
+        )
+
+    def _merge_projects_locally(
+        self,
+        *,
+        existing_projects: Sequence[ProjectMemoryRecord],
+        candidates: Sequence[DeepSeekProjectMemory],
+    ) -> list[ProjectMemorySeed] | None:
+        if not candidates:
+            return []
+
+        seeds: list[ProjectMemorySeed] = []
+        touched_keys: set[str] = set()
+        for candidate in candidates:
+            match, ambiguous = self._resolve_candidate_project_match(
+                candidate=candidate,
+                existing_projects=existing_projects,
+            )
+            if ambiguous:
+                return None
+            if match is not None:
+                if match.project_key in touched_keys:
+                    return None
+                touched_keys.add(match.project_key)
+                seeds.append(
+                    self._merge_existing_project_with_candidate(
+                        existing=match,
+                        candidate=candidate,
+                    )
+                )
+                continue
+
+            seed = self._seed_from_project_candidate(project=candidate)
+            if seed is not None:
+                seeds.append(seed)
+
+        return seeds[:8]
+
+    def _score_project_against_messages(
+        self,
+        *,
+        project: ProjectMemoryRecord,
+        messages: Sequence[StoredMessageRecord],
+    ) -> float:
+        candidate_terms = self._project_record_terms(project)
+        score = 0.0
+        for message in messages:
+            text = message.message_text.strip()
+            if not text:
+                continue
+            overlap = self._text_token_overlap_score(candidate_terms, text)
+            if overlap <= 0:
+                continue
+            score += overlap * 2.0
+            if message.direction == "outbound":
+                score += 0.5
+        if project.last_material_update_at:
+            score += 1.2
+        elif project.last_seen_at:
+            score += 0.6
+        return score
+
+    def _select_related_projects_for_messages(
+        self,
+        *,
+        projects: Sequence[ProjectMemoryRecord],
+        messages: Sequence[StoredMessageRecord],
+        limit: int,
+    ) -> list[ProjectMemoryRecord]:
+        if not projects or not messages:
+            return []
+        scored = [
+            (self._score_project_against_messages(project=project, messages=messages), project)
+            for project in projects
+        ]
+        scored = [item for item in scored if item[0] > 0]
+        scored.sort(
+            key=lambda item: (
+                item[0],
+                item[1].last_material_update_at or item[1].last_seen_at or item[1].updated_at,
+            ),
+            reverse=True,
+        )
+        return [project for _score, project in scored[: max(1, limit)]]
+
+    def _select_related_projects_for_candidates(
+        self,
+        *,
+        existing_projects: Sequence[ProjectMemoryRecord],
+        candidates: Sequence[DeepSeekProjectMemory],
+        messages: Sequence[StoredMessageRecord],
+        limit: int,
+    ) -> list[ProjectMemoryRecord]:
+        related: list[ProjectMemoryRecord] = []
+        seen_keys: set[str] = set()
+        for candidate in candidates:
+            match, ambiguous = self._resolve_candidate_project_match(
+                candidate=candidate,
+                existing_projects=existing_projects,
+            )
+            if ambiguous or match is None or match.project_key in seen_keys:
+                continue
+            seen_keys.add(match.project_key)
+            related.append(match)
+            if len(related) >= limit:
+                return related
+        if len(related) >= limit:
+            return related[:limit]
+        fallback = self._select_related_projects_for_messages(
+            projects=[project for project in existing_projects if project.project_key not in seen_keys],
+            messages=messages,
+            limit=max(1, limit - len(related)),
+        )
+        return [*related, *fallback][:limit]
+
     def _sanitize_analysis_result(
         self,
         result: DeepSeekMemoryResult,
@@ -2789,9 +3108,27 @@ class MemoryAnalysisService:
                 len(existing_projects),
             )
             return []
+        local_merge = self._merge_projects_locally(
+            existing_projects=existing_projects,
+            candidates=sanitized_candidates,
+        )
+        if local_merge is not None:
+            logger.info(
+                "merge_projects_local_result existing=%s candidates=%s merged=%s",
+                len(existing_projects),
+                len(sanitized_candidates),
+                len(local_merge),
+            )
+            return local_merge[:8]
+        related_existing_projects = self._select_related_projects_for_candidates(
+            existing_projects=existing_projects,
+            candidates=sanitized_candidates,
+            messages=source_messages,
+            limit=4,
+        )
         merged_result = await self.deepseek_service.merge_projects_incrementally(
             current_life_summary=updated_life_summary,
-            current_project_context=self._build_project_context(existing_projects),
+            current_project_context=self._build_project_context(related_existing_projects or existing_projects[:4]),
             candidate_projects_block=self._build_candidate_projects_block(sanitized_candidates),
             recent_window_summary=window_summary,
             conversation_context=conversation_context,
@@ -2814,19 +3151,12 @@ class MemoryAnalysisService:
         self,
         projects: list[DeepSeekProjectMemory],
     ) -> list[ProjectMemorySeed]:
-        return [
-            ProjectMemorySeed(
-                project_name=project.name,
-                summary=project.summary,
-                status=project.status,
-                what_is_being_built=project.what_is_being_built,
-                built_for=project.built_for,
-                next_steps=project.next_steps,
-                evidence=project.evidence,
-            )
-            for project in projects
-            if project.name.strip() and project.summary.strip()
-        ]
+        seeds: list[ProjectMemorySeed] = []
+        for project in projects:
+            seed = self._seed_from_project_candidate(project=project)
+            if seed is not None:
+                seeds.append(seed)
+        return seeds
 
     def _build_project_seed_context(self, projects: list[ProjectMemorySeed]) -> str:
         if not projects:
@@ -2912,6 +3242,10 @@ class MemoryAnalysisService:
         status: str | None = None,
         what_is_being_built: str | None = None,
         built_for: str | None = None,
+        aliases: list[str] | None = None,
+        stage: str | None = None,
+        priority: str | None = None,
+        blockers: list[str] | None = None,
         next_steps: list[str] | None = None,
         evidence: list[str] | None = None,
     ) -> ProjectMemoryRecord | None:
@@ -2923,6 +3257,10 @@ class MemoryAnalysisService:
             status=status,
             what_is_being_built=what_is_being_built,
             built_for=built_for,
+            aliases=aliases,
+            stage=stage,
+            priority=priority,
+            blockers=blockers,
             next_steps=next_steps,
             evidence=evidence,
             updated_at=datetime.now(UTC),
@@ -2936,6 +3274,10 @@ class MemoryAnalysisService:
         status: str = "",
         what_is_being_built: str = "",
         built_for: str = "",
+        aliases: list[str] | None = None,
+        stage: str = "",
+        priority: str = "",
+        blockers: list[str] | None = None,
         next_steps: list[str] | None = None,
         evidence: list[str] | None = None,
     ) -> ProjectMemoryRecord:
@@ -2946,6 +3288,10 @@ class MemoryAnalysisService:
             status=status,
             what_is_being_built=what_is_being_built,
             built_for=built_for,
+            aliases=aliases,
+            stage=stage,
+            priority=priority,
+            blockers=blockers,
             next_steps=next_steps or [],
             evidence=evidence or [],
             created_at=datetime.now(UTC),
@@ -2963,7 +3309,23 @@ class MemoryAnalysisService:
         if target_project is None:
             return None, ""
 
-        project_context = self._build_project_context(projects)
+        related_projects = self._select_related_projects_for_candidates(
+            existing_projects=projects,
+            candidates=[
+                DeepSeekProjectMemory(
+                    name=target_project.project_name,
+                    summary=target_project.summary,
+                    status=target_project.status,
+                    what_is_being_built=target_project.what_is_being_built,
+                    built_for=target_project.built_for,
+                    next_steps=target_project.next_steps,
+                    evidence=target_project.evidence,
+                )
+            ],
+            messages=[],
+            limit=4,
+        )
+        project_context = self._build_project_context(related_projects or [target_project])
         target_project_block = self._build_project_context([target_project])
         result = await self.deepseek_service.edit_project_memory(
             current_life_summary=self._build_persona_context(current_persona),

@@ -221,6 +221,27 @@
 
 ## Atualização 2026-04-20 2
 
+- Entregue nova rodada focada em projetos + custo de tokens da memória
+- Backend:
+  - `project_memories` ganhou `aliases`, `stage`, `priority`, `blockers`, `confidence_score` e `last_material_update_at`
+  - `memory_service` agora reduz mais o contexto do `improve_memory`, seleciona só projetos relacionados ao lote e tenta merge local antes de chamar o DeepSeek para reconciliar projetos
+  - `deepseek_service` passou a usar prompt incremental mais curto no `improve_memory` e limites de saída menores nesse modo
+  - `assistant_context_service` e `proactive_assistant_service` passaram a usar os novos sinais de projeto no ranking/recall
+- Frontend:
+  - aba `Projetos` e cards do dashboard principal agora exibem e editam estágio, prioridade, aliases, blockers e usam `confidence_score`/`last_material_update_at`
+- Validação operacional desta rodada:
+  - `python3 -m py_compile` dos arquivos backend alterados: ok
+  - `npm run build` em `frontend`: ok
+  - `npm run build` em `agent-frontend`: ok
+  - backend sincronizado para `/home/server/.local/share/auracore-runtime/repo/backend`
+  - `auracore-backend.service` reiniciado com sucesso
+    - `ExecMainPID=2407106`
+    - `ActiveEnterTimestamp=Mon 2026-04-20 09:19:29 -03`
+  - `GET /api/memories/status` respondeu `{"detail":"Bearer token ausente."}`
+  - `GET /api/whatsapp-agent/proactivity/settings` respondeu `{"detail":"Bearer token ausente."}`
+
+## Atualização 2026-04-20 2
+
 - Nova rodada focada em custo de memória e proatividade do WhatsApp concluída no backend
 - Memória:
   - jobs incrementais automáticos e backlog drain agora enfileiram lote fixo via `plan_next_batch()` em vez de executar a janela automática larga na rodada real

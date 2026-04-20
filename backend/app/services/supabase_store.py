@@ -17,6 +17,11 @@ contact_resolution_logger = logging.getLogger("auracore.contact_resolution")
 
 OPERATIVE_MESSAGE_LIMIT = 150
 _CLOCK_TIME_REGEX = re.compile(r"^(?P<hour>\d{1,2}):(?P<minute>\d{2})$")
+_PROJECT_BLOCKER_PATTERN = re.compile(
+    r"\b(?:bloquead[oa]?|bloqueio|travado|travada|depend[êe]ncia|depende|aguarda(?:ndo)?|"
+    r"pendente de|falta|risco|erro|aprova(?:cao|ção)|valida(?:cao|ção)|review|cliente)\b[^.;\n]{0,96}",
+    re.IGNORECASE,
+)
 
 SQLITE_LEGACY_COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
     "mensagens": {
@@ -47,6 +52,12 @@ SQLITE_LEGACY_COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
         "completion_source": "TEXT DEFAULT ''",
         "manual_completed_at": "TEXT",
         "manual_completion_notes": "TEXT DEFAULT ''",
+        "aliases": "TEXT DEFAULT '[]'",
+        "stage": "TEXT DEFAULT ''",
+        "priority": "TEXT DEFAULT ''",
+        "blockers": "TEXT DEFAULT '[]'",
+        "confidence_score": "INTEGER DEFAULT 0",
+        "last_material_update_at": "TEXT",
     },
     "person_memories": {
         "relationship_type": "TEXT DEFAULT ''",
@@ -239,6 +250,12 @@ class ProjectMemorySeed:
     built_for: str
     next_steps: list[str]
     evidence: list[str]
+    aliases: list[str] | None = None
+    stage: str = ""
+    priority: str = ""
+    blockers: list[str] | None = None
+    confidence_score: int = 0
+    last_material_update_at: datetime | None = None
 
 
 @dataclass(slots=True)
@@ -254,8 +271,14 @@ class ProjectMemoryRecord:
     built_for: str
     next_steps: list[str]
     evidence: list[str]
+    aliases: list[str]
+    stage: str
+    priority: str
+    blockers: list[str]
+    confidence_score: int
     source_snapshot_id: str | None
     last_seen_at: datetime | None
+    last_material_update_at: datetime | None
     completion_source: str
     manual_completed_at: datetime | None
     manual_completion_notes: str
@@ -329,6 +352,9 @@ class AgendaEventRecord:
     reminder_offset_minutes: int
     pre_reminder_sent_at: datetime | None
     reminder_sent_at: datetime | None
+    recurrence_rule: str | None
+    parent_event_id: str | None
+    excluded_dates: list[str]
     created_at: datetime
     updated_at: datetime
 
@@ -2273,25 +2299,101 @@ class SupabaseStore:
                 and existing_project.completion_source == "manual"
                 and existing_project.manual_completed_at is not None
             )
+            resolved_name = project_name
+            resolved_status = "Concluido" if manual_completion_locked else project.status.strip()
+            resolved_next_steps = [] if manual_completion_locked else self._clean_string_list(project.next_steps)
+            resolved_evidence = self._clean_string_list(project.evidence)
+            resolved_what_is_being_built = project.what_is_being_built.strip()
+            resolved_built_for = project.built_for.strip()
+            alias_candidates = self._merge_project_aliases(
+                existing_project.aliases if existing_project is not None else [],
+                project.aliases or [],
+                [existing_project.project_name] if existing_project is not None else [],
+                [project.project_name],
+            )
+            resolved_aliases = self._project_aliases_without_canonical(alias_candidates, canonical_name=resolved_name)
+            resolved_blockers = self._resolve_project_blockers(
+                explicit_blockers=project.blockers or [],
+                status=resolved_status,
+                summary=summary,
+                evidence=resolved_evidence,
+                existing_blockers=existing_project.blockers if existing_project is not None else [],
+            )
+            resolved_stage = self._resolve_project_stage(
+                explicit_stage=project.stage,
+                status=resolved_status,
+                blockers=resolved_blockers,
+                completion_source=existing_project.completion_source if manual_completion_locked and existing_project is not None else "",
+                manual_completed_at=existing_project.manual_completed_at if manual_completion_locked and existing_project is not None else None,
+                next_steps=resolved_next_steps,
+            )
+            resolved_priority = self._resolve_project_priority(
+                explicit_priority=project.priority,
+                stage=resolved_stage,
+                status=resolved_status,
+                blockers=resolved_blockers,
+                next_steps=resolved_next_steps,
+                evidence=resolved_evidence,
+            )
+            resolved_confidence_score = self._resolve_project_confidence_score(
+                explicit_score=project.confidence_score,
+                summary=summary,
+                status=resolved_status,
+                what_is_being_built=resolved_what_is_being_built,
+                built_for=resolved_built_for,
+                next_steps=resolved_next_steps,
+                evidence=resolved_evidence,
+                blockers=resolved_blockers,
+                aliases=resolved_aliases,
+                stage=resolved_stage,
+                priority=resolved_priority,
+            )
+            material_changed = self._project_material_changed(
+                existing=existing_project,
+                project_name=resolved_name,
+                summary=summary,
+                status=resolved_status,
+                what_is_being_built=resolved_what_is_being_built,
+                built_for=resolved_built_for,
+                next_steps=resolved_next_steps,
+                evidence=resolved_evidence,
+                aliases=resolved_aliases,
+                stage=resolved_stage,
+                priority=resolved_priority,
+                blockers=resolved_blockers,
+                confidence_score=resolved_confidence_score,
+            )
+            resolved_last_material_update_at = (
+                project.last_material_update_at
+                or observed_at
+                if existing_project is None or material_changed
+                else existing_project.last_material_update_at or existing_project.updated_at
+            )
             records.append(
                 {
                     "id": existing_project.id if existing_project else str(uuid4()),
                     "user_id": str(user_id),
                     "project_key": project_key,
-                    "project_name": project_name,
+                    "project_name": resolved_name,
                     "origin_source": (
                         self._normalize_project_origin_source(existing_project.origin_source)
                         if existing_project is not None
                         else "memory"
                     ),
                     "summary": summary,
-                    "status": "Concluido" if manual_completion_locked else project.status.strip(),
-                    "what_is_being_built": project.what_is_being_built.strip(),
-                    "built_for": project.built_for.strip(),
-                    "next_steps": [] if manual_completion_locked else self._clean_string_list(project.next_steps),
-                    "evidence": self._clean_string_list(project.evidence),
+                    "status": resolved_status,
+                    "what_is_being_built": resolved_what_is_being_built,
+                    "built_for": resolved_built_for,
+                    "next_steps": resolved_next_steps,
+                    "evidence": resolved_evidence,
+                    "aliases": resolved_aliases,
+                    "stage": resolved_stage,
+                    "priority": resolved_priority,
+                    "blockers": resolved_blockers,
+                    "confidence_score": resolved_confidence_score,
                     "source_snapshot_id": source_snapshot_id,
                     "last_seen_at": observed_at.isoformat(),
+                    "last_material_update_at": resolved_last_material_update_at.isoformat(),
                     "updated_at": observed_at.isoformat(),
                 }
             )
@@ -2306,6 +2408,12 @@ class SupabaseStore:
                 self._is_missing_column_error(exc, column_name="origin_source", table_name="project_memories")
                 or self._is_missing_column_error(exc, column_name="what_is_being_built", table_name="project_memories")
                 or self._is_missing_column_error(exc, column_name="built_for", table_name="project_memories")
+                or self._is_missing_column_error(exc, column_name="aliases", table_name="project_memories")
+                or self._is_missing_column_error(exc, column_name="stage", table_name="project_memories")
+                or self._is_missing_column_error(exc, column_name="priority", table_name="project_memories")
+                or self._is_missing_column_error(exc, column_name="blockers", table_name="project_memories")
+                or self._is_missing_column_error(exc, column_name="confidence_score", table_name="project_memories")
+                or self._is_missing_column_error(exc, column_name="last_material_update_at", table_name="project_memories")
             ):
                 raise
             legacy_records = []
@@ -2314,6 +2422,12 @@ class SupabaseStore:
                 legacy_record.pop("origin_source", None)
                 legacy_record.pop("what_is_being_built", None)
                 legacy_record.pop("built_for", None)
+                legacy_record.pop("aliases", None)
+                legacy_record.pop("stage", None)
+                legacy_record.pop("priority", None)
+                legacy_record.pop("blockers", None)
+                legacy_record.pop("confidence_score", None)
+                legacy_record.pop("last_material_update_at", None)
                 legacy_records.append(legacy_record)
             self.client.table("project_memories").upsert(legacy_records, on_conflict="user_id,project_key").execute()
         return self.list_project_memories(user_id, limit=max(8, len(records)))
@@ -2324,7 +2438,8 @@ class SupabaseStore:
                 self.client.table("project_memories")
                 .select(
                     "id,user_id,project_key,project_name,origin_source,summary,status,what_is_being_built,built_for,next_steps,evidence,"
-                    "source_snapshot_id,last_seen_at,completion_source,manual_completed_at,manual_completion_notes,updated_at"
+                    "aliases,stage,priority,blockers,confidence_score,source_snapshot_id,last_seen_at,last_material_update_at,"
+                    "completion_source,manual_completed_at,manual_completion_notes,updated_at"
                 )
                 .eq("user_id", str(user_id))
                 .order("last_seen_at", desc=True)
@@ -2339,6 +2454,12 @@ class SupabaseStore:
                 or self._is_missing_column_error(exc, column_name="completion_source", table_name="project_memories")
                 or self._is_missing_column_error(exc, column_name="manual_completed_at", table_name="project_memories")
                 or self._is_missing_column_error(exc, column_name="manual_completion_notes", table_name="project_memories")
+                or self._is_missing_column_error(exc, column_name="aliases", table_name="project_memories")
+                or self._is_missing_column_error(exc, column_name="stage", table_name="project_memories")
+                or self._is_missing_column_error(exc, column_name="priority", table_name="project_memories")
+                or self._is_missing_column_error(exc, column_name="blockers", table_name="project_memories")
+                or self._is_missing_column_error(exc, column_name="confidence_score", table_name="project_memories")
+                or self._is_missing_column_error(exc, column_name="last_material_update_at", table_name="project_memories")
             ):
                 raise
             response = (
@@ -2371,8 +2492,14 @@ class SupabaseStore:
                     built_for=str(row.get("built_for") or ""),
                     next_steps=self._parse_string_list(row.get("next_steps")),
                     evidence=self._parse_string_list(row.get("evidence")),
+                    aliases=self._parse_string_list(row.get("aliases")),
+                    stage=str(row.get("stage") or ""),
+                    priority=str(row.get("priority") or ""),
+                    blockers=self._parse_string_list(row.get("blockers")),
+                    confidence_score=self._parse_int(row.get("confidence_score")) or 0,
                     source_snapshot_id=self._optional_text(row.get("source_snapshot_id")),
                     last_seen_at=self._parse_datetime(row.get("last_seen_at")),
+                    last_material_update_at=self._parse_datetime(row.get("last_material_update_at")),
                     completion_source=str(row.get("completion_source") or ""),
                     manual_completed_at=self._parse_datetime(row.get("manual_completed_at")),
                     manual_completion_notes=str(row.get("manual_completion_notes") or ""),
@@ -2392,6 +2519,10 @@ class SupabaseStore:
         built_for: str,
         next_steps: list[str],
         evidence: list[str],
+        aliases: list[str] | None = None,
+        stage: str = "",
+        priority: str = "",
+        blockers: list[str] | None = None,
         created_at: datetime,
     ) -> ProjectMemoryRecord:
         resolved_name = project_name.strip()
@@ -2414,6 +2545,46 @@ class SupabaseStore:
         if existing is not None:
             raise ValueError("Ja existe um projeto com esse nome canonico.")
 
+        resolved_status = status.strip()
+        resolved_next_steps = self._clean_string_list(next_steps)
+        resolved_evidence = self._clean_string_list(evidence)
+        resolved_aliases = self._project_aliases_without_canonical(
+            self._merge_project_aliases(aliases or [], [resolved_name]),
+            canonical_name=resolved_name,
+        )
+        resolved_blockers = self._resolve_project_blockers(
+            explicit_blockers=blockers or [],
+            status=resolved_status,
+            summary=resolved_summary,
+            evidence=resolved_evidence,
+        )
+        resolved_stage = self._resolve_project_stage(
+            explicit_stage=stage,
+            status=resolved_status,
+            blockers=resolved_blockers,
+            next_steps=resolved_next_steps,
+        )
+        resolved_priority = self._resolve_project_priority(
+            explicit_priority=priority,
+            stage=resolved_stage,
+            status=resolved_status,
+            blockers=resolved_blockers,
+            next_steps=resolved_next_steps,
+            evidence=resolved_evidence,
+        )
+        resolved_confidence_score = self._resolve_project_confidence_score(
+            explicit_score=0,
+            summary=resolved_summary,
+            status=resolved_status,
+            what_is_being_built=what_is_being_built.strip(),
+            built_for=built_for.strip(),
+            next_steps=resolved_next_steps,
+            evidence=resolved_evidence,
+            blockers=resolved_blockers,
+            aliases=resolved_aliases,
+            stage=resolved_stage,
+            priority=resolved_priority,
+        )
         record = {
             "id": str(uuid4()),
             "user_id": str(user_id),
@@ -2421,13 +2592,19 @@ class SupabaseStore:
             "project_name": resolved_name,
             "origin_source": "manual",
             "summary": resolved_summary,
-            "status": status.strip(),
+            "status": resolved_status,
             "what_is_being_built": what_is_being_built.strip(),
             "built_for": built_for.strip(),
-            "next_steps": self._clean_string_list(next_steps),
-            "evidence": self._clean_string_list(evidence),
+            "next_steps": resolved_next_steps,
+            "evidence": resolved_evidence,
+            "aliases": resolved_aliases,
+            "stage": resolved_stage,
+            "priority": resolved_priority,
+            "blockers": resolved_blockers,
+            "confidence_score": resolved_confidence_score,
             "source_snapshot_id": None,
             "last_seen_at": created_at.isoformat(),
+            "last_material_update_at": created_at.isoformat(),
             "completion_source": "",
             "manual_completed_at": None,
             "manual_completion_notes": "",
@@ -2458,6 +2635,10 @@ class SupabaseStore:
         built_for: str | None = None,
         next_steps: list[str] | None = None,
         evidence: list[str] | None = None,
+        aliases: list[str] | None = None,
+        stage: str | None = None,
+        priority: str | None = None,
+        blockers: list[str] | None = None,
         updated_at: datetime,
     ) -> ProjectMemoryRecord | None:
         normalized_key = self._normalize_project_key(project_key)
@@ -2492,15 +2673,93 @@ class SupabaseStore:
             if collision is not None:
                 raise ValueError("Ja existe outro projeto com esse nome canonico.")
 
+        resolved_summary = (summary if summary is not None else existing.summary).strip()
+        resolved_status = (status if status is not None else existing.status).strip()
+        resolved_what_is_being_built = (
+            what_is_being_built if what_is_being_built is not None else existing.what_is_being_built
+        ).strip()
+        resolved_built_for = (built_for if built_for is not None else existing.built_for).strip()
+        resolved_next_steps = self._clean_string_list(next_steps if next_steps is not None else existing.next_steps)
+        resolved_evidence = self._clean_string_list(evidence if evidence is not None else existing.evidence)
+        alias_sources: list[Sequence[Any]] = [existing.aliases, [existing.project_name]]
+        if aliases is not None:
+            alias_sources.append(aliases)
+        if next_project_key != existing.project_key:
+            alias_sources.append([existing.project_name, existing.project_key.replace("-", " ")])
+        resolved_aliases = self._project_aliases_without_canonical(
+            self._merge_project_aliases(*alias_sources, [resolved_name]),
+            canonical_name=resolved_name,
+        )
+        resolved_blockers = self._resolve_project_blockers(
+            explicit_blockers=blockers if blockers is not None else existing.blockers,
+            status=resolved_status,
+            summary=resolved_summary,
+            evidence=resolved_evidence,
+            existing_blockers=existing.blockers,
+        )
+        resolved_stage = self._resolve_project_stage(
+            explicit_stage=stage if stage is not None else existing.stage,
+            status=resolved_status,
+            blockers=resolved_blockers,
+            completion_source=existing.completion_source,
+            manual_completed_at=existing.manual_completed_at,
+            next_steps=resolved_next_steps,
+        )
+        resolved_priority = self._resolve_project_priority(
+            explicit_priority=priority if priority is not None else existing.priority,
+            stage=resolved_stage,
+            status=resolved_status,
+            blockers=resolved_blockers,
+            next_steps=resolved_next_steps,
+            evidence=resolved_evidence,
+        )
+        resolved_confidence_score = self._resolve_project_confidence_score(
+            explicit_score=0,
+            summary=resolved_summary,
+            status=resolved_status,
+            what_is_being_built=resolved_what_is_being_built,
+            built_for=resolved_built_for,
+            next_steps=resolved_next_steps,
+            evidence=resolved_evidence,
+            blockers=resolved_blockers,
+            aliases=resolved_aliases,
+            stage=resolved_stage,
+            priority=resolved_priority,
+        )
+        material_changed = self._project_material_changed(
+            existing=existing,
+            project_name=resolved_name,
+            summary=resolved_summary,
+            status=resolved_status,
+            what_is_being_built=resolved_what_is_being_built,
+            built_for=resolved_built_for,
+            next_steps=resolved_next_steps,
+            evidence=resolved_evidence,
+            aliases=resolved_aliases,
+            stage=resolved_stage,
+            priority=resolved_priority,
+            blockers=resolved_blockers,
+            confidence_score=resolved_confidence_score,
+        )
         payload: dict[str, Any] = {
             "project_key": next_project_key,
             "project_name": resolved_name,
-            "summary": (summary if summary is not None else existing.summary).strip(),
-            "status": (status if status is not None else existing.status).strip(),
-            "what_is_being_built": (what_is_being_built if what_is_being_built is not None else existing.what_is_being_built).strip(),
-            "built_for": (built_for if built_for is not None else existing.built_for).strip(),
-            "next_steps": self._clean_string_list(next_steps if next_steps is not None else existing.next_steps),
-            "evidence": self._clean_string_list(evidence if evidence is not None else existing.evidence),
+            "summary": resolved_summary,
+            "status": resolved_status,
+            "what_is_being_built": resolved_what_is_being_built,
+            "built_for": resolved_built_for,
+            "next_steps": resolved_next_steps,
+            "evidence": resolved_evidence,
+            "aliases": resolved_aliases,
+            "stage": resolved_stage,
+            "priority": resolved_priority,
+            "blockers": resolved_blockers,
+            "confidence_score": resolved_confidence_score,
+            "last_material_update_at": (
+                updated_at.isoformat()
+                if material_changed
+                else (existing.last_material_update_at or existing.updated_at).isoformat()
+            ),
             "updated_at": updated_at.isoformat(),
         }
 
@@ -2540,10 +2799,18 @@ class SupabaseStore:
 
         payload: dict[str, Any] = {
             "status": "Concluido" if completed else "Em andamento",
+            "stage": "completed" if completed else self._resolve_project_stage(
+                explicit_stage=None,
+                status="Em andamento",
+                blockers=existing.blockers,
+                next_steps=existing.next_steps,
+            ),
             "completion_source": "manual" if completed else "",
             "manual_completed_at": changed_at.isoformat() if completed else None,
             "manual_completion_notes": completion_notes.strip() if completed else "",
             "next_steps": [] if completed else existing.next_steps,
+            "priority": "low" if completed else existing.priority,
+            "last_material_update_at": changed_at.isoformat(),
             "updated_at": changed_at.isoformat(),
         }
 
@@ -2963,7 +3230,8 @@ class SupabaseStore:
             self.client.table("agenda")
             .select(
                 "id,user_id,titulo,inicio,fim,status,contato_origem,message_id,"
-                "reminder_offset_minutes,pre_reminder_sent_at,reminder_sent_at,created_at,updated_at"
+                "reminder_offset_minutes,pre_reminder_sent_at,reminder_sent_at,"
+                "recurrence_rule,parent_event_id,excluded_dates,created_at,updated_at"
             )
             .eq("user_id", str(user_id))
             .eq("message_id", message_id.strip())
@@ -7505,6 +7773,241 @@ class SupabaseStore:
             return "manual"
         return "memory"
 
+    def _normalize_project_stage(self, value: str | None) -> str:
+        normalized = " ".join(str(value or "").split()).strip().lower()
+        if not normalized:
+            return ""
+        if normalized in {"completed", "concluido", "concluida", "done", "finalizado", "finalizada"}:
+            return "completed"
+        if normalized in {"blocked", "bloqueado", "bloqueada", "travado", "travada"}:
+            return "blocked"
+        if normalized in {"review", "validacao", "validação", "qa", "homologacao", "homologação"}:
+            return "review"
+        if normalized in {"planning", "planejamento", "discovery", "descoberta", "escopo"}:
+            return "planning"
+        if normalized in {"active", "ativo", "ativa", "em andamento", "execucao", "execução"}:
+            return "active"
+        return normalized
+
+    def _normalize_project_priority(self, value: str | None) -> str:
+        normalized = " ".join(str(value or "").split()).strip().lower()
+        if not normalized:
+            return ""
+        if normalized in {"alta", "high", "urgente", "critical", "critica", "crítica"}:
+            return "high"
+        if normalized in {"baixa", "low", "minor"}:
+            return "low"
+        if normalized in {"media", "média", "medium", "normal"}:
+            return "medium"
+        return normalized
+
+    def _clean_project_aliases(self, items: Sequence[Any]) -> list[str]:
+        aliases: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            normalized = " ".join(str(item or "").split()).strip()
+            if len(normalized) < 3:
+                continue
+            key = normalized.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            aliases.append(normalized)
+            if len(aliases) >= 8:
+                break
+        return aliases
+
+    def _merge_project_aliases(self, *alias_groups: Sequence[Any]) -> list[str]:
+        merged: list[str] = []
+        seen: set[str] = set()
+        for group in alias_groups:
+            for alias in self._clean_project_aliases(group):
+                key = alias.casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(alias)
+                if len(merged) >= 8:
+                    return merged
+        return merged
+
+    def _project_aliases_without_canonical(self, aliases: Sequence[Any], *, canonical_name: str) -> list[str]:
+        canonical_key = self._normalize_project_key(canonical_name)
+        filtered: list[str] = []
+        seen: set[str] = set()
+        for alias in self._clean_project_aliases(aliases):
+            alias_key = self._normalize_project_key(alias)
+            if not alias_key or alias_key == canonical_key:
+                continue
+            lowered = alias.casefold()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            filtered.append(alias)
+        return filtered[:8]
+
+    def _extract_project_blockers(self, *text_blocks: str) -> list[str]:
+        blockers: list[str] = []
+        seen: set[str] = set()
+        for block in text_blocks:
+            text = " ".join(str(block or "").split()).strip()
+            if not text:
+                continue
+            for match in _PROJECT_BLOCKER_PATTERN.finditer(text):
+                candidate = " ".join(match.group(0).split()).strip(" .,:;")
+                if len(candidate) < 8:
+                    continue
+                key = candidate.casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                blockers.append(candidate)
+                if len(blockers) >= 4:
+                    return blockers
+        return blockers
+
+    def _resolve_project_blockers(
+        self,
+        *,
+        explicit_blockers: Sequence[Any],
+        status: str,
+        summary: str,
+        evidence: Sequence[str],
+        existing_blockers: Sequence[str] | None = None,
+    ) -> list[str]:
+        cleaned_explicit = self._clean_string_list(explicit_blockers)
+        if cleaned_explicit:
+            return cleaned_explicit[:4]
+        return self._clean_string_list(
+            [
+                *(existing_blockers or []),
+                *self._extract_project_blockers(status, summary, *evidence),
+            ]
+        )[:4]
+
+    def _resolve_project_stage(
+        self,
+        *,
+        explicit_stage: str | None,
+        status: str,
+        blockers: Sequence[str],
+        completion_source: str = "",
+        manual_completed_at: datetime | None = None,
+        next_steps: Sequence[str] | None = None,
+    ) -> str:
+        normalized_explicit = self._normalize_project_stage(explicit_stage)
+        if normalized_explicit:
+            return normalized_explicit
+        status_lower = " ".join(status.split()).strip().lower()
+        if completion_source == "manual" or manual_completed_at is not None or "concl" in status_lower or "done" in status_lower:
+            return "completed"
+        if blockers or any(marker in status_lower for marker in ("bloq", "trav", "aguarda", "depend", "risco")):
+            return "blocked"
+        if any(marker in status_lower for marker in ("valid", "review", "teste", "homolog", "qa")):
+            return "review"
+        if any(marker in status_lower for marker in ("planej", "descob", "escopo", "ideia")):
+            return "planning"
+        if status_lower or list(next_steps or []):
+            return "active"
+        return ""
+
+    def _resolve_project_priority(
+        self,
+        *,
+        explicit_priority: str | None,
+        stage: str,
+        status: str,
+        blockers: Sequence[str],
+        next_steps: Sequence[str],
+        evidence: Sequence[str],
+    ) -> str:
+        normalized_explicit = self._normalize_project_priority(explicit_priority)
+        if normalized_explicit:
+            return normalized_explicit
+        if stage == "completed":
+            return "low"
+        haystack = " ".join([status, *blockers, *next_steps, *evidence]).lower()
+        if any(marker in haystack for marker in ("urg", "prazo", "hoje", "amanha", "amanhã", "cliente", "risco", "erro", "bloq")):
+            return "high"
+        if next_steps or evidence:
+            return "medium"
+        return "low"
+
+    def _resolve_project_confidence_score(
+        self,
+        *,
+        explicit_score: int | None,
+        summary: str,
+        status: str,
+        what_is_being_built: str,
+        built_for: str,
+        next_steps: Sequence[str],
+        evidence: Sequence[str],
+        blockers: Sequence[str],
+        aliases: Sequence[str],
+        stage: str,
+        priority: str,
+    ) -> int:
+        normalized_explicit = max(0, min(100, int(explicit_score or 0)))
+        if normalized_explicit > 0:
+            return normalized_explicit
+        score = 18
+        if summary.strip():
+            score += 18
+        if status.strip():
+            score += 8
+        if what_is_being_built.strip():
+            score += 14
+        if built_for.strip():
+            score += 8
+        score += min(16, len(list(next_steps)) * 5)
+        score += min(18, len(list(evidence)) * 4)
+        score += min(10, len(list(blockers)) * 4)
+        score += min(8, len(list(aliases)) * 2)
+        if stage in {"active", "review"}:
+            score += 6
+        elif stage == "blocked":
+            score += 4
+        if priority == "high":
+            score += 4
+        return max(24, min(100, score))
+
+    def _project_material_changed(
+        self,
+        *,
+        existing: ProjectMemoryRecord | None,
+        project_name: str,
+        summary: str,
+        status: str,
+        what_is_being_built: str,
+        built_for: str,
+        next_steps: Sequence[str],
+        evidence: Sequence[str],
+        aliases: Sequence[str],
+        stage: str,
+        priority: str,
+        blockers: Sequence[str],
+        confidence_score: int,
+    ) -> bool:
+        if existing is None:
+            return True
+        return any(
+            [
+                existing.project_name != project_name,
+                existing.summary != summary,
+                existing.status != status,
+                existing.what_is_being_built != what_is_being_built,
+                existing.built_for != built_for,
+                existing.next_steps != list(next_steps),
+                existing.evidence != list(evidence),
+                existing.aliases != list(aliases),
+                existing.stage != stage,
+                existing.priority != priority,
+                existing.blockers != list(blockers),
+                existing.confidence_score != confidence_score,
+            ]
+        )
+
     def build_person_key(
         self,
         *,
@@ -7615,6 +8118,14 @@ class SupabaseStore:
         message_id = self._optional_text(value.get("message_id"))
         if not titulo or inicio is None or fim is None or not message_id:
             return None
+        excluded_dates_raw = value.get("excluded_dates") or "[]"
+        if isinstance(excluded_dates_raw, str):
+            try:
+                excluded_dates = json.loads(excluded_dates_raw)
+            except json.JSONDecodeError:
+                excluded_dates = []
+        else:
+            excluded_dates = excluded_dates_raw if isinstance(excluded_dates_raw, list) else []
         return AgendaEventRecord(
             id=str(value.get("id") or ""),
             user_id=self._parse_uuid(value.get("user_id")) or fallback_user_id,
@@ -7627,6 +8138,9 @@ class SupabaseStore:
             reminder_offset_minutes=max(0, int(value.get("reminder_offset_minutes") or 0)),
             pre_reminder_sent_at=self._parse_datetime(value.get("pre_reminder_sent_at")),
             reminder_sent_at=self._parse_datetime(value.get("reminder_sent_at")),
+            recurrence_rule=self._optional_text(value.get("recurrence_rule")),
+            parent_event_id=self._optional_text(value.get("parent_event_id")),
+            excluded_dates=excluded_dates,
             created_at=self._parse_datetime(value.get("created_at")) or datetime.now(UTC),
             updated_at=self._parse_datetime(value.get("updated_at")) or datetime.now(UTC),
         )

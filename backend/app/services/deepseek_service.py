@@ -937,52 +937,30 @@ class DeepSeekService:
         is_first_analysis = intent == "first_analysis"
         return DeepSeekPromptPreview(
             system_prompt=(
-                "Voce e o analista principal de memoria do AuraCore. Sua funcao e transformar conversas "
-                "privadas em portugues do Brasil em uma memoria altamente util sobre o dono do numero. "
-                "Retorne apenas JSON valido e estritamente aderente ao schema pedido. Nunca invente fatos. "
-                "Priorize sinais sobre identidade, forma de agir, criterio de decisao, ritmo, projetos, "
-                "responsabilidades e tensoes reais do dono. Quando algo for incerto, trate como sinal ou "
-                "hipotese nas listas, sem afirmar como certeza no resumo consolidado."
-                + (
-                    " Esta leitura mistura conversas diretas e grupos selecionados do WhatsApp. Em mensagens "
-                    "de grupo, atribua falas, opinioes, pedidos, promessas e fatos ao participante correto "
-                    "antes de inferir algo sobre o dono."
-                    if contains_group_messages and not is_first_analysis
-                    else ""
+                (
+                    "Voce e o analista principal de memoria do AuraCore. Sua funcao e transformar conversas "
+                    "privadas em portugues do Brasil em uma memoria altamente util sobre o dono do numero. "
+                    "Retorne apenas JSON valido e estritamente aderente ao schema pedido. Nunca invente fatos. "
+                    "Priorize sinais sobre identidade, forma de agir, criterio de decisao, ritmo, projetos, "
+                    "responsabilidades e tensoes reais do dono. Quando algo for incerto, trate como sinal ou "
+                    "hipotese nas listas, sem afirmar como certeza no resumo consolidado."
+                    + (
+                        " Esta e a primeira analise salva do dono. Prefira cobertura ampla e conservadora: "
+                        "menos conviccao, menos projetos, menos inferencias psicologicas e mais lacunas explicitas."
+                        if is_first_analysis
+                        else ""
+                    )
                 )
-                + (
-                    " Esta e a primeira analise salva do dono. Prefira cobertura ampla e conservadora: "
-                    "menos conviccao, menos projetos, menos inferencias psicologicas e mais lacunas explicitas."
-                    if is_first_analysis
-                    else ""
-                )
-                + (
-                    "\n\nDiretrizes avancadas de analise: "
-                    "Detecte padroes comportamentais — como o dono reage sob pressao, se tende a delegar ou executar, "
-                    "se prefere decisoes rapidas ou refletidas. Identifique estilos de comunicacao — direto, detalhista, "
-                    "visual, pragmatico. Observe sinais emocionais — frustracao, entusiasmo, ceticismo, urgencia — "
-                    "e como eles influenciam decisoes. Mapeie preferencias operacionais — horarios de trabalho, "
-                    "ferramentas favoritas, aversoes recorrentes, tolerancia a riscos. Infira prioridades implicitas "
-                    "pelo que o dono repete, ignora, cobra com mais frequencia ou trata com mais cuidado."
-                    if not is_first_analysis
-                    else ""
-                )
-                + (
-                    "\n\nCamadas de profundidade esperadas: "
-                    "1) Camada factual — o que aconteceu, com quem, quando, qual o resultado visivel. "
-                    "2) Camada comportamental — como o dono agiu, qual estrategia de comunicacao usou, como lidou com obstaculos. "
-                    "3) Camada emocional — que emocoes transparecem (frustracao, orgulho, ansiedade, satisfacao) e como elas moldaram a acao. "
-                    "4) Camada relacional — qual a natureza real de cada vinculo (confianca, dependencia, admiracao, tenso) e como evoluiu. "
-                    "5) Camada estratégica — o que o dono realmente prioriza (vs o que diz que prioriza), quais projetos avancam vs estagnam, "
-                    "qual e o padrao de decisao quando conflitam."
-                    if not is_first_analysis
-                    else (
-                        "\n\nCamadas esperadas para a primeira analise: "
-                        "1) Quem e o dono — responsabilidades, contexto de vida, papeis. "
-                        "2) Com quem se relaciona — contatos mais ativos, natureza dos vinculos. "
-                        "3) O que faz — projetos visiveis, rotinas, ferramentas. "
-                        "4) Como age e decide — estilo de comunicacao, padrao sob pressao. "
-                        "5) Lacunas — o que ainda nao da para saber com confianca e precisa de mais conversa."
+                if is_first_analysis
+                else (
+                    "Voce atualiza a memoria cumulativa do dono no AuraCore. Trabalhe em modo delta: "
+                    "mantenha o que continua valido, corrija o que mudou e adicione apenas sinais novos ou "
+                    "mais fortes. Retorne somente JSON valido. Nunca invente fatos. "
+                    "Projetos e contatos podem vir vazios quando a janela nao trouxer sinal suficiente."
+                    + (
+                        " Em grupos, atribua cada fala ao participante correto antes de inferir algo sobre o dono."
+                        if contains_group_messages
+                        else ""
                     )
                 )
             ),
@@ -1090,6 +1068,22 @@ class DeepSeekService:
         recent_chat_context = chat_context.strip() or "(nenhuma conversa relevante com a IA salva ainda)"
         prioritized_open_questions = open_questions_context.strip() or "(nenhuma lacuna prioritaria registrada)"
         is_first_analysis = intent == "first_analysis"
+        if not is_first_analysis:
+            return self._build_incremental_prompt(
+                transcript=transcript,
+                conversation_context=conversation_context,
+                people_memory_context=people_memory_context,
+                current_life_summary=previous_summary,
+                prior_analyses_context=previous_analyses,
+                project_context=project_context,
+                chat_context=recent_chat_context,
+                open_questions_context=prioritized_open_questions,
+                window_hours=window_hours,
+                window_start=window_start,
+                window_end=window_end,
+                source_message_count=source_message_count,
+                contains_group_messages=contains_group_messages,
+            )
         intro = (
             "Analise a janela abaixo de conversas diretas e monte a primeira base de memoria do usuario."
             if is_first_analysis
@@ -1241,6 +1235,125 @@ Regras:
 - Se a mesma pessoa aparece em multiplas conversas com tom diferente, isso revela nuance — registre em relationship_summary.
 - Em key_learnings, priorize: (1) mudancas de comportamento/prioridade, (2) padroes que se repetem em 2+ conversas, (3) descobertas sobre como o dono opera. Evite listar fatos isolados.
 {bootstrap_rules if is_first_analysis else ""}
+""".strip()
+
+    def _build_incremental_prompt(
+        self,
+        *,
+        transcript: str,
+        conversation_context: str,
+        people_memory_context: str,
+        current_life_summary: str,
+        prior_analyses_context: str,
+        project_context: str,
+        chat_context: str,
+        open_questions_context: str,
+        window_hours: int,
+        window_start: datetime,
+        window_end: datetime,
+        source_message_count: int,
+        contains_group_messages: bool = False,
+    ) -> str:
+        intro = (
+            "Atualize a memoria do dono a partir desta janela incremental de conversas diretas e grupos relevantes."
+            if contains_group_messages
+            else "Atualize a memoria do dono a partir desta janela incremental de conversas."
+        )
+        return f"""
+{intro}
+
+Janela em horas: {window_hours}
+Inicio da janela (UTC): {window_start.isoformat()}
+Fim da janela (UTC): {window_end.isoformat()}
+Mensagens incluidas: {source_message_count}
+
+Resumo consolidado atual:
+{current_life_summary}
+
+Snapshots e leituras recentes:
+{prior_analyses_context}
+
+Projetos relacionados a esta janela:
+{project_context.strip() or "(nenhum projeto relacionado carregado para esta rodada)"}
+
+Conversas recentes com a IA pessoal:
+{chat_context}
+
+Lacunas ainda abertas:
+{open_questions_context}
+
+Contexto resumido por conversa:
+{conversation_context.strip() or "(nenhum agrupamento adicional de conversa disponivel)"}
+
+Memorias ja salvas dos contatos desta janela:
+{people_memory_context.strip() or "(nenhuma memoria de contato relevante carregada)"}
+
+Transcricao da conversa:
+{transcript}
+
+Retorne um JSON com exatamente estes campos:
+- updated_life_summary: string
+- window_summary: string
+- key_learnings: string[]
+- people_and_relationships: string[]
+- routine_signals: string[]
+- preferences: string[]
+- open_questions: string[]
+- active_projects: {{ name: string, summary: string, status: string, what_is_being_built: string, built_for: string, next_steps: string[], evidence: string[] }}[]
+- contact_memories: {{ person_key: string, contact_name: string, profile_summary: string, relationship_type: string, relationship_summary: string, salient_facts: string[], open_loops: string[], recent_topics: string[] }}[]
+
+Formato esperado do JSON:
+{{
+  "updated_life_summary": "string",
+  "window_summary": "string",
+  "key_learnings": ["string"],
+  "people_and_relationships": ["string"],
+  "routine_signals": ["string"],
+  "preferences": ["string"],
+  "open_questions": ["string"],
+  "active_projects": [
+    {{
+      "name": "string",
+      "summary": "string",
+      "status": "string",
+      "what_is_being_built": "string",
+      "built_for": "string",
+      "next_steps": ["string"],
+      "evidence": ["string"]
+    }}
+  ],
+  "contact_memories": [
+    {{
+      "person_key": "string",
+      "contact_name": "string",
+      "profile_summary": "string",
+      "relationship_type": "partner|family|friend|work|client|service|acquaintance|other|unknown",
+      "relationship_summary": "string",
+      "salient_facts": ["string"],
+      "open_loops": ["string"],
+      "recent_topics": ["string"]
+    }}
+  ]
+}}
+
+Regras:
+- Trabalhe em modo delta: integre esta janela ao que ja existe, sem reescrever tudo mecanicamente.
+- Atualize o resumo apenas quando esta janela trouxer mudanca, reforco relevante ou correcao do que estava salvo.
+- Dê mais peso ao que apareceu repetido, gerou decisao, criou tensao operacional ou mudou o foco atual do dono.
+- Se a janela nao trouxer sinal suficiente para projetos, retorne active_projects vazio.
+- Em active_projects, mantenha no maximo 4 itens ligados a esta janela e descarte projetos vagos.
+- Em active_projects, use nomes especificos e preserve continuidade com projetos ja salvos quando for claramente o mesmo projeto.
+- Em active_projects.summary, explique objetivo, fase atual e por que isso importa agora.
+- Em active_projects.next_steps, prefira de 1 a 4 passos curtos, observaveis e acionaveis.
+- Em active_projects.evidence, traga 2 a 4 sinais curtos e concretos.
+- Em contact_memories, atualize apenas pessoas que realmente aparecem nesta janela.
+- Em cada item de contact_memories, person_key deve copiar exatamente um person_key presente no contexto por conversa.
+- Em contact_memories, relationship_type deve escolher exatamente um destes tipos canonicos: partner, family, friend, work, client, service, acquaintance, other ou unknown.
+- Diferencie fatos do dono de fatos dos contatos; nao transfira contexto do contato para a persona do dono.
+- Se houver grupos, atribua opinioes, pedidos, promessas e fatos ao participante correto.
+- Preserve open_questions antigas que continuarem sem resposta e remova as que esta janela esclareceu.
+- Nunca trate o proprio dono como contato separado nem como publico de projeto.
+- Nao inclua markdown fences.
 """.strip()
 
     def _build_refinement_prompt(
@@ -1933,8 +2046,10 @@ Regras:
         if self._is_reasoning_model(self.settings.deepseek_memory_model):
             if intent == "first_analysis":
                 return 6400
-            return 4200
-        return 3400
+            return 3200
+        if intent == "first_analysis":
+            return 3400
+        return 2400
 
     def _refinement_max_output_tokens(self) -> int:
         return 3200 if self._is_reasoning_model() else 1500

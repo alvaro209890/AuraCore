@@ -50,10 +50,12 @@
 - O contexto de resposta do Orion agora prioriza carregamento sob demanda: projetos, snapshots e memória do contato entram no prompt apenas quando o planner indicar necessidade real
 - Mensagens simples/curtas podem pular a etapa de `assistant_search_plan` e cair direto no fallback heurístico para reduzir custo e latência
 - O pipeline `improve_memory` usa um contexto próprio mais enxuto que o da `first_analysis`, para reduzir tokens nos lotes automáticos sem mexer no bootstrap inicial
+- Em abril/2026 o incremental de memória passou a selecionar só projetos relacionados ao lote atual e tentar merge local de projetos antes de recorrer ao DeepSeek; isso reduz custo fixo e evita chamada extra do modelo em matches claros
 - Em abril/2026 o `automation_service` passou a preferir `plan_next_batch()` também nos jobs incrementais automáticos e no backlog drain; isso reduz custo de DeepSeek porque a execução real usa lote fixo de mensagens pendentes em vez de reler a janela automática larga
 - O merge incremental de projetos pode ser pulado quando o lote novo não trouxe candidatos de projeto; nesse caso os projetos existentes são preservados sem nova chamada ao modelo
 - O `refine_saved_memory` agora usa contexto dedicado mais compacto que o prompt padrão de análise e seleciona só os contatos mais relevantes para refinamento, evitando mandar todo o bloco salvo de contatos ao DeepSeek sem necessidade
 - A extração de `active_projects` agora combina prompt mais rígido no `deepseek_service` com refinamento local em `memory_service`, enriquecendo resumo/evidências/próximos passos a partir das mensagens-fonte e descartando projetos vagos
+- A tabela `project_memories` agora persiste também `aliases`, `stage`, `priority`, `blockers`, `confidence_score` e `last_material_update_at`; backend e dashboard principal já expõem esses campos
 - Em abril/2026 o `assistant_context_service` ganhou um caminho `structured-first` para intents de agenda e projetos: ele monta blocos compactos diretamente da agenda e de `project_memories` antes de recorrer a snapshots e contexto amplo
 - A tabela `project_memories` agora persiste `origin_source` (`memory` ou `manual`), o que permite preservar projetos criados manualmente na UI sem perdê-los em merges futuros
 - A agenda usa uma tabela unica para eventos automáticos e manuais; eventos criados manualmente entram em `agenda` com `message_id` sintético no formato `manual:{uuid}` e participam de conflito/lembrete igual aos demais

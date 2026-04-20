@@ -1064,6 +1064,9 @@ export function resolveOverviewNextAction(args: {
 }
 
 export function getProjectStrength(project: ProjectMemory): number {
+  if (project.confidence_score > 0) {
+    return Math.max(24, Math.min(100, project.confidence_score));
+  }
   const raw = 30 + (project.next_steps.length * 10) + (project.evidence.length * 7) + (project.status ? 8 : 0);
   return Math.max(24, Math.min(100, raw));
 }
@@ -1076,12 +1079,39 @@ export function getProjectStatusLabel(project: ProjectMemory): string {
   if (isProjectManuallyCompleted(project)) {
     return "Concluido manualmente";
   }
-  return project.status || "Em progresso";
+  if (project.status) {
+    return project.status;
+  }
+  if (project.stage === "planning") {
+    return "Planejamento";
+  }
+  if (project.stage === "review") {
+    return "Em revisao";
+  }
+  if (project.stage === "blocked") {
+    return "Bloqueado";
+  }
+  if (project.stage === "completed") {
+    return "Concluido";
+  }
+  return "Em progresso";
 }
 
 export function getProjectStatusTone(project: ProjectMemory): "emerald" | "amber" | "indigo" | "zinc" {
   if (isProjectManuallyCompleted(project)) {
     return "indigo";
+  }
+  if (project.stage === "blocked") {
+    return "amber";
+  }
+  if (project.stage === "review") {
+    return "indigo";
+  }
+  if (project.stage === "planning") {
+    return "zinc";
+  }
+  if (project.stage === "active") {
+    return "emerald";
   }
   const normalizedStatus = project.status.toLowerCase();
   if (normalizedStatus.includes("trav") || normalizedStatus.includes("risco") || normalizedStatus.includes("bloq")) {
@@ -1342,7 +1372,7 @@ function buildSmartContextHint(
   const scoredProjects = allProjects.map((p) => ({
     item: p,
     score: scoreByKeywords(
-      `${p.project_name} ${p.summary} ${p.status} ${p.what_is_being_built} ${p.built_for} ${p.next_steps.join(" ")}`,
+      `${p.project_name} ${p.summary} ${p.status} ${p.what_is_being_built} ${p.built_for} ${p.stage} ${p.priority} ${p.aliases.join(" ")} ${p.blockers.join(" ")} ${p.next_steps.join(" ")}`,
       keywords,
     ),
   }));
@@ -1943,6 +1973,10 @@ export function ConnectionDashboard({
       status: string;
       what_is_being_built: string;
       built_for: string;
+      aliases: string[];
+      stage: string;
+      priority: string;
+      blockers: string[];
       next_steps: string[];
       evidence: string[];
     },

@@ -434,6 +434,10 @@ class AssistantContextService:
             line = f"- {project.project_name}"
             if project.status:
                 line += f" [{project.status}]"
+            if project.stage:
+                line += f"; etapa: {self._summarize_text(project.stage, 32)}"
+            if project.priority:
+                line += f"; prioridade: {self._summarize_text(project.priority, 16)}"
             if project.next_steps:
                 line += f"; proximo passo: {self._summarize_text(project.next_steps[0], 120)}"
             elif project.summary:
@@ -676,11 +680,16 @@ class AssistantContextService:
                 project.status,
                 project.what_is_being_built,
                 project.built_for,
+                project.stage,
+                project.priority,
+                " ".join(project.aliases),
+                " ".join(project.blockers),
                 " ".join(project.next_steps),
                 " ".join(project.evidence),
             ]
         )
         score = self._score_text_block(haystack, queries)
+        score += min(5.0, max(0.0, project.confidence_score / 20.0))
         if project.last_seen_at:
             score += self._recency_score(project.last_seen_at, half_life_days=60)
         return score
@@ -886,12 +895,21 @@ class AssistantContextService:
             ]
             if project.status:
                 lines.append(f"  Status: {self._summarize_text(project.status, 80)}")
+            if project.stage:
+                lines.append(f"  Etapa: {self._summarize_text(project.stage, 48)}")
+            if project.priority:
+                lines.append(f"  Prioridade: {self._summarize_text(project.priority, 24)}")
             if project.what_is_being_built:
                 lines.append(
                     f"  O que esta sendo desenvolvido: {self._summarize_text(project.what_is_being_built, 160)}"
                 )
             if project.built_for:
                 lines.append(f"  Para quem: {self._summarize_text(project.built_for, 120)}")
+            if project.blockers:
+                lines.append(
+                    "  Bloqueios: "
+                    + "; ".join(self._summarize_items(project.blockers, item_limit=2, item_chars=90))
+                )
             if project.next_steps:
                 lines.append(
                     "  Proximos passos: "
@@ -1020,8 +1038,14 @@ class AssistantContextService:
                 lines.append(f"  Resumo: {project.summary}")
             if project.status:
                 lines.append(f"  Status: {project.status}")
+            if project.stage:
+                lines.append(f"  Etapa: {project.stage}")
+            if project.priority:
+                lines.append(f"  Prioridade: {project.priority}")
             if project.what_is_being_built:
                 lines.append(f"  O que esta sendo desenvolvido: {project.what_is_being_built}")
+            if project.blockers:
+                lines.append(f"  Bloqueios: {'; '.join(project.blockers[:2])}")
             if project.next_steps:
                 lines.append(f"  Proximos passos: {'; '.join(project.next_steps[:3])}")
             blocks.append("\n".join(lines))

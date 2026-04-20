@@ -158,6 +158,36 @@ class SQLiteClient:
                 "origin_source",
                 "ALTER TABLE project_memories ADD COLUMN origin_source TEXT NOT NULL DEFAULT 'memory'",
             ),
+            (
+                "project_memories",
+                "aliases",
+                "ALTER TABLE project_memories ADD COLUMN aliases TEXT NOT NULL DEFAULT '[]'",
+            ),
+            (
+                "project_memories",
+                "stage",
+                "ALTER TABLE project_memories ADD COLUMN stage TEXT NOT NULL DEFAULT ''",
+            ),
+            (
+                "project_memories",
+                "priority",
+                "ALTER TABLE project_memories ADD COLUMN priority TEXT NOT NULL DEFAULT ''",
+            ),
+            (
+                "project_memories",
+                "blockers",
+                "ALTER TABLE project_memories ADD COLUMN blockers TEXT NOT NULL DEFAULT '[]'",
+            ),
+            (
+                "project_memories",
+                "confidence_score",
+                "ALTER TABLE project_memories ADD COLUMN confidence_score INTEGER NOT NULL DEFAULT 0",
+            ),
+            (
+                "project_memories",
+                "last_material_update_at",
+                "ALTER TABLE project_memories ADD COLUMN last_material_update_at TEXT",
+            ),
         ]
         with self._lock:
             for table_name, column_name, alter_sql in migrations:

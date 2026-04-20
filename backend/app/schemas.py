@@ -443,6 +443,10 @@ class UpdateProjectMemoryRequest(BaseModel):
     status: str | None = Field(default=None, max_length=120)
     what_is_being_built: str | None = Field(default=None, max_length=800)
     built_for: str | None = Field(default=None, max_length=800)
+    aliases: list[str] | None = None
+    stage: str | None = Field(default=None, max_length=64)
+    priority: str | None = Field(default=None, max_length=32)
+    blockers: list[str] | None = None
     next_steps: list[str] | None = None
     evidence: list[str] | None = None
 
@@ -453,6 +457,10 @@ class CreateProjectMemoryRequest(BaseModel):
     status: str = Field(default="", max_length=120)
     what_is_being_built: str = Field(default="", max_length=800)
     built_for: str = Field(default="", max_length=800)
+    aliases: list[str] = Field(default_factory=list)
+    stage: str = Field(default="", max_length=64)
+    priority: str = Field(default="", max_length=32)
+    blockers: list[str] = Field(default_factory=list)
     next_steps: list[str] = Field(default_factory=list)
     evidence: list[str] = Field(default_factory=list)
 
@@ -499,10 +507,16 @@ class ProjectMemoryResponse(BaseModel):
     status: str = ""
     what_is_being_built: str = ""
     built_for: str = ""
+    aliases: list[str] = Field(default_factory=list)
+    stage: str = ""
+    priority: str = ""
+    blockers: list[str] = Field(default_factory=list)
+    confidence_score: int = Field(default=0, ge=0, le=100)
     next_steps: list[str] = Field(default_factory=list)
     evidence: list[str] = Field(default_factory=list)
     source_snapshot_id: str | None = None
     last_seen_at: datetime | None = None
+    last_material_update_at: datetime | None = None
     completion_source: str = ""
     manual_completed_at: datetime | None = None
     manual_completion_notes: str = ""
