@@ -585,12 +585,57 @@ class AgendaEventResponse(BaseModel):
     pre_reminder_at: datetime | None = None
     pre_reminder_sent_at: datetime | None = None
     reminder_sent_at: datetime | None = None
+    recurrence_rule: str | None = None
+    parent_event_id: str | None = None
+    excluded_dates: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
 
 class AgendaEventsListResponse(BaseModel):
     events: list[AgendaEventResponse] = Field(default_factory=list)
+
+
+class AgendaQueryRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=800)
+    reference_now: datetime | None = None
+
+
+class AgendaQueryResponse(BaseModel):
+    is_query: bool = False
+    time_range_description: str = ""
+    assistant_reply: str | None = None
+    events: list[AgendaEventResponse] = Field(default_factory=list)
+
+
+class AgendaPendingEventResponse(BaseModel):
+    titulo: str
+    inicio: datetime | None = None
+    fim: datetime | None = None
+    status: Literal["firme", "tentativo"] = "tentativo"
+    contato_origem: str | None = None
+    reminder_offset_minutes: int = Field(default=0, ge=0)
+    recurrence_rule: str | None = None
+    source_message_id: str
+    created_at: datetime
+    expires_at: datetime
+    confirmation_prompt: str
+
+
+class AgendaPendingConfirmationResponse(BaseModel):
+    has_pending_confirmation: bool = False
+    pending_event: AgendaPendingEventResponse | None = None
+
+
+class AgendaPendingConfirmationResolveRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=200)
+
+
+class AgendaPendingConfirmationResolveResponse(BaseModel):
+    handled: bool = False
+    action: str = "none"
+    saved_event: AgendaEventResponse | None = None
+    skipped_reason: str | None = None
 
 
 class CreateAgendaEventRequest(BaseModel):
@@ -600,6 +645,7 @@ class CreateAgendaEventRequest(BaseModel):
     status: Literal["firme", "tentativo"] = "firme"
     contato_origem: str | None = Field(default=None, max_length=160)
     reminder_offset_minutes: int = Field(default=0, ge=0, le=10080)
+    recurrence_rule: str | None = None
 
 
 class UpdateAgendaEventRequest(BaseModel):
@@ -609,6 +655,8 @@ class UpdateAgendaEventRequest(BaseModel):
     status: Literal["firme", "tentativo"] | None = None
     contato_origem: str | None = Field(default=None, max_length=160)
     reminder_offset_minutes: int | None = Field(default=None, ge=0, le=10080)
+    recurrence_rule: str | None = None
+    excluded_dates: list[str] | None = None
 
 
 class AutomationSettingsResponse(BaseModel):

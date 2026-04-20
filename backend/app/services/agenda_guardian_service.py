@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 from zoneinfo import ZoneInfo
+
+from dateutil import parser as dateutil_parser
 
 from app.config import Settings
 from app.services.deepseek_service import (
@@ -135,7 +137,7 @@ REMINDER_OFFSET_REGEXES = [
     re.compile(
         r"\b(?:me\s+)?(?:avise|avisa|avisar|lembre|lembra|lembrar)(?:\s+de)?(?:\s+com)?\s+"
         r"(?P<amount>\d{1,4}|uma|um|meia)\s*"
-        r"(?P<unit>min(?:uto)?s?|h(?:ora)?s?|dia?s?)\s+"
+        r"(?P<unit>min(?:uto)?s?|h(?:hora)?s?|dia?s?)\s+"
         r"(?:antes|de\s+anteced[eê]ncia)\b",
         re.IGNORECASE,
     ),
@@ -146,6 +148,41 @@ REMINDER_OFFSET_REGEXES = [
         re.IGNORECASE,
     ),
 ]
+
+# Query patterns for agenda questions like "what do I have tomorrow?"
+AGENDA_QUERY_REGEX = re.compile(
+    r"\b(?:o\s+que\s+(?:tenho|tem|houve)|quais\s+(?:s[aã]o\s+)?(?:os\s+)?(?:meus|meus)\s*(?:compromissos|eventos|agendas)|"
+    r"me\s+(?:mostre|fale|diga|liste)|(?:tem|tenho)\s+(?:algum|alguma)?\s*(?:compromisso|evento|coisa)|"
+    r"como\s+(?:est[aá]|ta)\s+(?:minha|a)\s*agenda|ver\s*(?:minha|a)?\s*agenda|"
+    r"(?:qual|quais)\s+(?:e|s[aã]o)\s+(?:os|meus)\s*(?:compromissos|eventos)?)\b",
+    re.IGNORECASE,
+)
+
+# Implicit intent patterns - "tenho que ir ao médico amanhã"
+IMPLICIT_SCHEDULE_REGEX = re.compile(
+    r"\b(?:tenho\s+(?:que|de)|preciso(?:\s+ir)?|vou(?:\s+ter)?\s+(?:ir|fazer)|"
+    r"(?:tenho|vou)?\s*(?:consulta|reuni[aã]o|encontro|aula|call|entrevista))\b",
+    re.IGNORECASE,
+)
+
+# Confirmation patterns for pending events
+CONFIRM_ACTION_REGEX = re.compile(
+    r"\b(?:confirm(?:ar|a|ado)?|sim|certo|certa|vai|pode|isso(?:\s+mesmo)?|ok|blz|beleza|combinado|fechado)\b",
+    re.IGNORECASE,
+)
+CANCEL_PENDING_REGEX = re.compile(
+    r"\b(?:cancel(?:ar|a|ou)?|nao|n[aã]o|errado|errada|esquec(?:e|a)|deixa|faz\s+de\s+conta)\b",
+    re.IGNORECASE,
+)
+
+# Recurring patterns
+RECURRING_PATTERN_REGEX = re.compile(
+    r"\b(?:toda\s+(?:segunda|ter[cç]a|quarta|quinta|sexta|s[aá]bado|domingo)|"
+    r"todo\s+(?:dia)|(?:todas\s+as)?\s*(?:segundas|ter[cç]as|quartas|quintas|sextas|s[aá]bados|domingos)|"
+    r"(?:cada|todo)\s+(?:segunda|ter[cç]a|quarta|quinta|sexta|s[aá]bado|domingo)|"
+    r"(?:semanal|quinzenal|mensal|anual))\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass(slots=True)
@@ -174,6 +211,23 @@ class AgendaConflictResolutionOutcome:
     skipped_reason: str | None = None
 
 
+@dataclass(slots=True)
+class AgendaQueryResult:
+    is_query: bool = False
+    events: list[AgendaEventRecord] = field(default_factory=list)
+    time_range_description: str = ""
+    assistant_reply: str | None = None
+
+
+@dataclass(slots=True)
+class PendingEventState:
+    event_data: dict
+    created_at: datetime
+    expires_at: datetime
+    source_message_id: str
+    confirmed: bool = False
+
+
 class AgendaGuardianService:
     def __init__(
         self,
@@ -191,6 +245,8 @@ class AgendaGuardianService:
         self.agent_gateway = agent_gateway
         self._reminder_task: asyncio.Task[None] | None = None
         self._reminder_lock = asyncio.Lock()
+        self._pending_events: dict[str, PendingEventState] = {}
+        self._pending_lock = asyncio.Lock()
 
     def warm_start(self) -> None:
         existing = self._reminder_task
@@ -1302,3 +1358,385 @@ class AgendaGuardianService:
     def _format_local(self, value: datetime) -> str:
         localized = value.astimezone(DEFAULT_TIMEZONE)
         return localized.strftime("%d/%m/%Y às %H:%M")
+
+    # ========== AGENDA QUERY HANDLING ==========
+
+    def detect_agenda_query(self, text: str) -> bool:
+        """Check if message is asking about agenda events."""
+        return bool(AGENDA_QUERY_REGEX.search(text)) and bool(DATE_SIGNAL_REGEX.search(text))
+
+    def parse_query_time_range(self, text: str, reference: datetime) -> tuple[datetime, datetime, str]:
+        """Parse query text to extract time range. Returns (start, end, description)."""
+        text_lower = text.lower()
+        now_local = reference.astimezone(DEFAULT_TIMEZONE)
+        today = now_local.date()
+
+        # Today
+        if "hoje" in text_lower:
+            start = datetime.combine(today, datetime.min.time(), tzinfo=DEFAULT_TIMEZONE)
+            end = start + timedelta(days=1)
+            return start.astimezone(UTC), end.astimezone(UTC), "hoje"
+
+        # Tomorrow
+        if "amanh" in text_lower or "amanhã" in text_lower:
+            tomorrow = today + timedelta(days=1)
+            start = datetime.combine(tomorrow, datetime.min.time(), tzinfo=DEFAULT_TIMEZONE)
+            end = start + timedelta(days=1)
+            return start.astimezone(UTC), end.astimezone(UTC), "amanhã"
+
+        # Specific weekday
+        weekday_names = {
+            "segunda": 0, "terca": 1, "terça": 1, "quarta": 2,
+            "quinta": 3, "sexta": 4, "sabado": 5, "sábado": 5, "domingo": 6
+        }
+        for name, idx in weekday_names.items():
+            if name in text_lower:
+                days_ahead = (idx - today.weekday()) % 7
+                if days_ahead == 0 and ("proxim" in text_lower or "próxim" in text_lower):
+                    days_ahead = 7
+                target_date = today + timedelta(days=days_ahead)
+                start = datetime.combine(target_date, datetime.min.time(), tzinfo=DEFAULT_TIMEZONE)
+                end = start + timedelta(days=1)
+                return start.astimezone(UTC), end.astimezone(UTC), name
+
+        # Default: next 7 days
+        start = datetime.combine(today, datetime.min.time(), tzinfo=DEFAULT_TIMEZONE)
+        end = start + timedelta(days=7)
+        return start.astimezone(UTC), end.astimezone(UTC), "esta semana"
+
+    async def handle_agenda_query(
+        self,
+        *,
+        user_id: UUID,
+        text: str,
+        reference_now: datetime,
+    ) -> AgendaQueryResult:
+        """Handle agenda query messages like 'what do I have tomorrow?'"""
+        start, end, description = self.parse_query_time_range(text, reference_now)
+
+        events = [
+            event
+            for event in self.store.list_agenda_events(user_id=user_id, limit=120, starts_after=start)
+            if event.inicio < end
+        ]
+
+        reply = self._format_query_response(events, description)
+        return AgendaQueryResult(
+            is_query=True,
+            events=events,
+            time_range_description=description,
+            assistant_reply=reply,
+        )
+
+    def _format_query_response(self, events: list[AgendaEventRecord], description: str) -> str:
+        """Format a human-friendly response for agenda queries."""
+        if not events:
+            return f"📭 Você não tem compromissos {description}."
+
+        status_emoji = {"firme": "✅", "tentativo": "⏳"}
+        lines = [f"📅 Seus compromissos {description}:\n"]
+
+        for event in sorted(events, key=lambda e: e.inicio):
+            emoji = status_emoji.get(event.status, "📌")
+            local_time = event.inicio.astimezone(DEFAULT_TIMEZONE)
+            time_str = local_time.strftime("%H:%M")
+
+            line = f"{emoji} **{event.titulo}** às {time_str}"
+            if event.contato_origem:
+                line += f" ({event.contato_origem})"
+
+            if event.recurrence_rule:
+                recur_desc = self._describe_recurrence(event.recurrence_rule)
+                line += f" 🔄{recur_desc}"
+
+            lines.append(line)
+
+        return "\n".join(lines)
+
+    # ========== PENDING EVENT CONFIRMATION ==========
+
+    async def check_pending_confirmation(
+        self,
+        *,
+        user_id: UUID,
+        text: str,
+    ) -> AgendaProcessingResult | None:
+        """Check if user is confirming/canceling a pending event."""
+        user_key = str(user_id)
+        pending = self._pending_events.get(user_key)
+        if pending is None:
+            return None
+
+        now = datetime.now(UTC)
+        if now > pending.expires_at:
+            del self._pending_events[user_key]
+            return None
+
+        text_lower = text.lower()
+
+        if CONFIRM_ACTION_REGEX.search(text_lower):
+            return await self._confirm_pending_event(user_id=user_id, pending=pending)
+
+        if CANCEL_PENDING_REGEX.search(text_lower):
+            return await self._cancel_pending_event(user_id=user_id, pending=pending)
+
+        return None
+
+    async def _confirm_pending_event(
+        self,
+        *,
+        user_id: UUID,
+        pending: PendingEventState,
+    ) -> AgendaProcessingResult:
+        """Save a pending event after user confirmation."""
+        user_key = str(user_id)
+        del self._pending_events[user_key]
+
+        titulo = pending.event_data.get("titulo", "Compromisso")
+        inicio_str = pending.event_data.get("inicio")
+        fim_str = pending.event_data.get("fim")
+        status = pending.event_data.get("status", "tentativo")
+        contato_origem = pending.event_data.get("contato_origem")
+        reminder_offset_minutes = pending.event_data.get("reminder_offset_minutes", 0)
+        recurrence_rule = pending.event_data.get("recurrence_rule")
+
+        from dateutil import parser as dateutil_parser
+        try:
+            inicio = dateutil_parser.parse(inicio_str) if inicio_str else None
+            fim = dateutil_parser.parse(fim_str) if fim_str else None
+        except Exception:
+            inicio = None
+            fim = None
+
+        if inicio is None:
+            return AgendaProcessingResult(action="create", skipped_reason="invalid_pending_data")
+
+        if fim is None or fim <= inicio:
+            fim = inicio + DEFAULT_EVENT_DURATION
+
+        saved_event = self.store.upsert_agenda_event(
+            user_id=user_id,
+            titulo=titulo,
+            inicio=inicio,
+            fim=fim,
+            status=status,
+            contato_origem=contato_origem,
+            message_id=f"confirmed:{pending.source_message_id}",
+            reminder_offset_minutes=reminder_offset_minutes or 0,
+            recurrence_rule=recurrence_rule,
+        )
+
+        self._log_debug(f"[Guardião do Tempo] Evento confirmado: '{saved_event.titulo}' em {self._format_local(saved_event.inicio)}")
+
+        return AgendaProcessingResult(
+            detected=True,
+            action="create",
+            saved_event=saved_event,
+        )
+
+    async def _cancel_pending_event(
+        self,
+        *,
+        user_id: UUID,
+        pending: PendingEventState,
+    ) -> AgendaProcessingResult:
+        """Cancel a pending event."""
+        user_key = str(user_id)
+        del self._pending_events[user_key]
+
+        return AgendaProcessingResult(
+            detected=True,
+            action="cancel",
+            skipped_reason="user_cancelled_pending",
+        )
+
+    def store_pending_event(
+        self,
+        *,
+        user_id: UUID,
+        event_data: dict,
+        message_id: str,
+        ttl_minutes: int = 10,
+    ) -> None:
+        """Store an event pending user confirmation."""
+        user_key = str(user_id)
+        now = datetime.now(UTC)
+        pending = PendingEventState(
+            event_data=event_data,
+            created_at=now,
+            expires_at=now + timedelta(minutes=ttl_minutes),
+            source_message_id=message_id,
+        )
+        self._pending_events[user_key] = pending
+
+    def get_pending_event(self, user_id: UUID) -> PendingEventState | None:
+        """Get the pending event for a user."""
+        return self._pending_events.get(str(user_id))
+
+    def _format_confirmation_request(self, event_data: dict) -> str:
+        """Format a confirmation prompt for a pending event."""
+        titulo = event_data.get("titulo", "Compromisso")
+        inicio_str = event_data.get("inicio", "")
+        status = event_data.get("status", "tentativo")
+
+        from dateutil import parser as dateutil_parser
+        try:
+            inicio = dateutil_parser.parse(inicio_str)
+            local_time = inicio.astimezone(DEFAULT_TIMEZONE)
+            formatted_time = local_time.strftime("%d/%m/%Y às %H:%M")
+        except Exception:
+            formatted_time = inicio_str
+
+        status_text = "✅ Firme" if status == "firme" else "⏳ Tentativo"
+
+        return (
+            f"📌 Vou cadastrar:\n\n"
+            f"**{titulo}**\n"
+            f"📅 {formatted_time}\n"
+            f"Status: {status_text}\n\n"
+            f"Posso confirmar este compromisso? Responda *sim* ou *não*."
+        )
+
+    # ========== RECURRING EVENTS ==========
+
+    def detect_recurring_pattern(self, text: str) -> str | None:
+        """Detect recurring pattern and return RRULE string."""
+        text_lower = text.lower()
+
+        weekday_rrules = {
+            "segunda": "FREQ=WEEKLY;BYDAY=MO",
+            "terca": "FREQ=WEEKLY;BYDAY=TU",
+            "terça": "FREQ=WEEKLY;BYDAY=TU",
+            "quarta": "FREQ=WEEKLY;BYDAY=WE",
+            "quinta": "FREQ=WEEKLY;BYDAY=TH",
+            "sexta": "FREQ=WEEKLY;BYDAY=FR",
+            "sabado": "FREQ=WEEKLY;BYDAY=SA",
+            "sábado": "FREQ=WEEKLY;BYDAY=SA",
+            "domingo": "FREQ=WEEKLY;BYDAY=SU",
+        }
+
+        # "toda segunda", "todas as segundas"
+        for name, rrule in weekday_rrules.items():
+            patterns = [
+                f"toda {name}",
+                f"todas as {name}s",
+                f"todo {name}",
+                f"todos os {name}s" if name != "sabado" and name != "sábado" else None,
+            ]
+            for pattern in patterns:
+                if pattern and pattern in text_lower:
+                    return rrule
+
+        # Specific common patterns
+        if "todo dia" in text_lower or "todos os dias" in text_lower:
+            return "FREQ=DAILY"
+
+        if "semanal" in text_lower:
+            return "FREQ=WEEKLY"
+
+        if "quinzenal" in text_lower:
+            return "FREQ=WEEKLY;INTERVAL=2"
+
+        if "mensal" in text_lower or "por mês" in text_lower:
+            return "FREQ=MONTHLY"
+
+        return None
+
+    def _describe_recurrence(self, rrule: str) -> str:
+        """Return human-friendly description of recurrence pattern."""
+        if not rrule:
+            return ""
+
+        patterns = {
+            "FREQ=DAILY": " (diário)",
+            "FREQ=WEEKLY": " (semanal)",
+            "FREQ=WEEKLY;INTERVAL=2": " (quinzenal)",
+            "FREQ=MONTHLY": " (mensal)",
+        }
+
+        for pattern, desc in patterns.items():
+            if rrule.startswith(pattern):
+                return desc
+
+        # BYDAY patterns
+        day_map = {
+            "MO": "segundas", "TU": "terças", "WE": "quartas",
+            "TH": "quintas", "FR": "sextas", "SA": "sábados", "SU": "domingos"
+        }
+        for code, day_name in day_map.items():
+            if f"BYDAY={code}" in rrule:
+                return f" (todas as {day_name})"
+
+        return ""
+
+    # ========== IMPROVED RESPONSE FORMATTING ==========
+
+    def format_event_created_message(
+        self,
+        *,
+        event: AgendaEventRecord,
+        is_update: bool = False,
+        has_conflict: bool = False,
+        conflict_event: AgendaEventRecord | None = None,
+    ) -> str:
+        """Format a comprehensive message when an event is created/updated."""
+        action_verb = "atualizado" if is_update else "cadastrado"
+        local_inicio = event.inicio.astimezone(DEFAULT_TIMEZONE)
+        local_fim = event.fim.astimezone(DEFAULT_TIMEZONE)
+
+        status_emoji = "✅" if event.status == "firme" else "⏳"
+        status_text = "Firme" if event.status == "firme" else "Tentativo"
+
+        duration = local_fim - local_inicio
+        if duration.total_seconds() > 0:
+            hours = int(duration.total_seconds() // 3600)
+            minutes = int((duration.total_seconds() % 3600) // 60)
+            if hours > 0:
+                duration_text = f"\n⏱️ Duração: {hours}h" + (f" {minutes}min" if minutes > 0 else "")
+            else:
+                duration_text = f"\n⏱️ Duração: {minutes}min"
+        else:
+            duration_text = ""
+
+        reminder_text = ""
+        if event.reminder_offset_minutes > 0:
+            reminder_text = f"\n🔔 Lembrete: {event.reminder_offset_minutes} min antes"
+
+        recurrence_text = ""
+        if event.recurrence_rule:
+            recurrence_text = f"\n🔄 Recorrência:{self._describe_recurrence(event.recurrence_rule)}"
+
+        origin_text = ""
+        if event.contato_origem:
+            origin_text = f"\n👤 Com: {event.contato_origem}"
+
+        conflict_text = ""
+        if has_conflict and conflict_event:
+            conflict_local = conflict_event.inicio.astimezone(DEFAULT_TIMEZONE)
+            conflict_text = (
+                f"\n\n⚠️ **Conflito detectado** com '{conflict_event.titulo}' às "
+                f"{conflict_local.strftime('%H:%M')}. Vou te enviar detalhes separadamente."
+            )
+
+        return (
+            f"{status_emoji} **Compromisso {action_verb}!**\n\n"
+            f"📌 **{event.titulo}**\n"
+            f"📅 {local_inicio.strftime('%d/%m/%Y')}\n"
+            f"🕐 {local_inicio.strftime('%H:%M')} - {local_fim.strftime('%H:%M')}"
+            f"{duration_text}"
+            f"{origin_text}"
+            f"\n📊 Status: {status_text}"
+            f"{reminder_text}"
+            f"{recurrence_text}"
+            f"{conflict_text}"
+        )
+
+    def format_event_cancelled_message(self, event: AgendaEventRecord) -> str:
+        """Format a message when an event is cancelled."""
+        local_inicio = event.inicio.astimezone(DEFAULT_TIMEZONE)
+        return (
+            f"🗑️ **Compromisso removido**\n\n"
+            f"📌 {event.titulo}\n"
+            f"📅 {local_inicio.strftime('%d/%m/%Y às %H:%M')}\n"
+            f"Status original: {'Firme' if event.status == 'firme' else 'Tentativo'}"
+        )

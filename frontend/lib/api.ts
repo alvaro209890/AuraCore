@@ -314,6 +314,9 @@ export type AgendaEvent = {
   pre_reminder_at: string | null;
   pre_reminder_sent_at: string | null;
   reminder_sent_at: string | null;
+  recurrence_rule?: string | null;
+  parent_event_id?: string | null;
+  excluded_dates?: string[];
   created_at: string;
   updated_at: string;
 };
@@ -325,6 +328,8 @@ export type UpdateAgendaEventInput = {
   status?: "firme" | "tentativo";
   contato_origem?: string;
   reminder_offset_minutes?: number;
+  recurrence_rule?: string | null;
+  excluded_dates?: string[];
 };
 
 export type CreateAgendaEventInput = {
@@ -334,6 +339,7 @@ export type CreateAgendaEventInput = {
   status?: "firme" | "tentativo";
   contato_origem?: string;
   reminder_offset_minutes?: number;
+  recurrence_rule?: string | null;
 };
 
 export type ProjectAssistantEditResponse = {
@@ -916,12 +922,56 @@ export async function deleteAgendaEvent(eventId: string): Promise<SimpleOkRespon
   });
 }
 
+function normalizeStringField(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function normalizeNullableStringField(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function normalizeStringListField(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((item): item is string => typeof item === "string");
+}
+
+function normalizeProjectMemory(project: ProjectMemory): ProjectMemory {
+  return {
+    ...project,
+    id: normalizeStringField(project.id),
+    project_key: normalizeStringField(project.project_key),
+    project_name: normalizeStringField(project.project_name),
+    origin_source: project.origin_source === "manual" ? "manual" : "memory",
+    summary: normalizeStringField(project.summary),
+    status: normalizeStringField(project.status),
+    what_is_being_built: normalizeStringField(project.what_is_being_built),
+    built_for: normalizeStringField(project.built_for),
+    aliases: normalizeStringListField(project.aliases),
+    stage: normalizeStringField(project.stage),
+    priority: normalizeStringField(project.priority),
+    blockers: normalizeStringListField(project.blockers),
+    confidence_score: typeof project.confidence_score === "number" && Number.isFinite(project.confidence_score) ? project.confidence_score : 0,
+    next_steps: normalizeStringListField(project.next_steps),
+    evidence: normalizeStringListField(project.evidence),
+    source_snapshot_id: normalizeNullableStringField(project.source_snapshot_id),
+    last_seen_at: normalizeNullableStringField(project.last_seen_at),
+    last_material_update_at: normalizeNullableStringField(project.last_material_update_at),
+    completion_source: normalizeStringField(project.completion_source),
+    manual_completed_at: normalizeNullableStringField(project.manual_completed_at),
+    manual_completion_notes: normalizeStringField(project.manual_completion_notes),
+    updated_at: normalizeStringField(project.updated_at),
+  };
+}
+
 export async function getMemoryProjects(): Promise<ProjectMemory[]> {
-  return request<ProjectMemory[]>("/api/memories/projects");
+  const response = await request<ProjectMemory[]>("/api/memories/projects");
+  return Array.isArray(response) ? response.map(normalizeProjectMemory) : [];
 }
 
 export async function createMemoryProject(input: CreateProjectMemoryInput): Promise<ProjectMemory> {
-  return request<ProjectMemory>("/api/memories/projects", {
+  const response = await request<ProjectMemory>("/api/memories/projects", {
     method: "POST",
     body: JSON.stringify({
       project_name: input.project_name,
@@ -937,6 +987,7 @@ export async function createMemoryProject(input: CreateProjectMemoryInput): Prom
       evidence: input.evidence ?? [],
     }),
   });
+  return normalizeProjectMemory(response);
 }
 
 export async function getMemoryRelations(): Promise<PersonRelation[]> {
@@ -960,13 +1011,14 @@ export async function updateMemoryProjectCompletion(
   projectKey: string,
   input: { completed: boolean; completion_notes?: string },
 ): Promise<ProjectMemory> {
-  return request<ProjectMemory>(`/api/memories/projects/${encodeURIComponent(projectKey)}`, {
+  const response = await request<ProjectMemory>(`/api/memories/projects/${encodeURIComponent(projectKey)}`, {
     method: "PUT",
     body: JSON.stringify({
       completed: input.completed,
       completion_notes: input.completion_notes ?? "",
     }),
   });
+  return normalizeProjectMemory(response);
 }
 
 export async function updateMemoryProject(
@@ -987,20 +1039,25 @@ export async function updateMemoryProject(
     evidence?: string[];
   },
 ): Promise<ProjectMemory> {
-  return request<ProjectMemory>(`/api/memories/projects/${encodeURIComponent(projectKey)}`, {
+  const response = await request<ProjectMemory>(`/api/memories/projects/${encodeURIComponent(projectKey)}`, {
     method: "PUT",
     body: JSON.stringify(input),
   });
+  return normalizeProjectMemory(response);
 }
 
 export async function assistMemoryProjectEdit(
   projectKey: string,
   instruction: string,
 ): Promise<ProjectAssistantEditResponse> {
-  return request<ProjectAssistantEditResponse>(`/api/memories/projects/${encodeURIComponent(projectKey)}/assist`, {
+  const response = await request<ProjectAssistantEditResponse>(`/api/memories/projects/${encodeURIComponent(projectKey)}/assist`, {
     method: "POST",
     body: JSON.stringify({ instruction }),
   });
+  return {
+    ...response,
+    project: normalizeProjectMemory(response.project),
+  };
 }
 
 export async function deleteMemoryProject(projectKey: string): Promise<SimpleOkResponse> {

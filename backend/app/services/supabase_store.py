@@ -84,6 +84,9 @@ SQLITE_LEGACY_COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
         "reminder_offset_minutes": "INTEGER NOT NULL DEFAULT 0",
         "pre_reminder_sent_at": "TEXT",
         "reminder_sent_at": "TEXT",
+        "recurrence_rule": "TEXT",
+        "parent_event_id": "TEXT",
+        "excluded_dates": "TEXT NOT NULL DEFAULT '[]'",
     },
     "whatsapp_agent_terminal_sessions": {
         "pending_command_text": "TEXT",
@@ -3254,6 +3257,7 @@ class SupabaseStore:
         contato_origem: str | None,
         message_id: str,
         reminder_offset_minutes: int = 0,
+        recurrence_rule: str | None = None,
     ) -> AgendaEventRecord:
         existing = self.get_agenda_event_by_message_id(user_id=user_id, message_id=message_id)
         now = datetime.now(UTC)
@@ -3271,6 +3275,9 @@ class SupabaseStore:
                 existing.pre_reminder_sent_at.isoformat() if existing and existing.pre_reminder_sent_at else None
             ),
             "reminder_sent_at": existing.reminder_sent_at.isoformat() if existing and existing.reminder_sent_at else None,
+            "recurrence_rule": self._optional_text(recurrence_rule),
+            "parent_event_id": None,
+            "excluded_dates": "[]",
             "created_at": (existing.created_at if existing else now).astimezone(UTC).isoformat(),
             "updated_at": now.isoformat(),
         }
@@ -3291,7 +3298,8 @@ class SupabaseStore:
     ) -> list[AgendaEventRecord]:
         sql = """
             SELECT id,user_id,titulo,inicio,fim,status,contato_origem,message_id,
-                   reminder_offset_minutes,pre_reminder_sent_at,reminder_sent_at,created_at,updated_at
+                   reminder_offset_minutes,pre_reminder_sent_at,reminder_sent_at,
+                   recurrence_rule,parent_event_id,excluded_dates,created_at,updated_at
             FROM agenda
             WHERE user_id = ?
               AND inicio < ?
@@ -3327,7 +3335,8 @@ class SupabaseStore:
             self.client.table("agenda")
             .select(
                 "id,user_id,titulo,inicio,fim,status,contato_origem,message_id,"
-                "reminder_offset_minutes,pre_reminder_sent_at,reminder_sent_at,created_at,updated_at"
+                "reminder_offset_minutes,pre_reminder_sent_at,reminder_sent_at,"
+                "recurrence_rule,parent_event_id,excluded_dates,created_at,updated_at"
             )
             .eq("user_id", str(user_id))
             .order("inicio", desc=False)
@@ -3354,6 +3363,7 @@ class SupabaseStore:
         status: str,
         contato_origem: str | None,
         reminder_offset_minutes: int,
+        recurrence_rule: str | None = None,
         created_at: datetime,
     ) -> AgendaEventRecord:
         record_id = str(uuid4())
@@ -3369,6 +3379,9 @@ class SupabaseStore:
             "reminder_offset_minutes": max(0, int(reminder_offset_minutes)),
             "pre_reminder_sent_at": None,
             "reminder_sent_at": None,
+            "recurrence_rule": self._optional_text(recurrence_rule),
+            "parent_event_id": None,
+            "excluded_dates": "[]",
             "created_at": created_at.isoformat(),
             "updated_at": created_at.isoformat(),
         }
@@ -3391,7 +3404,8 @@ class SupabaseStore:
         current_time = (now or datetime.now(UTC)).astimezone(UTC).isoformat()
         sql = """
             SELECT id,user_id,titulo,inicio,fim,status,contato_origem,message_id,
-                   reminder_offset_minutes,pre_reminder_sent_at,reminder_sent_at,created_at,updated_at
+                   reminder_offset_minutes,pre_reminder_sent_at,reminder_sent_at,
+                   recurrence_rule,parent_event_id,excluded_dates,created_at,updated_at
             FROM agenda
             WHERE user_id = ?
               AND lower(trim(contato_origem)) = lower(trim(?))
@@ -3409,7 +3423,8 @@ class SupabaseStore:
             self.client.table("agenda")
             .select(
                 "id,user_id,titulo,inicio,fim,status,contato_origem,message_id,"
-                "reminder_offset_minutes,pre_reminder_sent_at,reminder_sent_at,created_at,updated_at"
+                "reminder_offset_minutes,pre_reminder_sent_at,reminder_sent_at,"
+                "recurrence_rule,parent_event_id,excluded_dates,created_at,updated_at"
             )
             .eq("user_id", str(user_id))
             .eq("id", event_id)
@@ -3432,6 +3447,8 @@ class SupabaseStore:
         status: str | None = None,
         contato_origem: str | None = None,
         reminder_offset_minutes: int | None = None,
+        recurrence_rule: str | None = None,
+        excluded_dates: list[str] | None = None,
         reset_reminder: bool = True,
     ) -> AgendaEventRecord | None:
         existing = self.get_agenda_event(user_id=user_id, event_id=event_id)
@@ -3452,6 +3469,10 @@ class SupabaseStore:
             payload["contato_origem"] = self._optional_text(contato_origem)
         if reminder_offset_minutes is not None:
             payload["reminder_offset_minutes"] = max(0, int(reminder_offset_minutes))
+        if recurrence_rule is not None:
+            payload["recurrence_rule"] = self._optional_text(recurrence_rule)
+        if excluded_dates is not None:
+            payload["excluded_dates"] = json.dumps(self._clean_and_unique_string_list(excluded_dates, limit=120))
         if reset_reminder:
             payload["pre_reminder_sent_at"] = None
             payload["reminder_sent_at"] = None
@@ -3474,7 +3495,8 @@ class SupabaseStore:
     ) -> list[AgendaEventRecord]:
         sql = """
             SELECT id,user_id,titulo,inicio,fim,status,contato_origem,message_id,
-                   reminder_offset_minutes,pre_reminder_sent_at,reminder_sent_at,created_at,updated_at
+                   reminder_offset_minutes,pre_reminder_sent_at,reminder_sent_at,
+                   recurrence_rule,parent_event_id,excluded_dates,created_at,updated_at
             FROM agenda
             WHERE user_id = ?
               AND reminder_offset_minutes > 0
@@ -3502,7 +3524,8 @@ class SupabaseStore:
     ) -> list[AgendaEventRecord]:
         sql = """
             SELECT id,user_id,titulo,inicio,fim,status,contato_origem,message_id,
-                   reminder_offset_minutes,pre_reminder_sent_at,reminder_sent_at,created_at,updated_at
+                   reminder_offset_minutes,pre_reminder_sent_at,reminder_sent_at,
+                   recurrence_rule,parent_event_id,excluded_dates,created_at,updated_at
             FROM agenda
             WHERE user_id = ?
               AND inicio <= ?

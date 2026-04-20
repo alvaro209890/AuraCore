@@ -52,6 +52,7 @@
 - O contexto de resposta do Orion agora prioriza carregamento sob demanda: projetos, snapshots e memória do contato entram no prompt apenas quando o planner indicar necessidade real
 - Mensagens simples/curtas podem pular a etapa de `assistant_search_plan` e cair direto no fallback heurístico para reduzir custo e latência
 - O pipeline `improve_memory` usa um contexto próprio mais enxuto que o da `first_analysis`, para reduzir tokens nos lotes automáticos sem mexer no bootstrap inicial
+- O frontend principal agora normaliza respostas de `ProjectMemory` em `frontend/lib/api.ts` antes de renderizar; isso evita que campos nulos/legados em `stage`, `priority`, `status`, `aliases`, `blockers`, `next_steps` e `evidence` derrubem o dashboard
 - Em abril/2026 o incremental de memória passou a selecionar só projetos relacionados ao lote atual e tentar merge local de projetos antes de recorrer ao DeepSeek; isso reduz custo fixo e evita chamada extra do modelo em matches claros
 - Em abril/2026 o `automation_service` passou a preferir `plan_next_batch()` também nos jobs incrementais automáticos e no backlog drain; isso reduz custo de DeepSeek porque a execução real usa lote fixo de mensagens pendentes em vez de reler a janela automática larga
 - O merge incremental de projetos pode ser pulado quando o lote novo não trouxe candidatos de projeto; nesse caso os projetos existentes são preservados sem nova chamada ao modelo
@@ -70,3 +71,5 @@
 - Na proatividade, `followup`, `routine`, `project_nudge` e os digests têm produtores reais no `ProactiveAssistantService`; a UI deixou de expor `Agenda` como categoria proativa e o cooldown mínimo passou a olhar apenas entregas `sent`, enquanto os lembretes formais continuam no `agenda_guardian_service`
 - Os defaults de proatividade ficaram mais agressivos para novas contas: `intensity=high`, `max_unsolicited_per_day=6` e `min_interval_minutes=45`
 - A aba `Agenda` agora usa shells visuais `ops-*` e botões/pills do dashboard para criação e edição, com status em pills e presets de lembrete em vez de campos crus e `select` simples
+- A aba `Memória` do frontend principal usa `memoryActivity` como fonte primária para pipeline, jobs, syncs e decisões recentes; `automationStatus` fica como fallback quando esse snapshot específico não vier carregado
+- O backend de agenda agora expõe endpoints para consulta textual e confirmação pendente (`POST /api/agenda/query`, `GET /api/agenda/pending-confirmation`, `POST /api/agenda/pending-confirmation/resolve`) e a agenda manual já persiste `recurrence_rule`/`excluded_dates`

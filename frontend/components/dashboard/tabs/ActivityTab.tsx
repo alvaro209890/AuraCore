@@ -1,4 +1,5 @@
 import { StatusLine, getActivityToneLabel, getSnapshotCoverageTone } from '../../connection-dashboard';
+import type { MemoryActivity } from '../../connection-dashboard';
 import { AlertCircle, BarChart3, Brain, CheckCircle2, ChevronRight, Clock, Database, Fingerprint, GitBranch, MessageSquare, Pause, Play, RefreshCw, Send, Settings, Sparkles, Terminal, Trash2, Users, X, Zap, Cpu } from 'lucide-react';
 import { hasEstablishedMemory, buildActivityThinking, buildActivityTrace, getIntentTitle, getStepVisualState, MemorySignalCard, formatTokenCount, formatShortDateTime, formatRelativeTime, SectionTitle, ModernStatCard, ProgressBar, getProactiveStatusLabel, getProactiveCategoryLabel, formatConfidence, getProactiveDecisionLabel, truncateText, isProjectManuallyCompleted, getProjectStrength, normalizeProjectSearchText, getProjectStatusTone, getProjectStatusLabel, getAudienceLabel, ProjectInfoBlock, SegmentedControl, getRelationSortPriority, normalizeRelationType, getRelationTypeLabel, getRelationTone, getRelationStrength, AutomationNumberField } from '../../connection-dashboard';
 import { useMemo, useState } from 'react';
@@ -9,6 +10,7 @@ export default function ActivityTab({
   steps,
   logs,
   memory,
+  memoryActivity = null,
   latestSnapshot,
   projectsCount,
   snapshotsCount,
@@ -22,6 +24,7 @@ export default function ActivityTab({
   steps: any[];
   logs: any[];
   memory: MemoryCurrent | null;
+  memoryActivity?: MemoryActivity | null;
   latestSnapshot: MemorySnapshot | null;
   projectsCount: number;
   snapshotsCount: number;
@@ -34,17 +37,17 @@ export default function ActivityTab({
   const [activitySubTab, setActivitySubTab] = useState<"overview" | "persist" | "logs">("overview");
   const memoryReady = hasEstablishedMemory(memory, latestSnapshot);
   const resolvedIntent = agentState.intent ?? (memoryReady ? "improve_memory" : "first_analysis");
-  const latestDecision = automationStatus?.decisions[0] ?? null;
-  const latestSyncRun = automationStatus?.sync_runs[0] ?? null;
-  const latestJob = automationStatus?.jobs[0] ?? null;
-  const displayedJob = latestJob && (latestJob.status === "queued" || latestJob.status === "running")
-    ? latestJob
-    : latestJob;
-  const latestModelRun = automationStatus?.model_runs[0] ?? null;
+  const latestDecision = memoryActivity?.decisions?.[0] ?? automationStatus?.decisions?.[0] ?? null;
+  const latestSyncRun = memoryActivity?.sync_runs[0] ?? automationStatus?.sync_runs[0] ?? null;
+  const latestJob = memoryActivity?.jobs[0] ?? automationStatus?.jobs?.[0] ?? null;
+  const displayedJob = latestJob ?? null;
+  const latestModelRun = memoryActivity?.model_runs[0] ?? automationStatus?.model_runs?.[0] ?? null;
+  const queuedJobsCount = memoryActivity?.queued_jobs_count ?? automationStatus?.queued_jobs_count ?? 0;
+  const runningJobId = memoryActivity?.running_job_id ?? automationStatus?.running_job_id ?? null;
   const hasPendingDatabaseWork = Boolean(
     agentState.running ||
-    automationStatus?.running_job_id ||
-    automationStatus?.queued_jobs_count,
+    runningJobId ||
+    queuedJobsCount,
   );
   const thinkingLines = buildActivityThinking({
     intent: resolvedIntent,
@@ -172,11 +175,13 @@ export default function ActivityTab({
             />
             <MemorySignalCard
               label="Fila manual"
-              value={automationStatus ? String(automationStatus.queued_jobs_count) : "..."}
+              value={String(queuedJobsCount)}
               meta={
-                automationStatus
-                  ? `${automationStatus.running_job_id ? "Existe 1 job em execução agora" : "Nenhum job rodando agora"}`
-                  : "Aguardando status"
+                runningJobId
+                  ? "Existe 1 job em execução agora"
+                  : automationStatus || memoryActivity
+                    ? "Nenhum job rodando agora"
+                    : "Aguardando status"
               }
               tone="amber"
             />
@@ -203,8 +208,8 @@ export default function ActivityTab({
           <div className="activity-insight-grid">
             <MemorySignalCard
               label="Fila"
-              value={automationStatus ? String(automationStatus.queued_jobs_count) : "..."}
-              meta={automationStatus?.running_job_id ? "Há job rodando agora" : "Sem job em execução"}
+              value={String(queuedJobsCount)}
+              meta={runningJobId ? "Há job rodando agora" : "Sem job em execução"}
             />
             <MemorySignalCard
               label="Base já conhecida"
@@ -416,7 +421,7 @@ export default function ActivityTab({
                 displayedLogs.map((log, index) => (
                   <div key={index} className="activity-log-item">
                     <span className="activity-log-time">{formatShortDateTime(log.timestamp)}</span>
-                    <span className={`activity-log-level activity-log-level-${log.level.toLowerCase()}`}>{log.level}</span>
+                    <span className={`activity-log-level activity-log-level-${(log.level ?? "info").toLowerCase()}`}>{log.level ?? "info"}</span>
                     <span className="activity-log-message">{log.message}</span>
                   </div>
                 ))

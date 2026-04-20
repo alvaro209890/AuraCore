@@ -357,15 +357,20 @@ function mergeStatus(previous: ObserverStatus | null, next: ObserverStatus): Obs
   };
 }
 
-export function formatState(state: string): string {
-  const normalized = state.trim().toLowerCase();
+export function formatState(state: string | null | undefined): string {
+  const rawState = (state ?? "").trim();
+  if (!rawState) {
+    return "Indisponivel";
+  }
+
+  const normalized = rawState.toLowerCase();
   if (normalized === "open") return "Online";
   if (normalized === "connecting") return "Conectando";
   if (normalized === "reconnecting") return "Reconectando";
   if (normalized === "close") return "Desconectado";
   if (normalized === "logged_out") return "Deslogado";
 
-  return state
+  return rawState
     .split(/[_\s-]+/)
     .filter(Boolean)
     .map((chunk) => chunk.charAt(0).toUpperCase() + chunk.slice(1).toLowerCase())
@@ -1064,10 +1069,14 @@ export function resolveOverviewNextAction(args: {
 }
 
 export function getProjectStrength(project: ProjectMemory): number {
-  if (project.confidence_score > 0) {
-    return Math.max(24, Math.min(100, project.confidence_score));
+  const confidenceScore = typeof project.confidence_score === "number" && Number.isFinite(project.confidence_score) ? project.confidence_score : 0;
+  if (confidenceScore > 0) {
+    return Math.max(24, Math.min(100, confidenceScore));
   }
-  const raw = 30 + (project.next_steps.length * 10) + (project.evidence.length * 7) + (project.status ? 8 : 0);
+  const nextSteps = Array.isArray(project.next_steps) ? project.next_steps : [];
+  const evidence = Array.isArray(project.evidence) ? project.evidence : [];
+  const status = typeof project.status === "string" ? project.status : "";
+  const raw = 30 + (nextSteps.length * 10) + (evidence.length * 7) + (status ? 8 : 0);
   return Math.max(24, Math.min(100, raw));
 }
 
@@ -1076,44 +1085,48 @@ export function isProjectManuallyCompleted(project: ProjectMemory): boolean {
 }
 
 export function getProjectStatusLabel(project: ProjectMemory): string {
+  const status = typeof project.status === "string" ? project.status.trim() : "";
+  const stage = (project.stage ?? "").trim().toLowerCase();
+
   if (isProjectManuallyCompleted(project)) {
     return "Concluido manualmente";
   }
-  if (project.status) {
-    return project.status;
+  if (status) {
+    return status;
   }
-  if (project.stage === "planning") {
+  if (stage === "planning") {
     return "Planejamento";
   }
-  if (project.stage === "review") {
+  if (stage === "review") {
     return "Em revisao";
   }
-  if (project.stage === "blocked") {
+  if (stage === "blocked") {
     return "Bloqueado";
   }
-  if (project.stage === "completed") {
+  if (stage === "completed") {
     return "Concluido";
   }
   return "Em progresso";
 }
 
 export function getProjectStatusTone(project: ProjectMemory): "emerald" | "amber" | "indigo" | "zinc" {
+  const stage = (project.stage ?? "").trim().toLowerCase();
   if (isProjectManuallyCompleted(project)) {
     return "indigo";
   }
-  if (project.stage === "blocked") {
+  if (stage === "blocked") {
     return "amber";
   }
-  if (project.stage === "review") {
+  if (stage === "review") {
     return "indigo";
   }
-  if (project.stage === "planning") {
+  if (stage === "planning") {
     return "zinc";
   }
-  if (project.stage === "active") {
+  if (stage === "active") {
     return "emerald";
   }
-  const normalizedStatus = project.status.toLowerCase();
+  const normalizedStatus = (project.status ?? "").trim().toLowerCase();
   if (normalizedStatus.includes("trav") || normalizedStatus.includes("risco") || normalizedStatus.includes("bloq")) {
     return "amber";
   }
@@ -1126,16 +1139,17 @@ export function getProjectStatusTone(project: ProjectMemory): "emerald" | "amber
   return "zinc";
 }
 
-export function normalizeProjectSearchText(value: string): string {
-  return value
+export function normalizeProjectSearchText(value: string | null | undefined): string {
+  return (value ?? "")
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
 }
 
 export function getAudienceLabel(project: ProjectMemory): string {
-  if (project.built_for.trim()) {
-    return project.built_for;
+  const builtFor = (project.built_for ?? "").trim();
+  if (builtFor) {
+    return builtFor;
   }
   return "Público ainda não consolidado";
 }

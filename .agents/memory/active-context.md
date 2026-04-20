@@ -218,6 +218,47 @@
 ## Atualização 2026-04-20
 
 - Removido o arquivo `backend/app/services/whatsapp_cli_service.py` e toda a interceptação de CLI no `WhatsAppAgentService`
+- Frontend principal:
+  - corrigida a aba `Memória` para usar `memoryActivity` como fonte principal também na subaba `Pipeline`, evitando estado vazio/divergente quando `automationStatus` não refletia o último snapshot persistido
+  - `MemoryTab` passou a resolver jobs e decisões recentes com fallback entre `memoryActivity` e `automationStatus`
+- Backend de agenda:
+  - finalizado o pacote de endpoints para query textual e confirmação pendente
+  - `agenda.py` agora expõe:
+    - `POST /api/agenda/query`
+    - `GET /api/agenda/pending-confirmation`
+    - `POST /api/agenda/pending-confirmation/resolve`
+  - `SupabaseStore` e router manual passaram a persistir/retornar `recurrence_rule`, `parent_event_id` e `excluded_dates`
+  - corrigido bug no detector de recorrência em `agenda_guardian_service`
+- Validação local desta rodada:
+  - `python3 -m py_compile` dos arquivos backend alterados: ok
+  - `npm run build` em `frontend`: ok
+- Publicação:
+  - deploy concluído no Firebase Hosting target `app`
+  - URL: `https://auracore-82bf2.web.app`
+- Runtime:
+  - backend sincronizado para `/home/server/.local/share/auracore-runtime/repo/backend`
+  - `auracore-backend.service` reiniciado com sucesso
+    - `ExecMainPID=2422589`
+    - `ActiveEnterTimestamp=Mon 2026-04-20 10:02:12 -03`
+
+## Atualização 2026-04-20 2
+
+- Corrigido crash real no frontend publicado em `https://auracore-82bf2.web.app`
+- Causa observada:
+  - o dashboard assumia que alguns campos vindos da API eram sempre `string`
+  - dados legados/incompletos em projetos, grupos ou logs podiam chegar com `null/undefined`
+  - isso derrubava o bundle ao chamar `toLowerCase()` em `status`, `stage`, `priority`, `chat_name`, `chat_jid` ou `log.level`
+- Correção aplicada:
+  - `frontend/lib/api.ts` agora normaliza respostas de `ProjectMemory`
+  - helpers do `connection-dashboard` e da aba `Projects` passaram a tolerar `null/undefined`
+  - abas `Groups`, `Memory` e `Activity` receberam fallback defensivo para strings ausentes
+- Validação operacional:
+  - `npm run build` em `frontend`: ok
+  - Firebase Hosting target `app` publicado novamente
+  - URL confirmada no deploy: `https://auracore-82bf2.web.app`
+- Contexto de colaboração:
+  - havia mudanças concorrentes no backend em `backend/app/dependencies.py`, `backend/app/schemas.py`, `backend/app/services/agenda_guardian_service.py` e `backend/app/services/supabase_store.py`
+  - essa rodada não tocou nesses arquivos para evitar conflito com trabalho paralelo
 
 ## Atualização 2026-04-20 2
 

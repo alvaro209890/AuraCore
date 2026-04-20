@@ -238,6 +238,10 @@ def get_proactive_assistant_service(bundle: ServiceBundle = Depends(get_service_
     return bundle.proactive_assistant_service
 
 
+def get_agenda_guardian_service(bundle: ServiceBundle = Depends(get_service_bundle)):
+    return bundle.agenda_guardian_service
+
+
 def warm_registered_accounts() -> None:
     registry = get_account_registry()
     cache = get_service_bundle_cache()

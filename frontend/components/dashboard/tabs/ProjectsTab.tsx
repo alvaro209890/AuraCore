@@ -212,26 +212,28 @@ export default function ProjectsTab({
           ? "Todos os projetos ativos já têm próximos passos."
           : "Nada para mostrar com o filtro atual.";
 
-  function getStageLabel(stage: string): string {
-    const normalized = stage.trim().toLowerCase();
+  function getStageLabel(stage: string | null | undefined): string {
+    const rawStage = (stage ?? "").trim();
+    const normalized = rawStage.toLowerCase();
     if (normalized === "planning") return "Planejamento";
     if (normalized === "active") return "Ativo";
     if (normalized === "review") return "Revisão";
     if (normalized === "blocked") return "Bloqueado";
     if (normalized === "completed") return "Concluído";
-    return stage || "Sem etapa";
+    return rawStage || "Sem etapa";
   }
 
-  function getPriorityLabel(priority: string): string {
-    const normalized = priority.trim().toLowerCase();
+  function getPriorityLabel(priority: string | null | undefined): string {
+    const rawPriority = (priority ?? "").trim();
+    const normalized = rawPriority.toLowerCase();
     if (normalized === "high") return "Alta";
     if (normalized === "medium") return "Média";
     if (normalized === "low") return "Baixa";
-    return priority || "Sem prioridade";
+    return rawPriority || "Sem prioridade";
   }
 
-  function getPriorityTone(priority: string): "emerald" | "amber" | "indigo" | "zinc" {
-    const normalized = priority.trim().toLowerCase();
+  function getPriorityTone(priority: string | null | undefined): "emerald" | "amber" | "indigo" | "zinc" {
+    const normalized = (priority ?? "").trim().toLowerCase();
     if (normalized === "high") return "amber";
     if (normalized === "medium") return "indigo";
     if (normalized === "low") return "zinc";
@@ -240,17 +242,17 @@ export default function ProjectsTab({
 
   function buildProjectDraft(project: ProjectMemory): ProjectEditDraft {
     return {
-      project_name: project.project_name,
-      summary: project.summary,
-      status: project.status,
-      what_is_being_built: project.what_is_being_built,
-      built_for: project.built_for,
-      aliases_text: project.aliases.join("\n"),
-      stage: project.stage,
-      priority: project.priority,
-      blockers_text: project.blockers.join("\n"),
-      next_steps_text: project.next_steps.join("\n"),
-      evidence_text: project.evidence.join("\n"),
+      project_name: project.project_name ?? "",
+      summary: project.summary ?? "",
+      status: project.status ?? "",
+      what_is_being_built: project.what_is_being_built ?? "",
+      built_for: project.built_for ?? "",
+      aliases_text: Array.isArray(project.aliases) ? project.aliases.join("\n") : "",
+      stage: project.stage ?? "",
+      priority: project.priority ?? "",
+      blockers_text: Array.isArray(project.blockers) ? project.blockers.join("\n") : "",
+      next_steps_text: Array.isArray(project.next_steps) ? project.next_steps.join("\n") : "",
+      evidence_text: Array.isArray(project.evidence) ? project.evidence.join("\n") : "",
     };
   }
 

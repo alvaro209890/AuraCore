@@ -51,16 +51,19 @@ export default function MemoryTab({
   const structuralPreferences = memory?.structural_preferences ?? [];
   const structuralOpenQuestions = memory?.structural_open_questions ?? [];
   const pendingNewMessages = memoryStatus?.new_messages_after_first_analysis ?? 0;
+  const memoryActivityJobs = memoryActivity?.jobs ?? [];
+  const automationJobs = automationStatus?.jobs ?? [];
+  const activityJobs = memoryActivityJobs.length > 0 ? memoryActivityJobs : automationJobs;
   const automationPendingJob =
-    automationStatus?.jobs.find((job: any) => (
+    activityJobs.find((job: any) => (
       (job.status === "queued" || job.status === "running")
       && (job.intent === "first_analysis" || job.intent === "improve_memory")
     )) ?? null;
-  const latestAutomationDecision = automationStatus?.decisions[0] ?? null;
+  const latestAutomationDecision = memoryActivity?.decisions?.[0] ?? automationStatus?.decisions?.[0] ?? null;
   const currentJob = memoryStatus?.current_job ?? automationPendingJob ?? null;
   const latestCompletedJob =
     memoryStatus?.latest_completed_job
-    ?? automationStatus?.jobs.find((job: any) => job.status === "succeeded" || job.status === "failed")
+    ?? activityJobs.find((job: any) => job.status === "succeeded" || job.status === "failed")
     ?? null;
   const canExecuteAnalysis = memoryStatus?.can_execute_analysis ?? false;
   const currentJobIsPending = currentJob?.status === "queued" || currentJob?.status === "running";
@@ -335,7 +338,7 @@ export default function MemoryTab({
                 displayedLogs.map((log, index) => (
                   <div key={index} className="activity-log-item">
                     <span className="activity-log-time">{formatShortDateTime(log.timestamp)}</span>
-                    <span className={`activity-log-level activity-log-level-${log.level.toLowerCase()}`}>{log.level}</span>
+                    <span className={`activity-log-level activity-log-level-${(log.level ?? "info").toLowerCase()}`}>{log.level ?? "info"}</span>
                     <span className="activity-log-message">{log.message}</span>
                   </div>
                 ))
@@ -442,6 +445,7 @@ export default function MemoryTab({
           steps={steps}
           logs={logs}
           memory={memory}
+          memoryActivity={memoryActivity}
           latestSnapshot={latestSnapshot}
           projectsCount={projectsCount}
           snapshotsCount={snapshotsCount}

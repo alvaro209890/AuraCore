@@ -1,19 +1,27 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from dateutil import parser as dateutil_parser
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.dependencies import get_current_account, get_supabase_store
+from app.dependencies import get_agenda_guardian_service, get_current_account, get_supabase_store
 from app.schemas import (
     AgendaConflictResponse,
     AgendaEventResponse,
     AgendaEventsListResponse,
+    AgendaPendingConfirmationResolveRequest,
+    AgendaPendingConfirmationResolveResponse,
+    AgendaPendingConfirmationResponse,
+    AgendaPendingEventResponse,
+    AgendaQueryRequest,
+    AgendaQueryResponse,
     CreateAgendaEventRequest,
     SimpleOkResponse,
     UpdateAgendaEventRequest,
 )
 from app.services.account_registry import AccountRecord
+from app.services.agenda_guardian_service import AgendaGuardianService
 from app.services.supabase_store import AgendaEventRecord, SupabaseStore
 
 router = APIRouter(prefix="/api/agenda", tags=["agenda"])
@@ -52,6 +60,9 @@ async def list_agenda_events(
                 pre_reminder_at=_resolve_pre_reminder_at(event),
                 pre_reminder_sent_at=event.pre_reminder_sent_at,
                 reminder_sent_at=event.reminder_sent_at,
+                recurrence_rule=event.recurrence_rule,
+                parent_event_id=event.parent_event_id,
+                excluded_dates=event.excluded_dates,
                 created_at=event.created_at,
                 updated_at=event.updated_at,
             )
@@ -75,6 +86,7 @@ async def create_agenda_event(
         status=payload.status,
         contato_origem=payload.contato_origem,
         reminder_offset_minutes=payload.reminder_offset_minutes,
+        recurrence_rule=payload.recurrence_rule,
         created_at=datetime.now(UTC),
     )
     return _to_agenda_event_response(store=store, event=created)
@@ -103,6 +115,8 @@ async def update_agenda_event(
         status=payload.status,
         contato_origem=payload.contato_origem,
         reminder_offset_minutes=payload.reminder_offset_minutes,
+        recurrence_rule=payload.recurrence_rule,
+        excluded_dates=payload.excluded_dates,
         reset_reminder=True,
     )
     if updated is None:
@@ -120,6 +134,86 @@ async def delete_agenda_event(
     if not deleted:
         raise HTTPException(status_code=404, detail="Compromisso nao encontrado.")
     return SimpleOkResponse()
+
+
+@router.post("/query", response_model=AgendaQueryResponse)
+async def query_agenda_events(
+    payload: AgendaQueryRequest,
+    account: AccountRecord = Depends(get_current_account),
+    agenda_guardian: AgendaGuardianService = Depends(get_agenda_guardian_service),
+    store: SupabaseStore = Depends(get_supabase_store),
+) -> AgendaQueryResponse:
+    reference_now = payload.reference_now or datetime.now(UTC)
+    result = await agenda_guardian.handle_agenda_query(
+        user_id=account.app_user_id,
+        text=payload.text,
+        reference_now=reference_now,
+    )
+    return AgendaQueryResponse(
+        is_query=result.is_query,
+        time_range_description=result.time_range_description,
+        assistant_reply=result.assistant_reply,
+        events=[_to_agenda_event_response(store=store, event=event) for event in result.events],
+    )
+
+
+@router.get("/pending-confirmation", response_model=AgendaPendingConfirmationResponse)
+async def get_pending_agenda_confirmation(
+    account: AccountRecord = Depends(get_current_account),
+    agenda_guardian: AgendaGuardianService = Depends(get_agenda_guardian_service),
+) -> AgendaPendingConfirmationResponse:
+    pending = agenda_guardian.get_pending_event(account.app_user_id)
+    if pending is None:
+        return AgendaPendingConfirmationResponse(has_pending_confirmation=False)
+
+    try:
+        inicio = dateutil_parser.parse(pending.event_data.get("inicio")) if pending.event_data.get("inicio") else None
+        fim = dateutil_parser.parse(pending.event_data.get("fim")) if pending.event_data.get("fim") else None
+    except Exception:
+        inicio = None
+        fim = None
+
+    return AgendaPendingConfirmationResponse(
+        has_pending_confirmation=True,
+        pending_event=AgendaPendingEventResponse(
+            titulo=str(pending.event_data.get("titulo") or "Compromisso"),
+            inicio=inicio,
+            fim=fim,
+            status="firme" if str(pending.event_data.get("status") or "").strip().lower() == "firme" else "tentativo",
+            contato_origem=pending.event_data.get("contato_origem"),
+            reminder_offset_minutes=max(0, int(pending.event_data.get("reminder_offset_minutes") or 0)),
+            recurrence_rule=pending.event_data.get("recurrence_rule"),
+            source_message_id=pending.source_message_id,
+            created_at=pending.created_at,
+            expires_at=pending.expires_at,
+            confirmation_prompt=agenda_guardian._format_confirmation_request(pending.event_data),
+        ),
+    )
+
+
+@router.post("/pending-confirmation/resolve", response_model=AgendaPendingConfirmationResolveResponse)
+async def resolve_pending_agenda_confirmation(
+    payload: AgendaPendingConfirmationResolveRequest,
+    account: AccountRecord = Depends(get_current_account),
+    agenda_guardian: AgendaGuardianService = Depends(get_agenda_guardian_service),
+    store: SupabaseStore = Depends(get_supabase_store),
+) -> AgendaPendingConfirmationResolveResponse:
+    result = await agenda_guardian.check_pending_confirmation(
+        user_id=account.app_user_id,
+        text=payload.text,
+    )
+    if result is None:
+        return AgendaPendingConfirmationResolveResponse(
+            handled=False,
+            action="none",
+            skipped_reason="no_pending_confirmation",
+        )
+    return AgendaPendingConfirmationResolveResponse(
+        handled=result.detected or bool(result.skipped_reason),
+        action=result.action,
+        saved_event=_to_agenda_event_response(store=store, event=result.saved_event) if result.saved_event else None,
+        skipped_reason=result.skipped_reason,
+    )
 
 
 def _resolve_first_conflict(*, store: SupabaseStore, event: AgendaEventRecord) -> AgendaConflictResponse | None:
@@ -162,6 +256,9 @@ def _to_agenda_event_response(*, store: SupabaseStore, event: AgendaEventRecord)
         pre_reminder_at=_resolve_pre_reminder_at(event),
         pre_reminder_sent_at=event.pre_reminder_sent_at,
         reminder_sent_at=event.reminder_sent_at,
+        recurrence_rule=event.recurrence_rule,
+        parent_event_id=event.parent_event_id,
+        excluded_dates=event.excluded_dates,
         created_at=event.created_at,
         updated_at=event.updated_at,
     )

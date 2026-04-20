@@ -31,8 +31,8 @@ export default function GroupsTab({
     const query = deferredSearch.trim().toLowerCase();
     if (query) {
       result = result.filter((group) => (
-        group.chat_name.toLowerCase().includes(query) ||
-        group.chat_jid.toLowerCase().includes(query)
+        (group.chat_name ?? "").toLowerCase().includes(query) ||
+        (group.chat_jid ?? "").toLowerCase().includes(query)
       ));
     }
     return result;
