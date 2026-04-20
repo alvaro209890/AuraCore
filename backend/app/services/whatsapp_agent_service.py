@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 import logging
 from time import perf_counter
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from app.config import Settings
 from app.schemas import (
@@ -26,11 +26,9 @@ from app.services.supabase_store import (
     WhatsAppAgentContactMemoryRecord,
     WhatsAppAgentMessageRecord,
     WhatsAppAgentSettingsRecord,
-    WhatsAppAgentTerminalSessionRecord,
     WhatsAppAgentThreadRecord,
     WhatsAppAgentThreadSessionRecord,
 )
-from app.services.whatsapp_cli_service import CliOutboundMessage, WhatsAppCliService
 
 logger = logging.getLogger("auracore.agent_reply")
 
@@ -54,8 +52,14 @@ class AgentWorkspaceSnapshot:
     messages: list[WhatsAppAgentMessageRecord]
     active_thread_id: str | None
     active_session: WhatsAppAgentThreadSessionRecord | None
-    terminal_session: WhatsAppAgentTerminalSessionRecord | None
     contact_memory: WhatsAppAgentContactMemoryRecord | None
+
+
+@dataclass(slots=True)
+class AgentOutboundMessage:
+    text: str
+    generated_by: str
+    metadata: Mapping[str, object]
 
 
 class WhatsAppAgentService:
@@ -81,32 +85,23 @@ class WhatsAppAgentService:
         self.agent_gateway = agent_gateway
         self.agenda_guardian_service = agenda_guardian_service
         self.proactive_assistant_service = proactive_assistant_service
-        self.cli_service = WhatsAppCliService(
-            settings=settings,
-            store=store,
-            deepseek_service=deepseek_service,
-        )
 
     async def get_status(self) -> WhatsAppAgentStatusResponse:
-        self._ensure_cli_admin_defaults()
         agent_status = await self.agent_gateway.get_agent_status()
         _, settings_record = await self._load_observer_context()
         return self._build_status_response(agent_status=agent_status, settings=settings_record)
 
     async def connect_agent(self) -> WhatsAppAgentStatusResponse:
-        self._ensure_cli_admin_defaults()
         agent_status = await self.agent_gateway.connect_agent()
         _, settings_record = await self._load_observer_context()
         return self._build_status_response(agent_status=agent_status, settings=settings_record)
 
     async def reset_agent(self) -> WhatsAppAgentStatusResponse:
-        self._ensure_cli_admin_defaults()
         agent_status = await self.agent_gateway.reset_agent()
         _, settings_record = await self._load_observer_context()
         return self._build_status_response(agent_status=agent_status, settings=settings_record)
 
     async def build_workspace(self, *, thread_id: str | None = None) -> AgentWorkspaceSnapshot:
-        self._ensure_cli_admin_defaults()
         agent_status = await self.agent_gateway.get_agent_status()
         observer_status, settings_record = await self._load_observer_context()
 
@@ -133,14 +128,6 @@ class WhatsAppAgentService:
             if active_thread is not None
             else None
         )
-        terminal_session = (
-            self.store.get_whatsapp_agent_terminal_session(
-                user_id=self.settings.default_user_id,
-                thread_id=active_thread.id,
-            )
-            if active_thread is not None
-            else None
-        )
         contact_memory = (
             self.store.get_whatsapp_agent_contact_memory(
                 user_id=self.settings.default_user_id,
@@ -157,7 +144,6 @@ class WhatsAppAgentService:
             messages=messages,
             active_thread_id=active_thread_id,
             active_session=active_session,
-            terminal_session=terminal_session,
             contact_memory=contact_memory,
         )
 
@@ -170,37 +156,10 @@ class WhatsAppAgentService:
         return self._build_settings_response(updated)
 
     def list_threads(self, *, limit: int = 24) -> list[WhatsAppAgentThreadRecord]:
-        self._ensure_cli_admin_defaults()
         return self.store.list_whatsapp_agent_threads(
             user_id=self.settings.default_user_id,
             limit=limit,
         )
-
-    def list_admin_contacts(self, *, limit: int = 200):
-        self._ensure_cli_admin_defaults()
-        return self.store.list_known_contacts(
-            user_id=self.settings.default_user_id,
-            limit=limit,
-        )
-
-    def update_admin_contact(
-        self,
-        *,
-        contact_phone: str,
-        chat_jid: str | None,
-        contact_name: str | None,
-        is_admin: bool,
-    ):
-        updated = self.store.set_known_contact_admin(
-            user_id=self.settings.default_user_id,
-            contact_phone=contact_phone,
-            chat_jid=chat_jid,
-            contact_name=contact_name,
-            is_admin=is_admin,
-        )
-        if updated is None:
-            raise ValueError("Contato invalido para atualizar admin.")
-        return updated
 
     def list_messages(self, *, thread_id: str, limit: int = 40) -> list[WhatsAppAgentMessageRecord]:
         return self.store.list_whatsapp_agent_messages(thread_id=thread_id, limit=limit)
@@ -210,9 +169,6 @@ class WhatsAppAgentService:
             user_id=self.settings.default_user_id,
             thread_id=thread_id,
         )
-
-    def get_terminal_session_for_thread(self, *, thread_id: str) -> WhatsAppAgentTerminalSessionRecord | None:
-        return self.cli_service.get_terminal_session_for_thread(thread_id=thread_id)
 
     def get_contact_memory_for_thread(self, thread: WhatsAppAgentThreadRecord) -> WhatsAppAgentContactMemoryRecord | None:
         if not thread.contact_phone:
@@ -266,42 +222,21 @@ class WhatsAppAgentService:
         if payload.from_me or payload.direction == "outbound":
             return WhatsAppAgentInboundMessageResponse(action="ignored_from_me")
 
-        self._ensure_cli_admin_defaults()
-
         if self.store.get_whatsapp_agent_message_by_whatsapp_id(
             user_id=self.settings.default_user_id,
             whatsapp_message_id=payload.message_id,
         ):
             return WhatsAppAgentInboundMessageResponse(action="duplicate_message")
 
-        agent_owner_number = await self._get_agent_owner_number()
-        owner_self_message = bool(agent_owner_number and self.store.phone_matches(contact_phone, agent_owner_number))
-
-        # Only reply to pre-registered contacts or the agent owner
-        known_contact = self.store.get_known_contact_by_phone(
-            user_id=self.settings.default_user_id,
-            contact_phone=contact_phone,
-        )
-        is_owner_or_admin = bool(
-            agent_owner_number and self.store.phone_matches(contact_phone, agent_owner_number)
-        )
-        if known_contact is None and not is_owner_or_admin:
-            return WhatsAppAgentInboundMessageResponse(action="ignored_unknown_contact")
-
         observer_status, settings_record = await self._load_observer_context()
-        self.store.upsert_known_contact(
-            user_id=self.settings.default_user_id,
-            contact_phone=contact_phone,
-            chat_jid=chat_jid,
-            contact_name=contact_name,
-            name_source=contact_name_source,
-            seen_at=payload.timestamp,
+        observer_owner_number = self._resolve_observer_owner_number(observer_status=observer_status)
+        owner_self_message = (
+            True
+            if observer_owner_number is None
+            else self.store.phone_matches(contact_phone, observer_owner_number)
         )
-        # Refetch after upsert to get authoritative record
-        known_contact = self.store.get_known_contact_by_phone(
-            user_id=self.settings.default_user_id,
-            contact_phone=contact_phone,
-        ) or known_contact
+        if observer_owner_number and not owner_self_message:
+            return WhatsAppAgentInboundMessageResponse(action="ignored_unknown_contact")
 
         thread = self.store.get_or_create_whatsapp_agent_thread(
             user_id=self.settings.default_user_id,
@@ -310,8 +245,7 @@ class WhatsAppAgentService:
             contact_name=contact_name,
             created_at=payload.timestamp,
         )
-        contact_is_admin = bool(known_contact is not None and known_contact.is_admin)
-        delivery_chat_jid = known_contact.chat_jid if known_contact and known_contact.chat_jid else thread.chat_jid or chat_jid
+        delivery_chat_jid = thread.chat_jid or chat_jid
         session, _started_new_session = self.store.resolve_whatsapp_agent_session(
             user_id=self.settings.default_user_id,
             thread_id=thread.id,
@@ -344,7 +278,6 @@ class WhatsAppAgentService:
                 "audio_transcribed": bool(transcript_text),
                 "audio_transcription_error": transcription_error,
                 "owner_self_message": owner_self_message,
-                "contact_is_admin": contact_is_admin,
             },
             created_at=datetime.now(UTC),
         )
@@ -371,46 +304,6 @@ class WhatsAppAgentService:
                 action="duplicate_reply",
                 thread_id=thread.id,
                 inbound_message_id=inbound_message.id,
-            )
-
-        if self.cli_service.is_eligible_contact(contact_phone=contact_phone):
-            cli_result = await self.cli_service.handle_message(
-                message_text=normalized_text,
-                inbound_message=inbound_message,
-                thread=thread,
-                session=session,
-                chat_jid=delivery_chat_jid,
-                progress_callback=self._build_cli_progress_callback(
-                    payload=payload,
-                    inbound_message=inbound_message,
-                    thread=thread,
-                    session=session,
-                    contact_phone=contact_phone,
-                    delivery_chat_jid=delivery_chat_jid,
-                ),
-            )
-            self.store.update_whatsapp_agent_message(
-                message_id=inbound_message.id,
-                processing_status=cli_result.action,
-                learning_status="not_applicable",
-                model_run_id=cli_result.model_run_id,
-                metadata={
-                    **inbound_message.metadata,
-                    **self._build_cli_message_metadata(
-                        contact_phone=contact_phone,
-                        terminal_session=cli_result.terminal_session,
-                    ),
-                },
-            )
-            return await self._send_outbound_messages(
-                payload=payload,
-                inbound_message=inbound_message,
-                thread=thread,
-                session=session,
-                contact_phone=contact_phone,
-                delivery_chat_jid=delivery_chat_jid,
-                outbound_messages=cli_result.outbound_messages,
-                response_latency_ms=0,
             )
 
         contact_memory = self.store.get_whatsapp_agent_contact_memory(
@@ -554,7 +447,7 @@ class WhatsAppAgentService:
         assistant_reply: str | None = None
         reply_error_text: str | None = None
         reply_model_run_id: str | None = None
-        reply_generated_by = "agenda_guardian" if agenda_outcome.detected else "deepseek"
+        reply_generated_by = "agenda_guardian" if agenda_outcome.detected else "groq"
 
         contact_memory_context = self._build_rich_contact_context(
             memory=contact_memory,
@@ -582,8 +475,8 @@ class WhatsAppAgentService:
             reply_model_run = self.store.create_model_run(
                 user_id=self.settings.default_user_id,
                 job_id=None,
-                provider="deepseek",
-                model_name=self.settings.deepseek_model,
+                provider="groq",
+                model_name=self.settings.whatsapp_agent_groq_model,
                 run_type="whatsapp_agent_reply",
                 success=assistant_reply is not None,
                 latency_ms=reply_elapsed_ms,
@@ -647,12 +540,13 @@ class WhatsAppAgentService:
             )
             return observer_status, self.store.get_whatsapp_agent_settings(self.settings.default_user_id)
 
-    async def _get_agent_owner_number(self) -> str | None:
-        try:
-            agent_status = await self.agent_gateway.get_agent_status()
-        except Exception:
-            return None
-        return self.store.normalize_contact_phone(agent_status.owner_number)
+    def _resolve_observer_owner_number(self, *, observer_status: ObserverStatusResponse) -> str | None:
+        direct_owner = self.store.normalize_contact_phone(observer_status.owner_number)
+        if direct_owner:
+            return direct_owner
+        return self.store.get_whatsapp_session_owner_phone(
+            session_id=f"{self.settings.default_user_id}:observer"
+        )
 
     async def _send_outbound_reply(
         self,
@@ -676,7 +570,7 @@ class WhatsAppAgentService:
             contact_phone=contact_phone,
             delivery_chat_jid=delivery_chat_jid,
             outbound_messages=[
-                CliOutboundMessage(
+                AgentOutboundMessage(
                     text=assistant_reply,
                     generated_by=generated_by,
                     metadata={
@@ -698,7 +592,7 @@ class WhatsAppAgentService:
         session: WhatsAppAgentThreadSessionRecord,
         contact_phone: str,
         delivery_chat_jid: str,
-        outbound_messages: Sequence[CliOutboundMessage],
+        outbound_messages: Sequence[AgentOutboundMessage],
         response_latency_ms: int,
     ) -> WhatsAppAgentInboundMessageResponse:
         stored_messages: list[WhatsAppAgentMessageRecord] = []
@@ -706,19 +600,6 @@ class WhatsAppAgentService:
         last_sent_at: datetime | None = None
 
         for index, outbound in enumerate(outbound_messages):
-            cli_metadata = (
-                self._build_cli_message_metadata(
-                    contact_phone=contact_phone,
-                    cwd=str(outbound.metadata.get("cwd") or ""),
-                    context_version=(
-                        outbound.metadata.get("cli_context_version")
-                        if isinstance(outbound.metadata.get("cli_context_version"), int)
-                        else None
-                    ),
-                )
-                if outbound.generated_by.startswith("whatsapp_cli")
-                else {}
-            )
             source_inbound_message_id = (
                 payload.message_id
                 if index == 0 and self._can_claim_source_inbound_message(payload.message_id)
@@ -747,7 +628,6 @@ class WhatsAppAgentService:
                     "generated_by": outbound.generated_by,
                     "reply_to_message_id": inbound_message.whatsapp_message_id,
                     "delivery_chat_jid": delivery_chat_jid,
-                    **cli_metadata,
                     **outbound.metadata,
                 },
                 created_at=datetime.now(UTC),
@@ -846,122 +726,6 @@ class WhatsAppAgentService:
             outbound_message_id=message_ids[0] if message_ids else None,
             outbound_message_ids=message_ids,
             outbound_count=len(message_ids),
-        )
-
-    def _build_cli_progress_callback(
-        self,
-        *,
-        payload: WhatsAppAgentInboundMessageRequest,
-        inbound_message: WhatsAppAgentMessageRecord,
-        thread: WhatsAppAgentThreadRecord,
-        session: WhatsAppAgentThreadSessionRecord,
-        contact_phone: str,
-        delivery_chat_jid: str,
-    ):
-        async def _callback(outbound: CliOutboundMessage) -> None:
-            await self._send_progress_outbound_message(
-                payload=payload,
-                inbound_message=inbound_message,
-                thread=thread,
-                session=session,
-                contact_phone=contact_phone,
-                delivery_chat_jid=delivery_chat_jid,
-                outbound=outbound,
-            )
-
-        return _callback
-
-    async def _send_progress_outbound_message(
-        self,
-        *,
-        payload: WhatsAppAgentInboundMessageRequest,
-        inbound_message: WhatsAppAgentMessageRecord,
-        thread: WhatsAppAgentThreadRecord,
-        session: WhatsAppAgentThreadSessionRecord,
-        contact_phone: str,
-        delivery_chat_jid: str,
-        outbound: CliOutboundMessage,
-    ) -> None:
-        cli_metadata = self._build_cli_message_metadata(
-            contact_phone=contact_phone,
-            cwd=str(outbound.metadata.get("cwd") or ""),
-            context_version=(
-                outbound.metadata.get("cli_context_version")
-                if isinstance(outbound.metadata.get("cli_context_version"), int)
-                else None
-            ),
-        )
-        outbound_record = self.store.append_whatsapp_agent_message(
-            user_id=self.settings.default_user_id,
-            thread_id=thread.id,
-            direction="outbound",
-            role="assistant",
-            session_id=session.id,
-            content=outbound.text,
-            message_timestamp=datetime.now(UTC),
-            contact_phone=contact_phone,
-            chat_jid=delivery_chat_jid,
-            source_inbound_message_id=None,
-            processing_status="sending",
-            learning_status="not_applicable",
-            response_latency_ms=None,
-            model_run_id=(
-                str(outbound.metadata.get("model_run_id"))
-                if isinstance(outbound.metadata.get("model_run_id"), str)
-                else None
-            ),
-            metadata={
-                "generated_by": outbound.generated_by,
-                "reply_to_message_id": inbound_message.whatsapp_message_id,
-                "delivery_chat_jid": delivery_chat_jid,
-                **cli_metadata,
-                **outbound.metadata,
-            },
-            created_at=datetime.now(UTC),
-        )
-        try:
-            send_result = await self.agent_gateway.send_text_message(
-                chat_jid=delivery_chat_jid,
-                message_text=outbound.text,
-            )
-        except Exception as error:
-            send_error = str(error)
-            self.store.update_whatsapp_agent_message(
-                message_id=outbound_record.id,
-                send_status="failed",
-                processing_status="failed_send",
-                error_text=send_error,
-            )
-            logger.warning(
-                "reply_progress_send_failed thread_id=%s inbound_message_id=%s outbound_message_id=%s detail=%s",
-                thread.id,
-                inbound_message.id,
-                outbound_record.id,
-                send_error,
-            )
-            return
-
-        sent_at = send_result.timestamp or datetime.now(UTC)
-        self.store.update_whatsapp_agent_message(
-            message_id=outbound_record.id,
-            send_status="sent",
-            processing_status="sent",
-            whatsapp_message_id=send_result.message_id,
-            message_timestamp=sent_at,
-        )
-        self.store.update_whatsapp_agent_thread(
-            thread_id=thread.id,
-            chat_jid=delivery_chat_jid,
-            status="active",
-            last_outbound_at=sent_at,
-            last_message_at=sent_at,
-            last_error_at=None,
-            last_error_text=None,
-        )
-        self.store.update_whatsapp_agent_session(
-            session_id=session.id,
-            last_activity_at=sent_at,
-            updated_at=sent_at,
         )
 
     def _can_claim_source_inbound_message(self, source_inbound_message_id: str | None) -> bool:
@@ -1354,57 +1118,6 @@ class WhatsAppAgentService:
     def _sync_settings_with_observer(self, _observer_status: ObserverStatusResponse) -> WhatsAppAgentSettingsRecord:
         return self.store.get_whatsapp_agent_settings(self.settings.default_user_id)
 
-    def _build_cli_message_metadata(
-        self,
-        *,
-        contact_phone: str | None,
-        terminal_session: WhatsAppAgentTerminalSessionRecord | None = None,
-        cwd: str | None = None,
-        context_version: int | None = None,
-    ) -> dict[str, object]:
-        owner_phone = self.settings.normalized_whatsapp_cli_owner_phone
-        contact_is_admin = self.store.is_whatsapp_agent_admin_contact(
-            user_id=self.settings.default_user_id,
-            contact_phone=contact_phone,
-        )
-        is_owner = bool(owner_phone and self.store.phone_matches(contact_phone, owner_phone))
-        resolved_cwd = (
-            terminal_session.cwd
-            if terminal_session is not None
-            else str(cwd or "").strip()
-        )
-        resolved_context_version = (
-            terminal_session.context_version
-            if terminal_session is not None
-            else context_version
-        )
-        return {
-            "interaction_mode": "cli",
-            "channel": "whatsapp_agent_cli",
-            "cli_training_candidate": True,
-            "cli_mode_enabled": terminal_session.cli_mode_enabled if terminal_session is not None else True,
-            "cli_cwd": resolved_cwd,
-            "cli_context_version": resolved_context_version,
-            "contact_is_admin": contact_is_admin,
-            "admin_actor": bool(contact_is_admin or is_owner),
-            "server_operator": True,
-            "device_context": "server_pc",
-        }
-
-    def _ensure_cli_admin_defaults(self) -> None:
-        owner_phone = self.settings.normalized_whatsapp_cli_owner_phone
-        if not owner_phone:
-            return
-        self.store.upsert_known_contact(
-            user_id=self.settings.default_user_id,
-            contact_phone=owner_phone,
-            chat_jid=None,
-            contact_name="Alvaro",
-            name_source="system_seed",
-            seen_at=None,
-            is_admin=True,
-        )
-
     def _build_status_response(
         self,
         *,
@@ -1418,8 +1131,7 @@ class WhatsAppAgentService:
             gateway_ready=agent_status.gateway_ready,
             auto_reply_enabled=settings.auto_reply_enabled,
             owner_number=agent_status.owner_number,
-            allowed_contact_phone=settings.allowed_contact_phone,
-            reply_scope="all_direct_contacts",
+            reply_scope="observer_owner_only",
             qr_code=agent_status.qr_code,
             qr_expires_in_sec=agent_status.qr_expires_in_sec,
             last_seen_at=agent_status.last_seen_at,
@@ -1430,8 +1142,7 @@ class WhatsAppAgentService:
         return WhatsAppAgentSettingsResponse(
             user_id=str(settings_record.user_id),
             auto_reply_enabled=settings_record.auto_reply_enabled,
-            allowed_contact_phone=settings_record.allowed_contact_phone,
-            reply_scope="all_direct_contacts",
+            reply_scope="observer_owner_only",
             updated_at=settings_record.updated_at,
         )
 

@@ -639,7 +639,7 @@ class AgendaGuardianService:
         )
 
     async def _send_conflict_alert(self, *, new_event: AgendaEventRecord, existing_event: AgendaEventRecord) -> bool:
-        owner_target = await self._resolve_owner_chat_target(preferred_channel="agent")
+        owner_target = await self._resolve_owner_chat_target()
         if not owner_target:
             self._log_debug("[Guardião do Tempo] Conflito detectado, mas o número conectado não foi localizado.")
             return False
@@ -1014,7 +1014,7 @@ class AgendaGuardianService:
         return f"{local_start.strftime('%d/%m %H:%M')}-{local_end.strftime('%H:%M')}"
 
     async def _send_due_reminder(self, *, event: AgendaEventRecord, phase: str) -> bool:
-        owner_target = await self._resolve_owner_chat_target(preferred_channel="agent")
+        owner_target = await self._resolve_owner_chat_target()
         if not owner_target:
             self._log_debug(
                 f"[Guardião do Tempo] Lembrete de '{event.titulo}' não pôde ser entregue porque o número conectado não foi localizado."
@@ -1045,104 +1045,41 @@ class AgendaGuardianService:
                 f"[Guardião do Tempo] Lembrete {'antecipado' if phase == 'pre' else 'no horário'} enviado para '{event.titulo}'."
             )
             return True
-        except Exception as agent_exc:
-            logger.warning("agenda_due_reminder_agent_failed event_id=%s detail=%s", event.id, str(agent_exc))
-            try:
-                await self.observer_gateway.send_text_message(chat_jid=owner_target, message_text=message_text)
-                self._log_debug(
-                    f"[Guardião do Tempo] Lembrete {'antecipado' if phase == 'pre' else 'no horário'} enviado via observador para '{event.titulo}'."
-                )
-                return True
-            except Exception as observer_exc:
-                self._log_debug(
-                    f"[Guardião do Tempo] Falha ao enviar lembrete de '{event.titulo}': {str(observer_exc)}"
-                )
-                logger.warning(
-                    "agenda_due_reminder_failed event_id=%s detail=%s fallback_detail=%s",
-                    event.id,
-                    str(agent_exc),
-                    str(observer_exc),
-                )
-                return False
-
-    async def _resolve_owner_chat_target(self, *, preferred_channel: str) -> str | None:
-        attempts: list[tuple[str, str]] = []
-        if preferred_channel == "agent":
-            attempts.extend(
-                [
-                    ("observer_status", "observer"),
-                    ("observer_session", "observer"),
-                    ("configured_owner", "config"),
-                    ("agent_status", "agent"),
-                    ("agent_session", "agent"),
-                ]
+        except Exception as send_exc:
+            self._log_debug(
+                f"[Guardião do Tempo] Falha ao enviar lembrete de '{event.titulo}': {str(send_exc)}"
             )
-        else:
-            attempts.extend(
-                [
-                    ("observer_status", "observer"),
-                    ("observer_session", "observer"),
-                    ("configured_owner", "config"),
-                    ("agent_status", "agent"),
-                    ("agent_session", "agent"),
-                ]
+            logger.warning(
+                "agenda_due_reminder_failed event_id=%s detail=%s",
+                event.id,
+                str(send_exc),
             )
+            return False
 
-        expected_owner = self._resolve_expected_owner_target()
-        for source_kind, channel in attempts:
-            target: str | None = None
-            try:
-                if source_kind == "agent_status":
-                    target = self._normalize_chat_target((await self.agent_gateway.get_agent_status()).owner_number)
-                elif source_kind == "observer_status":
-                    target = self._normalize_chat_target((await self.observer_gateway.get_observer_status(refresh_qr=False)).owner_number)
-                elif source_kind == "agent_session":
-                    target = self._normalize_chat_target(
-                        self.store.get_whatsapp_session_owner_phone(session_id=f"{self.settings.default_user_id}:agent")
-                    )
-                elif source_kind == "observer_session":
-                    target = self._normalize_chat_target(
-                        self.store.get_whatsapp_session_owner_phone(session_id=f"{self.settings.default_user_id}:observer")
-                    )
-                elif source_kind == "configured_owner":
-                    target = self._normalize_chat_target(self.settings.normalized_whatsapp_cli_owner_phone)
-            except Exception:
-                target = None
-            if target:
-                if (
-                    source_kind.startswith("agent_")
-                    and expected_owner
-                    and not self.store.phone_matches(target, expected_owner)
-                ):
-                    logger.warning(
-                        "agenda_owner_target_mismatch user_id=%s source=%s target=%s expected=%s",
-                        self.settings.default_user_id,
-                        source_kind,
-                        target,
-                        expected_owner,
-                    )
-                    continue
-                logger.info(
-                    "agenda_owner_target_resolved user_id=%s channel=%s source=%s",
-                    self.settings.default_user_id,
-                    channel,
-                    source_kind,
-                )
-                return target
-        return None
+    async def _resolve_owner_chat_target(self) -> str | None:
+        try:
+            observer_target = self._normalize_chat_target(
+                (await self.observer_gateway.get_observer_status(refresh_qr=False)).owner_number
+            )
+        except Exception:
+            observer_target = None
+        if observer_target:
+            logger.info(
+                "agenda_owner_target_resolved user_id=%s source=observer_status",
+                self.settings.default_user_id,
+            )
+            return observer_target
 
-    def _resolve_expected_owner_target(self) -> str | None:
-        observer_owner = self._normalize_chat_target(
+        observer_session_target = self._normalize_chat_target(
             self.store.get_whatsapp_session_owner_phone(session_id=f"{self.settings.default_user_id}:observer")
         )
-        if observer_owner:
-            return observer_owner
-        configured_owner = self._normalize_chat_target(self.settings.normalized_whatsapp_cli_owner_phone)
-        if configured_owner:
-            return configured_owner
-        return self._normalize_chat_target(
-            self.store.get_whatsapp_session_owner_phone(session_id=f"{self.settings.default_user_id}:agent")
-        )
+        if observer_session_target:
+            logger.info(
+                "agenda_owner_target_resolved user_id=%s source=observer_session",
+                self.settings.default_user_id,
+            )
+            return observer_session_target
+        return None
 
     def _normalize_chat_target(self, value: str | None) -> str | None:
         raw = (value or "").strip()

@@ -848,7 +848,7 @@ class ProactiveAssistantService:
         candidate_id: str | None,
         now: datetime,
     ) -> bool:
-        owner_target = await self._resolve_owner_chat_target(preferred_channel="observer")
+        owner_target = await self._resolve_owner_chat_target()
         if not owner_target:
             self.store.create_proactive_delivery_log(
                 user_id=self.settings.default_user_id,
@@ -907,31 +907,27 @@ class ProactiveAssistantService:
         )
         try:
             send_result = await self.agent_gateway.send_text_message(chat_jid=owner_target, message_text=message_text)
-        except Exception as agent_exc:
-            logger.warning("proactive_send_agent_failed detail=%s", agent_exc)
-            try:
-                send_result = await self.observer_gateway.send_text_message(chat_jid=owner_target, message_text=message_text)
-            except Exception as observer_exc:
-                logger.warning("proactive_send_observer_failed detail=%s", observer_exc)
-                self.store.update_whatsapp_agent_message(
-                    message_id=outbound_record.id,
-                    send_status="failed",
-                    processing_status="failed_send",
-                    error_text=str(observer_exc),
-                )
-                self.store.create_proactive_delivery_log(
-                    user_id=self.settings.default_user_id,
-                    candidate_id=candidate_id,
-                    category=category,
-                    decision="failed",
-                    score=score,
-                    reason_code=reason_code,
-                    reason_text=reason_text,
-                    message_text=message_text,
-                    message_id=None,
-                    sent_at=None,
-                )
-                return False
+        except Exception as send_exc:
+            logger.warning("proactive_send_failed detail=%s", send_exc)
+            self.store.update_whatsapp_agent_message(
+                message_id=outbound_record.id,
+                send_status="failed",
+                processing_status="failed_send",
+                error_text=str(send_exc),
+            )
+            self.store.create_proactive_delivery_log(
+                user_id=self.settings.default_user_id,
+                candidate_id=candidate_id,
+                category=category,
+                decision="failed",
+                score=score,
+                reason_code=reason_code,
+                reason_text=reason_text,
+                message_text=message_text,
+                message_id=None,
+                sent_at=None,
+            )
+            return False
 
         sent_at = send_result.timestamp or now
         self.store.update_whatsapp_agent_message(
@@ -1169,69 +1165,18 @@ class ProactiveAssistantService:
         owner_phone = self.store.get_whatsapp_session_owner_phone(session_id=f"{self.settings.default_user_id}:observer")
         if owner_phone:
             return self._normalize_chat_target(owner_phone)
-        configured_owner_phone = self.settings.normalized_whatsapp_cli_owner_phone
-        if configured_owner_phone:
-            return self._normalize_chat_target(configured_owner_phone)
-        owner_phone = self.store.get_whatsapp_session_owner_phone(session_id=f"{self.settings.default_user_id}:agent")
-        if owner_phone:
-            return self._normalize_chat_target(owner_phone)
         return None
 
-    async def _resolve_owner_chat_target(self, *, preferred_channel: str) -> str | None:
-        attempts: list[tuple[str, str]] = []
-        if preferred_channel == "agent":
-            attempts.extend(
-                [
-                    ("observer_status", "observer"),
-                    ("observer_session", "observer"),
-                    ("configured_owner", "config"),
-                    ("agent_status", "agent"),
-                    ("agent_session", "agent"),
-                ]
+    async def _resolve_owner_chat_target(self) -> str | None:
+        try:
+            observer_target = self._normalize_chat_target(
+                (await self.observer_gateway.get_observer_status(refresh_qr=False)).owner_number
             )
-        else:
-            attempts.extend(
-                [
-                    ("observer_status", "observer"),
-                    ("observer_session", "observer"),
-                    ("configured_owner", "config"),
-                    ("agent_status", "agent"),
-                    ("agent_session", "agent"),
-                ]
-            )
-
-        expected_owner = self._resolve_owner_phone()
-        for source_kind, _channel in attempts:
-            target: str | None = None
-            try:
-                if source_kind == "agent_status":
-                    target = self._normalize_chat_target((await self.agent_gateway.get_agent_status()).owner_number)
-                elif source_kind == "observer_status":
-                    target = self._normalize_chat_target((await self.observer_gateway.get_observer_status(refresh_qr=False)).owner_number)
-                elif source_kind == "agent_session":
-                    target = self._normalize_chat_target(self.store.get_whatsapp_session_owner_phone(session_id=f"{self.settings.default_user_id}:agent"))
-                elif source_kind == "observer_session":
-                    target = self._normalize_chat_target(self.store.get_whatsapp_session_owner_phone(session_id=f"{self.settings.default_user_id}:observer"))
-                elif source_kind == "configured_owner":
-                    target = self._normalize_chat_target(self.settings.normalized_whatsapp_cli_owner_phone)
-            except Exception:
-                target = None
-            if target:
-                if (
-                    source_kind.startswith("agent_")
-                    and expected_owner
-                    and not self.store.phone_matches(target, expected_owner)
-                ):
-                    logger.warning(
-                        "proactive_owner_target_mismatch user_id=%s source=%s target=%s expected=%s",
-                        self.settings.default_user_id,
-                        source_kind,
-                        target,
-                        expected_owner,
-                    )
-                    continue
-                return target
-        return None
+        except Exception:
+            observer_target = None
+        if observer_target:
+            return observer_target
+        return self._resolve_owner_phone()
 
     def _normalize_chat_target(self, value: str | None) -> str | None:
         text = str(value or "").strip()

@@ -9,6 +9,7 @@ from app.services.assistant_context_service import (
     AssistantConversationTurn,
 )
 from app.services.deepseek_service import DeepSeekService
+from app.services.groq_service import GroqChatService
 from app.services.supabase_store import SupabaseStore, WhatsAppAgentMessageRecord
 
 ConversationRecord = WhatsAppAgentMessageRecord | AssistantConversationTurn
@@ -21,11 +22,13 @@ class AssistantReplyService:
         settings: Settings,
         store: SupabaseStore,
         deepseek_service: DeepSeekService,
+        groq_service: GroqChatService,
         context_service: AssistantContextService,
     ) -> None:
         self.settings = settings
         self.store = store
         self.deepseek_service = deepseek_service
+        self.groq_service = groq_service
         self.context_service = context_service
 
     async def generate_reply(
@@ -50,6 +53,20 @@ class AssistantReplyService:
             contact_memory_context=contact_memory_context,
             additional_rules=additional_rules,
         )
+        if channel == "whatsapp_agent":
+            return await self.groq_service.generate_reply(
+                user_message=user_message,
+                current_life_summary=context_package.current_life_summary,
+                recent_snapshots_context=context_package.recent_snapshots_context,
+                recent_projects_context=context_package.recent_projects_context,
+                recent_chat_context=context_package.recent_chat_context,
+                interaction_mode=context_package.interaction_mode,
+                context_hint=context_package.context_hint,
+                priority_context=context_package.priority_context,
+                recent_messages_label=recent_messages_label or "Historico recente desta conversa",
+                additional_rules=context_package.additional_rules,
+                model_name=self.settings.whatsapp_agent_groq_model,
+            )
         return await self.deepseek_service.generate_reply(
             user_message=user_message,
             current_life_summary=context_package.current_life_summary,

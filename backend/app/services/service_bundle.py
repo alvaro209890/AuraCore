@@ -89,6 +89,7 @@ class ServiceBundleCache:
                 settings=scoped_settings,
                 store=store,
                 deepseek_service=deepseek_service,
+                groq_service=groq_service,
                 context_service=assistant_context_service,
             )
             memory_service = MemoryAnalysisService(

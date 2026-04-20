@@ -124,16 +124,18 @@ class GroqChatService:
         priority_context: str = "",
         recent_messages_label: str = "Historico recente desta conversa",
         additional_rules: list[str] | None = None,
+        model_name: str | None = None,
     ) -> str:
         if not self.settings.groq_api_key:
             raise GroqChatError("GROQ_API_KEY nao configurada no backend local.")
 
+        resolved_model_name = str(model_name or self.settings.groq_model).strip() or self.settings.groq_model
         headers = {
             "Authorization": f"Bearer {self.settings.groq_api_key}",
             "Content-Type": "application/json",
         }
         payload = {
-            "model": self.settings.groq_model,
+            "model": resolved_model_name,
             "temperature": 0.35,
             "messages": [
                 {

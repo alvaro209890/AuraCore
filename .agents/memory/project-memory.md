@@ -17,16 +17,18 @@
 - As abas `Automação` e `Proatividade` agora usam painéis operacionais, shells escuros para `input/select/time/number`, botões próprios `ops-hero-button` e seletores segmentados no mesmo kit visual `ops-*`
 - A maior parte da lógica de domínio do backend está concentrada em `backend/app/services/supabase_store.py`, `memory_service.py`, `whatsapp_agent_service.py`, `agenda_guardian_service.py` e `deepseek_service.py`
 
-## WhatsApp Agent / CLI
+## WhatsApp Agent
 
-- Existe um modo agente/CLI do WhatsApp para o Álvaro
-- O Álvaro (`6684396232`) deve ser tratado como admin no fluxo do agente
-- O backend já suporta sessão terminal persistida, contexto CLI, progresso intermediário e mensagem final de conclusão
+- O modo CLI do WhatsApp foi removido em abril/2026; `/agente`, `/fechar` e afins não têm mais semântica de terminal
+- O `agent-frontend` no segundo site do Firebase é o único painel para gerenciar QR/reset do número global do agente
+- Chat e proatividade sempre saem pelo canal global `agent`; o `observer` serve para identificar a conta correta pelo número do owner
+- O agente do WhatsApp agora só responde ao número salvo como `observer_owner_phone` de uma conta ativa; contatos conhecidos e admins legados não autorizam resposta
+- As respostas conversacionais do WhatsApp agora usam Groq no backend; o modelo padrão dedicado do canal foi trocado para `llama-3.3-70b-versatile`
 - Quando mudanças do backend são feitas, normalmente é preciso sincronizar runtime e repositório principal antes de commitar
 - O agente conversacional do WhatsApp é majoritariamente reativo: hoje ele responde mensagens recebidas, usa memória própria por contato e tem proatividade nativa principalmente para agenda (conflitos e lembretes)
 - Já existe base de dados para evoluir proatividade mais rica: `whatsapp_agent_contact_memories`, `important_messages`, `analysis_jobs`, `automation_decisions` e snapshots/projetos da memória geral do usuário
 - Em abril/2026 foi introduzido um subsistema dedicado de proatividade do WhatsApp: `ProactiveAssistantService`, com preferências persistidas, candidatos proativos, log de entregas e digests de manhã/noite
-- O roteamento outbound para o dono no backend agora deve priorizar o owner do `observer` da conta atual; em `ProactiveAssistantService` e `agenda_guardian_service`, fallback vindo do `agent` só deve ser aceito se bater com o owner esperado ou com o phone configurado do Álvaro
+- O roteamento inbound do agente global resolve a conta por `observer_owner_phone`; no outbound, `ProactiveAssistantService` e `agenda_guardian_service` usam somente o owner do `observer` da conta atual como alvo lógico
 
 ## Deploy local
 

@@ -33,9 +33,8 @@ class WhatsAppAgentStatusResponse(BaseModel):
     state: str
     gateway_ready: bool
     auto_reply_enabled: bool
-    reply_scope: Literal["all_direct_contacts"] = "all_direct_contacts"
+    reply_scope: Literal["observer_owner_only"] = "observer_owner_only"
     owner_number: str | None = None
-    allowed_contact_phone: str | None = None
     qr_code: str | None = None
     qr_expires_in_sec: int | None = None
     last_seen_at: datetime | None = None
@@ -45,33 +44,8 @@ class WhatsAppAgentStatusResponse(BaseModel):
 class WhatsAppAgentSettingsResponse(BaseModel):
     user_id: str
     auto_reply_enabled: bool
-    reply_scope: Literal["all_direct_contacts"] = "all_direct_contacts"
-    allowed_contact_phone: str | None = None
+    reply_scope: Literal["observer_owner_only"] = "observer_owner_only"
     updated_at: datetime
-
-
-class WhatsAppAgentAdminContactResponse(BaseModel):
-    id: str
-    user_id: str
-    contact_phone: str
-    chat_jid: str | None = None
-    contact_name: str
-    name_source: str
-    is_admin: bool
-    last_seen_at: datetime | None = None
-    admin_updated_at: datetime | None = None
-    updated_at: datetime
-
-
-class WhatsAppAgentAdminContactsListResponse(BaseModel):
-    contacts: list[WhatsAppAgentAdminContactResponse] = Field(default_factory=list)
-
-
-class UpdateWhatsAppAgentAdminContactRequest(BaseModel):
-    contact_phone: str = Field(min_length=1)
-    chat_jid: str | None = None
-    contact_name: str | None = None
-    is_admin: bool
 
 
 class WhatsAppAgentSessionResponse(BaseModel):
@@ -83,21 +57,6 @@ class WhatsAppAgentSessionResponse(BaseModel):
     last_activity_at: datetime
     ended_at: datetime | None = None
     reset_reason: str | None = None
-    created_at: datetime
-    updated_at: datetime
-
-
-class WhatsAppAgentTerminalSessionResponse(BaseModel):
-    id: str
-    thread_id: str
-    contact_phone: str | None = None
-    chat_jid: str | None = None
-    cli_mode_enabled: bool
-    cwd: str
-    context_version: int = Field(default=1, ge=1)
-    last_command_text: str | None = None
-    last_command_at: datetime | None = None
-    closed_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -260,7 +219,6 @@ class WhatsAppAgentWorkspaceResponse(BaseModel):
     observer_status: ObserverStatusResponse
     active_thread_id: str | None = None
     active_session: WhatsAppAgentSessionResponse | None = None
-    terminal_session: WhatsAppAgentTerminalSessionResponse | None = None
     contact_memory: WhatsAppAgentContactMemoryResponse | None = None
     threads: list[WhatsAppAgentThreadResponse] = Field(default_factory=list)
     messages: list[WhatsAppAgentMessageResponse] = Field(default_factory=list)

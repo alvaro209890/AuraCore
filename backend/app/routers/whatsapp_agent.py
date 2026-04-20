@@ -12,9 +12,7 @@ from app.schemas import (
     SimpleOkResponse,
     UpdateProactivePreferencesRequest,
     UpdateWhatsAppAgentSettingsRequest,
-    UpdateWhatsAppAgentAdminContactRequest,
     WhatsAppAgentMessagesListResponse,
-    WhatsAppAgentAdminContactsListResponse,
     WhatsAppAgentSettingsResponse,
     WhatsAppAgentStatusResponse,
     WhatsAppAgentThreadsListResponse,
@@ -168,34 +166,6 @@ async def run_proactive_tick(
     return SimpleOkResponse()
 
 
-@router.get("/admin-contacts", response_model=WhatsAppAgentAdminContactsListResponse)
-async def list_agent_admin_contacts(
-    limit: int = Query(default=200, ge=1, le=500),
-    agent_service: WhatsAppAgentService = Depends(get_whatsapp_agent_service),
-) -> WhatsAppAgentAdminContactsListResponse:
-    contacts = agent_service.list_admin_contacts(limit=limit)
-    return WhatsAppAgentAdminContactsListResponse(
-        contacts=[_to_admin_contact_response(contact) for contact in contacts],
-    )
-
-
-@router.put("/admin-contacts", response_model=WhatsAppAgentAdminContactsListResponse)
-async def update_agent_admin_contact(
-    payload: UpdateWhatsAppAgentAdminContactRequest = Body(...),
-    agent_service: WhatsAppAgentService = Depends(get_whatsapp_agent_service),
-) -> WhatsAppAgentAdminContactsListResponse:
-    agent_service.update_admin_contact(
-        contact_phone=payload.contact_phone,
-        chat_jid=payload.chat_jid,
-        contact_name=payload.contact_name,
-        is_admin=payload.is_admin,
-    )
-    contacts = agent_service.list_admin_contacts(limit=200)
-    return WhatsAppAgentAdminContactsListResponse(
-        contacts=[_to_admin_contact_response(contact) for contact in contacts],
-    )
-
-
 @router.get("/workspace", response_model=WhatsAppAgentWorkspaceResponse)
 async def get_agent_workspace(
     thread_id: str | None = Query(default=None),
@@ -211,7 +181,6 @@ async def get_agent_workspace(
         observer_status=snapshot.observer_status,
         active_thread_id=snapshot.active_thread_id,
         active_session=_to_session_response(snapshot.active_session),
-        terminal_session=_to_terminal_session_response(snapshot.terminal_session),
         contact_memory=_to_contact_memory_response(snapshot.contact_memory),
         threads=[_to_thread_response(thread, agent_service) for thread in snapshot.threads],
         messages=[_to_message_response(message) for message in snapshot.messages],
@@ -336,40 +305,6 @@ def _to_contact_memory_response(memory) -> dict | None:
         "learned_message_count": memory.learned_message_count,
         "last_learned_at": memory.last_learned_at,
         "updated_at": memory.updated_at,
-    }
-
-
-def _to_admin_contact_response(contact) -> dict:
-    return {
-        "id": contact.id,
-        "user_id": str(contact.user_id),
-        "contact_phone": contact.contact_phone,
-        "chat_jid": contact.chat_jid,
-        "contact_name": contact.contact_name,
-        "name_source": contact.name_source,
-        "is_admin": contact.is_admin,
-        "last_seen_at": contact.last_seen_at,
-        "admin_updated_at": contact.admin_updated_at,
-        "updated_at": contact.updated_at,
-    }
-
-
-def _to_terminal_session_response(session) -> dict | None:
-    if session is None:
-        return None
-    return {
-        "id": session.id,
-        "thread_id": session.thread_id,
-        "contact_phone": session.contact_phone,
-        "chat_jid": session.chat_jid,
-        "cli_mode_enabled": session.cli_mode_enabled,
-        "cwd": session.cwd,
-        "context_version": session.context_version,
-        "last_command_text": session.last_command_text,
-        "last_command_at": session.last_command_at,
-        "closed_at": session.closed_at,
-        "created_at": session.created_at,
-        "updated_at": session.updated_at,
     }
 
 

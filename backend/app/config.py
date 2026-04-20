@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     deepseek_timeout_seconds: float = Field(60.0, alias="DEEPSEEK_TIMEOUT_SECONDS")
     groq_api_key: str | None = Field(default=None, alias="GROQ_API_KEY")
     groq_model: str = Field("llama-3.1-8b-instant", alias="GROQ_MODEL")
+    whatsapp_agent_groq_model: str = Field("llama-3.3-70b-versatile", alias="WHATSAPP_AGENT_GROQ_MODEL")
     groq_api_base_url: str = Field("https://api.groq.com/openai/v1", alias="GROQ_API_BASE_URL")
     groq_timeout_seconds: float = Field(45.0, alias="GROQ_TIMEOUT_SECONDS")
     memory_analysis_max_messages: int = Field(200, alias="MEMORY_ANALYSIS_MAX_MESSAGES")
@@ -85,13 +86,6 @@ class Settings(BaseSettings):
     context_max_message_chars: int = Field(3200, alias="CONTEXT_MAX_MESSAGE_CHARS")
     context_max_history_messages: int = Field(30, alias="CONTEXT_MAX_HISTORY_MESSAGES")
     whatsapp_agent_idle_timeout_minutes: int = Field(10, alias="WHATSAPP_AGENT_IDLE_TIMEOUT_MINUTES")
-    whatsapp_cli_owner_phone: str = Field("6684396232", alias="WHATSAPP_CLI_OWNER_PHONE")
-    whatsapp_cli_root: str = Field(
-        "/media/server/HD Backup/Servidores_NAO_MEXA/AuraCore",
-        alias="WHATSAPP_CLI_ROOT",
-    )
-    whatsapp_cli_max_steps: int = Field(6, alias="WHATSAPP_CLI_MAX_STEPS")
-    whatsapp_cli_output_chunk_chars: int = Field(1500, alias="WHATSAPP_CLI_OUTPUT_CHUNK_CHARS")
     message_retention_max_rows: int = Field(160, alias="MESSAGE_RETENTION_MAX_ROWS")
     request_timeout_seconds: float = Field(20.0, alias="REQUEST_TIMEOUT_SECONDS")
 
@@ -133,18 +127,3 @@ class Settings(BaseSettings):
     @property
     def system_gateway_database_path(self) -> str:
         return str(Path(self.normalized_database_root) / "agent-session" / "gateway.sqlite3")
-
-    @property
-    def normalized_whatsapp_cli_owner_phone(self) -> str | None:
-        digits = "".join(char for char in str(self.whatsapp_cli_owner_phone or "") if char.isdigit())
-        if len(digits) >= 12 and digits.startswith("55"):
-            digits = digits[2:]
-        if len(digits) > 11:
-            digits = digits[-11:]
-        if 8 <= len(digits) <= 11:
-            return digits
-        return None
-
-    @property
-    def normalized_whatsapp_cli_root(self) -> str:
-        return str(Path(self.whatsapp_cli_root).expanduser())

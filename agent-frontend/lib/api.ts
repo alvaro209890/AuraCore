@@ -44,19 +44,6 @@ export type GlobalAgentStatus = {
   current_user_observer_phone: string | null;
 };
 
-export type GlobalAgentAdminContact = {
-  id: string;
-  user_id: string;
-  contact_phone: string;
-  chat_jid: string | null;
-  contact_name: string;
-  name_source: string;
-  is_admin: boolean;
-  last_seen_at: string | null;
-  admin_updated_at: string | null;
-  updated_at: string;
-};
-
 const REMOTE_FALLBACK_API_BASE_URL = "https://api.cursar.space";
 const EXPLICIT_API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ?? null;
 
@@ -236,22 +223,4 @@ export async function resetGlobalAgent(): Promise<GlobalAgentStatus> {
   return request<GlobalAgentStatus>("/api/global-agent/reset", {
     method: "POST",
   });
-}
-
-export async function getGlobalAgentAdminContacts(): Promise<GlobalAgentAdminContact[]> {
-  const response = await request<{ contacts: GlobalAgentAdminContact[] }>("/api/global-agent/admin-contacts");
-  return response.contacts;
-}
-
-export async function updateGlobalAgentAdminContact(input: {
-  contact_phone: string;
-  chat_jid?: string | null;
-  contact_name?: string | null;
-  is_admin: boolean;
-}): Promise<GlobalAgentAdminContact[]> {
-  const response = await request<{ contacts: GlobalAgentAdminContact[] }>("/api/global-agent/admin-contacts", {
-    method: "PUT",
-    body: JSON.stringify(input),
-  });
-  return response.contacts;
 }

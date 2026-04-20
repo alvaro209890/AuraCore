@@ -6,7 +6,6 @@ import {
   Bot,
   CheckCircle2,
   Database,
-  Fingerprint,
   LoaderCircle,
   MessageCircleMore,
   QrCode,
@@ -18,11 +17,8 @@ import {
 
 import {
   connectGlobalAgent,
-  getGlobalAgentAdminContacts,
   getGlobalAgentStatus,
   resetGlobalAgent,
-  updateGlobalAgentAdminContact,
-  type GlobalAgentAdminContact,
   type GlobalAgentStatus,
 } from "@/lib/api";
 
@@ -33,8 +29,6 @@ export function GlobalAgentDashboard() {
   const [agentStatus, setAgentStatus] = useState<GlobalAgentStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyAction, setBusyAction] = useState<"connect" | "reset" | "refresh" | null>(null);
-  const [adminContacts, setAdminContacts] = useState<GlobalAgentAdminContact[]>([]);
-  const [busyAdminPhone, setBusyAdminPhone] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -68,17 +62,13 @@ export function GlobalAgentDashboard() {
     setLoading(true);
     try {
       const nextStatus = await connectGlobalAgent();
-      const nextContacts = await getGlobalAgentAdminContacts();
       setAgentStatus(nextStatus);
-      setAdminContacts(nextContacts);
       setError(null);
     } catch (nextError) {
       setError(formatUiError(nextError));
       try {
         const fallbackStatus = await getGlobalAgentStatus();
-        const fallbackContacts = await getGlobalAgentAdminContacts();
         setAgentStatus(fallbackStatus);
-        setAdminContacts(fallbackContacts);
       } catch {
         // Keep the original error state if even the fallback fails.
       }
@@ -92,8 +82,6 @@ export function GlobalAgentDashboard() {
     try {
       const nextStatus = await getGlobalAgentStatus();
       setAgentStatus(nextStatus);
-      const nextContacts = await getGlobalAgentAdminContacts();
-      setAdminContacts(nextContacts);
       setError(null);
     } catch (nextError) {
       setError(formatUiError(nextError));
@@ -125,24 +113,6 @@ export function GlobalAgentDashboard() {
       setError(formatUiError(nextError));
     } finally {
       setBusyAction(null);
-    }
-  }
-
-  async function handleToggleAdmin(contact: GlobalAgentAdminContact): Promise<void> {
-    setBusyAdminPhone(contact.contact_phone);
-    try {
-      const nextContacts = await updateGlobalAgentAdminContact({
-        contact_phone: contact.contact_phone,
-        chat_jid: contact.chat_jid,
-        contact_name: contact.contact_name,
-        is_admin: !contact.is_admin,
-      });
-      setAdminContacts(nextContacts);
-      setError(null);
-    } catch (nextError) {
-      setError(formatUiError(nextError));
-    } finally {
-      setBusyAdminPhone(null);
     }
   }
 
@@ -234,38 +204,26 @@ export function GlobalAgentDashboard() {
               <article className="agent-panel">
                 <div className="agent-panel-head">
                   <div>
-                    <span className="agent-section-kicker">Admins do CLI</span>
-                    <h2>Quem pode operar o terminal</h2>
+                    <span className="agent-section-kicker">Entrega</span>
+                    <h2>Quem recebe resposta</h2>
                   </div>
                 </div>
-                <div className="agent-admin-list">
-                  {adminContacts.length === 0 ? (
-                    <div className="agent-empty-qr">
-                      <Fingerprint size={26} />
-                      <span>Os contatos conhecidos vao aparecer aqui conforme o backend observar as conversas.</span>
-                    </div>
-                  ) : (
-                    adminContacts.map((contact) => (
-                      <div className="agent-admin-row" key={contact.id}>
-                        <div className="agent-admin-copy">
-                          <strong>{contact.contact_name || contact.contact_phone}</strong>
-                          <span>{contact.contact_phone}</span>
-                          <small>
-                            {contact.last_seen_at ? `Ultima atividade: ${formatShortDate(contact.last_seen_at)}` : "Ainda sem atividade"}
-                          </small>
-                        </div>
-                        <button
-                          className={contact.is_admin ? "agent-primary-button" : "agent-ghost-button"}
-                          disabled={busyAdminPhone === contact.contact_phone}
-                          onClick={() => void handleToggleAdmin(contact)}
-                          type="button"
-                        >
-                          {busyAdminPhone === contact.contact_phone ? <LoaderCircle className="spin" size={18} /> : <ShieldCheck size={18} />}
-                          {contact.is_admin ? "Admin ativo" : "Tornar admin"}
-                        </button>
-                      </div>
-                    ))
-                  )}
+                <div className="agent-rule-list">
+                  <RuleRow
+                    ok
+                    title="Somente owner provisionado"
+                    detail="O agente só responde quando o número remetente bate com o owner salvo em `observer_owner_phone` de uma conta ativa."
+                  />
+                  <RuleRow
+                    ok
+                    title="Contatos paralelos ignorados"
+                    detail="Contatos conhecidos, admins legados e outros números deixam de habilitar resposta no WhatsApp global."
+                  />
+                  <RuleRow
+                    ok
+                    title="Sem CLI no WhatsApp"
+                    detail="Mensagens como `/agente` ou `/fechar` não abrem terminal; tudo vira conversa normal com a IA."
+                  />
                 </div>
               </article>
 
@@ -285,12 +243,12 @@ export function GlobalAgentDashboard() {
                   <RuleRow
                     ok
                     title="Chave de roteamento"
-                    detail="Quando o backend identifica o numero do observador de uma conta, ele localiza o workspace correto e consulta apenas aquele banco."
+                    detail="Quando o backend identifica o numero do observador de uma conta, ele localiza o workspace correto e atende apenas o owner vinculado a esse observer."
                   />
                   <RuleRow
                     ok
-                    title="Persistencia separada"
-                    detail="A sessao global do agente fica em um banco local fora das pastas dos usuarios, sem misturar credenciais com os workspaces individuais."
+                    title="Saida unica"
+                    detail="Chat e proatividade sempre saem pelo numero conectado neste Agent Hub; o observer serve como chave de conta, não como canal de envio."
                   />
                 </div>
               </article>
@@ -376,16 +334,4 @@ function formatUiError(error: unknown): string {
     return error.message;
   }
   return "Nao foi possivel carregar o Agent Hub.";
-}
-
-function formatShortDate(value: string): string {
-  try {
-    return new Intl.DateTimeFormat("pt-BR", {
-      dateStyle: "short",
-      timeStyle: "short",
-      timeZone: "America/Sao_Paulo",
-    }).format(new Date(value));
-  } catch {
-    return value;
-  }
 }

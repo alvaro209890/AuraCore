@@ -2,14 +2,10 @@
 
 ## Estado operacional recente
 
-- O WhatsApp CLI recebeu várias melhorias recentes para ficar mais próximo de uma CLI real
-- Já existe:
-  - parsing mais tolerante do planner da CLI
-  - fallback heurístico para análise de pastas como `Downloads`
-  - progresso intermediário no WhatsApp
-  - mensagem final explícita avisando que a solicitação terminou
-  - edição estruturada por trecho (`edit`)
-  - validação automática pós-alteração quando aplicável
+- O modo CLI do WhatsApp foi removido do backend e das UIs públicas
+- O segundo site (`agent-frontend`) continua sendo o painel do QR do agente global, mas sem seção de admins/CLI
+- O agente global agora responde apenas ao owner mapeado por `observer_owner_phone`
+- Chat e proatividade usam somente o canal global `agent`; o `observer` ficou restrito à identificação da conta e do owner
 
 ## Diagnóstico recente importante
 
@@ -218,6 +214,18 @@
   - `deepseek_service` agora exige menos projetos vagos e mais detalhe concreto em `summary`, `what_is_being_built`, `built_for`, `next_steps` e `evidence`
   - `memory_service` passou a refinar candidatos de projeto com base nas mensagens-fonte, puxando evidências/snippets reais, próximos passos acionáveis e recompondo resumos fracos
   - projetos sem detalhe mínimo útil agora são descartados antes de persistir ou estabilizar o resultado da análise
+
+## Atualização 2026-04-20
+
+- Removido o arquivo `backend/app/services/whatsapp_cli_service.py` e toda a interceptação de CLI no `WhatsAppAgentService`
+- `internal_agent` já roteava por `observer_owner_phone`; agora o `WhatsAppAgentService` também só aceita o owner do `observer` da conta e não depende mais de `whatsapp_known_contacts`/admins
+- `ProactiveAssistantService` e `agenda_guardian_service` passaram a resolver o alvo apenas pelo `observer` e enviar somente via `agent_gateway`
+- APIs `/api/global-agent/admin-contacts` e `/api/whatsapp-agent/admin-contacts` foram removidas; `workspace` do agente não expõe mais `terminal_session`
+- As respostas de chat do WhatsApp deixaram de usar DeepSeek e agora passam por `GroqChatService` com `WHATSAPP_AGENT_GROQ_MODEL` default `llama-3.3-70b-versatile`
+- Validação local concluída:
+  - `python3 -m py_compile` dos módulos backend alterados: ok
+  - `npm run build` em `agent-frontend`: ok
+  - `npm run build` em `frontend`: ok
 - Validação local desta rodada:
   - `python3 -m py_compile backend/app/services/memory_service.py backend/app/services/deepseek_service.py`: ok
   - backend sincronizado para o runtime local
