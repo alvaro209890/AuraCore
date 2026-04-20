@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 from app.config import Settings
 from app.services.deepseek_service import DeepSeekService
-from app.services.observer_gateway import ObserverGatewayService
+from app.services.observer_gateway import ObserverGatewayService, WhatsAppAgentGatewayService
 from app.services.supabase_store import (
     ProjectMemoryRecord,
     ProactiveCandidateRecord,
@@ -61,11 +61,13 @@ class ProactiveAssistantService:
         store: SupabaseStore,
         deepseek_service: DeepSeekService,
         observer_gateway: ObserverGatewayService,
+        agent_gateway: WhatsAppAgentGatewayService,
     ) -> None:
         self.settings = settings
         self.store = store
         self.deepseek_service = deepseek_service
         self.observer_gateway = observer_gateway
+        self.agent_gateway = agent_gateway
         self._loop_task: asyncio.Task[None] | None = None
         self._tick_lock = asyncio.Lock()
 
@@ -904,28 +906,32 @@ class ProactiveAssistantService:
             created_at=now,
         )
         try:
-            send_result = await self.observer_gateway.send_text_message(chat_jid=owner_target, message_text=message_text)
-        except Exception as observer_exc:
-            logger.warning("proactive_send_observer_failed detail=%s", observer_exc)
-            self.store.update_whatsapp_agent_message(
-                message_id=outbound_record.id,
-                send_status="failed",
-                processing_status="failed_send",
-                error_text=str(observer_exc),
-            )
-            self.store.create_proactive_delivery_log(
-                user_id=self.settings.default_user_id,
-                candidate_id=candidate_id,
-                category=category,
-                decision="failed",
-                score=score,
-                reason_code=reason_code,
-                reason_text=reason_text,
-                message_text=message_text,
-                message_id=None,
-                sent_at=None,
-            )
-            return False
+            send_result = await self.agent_gateway.send_text_message(chat_jid=owner_target, message_text=message_text)
+        except Exception as agent_exc:
+            logger.warning("proactive_send_agent_failed detail=%s", agent_exc)
+            try:
+                send_result = await self.observer_gateway.send_text_message(chat_jid=owner_target, message_text=message_text)
+            except Exception as observer_exc:
+                logger.warning("proactive_send_observer_failed detail=%s", observer_exc)
+                self.store.update_whatsapp_agent_message(
+                    message_id=outbound_record.id,
+                    send_status="failed",
+                    processing_status="failed_send",
+                    error_text=str(observer_exc),
+                )
+                self.store.create_proactive_delivery_log(
+                    user_id=self.settings.default_user_id,
+                    candidate_id=candidate_id,
+                    category=category,
+                    decision="failed",
+                    score=score,
+                    reason_code=reason_code,
+                    reason_text=reason_text,
+                    message_text=message_text,
+                    message_id=None,
+                    sent_at=None,
+                )
+                return False
 
         sent_at = send_result.timestamp or now
         self.store.update_whatsapp_agent_message(
@@ -1166,21 +1172,44 @@ class ProactiveAssistantService:
         configured_owner_phone = self.settings.normalized_whatsapp_cli_owner_phone
         if configured_owner_phone:
             return self._normalize_chat_target(configured_owner_phone)
+        owner_phone = self.store.get_whatsapp_session_owner_phone(session_id=f"{self.settings.default_user_id}:agent")
+        if owner_phone:
+            return self._normalize_chat_target(owner_phone)
         return None
 
     async def _resolve_owner_chat_target(self, *, preferred_channel: str) -> str | None:
-        attempts: list[tuple[str, str]] = [
-            ("observer_status", "observer"),
-            ("observer_session", "observer"),
-            ("configured_owner", "config"),
-        ]
+        attempts: list[tuple[str, str]] = []
+        if preferred_channel == "agent":
+            attempts.extend(
+                [
+                    ("observer_status", "observer"),
+                    ("observer_session", "observer"),
+                    ("configured_owner", "config"),
+                    ("agent_status", "agent"),
+                    ("agent_session", "agent"),
+                ]
+            )
+        else:
+            attempts.extend(
+                [
+                    ("observer_status", "observer"),
+                    ("observer_session", "observer"),
+                    ("configured_owner", "config"),
+                    ("agent_status", "agent"),
+                    ("agent_session", "agent"),
+                ]
+            )
 
         expected_owner = self._resolve_owner_phone()
         for source_kind, _channel in attempts:
             target: str | None = None
             try:
-                if source_kind == "observer_status":
+                if source_kind == "agent_status":
+                    target = self._normalize_chat_target((await self.agent_gateway.get_agent_status()).owner_number)
+                elif source_kind == "observer_status":
                     target = self._normalize_chat_target((await self.observer_gateway.get_observer_status(refresh_qr=False)).owner_number)
+                elif source_kind == "agent_session":
+                    target = self._normalize_chat_target(self.store.get_whatsapp_session_owner_phone(session_id=f"{self.settings.default_user_id}:agent"))
                 elif source_kind == "observer_session":
                     target = self._normalize_chat_target(self.store.get_whatsapp_session_owner_phone(session_id=f"{self.settings.default_user_id}:observer"))
                 elif source_kind == "configured_owner":
@@ -1188,7 +1217,11 @@ class ProactiveAssistantService:
             except Exception:
                 target = None
             if target:
-                if expected_owner and not self.store.phone_matches(target, expected_owner):
+                if (
+                    source_kind.startswith("agent_")
+                    and expected_owner
+                    and not self.store.phone_matches(target, expected_owner)
+                ):
                     logger.warning(
                         "proactive_owner_target_mismatch user_id=%s source=%s target=%s expected=%s",
                         self.settings.default_user_id,
@@ -1204,13 +1237,13 @@ class ProactiveAssistantService:
         text = str(value or "").strip()
         if not text:
             return None
+        if "@" in text:
+            return text
         digits = "".join(char for char in text if char.isdigit())
-        if not digits:
-            return None
         if len(digits) >= 12 and digits.startswith("55"):
-            return digits
+            digits = digits[2:]
         if len(digits) > 11:
             digits = digits[-11:]
-        if 10 <= len(digits) <= 11:
-            return f"55{digits}"
-        return digits if 12 <= len(digits) <= 13 else None
+        if 8 <= len(digits) <= 11:
+            return f"{digits}@s.whatsapp.net"
+        return None

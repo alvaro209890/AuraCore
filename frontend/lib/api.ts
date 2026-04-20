@@ -757,23 +757,6 @@ export async function getObserverStatus(refreshQr = false): Promise<ObserverStat
   return request<ObserverStatus>(`/api/observer/status${query}`);
 }
 
-function toAgentStatus(status: ObserverStatus): WhatsAppAgentStatus {
-  return {
-    instance_name: status.instance_name,
-    connected: status.connected,
-    state: status.state,
-    gateway_ready: status.gateway_ready,
-    auto_reply_enabled: true,
-    reply_scope: "all_direct_contacts",
-    owner_number: status.owner_number,
-    allowed_contact_phone: null,
-    qr_code: status.qr_code,
-    qr_expires_in_sec: status.qr_expires_in_sec,
-    last_seen_at: status.last_seen_at,
-    last_error: status.last_error,
-  };
-}
-
 export async function refreshObserverMessages(): Promise<ObserverMessageRefreshResponse> {
   return request<ObserverMessageRefreshResponse>("/api/observer/messages/refresh", {
     method: "POST",
@@ -781,15 +764,15 @@ export async function refreshObserverMessages(): Promise<ObserverMessageRefreshR
 }
 
 export async function connectAgent(): Promise<WhatsAppAgentStatus> {
-  return toAgentStatus(await connectObserver());
+  return request<WhatsAppAgentStatus>("/api/whatsapp-agent/connect", { method: "POST" });
 }
 
 export async function resetAgent(): Promise<WhatsAppAgentStatus> {
-  return toAgentStatus(await resetObserver());
+  return request<WhatsAppAgentStatus>("/api/whatsapp-agent/reset", { method: "POST" });
 }
 
 export async function getAgentStatus(): Promise<WhatsAppAgentStatus> {
-  return toAgentStatus(await getObserverStatus());
+  return request<WhatsAppAgentStatus>("/api/whatsapp-agent/status");
 }
 
 export async function getAgentWorkspace(threadId?: string): Promise<WhatsAppAgentWorkspace> {

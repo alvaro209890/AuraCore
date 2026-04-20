@@ -36,6 +36,7 @@ export const config = {
   nodeEnv: getOptional("NODE_ENV", "development"),
   instanceName: getOptional("INSTANCE_NAME", "observer"),
   observerInstanceName: getOptional("OBSERVER_INSTANCE_NAME", getOptional("INSTANCE_NAME", "observer")),
+  agentInstanceName: getOptional("AGENT_INSTANCE_NAME", "agent"),
   auracoreApiBaseUrl: normalizeUrl(getRequired("AURACORE_API_BASE_URL")),
   internalApiToken: getRequired("INTERNAL_API_TOKEN"),
   qrExpiresSeconds: parseInteger("QR_EXPIRES_SECONDS", 60),
