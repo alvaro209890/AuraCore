@@ -104,39 +104,6 @@ app.post("/internal/observer/send", async (req, res, next) => {
   }
 });
 
-app.get("/internal/agent/status", (req, res) => {
-  res.json(gatewayManager.getGlobalAgentStatus());
-});
-
-app.post("/internal/agent/connect", async (req, res, next) => {
-  try {
-    const status = await gatewayManager.connectGlobalAgent();
-    res.json(status);
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.post("/internal/agent/reset", async (req, res, next) => {
-  try {
-    const status = await gatewayManager.resetGlobalAgent();
-    res.json(status);
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.post("/internal/agent/send", async (req, res, next) => {
-  try {
-    const chatJid = String(req.body?.chat_jid ?? "").trim();
-    const messageText = String(req.body?.message_text ?? "").trim();
-    const result = await gatewayManager.sendGlobalAgentTextMessage(chatJid, messageText);
-    res.json(result);
-  } catch (error) {
-    next(error);
-  }
-});
-
 app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
   const message = error instanceof Error ? error.message : "Internal gateway error.";
   res.status(500).json({ detail: message });

@@ -42,8 +42,6 @@ class Settings(BaseSettings):
             "http://127.0.0.1:3001,"
             "https://auracore-82bf2.web.app,"
             "https://auracore-82bf2.firebaseapp.com,"
-            "https://auracore-agent-82bf2.web.app,"
-            "https://auracore-agent-82bf2.firebaseapp.com"
         ),
         alias="FRONTEND_ORIGINS",
     )
@@ -110,8 +108,6 @@ class Settings(BaseSettings):
             "http://127.0.0.1:3001",
             "https://auracore-82bf2.web.app",
             "https://auracore-82bf2.firebaseapp.com",
-            "https://auracore-agent-82bf2.web.app",
-            "https://auracore-agent-82bf2.firebaseapp.com",
         ]
 
     @property

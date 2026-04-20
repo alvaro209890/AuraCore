@@ -14,26 +14,12 @@ type ManagedObserverChannel = {
 
 type ChannelName = "observer";
 
-const GLOBAL_AGENT_SCOPE = "global-agent";
-const GLOBAL_AGENT_SESSION_ID = "global:agent";
-const GLOBAL_AGENT_INSTANCE_NAME = "auracore-global-agent";
-
 export class AuraCoreGatewayManager {
   private readonly users = new Map<string, ManagedObserverChannel>();
-  private readonly globalAgent = new WhatsAppGatewayChannel(
-    {
-      kind: "system",
-      systemScope: GLOBAL_AGENT_SCOPE,
-    },
-    "agent",
-    GLOBAL_AGENT_SESSION_ID,
-    config.agentInstanceName || GLOBAL_AGENT_INSTANCE_NAME,
-  );
   private bootstrapRetryTimer: NodeJS.Timeout | null = null;
 
   async start(): Promise<void> {
     try {
-      await this.globalAgent.start();
       await this.bootstrapActiveAccounts();
       this.clearBootstrapRetryTimer();
     } catch (error) {
@@ -47,31 +33,18 @@ export class AuraCoreGatewayManager {
     if (!managed) {
       return this.buildIdleStatus(appUserId, username, channelName);
     }
-    return this.resolveChannel(managed, channelName).getStatus();
+    return managed.observer.getStatus();
   }
 
-  getGlobalAgentStatus(): GatewayObserverStatus {
-    return this.globalAgent.getStatus();
-  }
-
-  async connect(appUserId: string, username: string, channelName: ChannelName): Promise<GatewayObserverStatus> {
+  async connect(appUserId: string, username: string, _channelName: ChannelName): Promise<GatewayObserverStatus> {
     const managed = this.getOrCreateUser(appUserId, username);
-    return this.resolveChannel(managed, channelName).connectSession();
+    return managed.observer.connectSession();
   }
 
-  async connectGlobalAgent(): Promise<GatewayObserverStatus> {
-    return this.globalAgent.connectSession();
-  }
-
-  async reset(appUserId: string, username: string, channelName: ChannelName): Promise<GatewayObserverStatus> {
+  async reset(appUserId: string, username: string, _channelName: ChannelName): Promise<GatewayObserverStatus> {
     const managed = this.getOrCreateUser(appUserId, username);
-    await this.resolveChannel(managed, channelName).resetSession();
-    return this.resolveChannel(managed, channelName).getStatus();
-  }
-
-  async resetGlobalAgent(): Promise<GatewayObserverStatus> {
-    await this.globalAgent.resetSession();
-    return this.globalAgent.getStatus();
+    await managed.observer.resetSession();
+    return managed.observer.getStatus();
   }
 
   async refreshObserverHistory(appUserId: string, username: string): Promise<GatewayObserverStatus> {
@@ -82,26 +55,17 @@ export class AuraCoreGatewayManager {
   async sendTextMessage(
     appUserId: string,
     username: string,
-    channelName: ChannelName,
+    _channelName: ChannelName,
     chatJid: string,
     messageText: string,
   ): Promise<GatewaySendResult> {
     const managed = this.getOrCreateUser(appUserId, username);
-    return this.resolveChannel(managed, channelName).sendTextMessage(chatJid, messageText);
-  }
-
-  async sendGlobalAgentTextMessage(
-    chatJid: string,
-    messageText: string,
-  ): Promise<GatewaySendResult> {
-    return this.globalAgent.sendTextMessage(chatJid, messageText);
+    return managed.observer.sendTextMessage(chatJid, messageText);
   }
 
   async shutdown(): Promise<void> {
     this.clearBootstrapRetryTimer();
-    await Promise.all(
-      [this.globalAgent.shutdown(), ...Array.from(this.users.values()).map((managed) => managed.observer.shutdown())],
-    );
+    await Promise.all(Array.from(this.users.values()).map((managed) => managed.observer.shutdown()));
     this.users.clear();
   }
 
@@ -126,10 +90,6 @@ export class AuraCoreGatewayManager {
     };
     this.users.set(appUserId, managed);
     return managed;
-  }
-
-  private resolveChannel(managed: ManagedObserverChannel, channelName: ChannelName): WhatsAppGatewayChannel {
-    return managed.observer;
   }
 
   private buildIdleStatus(appUserId: string, username: string, channelName: ChannelName): GatewayObserverStatus {

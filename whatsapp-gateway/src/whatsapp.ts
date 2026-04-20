@@ -231,7 +231,7 @@ export class WhatsAppGatewayChannel {
 
   constructor(
     private readonly scope: AuraCoreStorageScope,
-    private readonly channelName: "observer" | "agent",
+    private readonly channelName: "observer",
     private readonly sessionId: string,
     private readonly instanceName: string,
   ) {
@@ -344,12 +344,7 @@ export class WhatsAppGatewayChannel {
         if (isStatusJid(jid) || isBroadcastJid(jid) || isNewsletterJid(jid)) {
           return true;
         }
-        if (this.channelName === "observer") {
-          return false;
-        }
-        // The global agent still needs unresolved LID chats to pass through so
-        // normalizeMessage() can buffer and replay them once the phone mapping arrives.
-        return !(isDirectUserJid(jid) || String(jid ?? "").trim().endsWith("@lid"));
+        return false;
       },
       browser: Browsers.macOS(`AuraCore-${this.instanceName}`),
       // Let Baileys recover linked-device decrypt retries that show up as
@@ -601,10 +596,7 @@ export class WhatsAppGatewayChannel {
     sourceEvent: string,
     attemptNumber: number,
   ): Promise<boolean> {
-    const ingestPath =
-      this.channelName === "observer"
-        ? "/api/internal/observer/messages/ingest"
-        : "/api/internal/agent/messages/inbound";
+    const ingestPath = "/api/internal/observer/messages/ingest";
 
     try {
       const response = await fetch(`${config.auracoreApiBaseUrl}${ingestPath}`, {
@@ -757,9 +749,6 @@ export class WhatsAppGatewayChannel {
     }
 
     const isGroupChat = isGroupJid(rawRemoteJid) || isGroupJid(resolvedChatJid);
-    if (isGroupChat && this.channelName !== "observer") {
-      return null;
-    }
 
     if (!isGroupChat && !isDirectUserJid(resolvedChatJid)) {
       return null;
@@ -808,10 +797,7 @@ export class WhatsAppGatewayChannel {
       return null;
     }
 
-    const deliveryChatJid =
-      this.channelName === "agent" && rawRemoteJid.endsWith("@lid")
-        ? rawRemoteJid
-        : resolvedChatJid;
+    const deliveryChatJid = resolvedChatJid;
 
     const { value: contactName, source: contactNameSource } = this.resolveContactName(
       message,

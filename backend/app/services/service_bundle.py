@@ -112,14 +112,12 @@ class ServiceBundleCache:
                 store=store,
                 deepseek_service=deepseek_service,
                 observer_gateway=observer_gateway,
-                agent_gateway=agent_gateway,
             )
             proactive_assistant_service = ProactiveAssistantService(
                 settings=scoped_settings,
                 store=store,
                 deepseek_service=deepseek_service,
                 observer_gateway=observer_gateway,
-                agent_gateway=agent_gateway,
             )
             whatsapp_agent_service = WhatsAppAgentService(
                 settings=scoped_settings,

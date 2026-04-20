@@ -10,14 +10,11 @@ from app.dependencies import get_settings, warm_registered_accounts
 from app.routers.agenda import router as agenda_router
 from app.routers.auth import router as auth_router
 from app.routers.automation import router as automation_router
-from app.routers.global_agent import router as global_agent_router
 from app.routers.internal_accounts import router as internal_accounts_router
-from app.routers.internal_agent import router as internal_agent_router
 from app.routers.internal import router as internal_router
 from app.routers.internal_storage import router as internal_storage_router
 from app.routers.memories import router as memories_router
 from app.routers.observer import router as observer_router
-from app.routers.whatsapp_agent import router as whatsapp_agent_router
 from app.services.deepseek_service import DeepSeekError
 from app.services.groq_service import GroqChatError
 from app.services.memory_service import MemoryAnalysisError
@@ -43,14 +40,11 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(agenda_router)
 app.include_router(observer_router)
-app.include_router(global_agent_router)
 app.include_router(memories_router)
 app.include_router(automation_router)
 app.include_router(internal_accounts_router)
 app.include_router(internal_router)
-app.include_router(internal_agent_router)
 app.include_router(internal_storage_router)
-app.include_router(whatsapp_agent_router)
 
 
 @app.on_event("startup")

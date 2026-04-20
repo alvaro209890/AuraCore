@@ -50,7 +50,6 @@ import {
 // --- Novas Abas Componentizadas (Shadcn-like) ---
 import OverviewTab from './dashboard/tabs/OverviewTab';
 import ObserverTab from './dashboard/tabs/ObserverTab';
-import AgentTab from './dashboard/tabs/AgentTab';
 import GroupsTab from './dashboard/tabs/GroupsTab';
 import MemoryTab from './dashboard/tabs/MemoryTab';
 import RelationsTab from './dashboard/tabs/RelationsTab';
@@ -58,7 +57,6 @@ import AgendaTab from './dashboard/tabs/AgendaTab';
 import ProjectsTab from './dashboard/tabs/ProjectsTab';
 import ActivityTab from './dashboard/tabs/ActivityTab';
 import AutomationTab from './dashboard/tabs/AutomationTab';
-import ProactivityTab from './dashboard/tabs/ProactivityTab';
 import ManualTab from './dashboard/tabs/ManualTab';
 import AccountTab from './dashboard/tabs/AccountTab';
 
@@ -270,7 +268,6 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "agenda", label: "Agenda", icon: Clock },
       { id: "projects", label: "Projetos", icon: FolderGit2 },
       { id: "automation", label: "Automação", icon: Zap },
-      { id: "proactivity", label: "Proatividade", icon: Sparkles },
     ],
   },
   {
@@ -1404,7 +1401,7 @@ export function ConnectionDashboard({
   onLogout: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<TabId>("overview");
-  const resolvedActiveTab: TabId = activeTab === "activity" ? "memory" : activeTab;
+  const resolvedActiveTab: TabId = activeTab === "activity" ? "memory" : activeTab === "agent" || activeTab === "proactivity" ? "overview" : activeTab;
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [status, setStatus] = useState<ObserverStatus | null>(null);
   const [viewState, setViewState] = useState<ViewState>("idle");
@@ -2174,10 +2171,7 @@ export function ConnectionDashboard({
       resolvedActiveTab === "automation" ||
       queuedJobId !== null
     );
-    const shouldRefreshProactivity = !isTickingProactivity && (
-      resolvedActiveTab === "manual" ||
-      resolvedActiveTab === "proactivity"
-    );
+    const shouldRefreshProactivity = false;
     const shouldRefreshHeavyGroups = shouldRefreshHeavyResource("groups", analysisIsBusy);
     const shouldRefreshMemoryGroups = (resolvedActiveTab === "manual" || resolvedActiveTab === "groups") && shouldRefreshHeavyGroups;
 
@@ -2330,7 +2324,7 @@ export function ConnectionDashboard({
   }
 
   pollStatusRef.current = pollStatus;
-  pollAgentStatusRef.current = pollAgentStatus;
+  pollAgentStatusRef.current = null;
   refreshLiveDataRef.current = refreshLiveData;
 
   useEffect(() => {
@@ -2525,7 +2519,7 @@ export function ConnectionDashboard({
     const shouldLoadAgenda = activeTab === "agenda";
     const shouldLoadSnapshots = activeTab === "overview" || activeTab === "memory" || activeTab === "manual";
     const shouldLoadAutomation = resolvedActiveTab === "memory" || resolvedActiveTab === "automation" || resolvedActiveTab === "manual" || queuedJobId !== null;
-    const shouldLoadProactivity = resolvedActiveTab === "proactivity" || resolvedActiveTab === "manual";
+    const shouldLoadProactivity = false;
 
     const [
       statusResult,
@@ -3411,24 +3405,6 @@ export function ConnectionDashboard({
                   onDraftChange={setAutomationDraft}
                   onSave={() => void saveAutomationConfig()}
                   onTick={() => void triggerAutomationNow()}
-                />
-              ) : null}
-
-              {resolvedActiveTab === "proactivity" ? (
-                <ProactivityTab
-                  proactiveSettings={proactiveSettings}
-                  proactivityDraft={proactivityDraft}
-                  proactiveCandidates={proactiveCandidates}
-                  proactiveDeliveries={proactiveDeliveries}
-                  proactiveError={proactiveError}
-                  isSavingProactivity={isSavingProactivity}
-                  isTickingProactivity={isTickingProactivity}
-                  onDraftChange={setProactivityDraft}
-                  onSave={() => void saveProactivityConfig()}
-                  onTick={() => void triggerProactivityNow()}
-                  onDismissCandidate={(candidateId) => void updateCandidateState(candidateId, "dismiss")}
-                  onConfirmCandidate={(candidateId) => void updateCandidateState(candidateId, "confirm")}
-                  onCompleteCandidate={(candidateId) => void updateCandidateState(candidateId, "complete")}
                 />
               ) : null}
 
