@@ -484,19 +484,19 @@ export default function ProjectsTab({
         <div className="project-inline-grid">
           <label className="project-inline-field">
             <span>Nome</span>
-            <input className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50" type="text" value={draft.project_name} onChange={(event) => updateProjectDraft(project.id, "project_name", event.target.value)} />
+            <input className="ac-input" type="text" value={draft.project_name} onChange={(event) => updateProjectDraft(project.id, "project_name", event.target.value)} />
           </label>
           <label className="project-inline-field">
             <span>Status</span>
-            <input className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50" type="text" value={draft.status} onChange={(event) => updateProjectDraft(project.id, "status", event.target.value)} />
+            <input className="ac-input" type="text" value={draft.status} onChange={(event) => updateProjectDraft(project.id, "status", event.target.value)} />
           </label>
           <label className="project-inline-field">
             <span>Etapa</span>
-            <input className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50" type="text" value={draft.stage} onChange={(event) => updateProjectDraft(project.id, "stage", event.target.value)} />
+            <input className="ac-input" type="text" value={draft.stage} onChange={(event) => updateProjectDraft(project.id, "stage", event.target.value)} />
           </label>
           <label className="project-inline-field">
             <span>Prioridade</span>
-            <input className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50" type="text" value={draft.priority} onChange={(event) => updateProjectDraft(project.id, "priority", event.target.value)} />
+            <input className="ac-input" type="text" value={draft.priority} onChange={(event) => updateProjectDraft(project.id, "priority", event.target.value)} />
           </label>
           <label className="project-inline-field project-inline-field-full">
             <span>Resumo</span>
@@ -528,11 +528,11 @@ export default function ProjectsTab({
           </label>
         </div>
         <div className="project-inline-actions">
-          <button className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 bg-zinc-900 text-zinc-50 hover:bg-zinc-900/90 h-9 px-4 py-2" disabled={saving} onClick={() => void submitProjectDraft(project)} type="button">
+          <button className="ac-primary-button" disabled={saving} onClick={() => void submitProjectDraft(project)} type="button">
             {saving ? <RefreshCw size={14} className="spin" /> : <BadgeCheck size={14} />}
             {saving ? "Salvando..." : "Salvar projeto"}
           </button>
-          <button className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 border border-zinc-200 bg-white text-zinc-900 hover:bg-zinc-100 hover:text-zinc-900 h-9 px-4 py-2" disabled={saving} onClick={closeProjectEditor} type="button">
+          <button className="ac-secondary-button" disabled={saving} onClick={closeProjectEditor} type="button">
             Cancelar
           </button>
         </div>
@@ -571,7 +571,7 @@ export default function ProjectsTab({
             onChange={(event) => setProjectAiDrafts((current) => ({ ...current, [project.id]: event.target.value }))}
           />
           <div className="project-inline-actions">
-            <button className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 bg-zinc-900 text-zinc-50 hover:bg-zinc-900/90 h-9 px-4 py-2" disabled={loading || !draft.trim()} onClick={() => void submitProjectAiInstruction(project)} type="button">
+            <button className="ac-primary-button" disabled={loading || !draft.trim()} onClick={() => void submitProjectAiInstruction(project)} type="button">
               {loading ? <RefreshCw size={14} className="spin" /> : <Send size={14} />}
               {loading ? "Editando..." : "Enviar para IA"}
             </button>
@@ -591,7 +591,7 @@ export default function ProjectsTab({
           <h3>Nenhum projeto consolidado</h3>
           <p>Agora você pode criar um projeto manualmente e deixar a IA enriquecer isso depois, sem depender da primeira detecção automática da memória.</p>
           <div className="hero-actions">
-            <button className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 bg-zinc-900 text-zinc-50 hover:bg-zinc-900/90 h-9 px-4 py-2" onClick={toggleCreateProject} type="button">
+            <button className="ac-primary-button" onClick={toggleCreateProject} type="button">
               <Plus size={15} />
               {creatingProject ? "Fechar criação manual" : "Novo projeto"}
             </button>
@@ -601,19 +601,19 @@ export default function ProjectsTab({
               <div className="project-inline-grid">
                 <label className="project-inline-field">
                   <span>Nome</span>
-                  <input className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50" type="text" value={createProjectDraft.project_name} onChange={(event) => setCreateProjectDraft((current) => ({ ...current, project_name: event.target.value }))} />
+                  <input className="ac-input" type="text" value={createProjectDraft.project_name} onChange={(event) => setCreateProjectDraft((current) => ({ ...current, project_name: event.target.value }))} />
                 </label>
                 <label className="project-inline-field">
                   <span>Status</span>
-                  <input className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50" type="text" value={createProjectDraft.status} onChange={(event) => setCreateProjectDraft((current) => ({ ...current, status: event.target.value }))} />
+                  <input className="ac-input" type="text" value={createProjectDraft.status} onChange={(event) => setCreateProjectDraft((current) => ({ ...current, status: event.target.value }))} />
                 </label>
                 <label className="project-inline-field">
                   <span>Etapa</span>
-                  <input className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50" type="text" value={createProjectDraft.stage} onChange={(event) => setCreateProjectDraft((current) => ({ ...current, stage: event.target.value }))} />
+                  <input className="ac-input" type="text" value={createProjectDraft.stage} onChange={(event) => setCreateProjectDraft((current) => ({ ...current, stage: event.target.value }))} />
                 </label>
                 <label className="project-inline-field">
                   <span>Prioridade</span>
-                  <input className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50" type="text" value={createProjectDraft.priority} onChange={(event) => setCreateProjectDraft((current) => ({ ...current, priority: event.target.value }))} />
+                  <input className="ac-input" type="text" value={createProjectDraft.priority} onChange={(event) => setCreateProjectDraft((current) => ({ ...current, priority: event.target.value }))} />
                 </label>
                 <label className="project-inline-field project-inline-field-full">
                   <span>Resumo</span>
@@ -645,11 +645,11 @@ export default function ProjectsTab({
                 </label>
               </div>
               <div className="project-inline-actions">
-                <button className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 bg-zinc-900 text-zinc-50 hover:bg-zinc-900/90 h-9 px-4 py-2" disabled={isCreatingProject} onClick={() => void submitCreateProject()} type="button">
+                <button className="ac-primary-button" disabled={isCreatingProject} onClick={() => void submitCreateProject()} type="button">
                   {isCreatingProject ? <RefreshCw size={14} className="spin" /> : <BadgeCheck size={14} />}
                   {isCreatingProject ? "Criando..." : "Salvar projeto"}
                 </button>
-                <button className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 border border-zinc-200 bg-white text-zinc-900 hover:bg-zinc-100 hover:text-zinc-900 h-9 px-4 py-2" disabled={isCreatingProject} onClick={toggleCreateProject} type="button">
+                <button className="ac-secondary-button" disabled={isCreatingProject} onClick={toggleCreateProject} type="button">
                   Cancelar
                 </button>
               </div>
@@ -739,7 +739,7 @@ export default function ProjectsTab({
           </div>
         </div>
         <div className="hero-actions" style={{ marginTop: "1rem" }}>
-          <button className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 bg-zinc-900 text-zinc-50 hover:bg-zinc-900/90 h-9 px-4 py-2" onClick={toggleCreateProject} type="button">
+          <button className="ac-primary-button" onClick={toggleCreateProject} type="button">
             <Plus size={14} />
             {creatingProject ? "Fechar criação" : "Novo projeto"}
           </button>
@@ -749,19 +749,19 @@ export default function ProjectsTab({
             <div className="project-inline-grid">
               <label className="project-inline-field">
                 <span>Nome</span>
-                <input className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50" type="text" value={createProjectDraft.project_name} onChange={(event) => setCreateProjectDraft((current) => ({ ...current, project_name: event.target.value }))} />
+                <input className="ac-input" type="text" value={createProjectDraft.project_name} onChange={(event) => setCreateProjectDraft((current) => ({ ...current, project_name: event.target.value }))} />
               </label>
               <label className="project-inline-field">
                 <span>Status</span>
-                <input className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50" type="text" value={createProjectDraft.status} onChange={(event) => setCreateProjectDraft((current) => ({ ...current, status: event.target.value }))} />
+                <input className="ac-input" type="text" value={createProjectDraft.status} onChange={(event) => setCreateProjectDraft((current) => ({ ...current, status: event.target.value }))} />
               </label>
               <label className="project-inline-field">
                 <span>Etapa</span>
-                <input className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50" type="text" value={createProjectDraft.stage} onChange={(event) => setCreateProjectDraft((current) => ({ ...current, stage: event.target.value }))} />
+                <input className="ac-input" type="text" value={createProjectDraft.stage} onChange={(event) => setCreateProjectDraft((current) => ({ ...current, stage: event.target.value }))} />
               </label>
               <label className="project-inline-field">
                 <span>Prioridade</span>
-                <input className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50" type="text" value={createProjectDraft.priority} onChange={(event) => setCreateProjectDraft((current) => ({ ...current, priority: event.target.value }))} />
+                <input className="ac-input" type="text" value={createProjectDraft.priority} onChange={(event) => setCreateProjectDraft((current) => ({ ...current, priority: event.target.value }))} />
               </label>
               <label className="project-inline-field project-inline-field-full">
                 <span>Resumo</span>
@@ -793,11 +793,11 @@ export default function ProjectsTab({
               </label>
             </div>
             <div className="project-inline-actions">
-              <button className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 bg-zinc-900 text-zinc-50 hover:bg-zinc-900/90 h-9 px-4 py-2" disabled={isCreatingProject} onClick={() => void submitCreateProject()} type="button">
+              <button className="ac-primary-button" disabled={isCreatingProject} onClick={() => void submitCreateProject()} type="button">
                 {isCreatingProject ? <RefreshCw size={14} className="spin" /> : <BadgeCheck size={14} />}
                 {isCreatingProject ? "Criando..." : "Salvar projeto"}
               </button>
-              <button className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 border border-zinc-200 bg-white text-zinc-900 hover:bg-zinc-100 hover:text-zinc-900 h-9 px-4 py-2" disabled={isCreatingProject} onClick={toggleCreateProject} type="button">
+              <button className="ac-secondary-button" disabled={isCreatingProject} onClick={toggleCreateProject} type="button">
                 Cancelar
               </button>
             </div>

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import logging
+import re
 from time import perf_counter
 from typing import Mapping, Sequence
 
@@ -14,7 +15,10 @@ from app.schemas import (
     WhatsAppAgentSettingsResponse,
     WhatsAppAgentStatusResponse,
 )
-from app.services.agenda_guardian_service import AgendaGuardianService, AgendaProcessingResult
+from app.services.agenda_guardian_service import (
+    AgendaGuardianService,
+    AgendaProcessingResult,
+)
 from app.services.assistant_reply_service import AssistantReplyService
 from app.services.deepseek_service import DeepSeekAgentMemoryDecision, DeepSeekService
 from app.services.groq_service import GroqChatService
@@ -22,6 +26,8 @@ from app.services.observer_gateway import ObserverGatewayService, WhatsAppAgentG
 from app.services.proactive_assistant_service import ProactiveAssistantService
 from app.services.supabase_store import (
     ImportantMessageSeed,
+    ProjectMemoryRecord,
+    ProactiveCandidateRecord,
     SupabaseStore,
     WhatsAppAgentContactMemoryRecord,
     WhatsAppAgentMessageRecord,
@@ -31,6 +37,56 @@ from app.services.supabase_store import (
 )
 
 logger = logging.getLogger("auracore.agent_reply")
+
+PROJECT_CREATE_PREFIXES = (
+    "crie um projeto",
+    "cria um projeto",
+    "crie projeto",
+    "cria projeto",
+    "novo projeto",
+    "adicione um projeto",
+    "adiciona um projeto",
+    "adiciona projeto",
+    "adicione projeto",
+    "abra um projeto",
+    "abre um projeto",
+)
+PROJECT_PLAN_MARKERS = (
+    "me da um plano",
+    "me dá um plano",
+    "me passa um plano",
+    "organiza esse projeto",
+    "organize esse projeto",
+    "o que fazer",
+    "como destravar",
+    "proximo passo",
+    "próximo passo",
+)
+PROJECT_COMPLETE_MARKERS = (
+    "marque como concluido",
+    "marque como concluído",
+    "marque isso como concluido",
+    "marque isso como concluído",
+    "marcar como concluido",
+    "marcar como concluído",
+    "conclua",
+    "concluir",
+    "finaliza",
+    "finalizar",
+    "encerra",
+    "encerrar",
+)
+PROJECT_REOPEN_MARKERS = (
+    "reabra",
+    "reabrir",
+    "reativa",
+    "reativar",
+    "desmarca como concluido",
+    "desmarca como concluído",
+    "volta esse projeto",
+    "deixa ativo",
+)
+PROJECT_DONE_REGEX = re.compile(r"\b(?:ja fiz|já fiz|resolvi|conclui|concluí|feito|finalizei|terminei)\b", re.IGNORECASE)
 
 
 @dataclass(slots=True)
@@ -60,6 +116,14 @@ class AgentOutboundMessage:
     text: str
     generated_by: str
     metadata: Mapping[str, object]
+
+
+@dataclass(slots=True)
+class ProjectCommandOutcome:
+    handled: bool = False
+    assistant_reply: str | None = None
+    processing_status: str = "project_command_handled"
+    generated_by: str = "project_command"
 
 
 class WhatsAppAgentService:
@@ -374,31 +438,72 @@ class WhatsAppAgentService:
             occurred_at=payload.timestamp,
         )
 
-        proactive_reply_outcome = None
+        # Check for pending event confirmation/cancellation
+        pending_result = None
         if owner_self_message:
-            learning_decision = learning_outcome.last_decision
-            await self.proactive_assistant_service.capture_owner_message(
-                thread_id=thread.id,
+            pending_result = await self.agenda_guardian_service.check_pending_confirmation(
+                user_id=self.settings.default_user_id,
+                text=normalized_text,
+            )
+            if pending_result is not None:
+                agenda_outcome = AgendaProcessingResult(
+                    detected=True,
+                    action=pending_result.action,
+                    saved_event=pending_result.saved_event,
+                    clarification_needed=pending_result.clarification_needed,
+                    clarification_reply=pending_result.clarification_reply,
+                )
+
+        # Check for agenda queries like "what do I have tomorrow"
+        query_result = None
+        if owner_self_message and agenda_outcome is None:
+            detect_agenda_query = getattr(self.agenda_guardian_service, "detect_agenda_query", None)
+            handle_agenda_query = getattr(self.agenda_guardian_service, "handle_agenda_query", None)
+            if callable(detect_agenda_query) and callable(handle_agenda_query) and detect_agenda_query(normalized_text):
+                query_result = await handle_agenda_query(
+                    user_id=self.settings.default_user_id,
+                    text=normalized_text,
+                    reference_now=payload.timestamp,
+                )
+
+        proactive_reply_outcome = None
+        project_command_outcome = None
+        recent_reply_candidate = None
+        if owner_self_message:
+            recent_reply_candidate = self.proactive_assistant_service.get_recent_reply_candidate(
                 contact_phone=contact_phone,
-                chat_jid=delivery_chat_jid,
-                source_message_id=payload.message_id,
+                now=payload.timestamp,
+            )
+            project_command_outcome = self._handle_owner_project_command(
+                contact_phone=contact_phone,
                 message_text=normalized_text,
                 occurred_at=payload.timestamp,
-                learning_signals=(
-                    {
-                        "mood_signals": learning_decision.mood_signals,
-                        "implied_urgency": learning_decision.implied_urgency,
-                        "implied_tasks": learning_decision.implied_tasks,
-                    }
-                    if learning_decision is not None
-                    else {}
-                ),
+                recent_reply_candidate=recent_reply_candidate,
             )
-            proactive_reply_outcome = self.proactive_assistant_service.handle_owner_reply(
-                contact_phone=contact_phone,
-                message_text=normalized_text,
-                occurred_at=payload.timestamp,
-            )
+            if project_command_outcome is None:
+                learning_decision = learning_outcome.last_decision
+                await self.proactive_assistant_service.capture_owner_message(
+                    thread_id=thread.id,
+                    contact_phone=contact_phone,
+                    chat_jid=delivery_chat_jid,
+                    source_message_id=payload.message_id,
+                    message_text=normalized_text,
+                    occurred_at=payload.timestamp,
+                    learning_signals=(
+                        {
+                            "mood_signals": learning_decision.mood_signals,
+                            "implied_urgency": learning_decision.implied_urgency,
+                            "implied_tasks": learning_decision.implied_tasks,
+                        }
+                        if learning_decision is not None
+                        else {}
+                    ),
+                )
+                proactive_reply_outcome = self.proactive_assistant_service.handle_owner_reply(
+                    contact_phone=contact_phone,
+                    message_text=normalized_text,
+                    occurred_at=payload.timestamp,
+                )
 
         if not settings_record.auto_reply_enabled:
             self.store.update_whatsapp_agent_message(
@@ -406,6 +511,8 @@ class WhatsAppAgentService:
                 processing_status=(
                     "scheduled_no_reply"
                     if agenda_outcome.detected
+                    else "project_command_handled_no_reply"
+                    if project_command_outcome is not None and project_command_outcome.handled
                     else "proactive_handled_no_reply"
                     if proactive_reply_outcome is not None and proactive_reply_outcome.handled
                     else "auto_reply_disabled"
@@ -415,12 +522,28 @@ class WhatsAppAgentService:
                 action=(
                     "scheduled_no_reply"
                     if agenda_outcome.detected
+                    else "project_command_handled_no_reply"
+                    if project_command_outcome is not None and project_command_outcome.handled
                     else "proactive_handled_no_reply"
                     if proactive_reply_outcome is not None and proactive_reply_outcome.handled
                     else "auto_reply_disabled"
                 ),
                 thread_id=thread.id,
                 inbound_message_id=inbound_message.id,
+            )
+
+        if project_command_outcome is not None and project_command_outcome.handled and project_command_outcome.assistant_reply:
+            return await self._send_outbound_reply(
+                payload=payload,
+                inbound_message=inbound_message,
+                thread=thread,
+                session=session,
+                contact_phone=contact_phone,
+                delivery_chat_jid=delivery_chat_jid,
+                assistant_reply=project_command_outcome.assistant_reply,
+                response_latency_ms=int((perf_counter() - reply_started) * 1000),
+                reply_model_run_id=None,
+                generated_by=project_command_outcome.generated_by,
             )
 
         if proactive_reply_outcome is not None and proactive_reply_outcome.handled and proactive_reply_outcome.assistant_reply:
@@ -435,6 +558,21 @@ class WhatsAppAgentService:
                 response_latency_ms=int((perf_counter() - reply_started) * 1000),
                 reply_model_run_id=None,
                 generated_by="proactive_assistant_reply",
+            )
+
+        # Handle agenda query results
+        if query_result is not None and query_result.is_query and query_result.assistant_reply:
+            return await self._send_outbound_reply(
+                payload=payload,
+                inbound_message=inbound_message,
+                thread=thread,
+                session=session,
+                contact_phone=contact_phone,
+                delivery_chat_jid=delivery_chat_jid,
+                assistant_reply=query_result.assistant_reply,
+                response_latency_ms=int((perf_counter() - reply_started) * 1000),
+                reply_model_run_id=None,
+                generated_by="agenda_query",
             )
 
         reply_started = perf_counter()
@@ -453,6 +591,14 @@ class WhatsAppAgentService:
             memory=contact_memory,
             learning_outcome=learning_outcome,
         )
+        reply_priority_context = (
+            self.proactive_assistant_service.build_recent_reply_priority_context(
+                contact_phone=contact_phone,
+                now=payload.timestamp,
+            )
+            if owner_self_message
+            else ""
+        )
 
         if agenda_outcome.detected:
             assistant_reply = self._build_agenda_confirmation_reply(agenda_outcome)
@@ -462,8 +608,9 @@ class WhatsAppAgentService:
                     user_message=normalized_text,
                     recent_messages=prior_messages,
                     context_hint=None,
-                    priority_context=None,
+                    priority_context=reply_priority_context or None,
                     contact_memory_context=contact_memory_context,
+                    additional_rules=self._build_whatsapp_additional_rules(has_priority_context=bool(reply_priority_context)),
                     channel="whatsapp_agent",
                 )
             except Exception as error:
@@ -547,6 +694,365 @@ class WhatsAppAgentService:
         return self.store.get_whatsapp_session_owner_phone(
             session_id=f"{self.settings.default_user_id}:observer"
         )
+
+    def _build_whatsapp_additional_rules(self, *, has_priority_context: bool) -> list[str]:
+        rules = [
+            "Canal WhatsApp: prefira resposta curta, em blocos pequenos, sem paragrafo longo.",
+            "Se listar passos ou opções, use no máximo 3 bullets com '•'.",
+            "Se houver um projeto relevante, cite o nome dele explicitamente antes de sugerir a ação.",
+            "Se a mensagem atual parecer continuação de um assunto recente, mantenha continuidade em vez de responder como se o contexto estivesse zerado.",
+        ]
+        if has_priority_context:
+            rules.append(
+                "Existe um contexto prioritário recente para esta resposta. Use esse contexto primeiro antes de dizer que faltou informação."
+            )
+        return rules
+
+    def _handle_owner_project_command(
+        self,
+        *,
+        contact_phone: str,
+        message_text: str,
+        occurred_at: datetime,
+        recent_reply_candidate: ProactiveCandidateRecord | None,
+    ) -> ProjectCommandOutcome | None:
+        normalized = " ".join(message_text.split()).strip()
+        lowered = normalized.casefold()
+        if not lowered:
+            return None
+
+        create_request = self._parse_project_create_command(normalized)
+        if create_request is not None:
+            project_name, summary = create_request
+            if not project_name:
+                return ProjectCommandOutcome(
+                    handled=True,
+                    assistant_reply=(
+                        "*Não consegui criar o projeto ainda*\n"
+                        "Me mande no formato:\n"
+                        "• `crie um projeto Nome do projeto: resumo curto`\n"
+                        "Aí eu já salvo direto no radar."
+                    ),
+                )
+            default_summary = (
+                summary
+                or f"Frente criada manualmente pelo dono via WhatsApp para acompanhar {project_name}."
+            )
+            try:
+                created = self.store.create_project_memory(
+                    user_id=self.settings.default_user_id,
+                    project_name=project_name,
+                    summary=default_summary,
+                    status="Em definição" if not summary else "Em andamento",
+                    what_is_being_built=summary[:180] if summary else project_name[:180],
+                    built_for="",
+                    aliases=[],
+                    stage="planning",
+                    priority="medium",
+                    blockers=[],
+                    next_steps=(["Definir escopo imediato e o próximo passo concreto."] if not summary else []),
+                    evidence=[],
+                    created_at=occurred_at,
+                )
+            except ValueError:
+                existing = self._resolve_project_from_command(
+                    message_text=project_name,
+                    projects=self.store.list_project_memories(self.settings.default_user_id, limit=24),
+                    recent_reply_candidate=recent_reply_candidate,
+                )
+                existing_name = existing.project_name if existing is not None else project_name
+                return ProjectCommandOutcome(
+                    handled=True,
+                    assistant_reply=(
+                        "*Esse projeto já existe no radar*\n"
+                        f"*{existing_name}*\n"
+                        "Se quiser, eu posso ajustar esse projeto, reabrir ou marcar como concluído por aqui."
+                    ),
+                )
+            return ProjectCommandOutcome(
+                handled=True,
+                assistant_reply=self._format_project_created_reply(created),
+            )
+
+        projects = self.store.list_project_memories(self.settings.default_user_id, limit=24)
+        wants_plan = any(marker in lowered for marker in PROJECT_PLAN_MARKERS)
+        wants_completion = any(marker in lowered for marker in PROJECT_COMPLETE_MARKERS) or bool(PROJECT_DONE_REGEX.search(normalized))
+        wants_reopen = any(marker in lowered for marker in PROJECT_REOPEN_MARKERS)
+        if not wants_plan and not wants_completion and not wants_reopen:
+            return None
+
+        project = self._resolve_project_from_command(
+            message_text=normalized,
+            projects=projects,
+            recent_reply_candidate=recent_reply_candidate,
+        )
+        if project is None:
+            if wants_plan:
+                return None
+            if "projeto" not in lowered:
+                return None
+            return ProjectCommandOutcome(
+                handled=True,
+                assistant_reply=self._format_project_resolution_failure(projects),
+            )
+
+        if wants_plan:
+            return ProjectCommandOutcome(
+                handled=True,
+                assistant_reply=self._format_project_plan_reply(
+                    project=project,
+                    recent_reply_candidate=recent_reply_candidate,
+                ),
+            )
+
+        if wants_reopen:
+            updated = self.store.update_project_manual_completion(
+                user_id=self.settings.default_user_id,
+                project_key=project.project_key,
+                completed=False,
+                completion_notes="",
+                changed_at=occurred_at,
+            )
+            if recent_reply_candidate is not None:
+                self.store.update_proactive_candidate(
+                    candidate_id=recent_reply_candidate.id,
+                    status="dismissed",
+                    cooldown_until=occurred_at + timedelta(hours=8),
+                    due_at=None,
+                )
+            if updated is None:
+                return None
+            return ProjectCommandOutcome(
+                handled=True,
+                assistant_reply=self._format_project_reopened_reply(updated),
+            )
+
+        updated = self.store.update_project_manual_completion(
+            user_id=self.settings.default_user_id,
+            project_key=project.project_key,
+            completed=True,
+            completion_notes="Marcado como concluído via WhatsApp pelo dono.",
+            changed_at=occurred_at,
+        )
+        if recent_reply_candidate is not None:
+            self.store.update_proactive_candidate(
+                candidate_id=recent_reply_candidate.id,
+                status="done",
+                cooldown_until=occurred_at + timedelta(days=14),
+                due_at=None,
+            )
+        if updated is None:
+            return None
+        return ProjectCommandOutcome(
+            handled=True,
+            assistant_reply=self._format_project_completed_reply(updated),
+        )
+
+    def _parse_project_create_command(self, message_text: str) -> tuple[str, str] | None:
+        lowered = message_text.casefold()
+        prefix = next((item for item in PROJECT_CREATE_PREFIXES if lowered.startswith(item)), None)
+        if prefix is None:
+            return None
+        remainder = message_text[len(prefix):].strip(" .:-")
+        remainder = re.sub(r"^(?:um|uma|novo|nova|chamado|chamada)\s+", "", remainder, flags=re.IGNORECASE)
+        if not remainder:
+            return "", ""
+
+        project_name = remainder
+        summary = ""
+        for delimiter in (":", " - ", " — ", " | "):
+            if delimiter in remainder:
+                left, right = remainder.split(delimiter, 1)
+                project_name = left.strip(" .:-")
+                summary = right.strip(" .:-")
+                break
+        if not summary and "," in remainder:
+            left, right = remainder.split(",", 1)
+            if left.strip() and len(left.split()) <= 10:
+                project_name = left.strip(" .:-")
+                summary = right.strip(" .:-")
+        return project_name.strip(), summary.strip()
+
+    def _resolve_project_from_command(
+        self,
+        *,
+        message_text: str,
+        projects: Sequence[ProjectMemoryRecord],
+        recent_reply_candidate: ProactiveCandidateRecord | None,
+    ) -> ProjectMemoryRecord | None:
+        direct_match = self._match_project_by_message(message_text=message_text, projects=projects)
+        if direct_match is not None:
+            return direct_match
+
+        lowered = " ".join(message_text.casefold().split()).strip()
+        if any(marker in lowered for marker in ("isso", "esse", "essa", "este", "esta", "ele", "ela")):
+            candidate_project = self._project_from_recent_candidate(
+                recent_reply_candidate=recent_reply_candidate,
+                projects=projects,
+            )
+            if candidate_project is not None:
+                return candidate_project
+
+        return self._project_from_recent_candidate(
+            recent_reply_candidate=recent_reply_candidate,
+            projects=projects,
+        )
+
+    def _project_from_recent_candidate(
+        self,
+        *,
+        recent_reply_candidate: ProactiveCandidateRecord | None,
+        projects: Sequence[ProjectMemoryRecord],
+    ) -> ProjectMemoryRecord | None:
+        if recent_reply_candidate is None:
+            return None
+        payload = recent_reply_candidate.payload_json if isinstance(recent_reply_candidate.payload_json, dict) else {}
+        project_key = str(payload.get("project_key") or "").strip()
+        if project_key:
+            for project in projects:
+                if project.project_key == project_key:
+                    return project
+        project_name = str(payload.get("project_name") or "").strip()
+        if project_name:
+            return self._match_project_by_message(message_text=project_name, projects=projects)
+        return None
+
+    def _match_project_by_message(
+        self,
+        *,
+        message_text: str,
+        projects: Sequence[ProjectMemoryRecord],
+    ) -> ProjectMemoryRecord | None:
+        normalized_message = self._normalize_project_match_text(message_text)
+        if not normalized_message:
+            return None
+
+        message_tokens = self._tokenize_project_match_text(normalized_message)
+        ranked: list[tuple[int, ProjectMemoryRecord]] = []
+        for project in projects:
+            names = [project.project_name, *project.aliases]
+            score = 0
+            for index, name in enumerate(names):
+                normalized_name = self._normalize_project_match_text(name)
+                if not normalized_name:
+                    continue
+                if normalized_name in normalized_message:
+                    score = max(score, 40 if index == 0 else 32)
+                name_tokens = self._tokenize_project_match_text(normalized_name)
+                if name_tokens:
+                    overlap = len(message_tokens & name_tokens)
+                    if overlap:
+                        score = max(score, overlap * 8 + (8 if index == 0 else 4))
+            if score > 0:
+                ranked.append((score, project))
+
+        if not ranked:
+            return None
+        ranked.sort(key=lambda item: (item[0], item[1].updated_at), reverse=True)
+        top_score, top_project = ranked[0]
+        if len(ranked) > 1 and top_score == ranked[1][0]:
+            return None
+        return top_project
+
+    def _normalize_project_match_text(self, value: str) -> str:
+        compact = re.sub(r"[^a-z0-9à-ÿ]+", " ", str(value or "").casefold()).strip()
+        return " ".join(compact.split())
+
+    def _tokenize_project_match_text(self, value: str) -> set[str]:
+        stopwords = {
+            "projeto",
+            "para",
+            "com",
+            "sem",
+            "uma",
+            "uns",
+            "umas",
+            "dos",
+            "das",
+            "por",
+            "pra",
+            "que",
+        }
+        return {
+            token
+            for token in self._normalize_project_match_text(value).split()
+            if len(token) >= 3 and token not in stopwords
+        }
+
+    def _format_project_resolution_failure(self, projects: Sequence[ProjectMemoryRecord]) -> str:
+        suggestions = [project.project_name for project in list(projects)[:3] if project.project_name.strip()]
+        lines = [
+            "*Não consegui identificar o projeto certo*",
+            "Me diga o nome exato do projeto ou responda ao nudge com algo como:",
+            '• "marque como concluído"',
+            '• "reabra"',
+        ]
+        if suggestions:
+            lines.append("Projetos em radar agora: " + "; ".join(suggestions))
+        return "\n".join(lines)
+
+    def _format_project_created_reply(self, project: ProjectMemoryRecord) -> str:
+        lines = [
+            "*Projeto criado no radar*",
+            f"*{project.project_name}*",
+            f"• Status: {project.status or 'Em definição'}",
+            f"• Etapa: {project.stage or 'planning'}",
+            f"• Resumo: {project.summary[:180]}",
+        ]
+        if project.next_steps:
+            lines.append(f"• Próximo passo inicial: {project.next_steps[0][:140]}")
+        lines.append('Se quiser, agora eu também posso "marcar como concluído", "reabrir" ou ajustar os próximos passos.')
+        return "\n".join(lines)
+
+    def _format_project_completed_reply(self, project: ProjectMemoryRecord) -> str:
+        lines = [
+            "*Projeto marcado como concluído*",
+            f"*{project.project_name}*",
+            f"• Status: {project.status or 'Concluído'}",
+        ]
+        if project.manual_completed_at is not None:
+            lines.append(f"• Fechado em: {project.manual_completed_at.astimezone(UTC).strftime('%d/%m %H:%M UTC')}")
+        lines.append('Se precisar, posso "reabrir" esse projeto depois.')
+        return "\n".join(lines)
+
+    def _format_project_reopened_reply(self, project: ProjectMemoryRecord) -> str:
+        lines = [
+            "*Projeto reaberto no radar*",
+            f"*{project.project_name}*",
+            f"• Status: {project.status or 'Em andamento'}",
+        ]
+        if project.next_steps:
+            lines.append(f"• Próximo passo atual: {project.next_steps[0][:140]}")
+        else:
+            lines.append("• Próximo passo atual: ainda não consolidado")
+        return "\n".join(lines)
+
+    def _format_project_plan_reply(
+        self,
+        *,
+        project: ProjectMemoryRecord,
+        recent_reply_candidate: ProactiveCandidateRecord | None,
+    ) -> str:
+        lines = [f"*Plano curto para {project.project_name}*"]
+        if project.blockers:
+            lines.append(f"• Bloqueio principal: {project.blockers[0][:140]}")
+        payload = recent_reply_candidate.payload_json if recent_reply_candidate and isinstance(recent_reply_candidate.payload_json, dict) else {}
+        suggested_actions = [
+            str(item).strip()
+            for item in (payload.get("suggested_actions") or [])
+            if str(item).strip()
+        ]
+        if not suggested_actions:
+            suggested_actions = list(project.next_steps[:3])
+        if suggested_actions:
+            for index, action in enumerate(suggested_actions[:3], start=1):
+                lines.append(f"• {index}. {action[:160]}")
+        elif project.summary:
+            lines.append(f"• Direção: {project.summary[:180]}")
+        else:
+            lines.append("• Direção: definir o próximo passo executável em uma frase.")
+        lines.append('Quando terminar, é só me responder "marque como concluído".')
+        return "\n".join(lines)
 
     async def _send_outbound_reply(
         self,
@@ -747,60 +1253,18 @@ class WhatsAppAgentService:
             return "Recebi a mensagem. Tive sinal de agenda, mas não consegui consolidar o compromisso com segurança."
 
         event = outcome.saved_event
-        status_label = "Firme" if event.status == "firme" else "Tentativo"
-        event_time = self.agenda_guardian_service.format_local_datetime(event.inicio)
-        reminder_rule = self.agenda_guardian_service.format_reminder_rule(event)
-        origin_label = event.contato_origem or "não identificada"
 
         if outcome.action == "cancel":
-            return (
-                "*Compromisso removido da agenda*\n\n"
-                f"*{event.titulo}*\n"
-                f"• Horário anterior: {event_time}\n"
-                f"• Origem: {origin_label}\n\n"
-                "Se quiser, eu posso marcar outro horário no lugar."
-            )
-        if outcome.updated_existing_event:
-            if outcome.action == "reschedule":
-                return (
-                    "*Compromisso reagendado*\n\n"
-                    f"*{event.titulo}*\n"
-                    f"• Novo horário: {event_time}\n"
-                    f"• Status: {status_label}\n"
-                    f"• Lembretes: {reminder_rule}\n"
-                    f"• Origem: {origin_label}\n\n"
-                    "Se quiser, eu também posso ajustar a duração ou a antecedência."
-                )
-            return (
-                "*Lembrete atualizado na agenda*\n\n"
-                f"*{event.titulo}*\n"
-                f"• Quando: {event_time}\n"
-                f"• Status: {status_label}\n"
-                f"• Lembretes: {reminder_rule}\n"
-                f"• Origem: {origin_label}\n\n"
-                "Se quiser, eu também posso ajustar o horário ou a duração."
-            )
-        if outcome.conflict_event is not None:
-            conflict_time = self.agenda_guardian_service.format_local_datetime(outcome.conflict_event.inicio)
-            return (
-                "*Compromisso salvo com atenção de conflito*\n\n"
-                f"*{event.titulo}*\n"
-                f"• Quando: {event_time}\n"
-                f"• Status: {status_label}\n"
-                f"• Lembretes: {reminder_rule}\n"
-                f"• Origem: {origin_label}\n\n"
-                "*Atenção*\n"
-                f"Já existe \"{outcome.conflict_event.titulo}\" em {conflict_time}.\n\n"
-                "Se quiser, eu posso te ajudar a reorganizar esse horário."
-            )
-        return (
-            "*Compromisso salvo na agenda*\n\n"
-            f"*{event.titulo}*\n"
-            f"• Quando: {event_time}\n"
-            f"• Status: {status_label}\n"
-            f"• Lembretes: {reminder_rule}\n"
-            f"• Origem: {origin_label}\n\n"
-            "Se quiser, eu também posso ajustar antecedência, horário ou duração."
+            return self.agenda_guardian_service.format_event_cancelled_message(event)
+
+        is_update = outcome.updated_existing_event
+        has_conflict = outcome.conflict_event is not None
+
+        return self.agenda_guardian_service.format_event_created_message(
+            event=event,
+            is_update=is_update,
+            has_conflict=has_conflict,
+            conflict_event=outcome.conflict_event,
         )
 
     async def _learn_from_inbound_message(

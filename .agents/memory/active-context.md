@@ -240,6 +240,30 @@
   - `GET /api/memories/status` respondeu `{"detail":"Bearer token ausente."}`
   - `GET /api/whatsapp-agent/proactivity/settings` respondeu `{"detail":"Bearer token ausente."}`
 
+## Atualização 2026-04-20 3
+
+- Corrigida a rodada do WhatsApp + frontend principal pedida pelo Álvaro
+- Frontend principal:
+  - botões utilitários claros das abas modulares foram trocados para os estilos reais do dashboard (`ac-primary-button` / `ac-secondary-button`)
+  - build local ok em `frontend`
+  - publish no Firebase Hosting target `app` concluído:
+    - `https://auracore-82bf2.web.app`
+- WhatsApp Agent / proatividade:
+  - `project_nudge` e digests agora saem mais formatados para WhatsApp, com blocos curtos e comandos explícitos
+  - respostas do owner podem usar o candidato proativo recente como contexto prioritário
+  - owner agora consegue por WhatsApp:
+    - criar projeto manual
+    - marcar projeto como concluído
+    - reabrir projeto
+    - pedir um plano curto para o projeto em radar
+- Deploy local do backend nesta rodada:
+  - foram sincronizados somente `proactive_assistant_service.py` e `whatsapp_agent_service.py` para o runtime local, sem levar junto mudanças concorrentes em agenda/recorrência ainda em progresso no worktree
+  - `auracore-backend.service` reiniciado com sucesso após um ajuste de compatibilidade com runtime
+    - `ExecMainPID=2414551`
+    - `ActiveEnterTimestamp=Mon 2026-04-20 09:40:42 -03`
+  - `GET /api/whatsapp-agent/proactivity/settings` respondeu `{"detail":"Bearer token ausente."}`
+  - `GET /api/memories/status` respondeu `{"detail":"Bearer token ausente."}`
+
 ## Atualização 2026-04-20 2
 
 - Nova rodada focada em custo de memória e proatividade do WhatsApp concluída no backend

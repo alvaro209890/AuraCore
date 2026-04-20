@@ -134,6 +134,28 @@ class ProactiveAssistantService:
             updates["cooldown_until"] = datetime.now(UTC) + timedelta(days=7)
         return self.store.update_proactive_candidate(candidate_id=candidate_id, **updates)
 
+    def get_recent_reply_candidate(
+        self,
+        *,
+        contact_phone: str,
+        now: datetime,
+    ) -> ProactiveCandidateRecord | None:
+        normalized_phone = self.store.normalize_contact_phone(contact_phone)
+        if not normalized_phone:
+            return None
+        return self._find_reply_candidate(contact_phone=normalized_phone, now=now)
+
+    def build_recent_reply_priority_context(
+        self,
+        *,
+        contact_phone: str,
+        now: datetime,
+    ) -> str:
+        candidate = self.get_recent_reply_candidate(contact_phone=contact_phone, now=now)
+        if candidate is None:
+            return ""
+        return self._build_candidate_priority_context(candidate)
+
     async def capture_owner_message(
         self,
         *,
@@ -765,25 +787,28 @@ class ProactiveAssistantService:
             important_source = bool(payload.get("important_source"))
             if important_source:
                 intro = important_reason[:140] or task_text[:140]
-                support = ""
-                if source_excerpt:
-                    support = f" Sinal que ficou no radar: {source_excerpt[:110]}."
                 if candidate.status == "confirmed":
                     return (
-                        f"Isso continua importante e ainda parece aberto: {intro}."
-                        f"{support} Quer que eu te cobre isso depois ou destrave agora?"
+                        "*Pendência importante em radar*\n"
+                        f"• {intro}.\n"
+                        + (f"• Sinal salvo: {source_excerpt[:110]}.\n" if source_excerpt else "")
+                        + "Quer que eu te cobre isso depois ou destrave agora?"
                     )
                 return (
-                    f"Tem um ponto importante em aberto: {intro}."
-                    f"{support} Quer que eu te organize o próximo passo agora?"
+                    "*Pendência importante em radar*\n"
+                    f"• {intro}.\n"
+                    + (f"• Sinal salvo: {source_excerpt[:110]}.\n" if source_excerpt else "")
+                    + "Quer que eu te organize o próximo passo agora?"
                 )
             if candidate.status == "confirmed":
                 return (
-                    f"Isso continua aberto: {task_text[:140]}. "
+                    "*Pendência em radar*\n"
+                    f"• {task_text[:140]}.\n"
                     "Vale resolver agora ou quer que eu só te lembre mais tarde?"
                 )
             return (
-                f"Você puxou isso como pendência: {task_text[:140]}. "
+                "*Pendência em radar*\n"
+                f"• {task_text[:140]}.\n"
                 "Quer que eu te ajude a destravar agora ou só deixe no radar?"
             )
         if candidate.category == "project_nudge":
@@ -795,32 +820,61 @@ class ProactiveAssistantService:
                 for item in (payload.get("suggested_actions") or [])
                 if str(item).strip()
             ][:3]
-            action_text = ""
-            if suggested_actions:
-                action_text = " Ações concretas agora: " + " | ".join(
-                    f"{index + 1}) {action[:80]}"
-                    for index, action in enumerate(suggested_actions[:2])
-                )
-            reason_text = f" Sinal de prioridade: {project_reason[:100]}." if project_reason else ""
+            lines = ["*Radar de projeto*", f"*{project_name[:100]}*"]
+            if project_reason:
+                lines.append(f"• Motivo: {project_reason[:100]}")
             if next_step:
-                return (
-                    f"Projeto em radar: {project_name[:100]}. "
-                    f"O próximo passo mais claro parece ser {next_step[:120]}."
-                    f"{reason_text}"
-                    f"{action_text} Quer que eu te deixe um plano curto?"
-                )
-            if action_text:
-                return (
-                    f"Projeto em radar: {project_name[:100]}.{reason_text}"
-                    f"{action_text} Quer que eu te organize uma delas?"
-                )
-            return f"Vale revisar {project_name[:100]} agora ou eu te monto um próximo passo enxuto?"
+                lines.append(f"• Próximo passo: {next_step[:120]}")
+            if suggested_actions:
+                for index, action in enumerate(suggested_actions[:2], start=1):
+                    label = "Agora" if index == 1 else "Depois"
+                    lines.append(f"• {label}: {action[:88]}")
+            lines.append('Se quiser, responda com "marque como concluído", "reabra" ou "me dá um plano".')
+            return "\n".join(lines)
         if candidate.category == "routine":
             suggestion = str(payload.get("suggestion") or "Vale reorganizar o próximo bloco com mais leveza.").strip()
-            return f"{candidate.summary[:140]} {suggestion[:140]}"
+            return f"*Ajuste de ritmo*\n• {candidate.summary[:140]}\n• {suggestion[:140]}"
         if candidate.category == "agenda_followup":
-            return f"{candidate.summary[:180]} Quer que eu organize isso agora?"
+            return f"*Agenda em radar*\n• {candidate.summary[:180]}\nQuer que eu organize isso agora?"
         return candidate.summary[:220]
+
+    def _build_candidate_priority_context(self, candidate: ProactiveCandidateRecord) -> str:
+        payload = candidate.payload_json if isinstance(candidate.payload_json, dict) else {}
+        if candidate.category == "project_nudge":
+            project_name = str(payload.get("project_name") or candidate.title).strip()
+            next_step = str(payload.get("next_step") or candidate.summary).strip()
+            project_reason = str(payload.get("project_reason") or candidate.summary).strip()
+            suggested_actions = [
+                str(item).strip()
+                for item in (payload.get("suggested_actions") or [])
+                if str(item).strip()
+            ][:2]
+            lines = [
+                "Esta mensagem pode ser resposta a um nudge recente de projeto.",
+                f"Projeto em foco: {project_name[:100]}",
+                f"Motivo do radar: {project_reason[:140]}",
+            ]
+            if next_step:
+                lines.append(f"Proximo passo mais claro: {next_step[:140]}")
+            if suggested_actions:
+                lines.append("Acoes sugeridas: " + "; ".join(action[:88] for action in suggested_actions))
+            return "\n".join(lines)
+        if candidate.category == "followup":
+            task_text = str(payload.get("task_text") or candidate.summary or candidate.title).strip()
+            return "\n".join(
+                [
+                    "Esta mensagem pode ser resposta a uma pendencia recente em radar.",
+                    f"Pendencia em foco: {task_text[:160]}",
+                ]
+            )
+        if candidate.category == "agenda_followup":
+            return "\n".join(
+                [
+                    "Esta mensagem pode ser resposta a um item recente de agenda.",
+                    f"Contexto em foco: {candidate.summary[:160]}",
+                ]
+            )
+        return ""
 
     async def _generate_project_action_hints(self, *, project: ProjectMemoryRecord) -> list[str]:
         fallback_actions = self._fallback_project_action_hints(project)
@@ -1460,25 +1514,26 @@ class ProactiveAssistantService:
         )
         important = self.store.list_important_messages(self.settings.default_user_id, limit=2)
 
-        lines = ["Bom dia. Radar curto de agora:"]
+        lines = ["*Bom dia. Radar curto de agora*"]
         if today_events:
             event_chunks = [
                 f"{event.titulo} às {event.inicio.astimezone(DEFAULT_TIMEZONE).strftime('%H:%M')}"
                 for event in today_events
             ]
-            lines.append("Agenda: " + "; ".join(event_chunks))
+            lines.append("• *Agenda:* " + "; ".join(event_chunks))
         if open_candidates:
             top_candidates = [
                 candidate.title.replace("Pendente sugerida: ", "").strip()
                 for candidate in open_candidates[:2]
             ]
-            lines.append("Pendências em radar: " + "; ".join(top_candidates))
+            lines.append("• *Pendências em radar:* " + "; ".join(top_candidates))
         if important:
-            lines.append("Importante recente: " + "; ".join(item.importance_reason[:80] for item in important[:1]))
+            lines.append("• *Importante recente:* " + "; ".join(item.importance_reason[:80] for item in important[:1]))
         top_project = self._select_project_for_digest()
         if top_project is not None:
             project_name, next_step = top_project
-            lines.append(f"Projeto para destravar: {project_name[:72]} -> {next_step[:88]}")
+            lines.append(f"• *Projeto para destravar:* {project_name[:72]}")
+            lines.append(f"  Próximo passo: {next_step[:88]}")
         if len(lines) == 1:
             return "", ""
         signature = self._signature_for(lines)
@@ -1499,16 +1554,16 @@ class ProactiveAssistantService:
             limit=12,
             statuses=["suggested", "confirmed"],
         )
-        lines = ["Fechamento curto do dia:"]
+        lines = ["*Fechamento curto do dia*"]
         if open_candidates:
             pending_titles = [
                 candidate.title.replace("Pendente sugerida: ", "").strip()
                 for candidate in open_candidates[:3]
             ]
-            lines.append("Ainda em aberto: " + "; ".join(pending_titles))
+            lines.append("• *Ainda em aberto:* " + "; ".join(pending_titles))
         if tomorrow_events:
             lines.append(
-                "Amanhã cedo: "
+                "• *Amanhã cedo:* "
                 + "; ".join(
                     f"{event.titulo} às {event.inicio.astimezone(DEFAULT_TIMEZONE).strftime('%H:%M')}"
                     for event in tomorrow_events
@@ -1517,7 +1572,8 @@ class ProactiveAssistantService:
         top_project = self._select_project_for_digest()
         if top_project is not None:
             project_name, next_step = top_project
-            lines.append(f"Projeto mais vivo agora: {project_name[:72]} -> {next_step[:88]}")
+            lines.append(f"• *Projeto mais vivo agora:* {project_name[:72]}")
+            lines.append(f"  Próximo passo: {next_step[:88]}")
         if len(lines) == 1:
             return "", ""
         signature = self._signature_for(lines)

@@ -115,7 +115,7 @@ export default function GroupsTab({
               O DeepSeek passa a enxergar corretamente grupo e participante no contexto incremental, sem contaminar o bootstrap inicial.
             </p>
           </div>
-          <button className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 border border-zinc-200 bg-white text-zinc-900 hover:bg-zinc-100 hover:text-zinc-900 h-9 px-4 py-2" onClick={onRefresh} type="button">
+          <button className="ac-secondary-button" onClick={onRefresh} type="button">
             <RefreshCw size={15} />
             Atualizar lista
           </button>
@@ -140,10 +140,10 @@ export default function GroupsTab({
         {selectedJids.size > 0 && (
           <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', background: 'var(--zinc-800)', padding: '0.5rem', borderRadius: '8px', alignItems: 'center' }}>
             <span style={{ fontSize: '0.85rem', color: 'var(--zinc-400)', marginRight: 'auto' }}>{selectedJids.size} selecionado(s)</span>
-            <button className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 border border-zinc-200 bg-white text-zinc-900 hover:bg-zinc-100 hover:text-zinc-900 h-9 px-4 py-2" onClick={() => executeMassAction(true)}>
+            <button className="ac-secondary-button" onClick={() => executeMassAction(true)}>
               <CheckCircle2 size={16} style={{ color: 'var(--emerald-500)' }}/> Ativar
             </button>
-            <button className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 border border-zinc-200 bg-white text-zinc-900 hover:bg-zinc-100 hover:text-zinc-900 h-9 px-4 py-2" onClick={() => executeMassAction(false)}>
+            <button className="ac-secondary-button" onClick={() => executeMassAction(false)}>
               <XCircle size={16} style={{ color: 'var(--zinc-500)' }}/> Desativar
             </button>
           </div>

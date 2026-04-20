@@ -380,7 +380,7 @@ export default function RelationsTab({
       )}
 
       <div className="bg-white rounded-xl border border-zinc-200 p-6 shadow-sm">
-        <SectionTitle title="Como manter isso melhor" icon={MessageSquare} action={<button className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 border border-zinc-200 bg-white text-zinc-900 hover:bg-zinc-100 hover:text-zinc-900 h-9 px-4 py-2" onClick={onRefresh} type="button">Recarregar</button>} />
+        <SectionTitle title="Como manter isso melhor" icon={MessageSquare} action={<button className="ac-secondary-button" onClick={onRefresh} type="button">Recarregar</button>} />
         <p className="support-copy">
           Quando você roda a próxima atualização de memória, o modelo cruza mensagens novas com esta base de pessoas. Isso melhora tipo de vínculo, fatos recorrentes, pendências e tom da relação de forma cumulativa.
         </p>

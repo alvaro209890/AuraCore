@@ -102,15 +102,15 @@ export default function OverviewTab({
           <p>Use esta tela para entender rapidamente em que etapa o sistema está, o que já foi consolidado e qual é o próximo passo recomendado.</p>
         </div>
         <div className="hero-actions">
-          <button className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 bg-zinc-900 text-zinc-50 hover:bg-zinc-900/90 h-9 px-4 py-2" onClick={handlePrimaryAction} type="button">
+          <button className="ac-primary-button" onClick={handlePrimaryAction} type="button">
             <Play size={15} />
             {nextAction.buttonLabel}
           </button>
-          <button className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 border border-zinc-200 bg-white text-zinc-900 hover:bg-zinc-100 hover:text-zinc-900 h-9 px-4 py-2" onClick={onGoToMemory} type="button">
+          <button className="ac-secondary-button" onClick={onGoToMemory} type="button">
             <Database size={15} />
             Abrir Memória
           </button>
-          <button className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 border border-zinc-200 bg-white text-zinc-900 hover:bg-zinc-100 hover:text-zinc-900 h-9 px-4 py-2" onClick={onGoToMemory} type="button">
+          <button className="ac-secondary-button" onClick={onGoToMemory} type="button">
             <Activity size={15} />
             Ver Pipeline
           </button>
@@ -147,11 +147,11 @@ export default function OverviewTab({
               </div>
               <p className="lead-copy">{nextAction.detail}</p>
               <div className="hero-actions">
-                <button className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 bg-zinc-900 text-zinc-50 hover:bg-zinc-900/90 h-9 px-4 py-2" onClick={handlePrimaryAction} type="button">
+                <button className="ac-primary-button" onClick={handlePrimaryAction} type="button">
                   <ChevronRight size={15} />
                   {nextAction.buttonLabel}
                 </button>
-                <button className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 border border-zinc-200 bg-white text-zinc-900 hover:bg-zinc-100 hover:text-zinc-900 h-9 px-4 py-2" onClick={onGoToMemory} type="button">
+                <button className="ac-secondary-button" onClick={onGoToMemory} type="button">
                   <Activity size={15} />
                   Acompanhar pipeline
                 </button>
@@ -336,7 +336,7 @@ export default function OverviewTab({
                   Este quadro sai do zero assim que a memoria inicial nasce. Ate la, use Memoria para acompanhar sync, fila e pipeline.
                 </p>
                 <div className="hero-actions">
-                  <button className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 border border-zinc-200 bg-white text-zinc-900 hover:bg-zinc-100 hover:text-zinc-900 h-9 px-4 py-2" onClick={onGoToMemory} type="button">
+                  <button className="ac-secondary-button" onClick={onGoToMemory} type="button">
                     <Activity size={15} />
                     Abrir Pipeline
                   </button>

@@ -53,7 +53,7 @@ export default function ObserverTab({
           </div>
 
           <div className="observer-actions">
-            <button className="inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:pointer-events-none disabled:opacity-50 bg-zinc-900 text-zinc-50 hover:bg-zinc-900/90 h-9 px-4 py-2" onClick={onConnect} disabled={isSubmitting || viewState === "connected"} type="button">
+            <button className="ac-primary-button" onClick={onConnect} disabled={isSubmitting || viewState === "connected"} type="button">
               <RefreshCw size={15} className={isSubmitting ? "spin" : ""} />
               {viewState === "connected" ? "Observador conectado" : isSubmitting ? "Gerando QR..." : "Gerar Novo QR"}
             </button>

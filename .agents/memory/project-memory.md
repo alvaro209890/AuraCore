@@ -30,6 +30,8 @@
 - Em abril/2026 foi introduzido um subsistema dedicado de proatividade do WhatsApp: `ProactiveAssistantService`, com preferências persistidas, candidatos proativos, log de entregas e digests de manhã/noite
 - O roteamento inbound do agente global resolve a conta por `observer_owner_phone`; no outbound, `ProactiveAssistantService` e `agenda_guardian_service` usam somente o owner do `observer` da conta atual como alvo lógico
 - Em abril/2026 o outbound proativo passou a preferir o thread mais recente do WhatsApp Agent para definir `chat_jid`/telefone do dono; isso é importante para contatos em formato `@lid` e evita cair num owner genérico do observer quando já existe conversa recente no agente
+- O WhatsApp Agent agora suporta comandos diretos do owner para projetos: criar projeto manual, marcar como concluído, reabrir e pedir um plano curto, inclusive quando a resposta vier em cima de um `project_nudge` recente
+- As respostas do WhatsApp agora podem receber um contexto prioritário curto vindo do candidato proativo recente; isso evita perder o fio em respostas ambíguas como "marque isso como concluído" ou "me dá um plano"
 
 ## Deploy local
 
