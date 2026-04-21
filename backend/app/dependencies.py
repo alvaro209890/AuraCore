@@ -10,7 +10,7 @@ from app.services.account_registry import AccountRecord, AccountRegistry
 from app.services.firebase_auth import FirebaseAuthError, FirebaseAuthService, VerifiedFirebaseUser
 from app.services.observer_gateway import WhatsAppAgentGatewayService
 from app.services.service_bundle import ServiceBundle, ServiceBundleCache
-from app.services.supabase_store import SupabaseStore
+from app.services.banco_de_dados_local_store import BancoDeDadosLocalStore
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -48,9 +48,9 @@ def get_service_bundle_cache() -> ServiceBundleCache:
 
 
 @lru_cache
-def get_system_supabase_store() -> SupabaseStore:
+def get_system_banco_de_dados_local_store() -> BancoDeDadosLocalStore:
     settings = get_settings()
-    return SupabaseStore(
+    return BancoDeDadosLocalStore(
         database_path=settings.system_gateway_database_path,
         default_user_id=settings.system_user_id,
         message_retention_max_rows=min(
@@ -147,11 +147,11 @@ def get_internal_service_bundle(
     return cache.get_bundle(account)
 
 
-def get_supabase_store(bundle: ServiceBundle = Depends(get_service_bundle)) -> SupabaseStore:
+def get_banco_de_dados_local_store(bundle: ServiceBundle = Depends(get_service_bundle)) -> BancoDeDadosLocalStore:
     return bundle.store
 
 
-def get_internal_supabase_store(bundle: ServiceBundle = Depends(get_internal_service_bundle)) -> SupabaseStore:
+def get_internal_banco_de_dados_local_store(bundle: ServiceBundle = Depends(get_internal_service_bundle)) -> BancoDeDadosLocalStore:
     return bundle.store
 
 
@@ -161,10 +161,10 @@ def get_internal_storage_store(
     x_auracore_user_id: str | None = Header(default=None),
     cache: ServiceBundleCache = Depends(get_service_bundle_cache),
     registry: AccountRegistry = Depends(get_account_registry),
-) -> SupabaseStore:
+) -> BancoDeDadosLocalStore:
     system_scope = (x_auracore_system_scope or "").strip().lower()
     if system_scope == "global-agent":
-        return get_system_supabase_store()
+        return get_system_banco_de_dados_local_store()
 
     normalized_user_id = (x_auracore_user_id or "").strip()
     if not normalized_user_id:

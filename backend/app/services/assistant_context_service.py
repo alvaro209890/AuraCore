@@ -9,14 +9,14 @@ from typing import Literal, Sequence
 
 from app.config import Settings
 from app.services.deepseek_service import DeepSeekAssistantSearchPlan, DeepSeekService
-from app.services.supabase_store import (
+from app.services.banco_de_dados_local_store import (
     AgendaEventRecord,
     ImportantMessageRecord,
     MemorySnapshotRecord,
     PersonMemoryRecord,
     PersonaRecord,
     ProjectMemoryRecord,
-    SupabaseStore,
+    BancoDeDadosLocalStore,
 )
 
 logger = logging.getLogger("auracore.assistant_context")
@@ -49,7 +49,7 @@ class AssistantContextService:
         self,
         *,
         settings: Settings,
-        store: SupabaseStore,
+        store: BancoDeDadosLocalStore,
         deepseek_service: DeepSeekService,
     ) -> None:
         self.settings = settings

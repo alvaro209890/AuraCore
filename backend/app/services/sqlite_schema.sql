@@ -381,7 +381,7 @@ CREATE TABLE IF NOT EXISTS automation_settings (
   stale_hours_threshold INTEGER NOT NULL DEFAULT 24,
   pruned_messages_threshold INTEGER NOT NULL DEFAULT 1,
   default_detail_mode TEXT NOT NULL DEFAULT 'balanced',
-  default_target_message_count INTEGER NOT NULL DEFAULT 120,
+  default_target_message_count INTEGER NOT NULL DEFAULT 20,
   default_lookback_hours INTEGER NOT NULL DEFAULT 72,
   daily_budget_usd REAL NOT NULL DEFAULT 5.0,
   max_auto_jobs_per_day INTEGER NOT NULL DEFAULT 100,

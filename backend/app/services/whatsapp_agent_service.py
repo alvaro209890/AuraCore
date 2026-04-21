@@ -24,11 +24,11 @@ from app.services.deepseek_service import DeepSeekAgentMemoryDecision, DeepSeekS
 from app.services.groq_service import GroqChatService
 from app.services.observer_gateway import ObserverGatewayService, WhatsAppAgentGatewayService
 from app.services.proactive_assistant_service import ProactiveAssistantService
-from app.services.supabase_store import (
+from app.services.banco_de_dados_local_store import (
     ImportantMessageSeed,
     ProjectMemoryRecord,
     ProactiveCandidateRecord,
-    SupabaseStore,
+    BancoDeDadosLocalStore,
     WhatsAppAgentContactMemoryRecord,
     WhatsAppAgentMessageRecord,
     WhatsAppAgentSettingsRecord,
@@ -131,7 +131,7 @@ class WhatsAppAgentService:
         self,
         *,
         settings: Settings,
-        store: SupabaseStore,
+        store: BancoDeDadosLocalStore,
         reply_service: AssistantReplyService,
         deepseek_service: DeepSeekService,
         groq_service: GroqChatService,
@@ -1497,6 +1497,7 @@ class WhatsAppAgentService:
             "agent_mood_signals": decision.mood_signals[:4],
             "agent_implied_urgency": decision.implied_urgency,
             "agent_implied_tasks": decision.implied_tasks[:4],
+            "agent_writing_style_hints": decision.writing_style_hints,
             "agent_important_reason": decision.importance_reason if decision.should_save_as_important else "",
             "agent_important_category": decision.importance_category if decision.should_save_as_important else "",
             "agent_important_confidence": decision.importance_confidence if decision.should_save_as_important else 0,

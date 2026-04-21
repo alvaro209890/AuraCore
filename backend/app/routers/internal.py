@@ -11,7 +11,7 @@ from app.dependencies import (
     get_internal_automation_service,
     get_internal_observer_gateway_service,
     get_internal_service_bundle,
-    get_internal_supabase_store,
+    get_internal_banco_de_dados_local_store,
     get_internal_whatsapp_agent_gateway_service,
 )
 from app.schemas import (
@@ -22,7 +22,7 @@ from app.schemas import (
 )
 from app.services.account_registry import AccountRecord, AccountRegistry
 from app.services.service_bundle import ServiceBundle
-from app.services.supabase_store import IngestedMessageRecord, SupabaseStore
+from app.services.banco_de_dados_local_store import IngestedMessageRecord, BancoDeDadosLocalStore
 
 router = APIRouter(prefix="/api/internal/observer", tags=["internal"])
 logger = logging.getLogger("auracore.observer_ingest")
@@ -34,7 +34,7 @@ async def ingest_messages(
     account: AccountRecord = Depends(get_internal_account),
     registry: AccountRegistry = Depends(get_account_registry),
     bundle: ServiceBundle = Depends(get_internal_service_bundle),
-    store: SupabaseStore = Depends(get_internal_supabase_store),
+    store: BancoDeDadosLocalStore = Depends(get_internal_banco_de_dados_local_store),
     automation_service = Depends(get_internal_automation_service),
     observer_gateway = Depends(get_internal_observer_gateway_service),
     agent_gateway = Depends(get_internal_whatsapp_agent_gateway_service),
@@ -100,7 +100,7 @@ async def ingest_messages(
 @router.post("/groups/upsert", response_model=SimpleOkResponse)
 async def upsert_groups(
     payload: GroupMetadataUpdateRequest,
-    store: SupabaseStore = Depends(get_internal_supabase_store),
+    store: BancoDeDadosLocalStore = Depends(get_internal_banco_de_dados_local_store),
 ) -> SimpleOkResponse:
     updated_count = 0
     for item in payload.groups:
@@ -120,7 +120,7 @@ async def upsert_groups(
 
 async def _build_records(
     payload: IngestMessagesRequest,
-    store: SupabaseStore,
+    store: BancoDeDadosLocalStore,
     blocked_contact_phone: str | None,
     bundle: ServiceBundle,
 ) -> tuple[list[IngestedMessageRecord], int]:

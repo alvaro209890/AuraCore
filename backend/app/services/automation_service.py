@@ -16,12 +16,12 @@ from app.services.memory_service import (
     MemoryAnalysisService,
     MemoryRefinementOutcome,
 )
-from app.services.supabase_store import (
+from app.services.banco_de_dados_local_store import (
     AnalysisJobRecord,
     AutomationDecisionRecord,
     AutomationSettingsRecord,
     ModelRunRecord,
-    SupabaseStore,
+    BancoDeDadosLocalStore,
     WhatsAppSyncRunRecord,
 )
 
@@ -70,7 +70,7 @@ class AutomationService:
         self,
         *,
         settings: Settings,
-        store: SupabaseStore,
+        store: BancoDeDadosLocalStore,
         memory_service: MemoryAnalysisService,
     ) -> None:
         self.settings = settings
@@ -1004,7 +1004,7 @@ class AutomationService:
         if has_pending_job:
             return
 
-        if status.pending_new_message_count > 0 and job.intent == "improve_memory":
+        if job.intent == "improve_memory" and status.can_run_next_batch:
             logger.info(
                 "follow_up_analysis_queueing_drain pending=%s batch_size=%s",
                 status.pending_new_message_count,
@@ -1035,7 +1035,7 @@ class AutomationService:
         if (
             job.trigger_source == "automation"
             and automation_settings.auto_refine_enabled
-            and job.intent in {"first_analysis", "improve_memory"}
+            and job.intent == "first_analysis"
             and self._get_daily_cost_usd() < automation_settings.daily_budget_usd
             and self._get_daily_auto_jobs_count() < automation_settings.max_auto_jobs_per_day
         ):

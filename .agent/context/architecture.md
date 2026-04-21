@@ -38,7 +38,7 @@ backend/
       service_bundle.py          — Bundle de servicos compartilhados
       sqlite_client.py           — Cliente SQLite + migracoes
       sqlite_schema.sql          — Schema completo do banco
-      supabase_store.py          — Fallback Supabase + migracoes locais
+      banco_de_dados_local_store.py          — Fallback Banco_de_dados_local + migracoes locais
       whatsapp_agent_service.py  — Logica do agente WhatsApp
 ```
 

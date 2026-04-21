@@ -9,7 +9,7 @@ from typing import Literal
 
 from app.config import Settings
 from app.services.memory_service import FixedAnalysisPlan, MemoryAnalysisError, MemoryAnalysisService
-from app.services.supabase_store import AnalysisJobRecord, ModelRunRecord, SupabaseStore, WhatsAppSyncRunRecord
+from app.services.banco_de_dados_local_store import AnalysisJobRecord, ModelRunRecord, BancoDeDadosLocalStore, WhatsAppSyncRunRecord
 
 
 logger = logging.getLogger("auracore.memory_jobs")
@@ -31,7 +31,7 @@ class MemoryJobService:
         self,
         *,
         settings: Settings,
-        store: SupabaseStore,
+        store: BancoDeDadosLocalStore,
         memory_service: MemoryAnalysisService,
     ) -> None:
         self.settings = settings

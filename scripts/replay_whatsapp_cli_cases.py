@@ -30,11 +30,11 @@ def main() -> int:
     os.environ.setdefault("INTERNAL_API_TOKEN", "replay-cli")
     from app.config import Settings
     from app.services.deepseek_service import DeepSeekService
-    from app.services.supabase_store import SupabaseStore
+    from app.services.banco_de_dados_local_store import BancoDeDadosLocalStore
     from app.services.whatsapp_cli_service import WhatsAppCliService
 
     settings = Settings()
-    store = SupabaseStore(
+    store = BancoDeDadosLocalStore(
         database_path=args.db,
         default_user_id=settings.default_user_id,
         message_retention_max_rows=20,

@@ -17,7 +17,7 @@ from app.services.deepseek_service import (
     DeepSeekService,
 )
 from app.services.observer_gateway import ObserverGatewayService, WhatsAppAgentGatewayService
-from app.services.supabase_store import AgendaEventRecord, IngestedMessageRecord, SupabaseStore
+from app.services.banco_de_dados_local_store import AgendaEventRecord, IngestedMessageRecord, BancoDeDadosLocalStore
 
 DEFAULT_TIMEZONE = ZoneInfo("America/Sao_Paulo")
 DEFAULT_EVENT_DURATION = timedelta(hours=1)
@@ -233,7 +233,7 @@ class AgendaGuardianService:
         self,
         *,
         settings: Settings,
-        store: SupabaseStore,
+        store: BancoDeDadosLocalStore,
         deepseek_service: DeepSeekService,
         observer_gateway: ObserverGatewayService,
         agent_gateway: WhatsAppAgentGatewayService,

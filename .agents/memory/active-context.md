@@ -92,7 +92,7 @@
   - o repositório versiona artefatos de build e dependências locais como `.next`, `out`, `dist` e `node_modules`
   - há forte concentração de código em poucos arquivos grandes:
     - `frontend/components/connection-dashboard.tsx` ~8.3k linhas
-    - `backend/app/services/supabase_store.py` ~8k linhas
+    - `backend/app/services/banco_de_dados_local_store.py` ~8k linhas
     - `backend/app/services/memory_service.py` ~3.6k linhas
     - `backend/app/services/deepseek_service.py` ~2.5k linhas
 - O worktree estava sujo durante a análise, principalmente nos arquivos do agente/proatividade; evitar assumir árvore limpa para deploy ou commits automáticos sem conferir `git status`
@@ -227,7 +227,7 @@
     - `POST /api/agenda/query`
     - `GET /api/agenda/pending-confirmation`
     - `POST /api/agenda/pending-confirmation/resolve`
-  - `SupabaseStore` e router manual passaram a persistir/retornar `recurrence_rule`, `parent_event_id` e `excluded_dates`
+  - `BancoDeDadosLocalStore` e router manual passaram a persistir/retornar `recurrence_rule`, `parent_event_id` e `excluded_dates`
   - corrigido bug no detector de recorrência em `agenda_guardian_service`
 - Validação local desta rodada:
   - `python3 -m py_compile` dos arquivos backend alterados: ok
@@ -291,7 +291,7 @@
   - Firebase Hosting target `app` publicado novamente
   - URL confirmada no deploy: `https://auracore-82bf2.web.app`
 - Contexto de colaboração:
-  - havia mudanças concorrentes no backend em `backend/app/dependencies.py`, `backend/app/schemas.py`, `backend/app/services/agenda_guardian_service.py` e `backend/app/services/supabase_store.py`
+  - havia mudanças concorrentes no backend em `backend/app/dependencies.py`, `backend/app/schemas.py`, `backend/app/services/agenda_guardian_service.py` e `backend/app/services/banco_de_dados_local_store.py`
   - essa rodada não tocou nesses arquivos para evitar conflito com trabalho paralelo
 
 ## Atualização 2026-04-20 2
@@ -416,7 +416,7 @@
   - `Proatividade`: a UI deixou de expor `Agenda` como categoria proativa; o cooldown global mínimo agora consulta apenas entregas `sent`
   - `Agenda`: criação/edição manual foi refatorada para shells `ops-*`, status em pills e presets de lembrete, removendo campos visuais crus/brancos
 - Validação local desta rodada:
-  - `python3 -m py_compile` em `automation_service.py`, `proactive_assistant_service.py` e `supabase_store.py`: ok
+  - `python3 -m py_compile` em `automation_service.py`, `proactive_assistant_service.py` e `banco_de_dados_local_store.py`: ok
   - `npm run build` em `frontend`: ok
 
 ## Atualização 2026-04-17 15
@@ -424,7 +424,7 @@
 - Runtime local sincronizado com:
   - `automation_service.py`
   - `proactive_assistant_service.py`
-  - `supabase_store.py`
+  - `banco_de_dados_local_store.py`
   - `memory_service.py`
 - Correção extra aplicada no backend: `memory_service.get_analysis_preview()` estava chamando `_build_analysis_prompt_context_for_intent` com variável `intent` inexistente; passou a usar `resolved_intent`
 - Backend:
@@ -457,3 +457,62 @@
   - envio proativo manual executado com sucesso via esse `chat_jid`
   - delivery log registrado como `decision=sent`, `reason_code=manual_recent_thread_test`
   - o usuário respondeu `ok` em seguida e o thread ficou novamente consolidado com `contact_name='Álvaro'`
+
+## Atualização 2026-04-21
+
+- Análise estrutural rápida do repositório confirmada sem alteração de arquitetura:
+  - `backend` FastAPI local, `frontend` e `agent-frontend` em Next.js 15 com `output: "export"`, `whatsapp-gateway` em Express + Baileys
+  - deploy local continua orientado por `systemd --user` + `cloudflared` + `scripts/auto-update.sh`
+- Estado de manutenção observado:
+  - não apareceu suíte de testes rastreável em `backend`, `frontend`, `agent-frontend` ou `whatsapp-gateway`; só há referências incidentais em `package-lock.json`
+  - `.gitignore` atual cobre `node_modules`, `.next`, `dist` e `out`, e a checagem rápida não mostrou esses artefatos rastreados no Git
+  - ainda há forte concentração de lógica em poucos arquivos grandes, principalmente `backend/app/services/banco_de_dados_local_store.py`, `memory_service.py`, `deepseek_service.py`, `proactive_assistant_service.py`, `agenda_guardian_service.py`, `whatsapp_agent_service.py` e `frontend/components/connection-dashboard.tsx`
+- Risco operacional útil para próximos agentes:
+  - análises e mudanças amplas seguem pedindo cuidado com regressão manual, porque o projeto depende mais de build/smoke test do que de testes automatizados
+
+## Atualização 2026-04-21 2
+
+- Renomeação estrutural concluída para alinhar o nome do store local em todo o projeto rastreado:
+  - `backend/app/services/banco_de_dados_local_store.py` passou a ser o módulo principal do store
+  - a classe principal do store agora é `BancoDeDadosLocalStore`
+  - dependências FastAPI e imports do backend passaram a usar `get_banco_de_dados_local_store` e variantes `system`/`internal`
+  - a pasta `Banco_de_dados_local/` agora concentra os SQLs e migrations versionados
+- Validação local desta rodada:
+  - `python3 -m py_compile` dos módulos backend/scripts afetados: ok
+  - busca em arquivos rastreados confirmou remoção completa do nome antigo
+
+## Atualização 2026-04-21 3
+
+- Nova rodada de melhoria da proatividade entregue no backend:
+  - `DeepSeekService` ganhou `generate_proactive_message()` para redigir nudges mais humanos, curtos, discretos e contextuais
+  - `ProactiveAssistantService` agora monta contexto do dono antes de enviar: perfil, tom preferido, sinais de humor, ações implícitas e pistas recentes de estilo
+  - o fallback local dos nudges também foi reescrito para soar menos “painel” e mais assistente pessoal útil
+  - os digests de manhã/noite ficaram com linguagem mais natural
+  - `whatsapp_agent_service` passou a salvar `agent_writing_style_hints` nos metadados de aprendizado para alimentar essa personalização
+- Validação local desta rodada:
+  - `python3 -m py_compile backend/app/services/deepseek_service.py backend/app/services/proactive_assistant_service.py backend/app/services/whatsapp_agent_service.py backend/app/services/service_bundle.py backend/app/main.py`: ok
+  - runtime local sincronizado com `rsync -a --delete backend/app/ /home/server/.local/share/auracore-runtime/repo/backend/app/`
+  - `auracore-backend.service` reiniciado com sucesso
+    - `ExecMainPID=3091305`
+    - `ActiveEnterTimestamp=Tue 2026-04-21 17:49:18 -03`
+  - validação pós-restart:
+    - `GET http://127.0.0.1:8000/health` respondeu `{"status":"healthy"}`
+    - `GET http://127.0.0.1:8000/api/whatsapp-agent/proactivity/settings` respondeu `{"detail":"Bearer token ausente."}`
+
+## Atualização 2026-04-21 4
+
+- Humor controlado adicionado à proatividade do WhatsApp:
+  - `DeepSeekService.generate_proactive_message()` agora recebe `humor_guidance`
+  - `ProactiveAssistantService` decide quando humor é permitido e quando deve ser bloqueado
+  - o humor ficou sutil, seco e curto; é liberado principalmente em `project_nudge`, `routine` e alguns `followup`
+  - o humor é bloqueado em agenda, sinais importantes, urgência alta, foco/correria e estados emocionais mais pesados
+  - os fallbacks locais ganharam linhas de humor leve quando o contexto permite
+- Validação local desta rodada:
+  - `python3 -m py_compile backend/app/services/deepseek_service.py backend/app/services/proactive_assistant_service.py backend/app/services/whatsapp_agent_service.py backend/app/services/service_bundle.py backend/app/main.py`: ok
+  - runtime local sincronizado com `rsync -a --delete backend/app/ /home/server/.local/share/auracore-runtime/repo/backend/app/`
+  - `auracore-backend.service` reiniciado com sucesso
+    - `ExecMainPID=3092559`
+    - `ActiveEnterTimestamp=Tue 2026-04-21 17:51:46 -03`
+  - validação pós-restart:
+    - `GET http://127.0.0.1:8000/health` respondeu `{"status":"healthy"}`
+    - `GET http://127.0.0.1:8000/api/whatsapp-agent/proactivity/settings` respondeu `{"detail":"Bearer token ausente."}`

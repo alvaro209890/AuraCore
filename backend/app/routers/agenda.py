@@ -5,7 +5,7 @@ from dateutil import parser as dateutil_parser
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.dependencies import get_agenda_guardian_service, get_current_account, get_supabase_store
+from app.dependencies import get_agenda_guardian_service, get_current_account, get_banco_de_dados_local_store
 from app.schemas import (
     AgendaConflictResponse,
     AgendaEventResponse,
@@ -22,7 +22,7 @@ from app.schemas import (
 )
 from app.services.account_registry import AccountRecord
 from app.services.agenda_guardian_service import AgendaGuardianService
-from app.services.supabase_store import AgendaEventRecord, SupabaseStore
+from app.services.banco_de_dados_local_store import AgendaEventRecord, BancoDeDadosLocalStore
 
 router = APIRouter(prefix="/api/agenda", tags=["agenda"])
 
@@ -32,7 +32,7 @@ async def list_agenda_events(
     limit: int = Query(default=120, ge=1, le=300),
     upcoming_only: bool = Query(default=False),
     account: AccountRecord = Depends(get_current_account),
-    store: SupabaseStore = Depends(get_supabase_store),
+    store: BancoDeDadosLocalStore = Depends(get_banco_de_dados_local_store),
 ) -> AgendaEventsListResponse:
     starts_after = datetime.now(UTC) if upcoming_only else None
     events = store.list_agenda_events(
@@ -74,7 +74,7 @@ async def list_agenda_events(
 async def create_agenda_event(
     payload: CreateAgendaEventRequest,
     account: AccountRecord = Depends(get_current_account),
-    store: SupabaseStore = Depends(get_supabase_store),
+    store: BancoDeDadosLocalStore = Depends(get_banco_de_dados_local_store),
 ) -> AgendaEventResponse:
     if payload.fim <= payload.inicio:
         raise HTTPException(status_code=400, detail="O fim do compromisso precisa ser depois do inicio.")
@@ -97,7 +97,7 @@ async def update_agenda_event(
     event_id: str,
     payload: UpdateAgendaEventRequest,
     account: AccountRecord = Depends(get_current_account),
-    store: SupabaseStore = Depends(get_supabase_store),
+    store: BancoDeDadosLocalStore = Depends(get_banco_de_dados_local_store),
 ) -> AgendaEventResponse:
     existing = store.get_agenda_event(user_id=account.app_user_id, event_id=event_id)
     if existing is None:
@@ -128,7 +128,7 @@ async def update_agenda_event(
 async def delete_agenda_event(
     event_id: str,
     account: AccountRecord = Depends(get_current_account),
-    store: SupabaseStore = Depends(get_supabase_store),
+    store: BancoDeDadosLocalStore = Depends(get_banco_de_dados_local_store),
 ) -> SimpleOkResponse:
     deleted = store.delete_agenda_event(user_id=account.app_user_id, event_id=event_id)
     if not deleted:
@@ -141,7 +141,7 @@ async def query_agenda_events(
     payload: AgendaQueryRequest,
     account: AccountRecord = Depends(get_current_account),
     agenda_guardian: AgendaGuardianService = Depends(get_agenda_guardian_service),
-    store: SupabaseStore = Depends(get_supabase_store),
+    store: BancoDeDadosLocalStore = Depends(get_banco_de_dados_local_store),
 ) -> AgendaQueryResponse:
     reference_now = payload.reference_now or datetime.now(UTC)
     result = await agenda_guardian.handle_agenda_query(
@@ -196,7 +196,7 @@ async def resolve_pending_agenda_confirmation(
     payload: AgendaPendingConfirmationResolveRequest,
     account: AccountRecord = Depends(get_current_account),
     agenda_guardian: AgendaGuardianService = Depends(get_agenda_guardian_service),
-    store: SupabaseStore = Depends(get_supabase_store),
+    store: BancoDeDadosLocalStore = Depends(get_banco_de_dados_local_store),
 ) -> AgendaPendingConfirmationResolveResponse:
     result = await agenda_guardian.check_pending_confirmation(
         user_id=account.app_user_id,
@@ -216,7 +216,7 @@ async def resolve_pending_agenda_confirmation(
     )
 
 
-def _resolve_first_conflict(*, store: SupabaseStore, event: AgendaEventRecord) -> AgendaConflictResponse | None:
+def _resolve_first_conflict(*, store: BancoDeDadosLocalStore, event: AgendaEventRecord) -> AgendaConflictResponse | None:
     conflicts = store.find_agenda_conflicts(
         user_id=event.user_id,
         inicio=event.inicio,
@@ -238,7 +238,7 @@ def _resolve_first_conflict(*, store: SupabaseStore, event: AgendaEventRecord) -
     )
 
 
-def _to_agenda_event_response(*, store: SupabaseStore, event: AgendaEventRecord) -> AgendaEventResponse:
+def _to_agenda_event_response(*, store: BancoDeDadosLocalStore, event: AgendaEventRecord) -> AgendaEventResponse:
     conflict = _resolve_first_conflict(store=store, event=event)
     return AgendaEventResponse(
         id=event.id,

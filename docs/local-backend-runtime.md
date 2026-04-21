@@ -104,7 +104,7 @@ Schema base:
 
 Migrações locais não destrutivas:
 
-- [`backend/app/services/supabase_store.py`](/home/acer/Downloads/AuraCore/backend/app/services/supabase_store.py)
+- [`backend/app/services/banco_de_dados_local_store.py`](/home/acer/Downloads/AuraCore/backend/app/services/banco_de_dados_local_store.py)
 - [`backend/app/services/sqlite_client.py`](/home/acer/Downloads/AuraCore/backend/app/services/sqlite_client.py)
 
 ### Tabelas centrais do observador e memória

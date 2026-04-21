@@ -11,7 +11,7 @@ from app.dependencies import (
     get_memory_analysis_service,
     get_memory_job_service,
     get_observer_gateway_service,
-    get_supabase_store,
+    get_banco_de_dados_local_store,
     get_whatsapp_agent_gateway_service,
 )
 from app.schemas import (
@@ -42,7 +42,7 @@ from app.schemas import (
 from app.services.memory_job_service import MemoryActivitySnapshot, MemoryJobService
 from app.services.memory_service import MemoryAnalysisService
 from app.services.observer_gateway import ObserverGatewayService, WhatsAppAgentGatewayService
-from app.services.supabase_store import (
+from app.services.banco_de_dados_local_store import (
     AnalysisJobRecord,
     KnownGroupRecord,
     MemorySnapshotRecord,
@@ -50,7 +50,7 @@ from app.services.supabase_store import (
     PersonaRecord,
     PersonMemoryRecord,
     ProjectMemoryRecord,
-    SupabaseStore,
+    BancoDeDadosLocalStore,
     WhatsAppSyncRunRecord,
 )
 
@@ -431,7 +431,7 @@ async def delete_memory_project(
 
 @router.get("/groups", response_model=WhatsAppGroupSelectionsListResponse)
 async def get_memory_groups(
-    store: SupabaseStore = Depends(get_supabase_store),
+    store: BancoDeDadosLocalStore = Depends(get_banco_de_dados_local_store),
 ) -> WhatsAppGroupSelectionsListResponse:
     groups = await run_in_threadpool(store.list_known_groups, user_id=store.default_user_id)
     responses: list[WhatsAppGroupSelectionResponse] = []
@@ -456,7 +456,7 @@ async def get_memory_groups(
 async def update_memory_group_selection(
     chat_jid: str,
     request: UpdateWhatsAppGroupSelectionRequest,
-    store: SupabaseStore = Depends(get_supabase_store),
+    store: BancoDeDadosLocalStore = Depends(get_banco_de_dados_local_store),
 ) -> WhatsAppGroupSelectionResponse:
     updated = await run_in_threadpool(
         store.update_known_group_selection,
@@ -482,7 +482,7 @@ async def update_memory_group_selection(
 @router.delete("/database", response_model=SimpleOkResponse)
 async def clear_saved_database(
     memory_job_service: MemoryJobService = Depends(get_memory_job_service),
-    store: SupabaseStore = Depends(get_supabase_store),
+    store: BancoDeDadosLocalStore = Depends(get_banco_de_dados_local_store),
     observer_gateway: ObserverGatewayService = Depends(get_observer_gateway_service),
     agent_gateway: WhatsAppAgentGatewayService = Depends(get_whatsapp_agent_gateway_service),
 ) -> SimpleOkResponse:

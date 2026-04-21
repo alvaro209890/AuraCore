@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Body, Depends, Query
 
-from app.dependencies import get_automation_service, get_supabase_store
+from app.dependencies import get_automation_service, get_banco_de_dados_local_store
 from app.schemas import (
     AnalysisJobResponse,
     AutomationDecisionResponse,
@@ -15,12 +15,12 @@ from app.schemas import (
     WhatsAppSyncRunResponse,
 )
 from app.services.automation_service import AutomationService
-from app.services.supabase_store import (
+from app.services.banco_de_dados_local_store import (
     AnalysisJobRecord,
     AutomationDecisionRecord,
     AutomationSettingsRecord,
     ModelRunRecord,
-    SupabaseStore,
+    BancoDeDadosLocalStore,
     WhatsAppSyncRunRecord,
 )
 
@@ -48,7 +48,7 @@ async def get_automation_status(
 @router.get("/jobs", response_model=AutomationJobsListResponse)
 async def list_automation_jobs(
     limit: int = Query(default=12, ge=1, le=50),
-    store: SupabaseStore = Depends(get_supabase_store),
+    store: BancoDeDadosLocalStore = Depends(get_banco_de_dados_local_store),
 ) -> AutomationJobsListResponse:
     jobs = store.list_analysis_jobs(user_id=store.default_user_id, limit=limit)
     return AutomationJobsListResponse(jobs=[_to_job_response(job) for job in jobs])
@@ -57,7 +57,7 @@ async def list_automation_jobs(
 @router.get("/decisions", response_model=AutomationDecisionsListResponse)
 async def list_automation_decisions(
     limit: int = Query(default=10, ge=1, le=50),
-    store: SupabaseStore = Depends(get_supabase_store),
+    store: BancoDeDadosLocalStore = Depends(get_banco_de_dados_local_store),
 ) -> AutomationDecisionsListResponse:
     decisions = store.list_automation_decisions(user_id=store.default_user_id, limit=limit)
     return AutomationDecisionsListResponse(decisions=[_to_decision_response(decision) for decision in decisions])
@@ -65,7 +65,7 @@ async def list_automation_decisions(
 
 @router.get("/settings", response_model=AutomationSettingsResponse)
 async def get_automation_settings(
-    store: SupabaseStore = Depends(get_supabase_store),
+    store: BancoDeDadosLocalStore = Depends(get_banco_de_dados_local_store),
 ) -> AutomationSettingsResponse:
     settings = store.get_automation_settings(store.default_user_id)
     return _to_settings_response(settings)
@@ -74,7 +74,7 @@ async def get_automation_settings(
 @router.put("/settings", response_model=AutomationSettingsResponse)
 async def update_automation_settings(
     request: UpdateAutomationSettingsRequest = Body(...),
-    store: SupabaseStore = Depends(get_supabase_store),
+    store: BancoDeDadosLocalStore = Depends(get_banco_de_dados_local_store),
 ) -> AutomationSettingsResponse:
     settings = store.update_automation_settings(
         user_id=store.default_user_id,

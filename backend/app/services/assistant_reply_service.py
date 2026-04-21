@@ -10,7 +10,7 @@ from app.services.assistant_context_service import (
 )
 from app.services.deepseek_service import DeepSeekService
 from app.services.groq_service import GroqChatService
-from app.services.supabase_store import SupabaseStore, WhatsAppAgentMessageRecord
+from app.services.banco_de_dados_local_store import BancoDeDadosLocalStore, WhatsAppAgentMessageRecord
 
 ConversationRecord = WhatsAppAgentMessageRecord | AssistantConversationTurn
 
@@ -20,7 +20,7 @@ class AssistantReplyService:
         self,
         *,
         settings: Settings,
-        store: SupabaseStore,
+        store: BancoDeDadosLocalStore,
         deepseek_service: DeepSeekService,
         groq_service: GroqChatService,
         context_service: AssistantContextService,

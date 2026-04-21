@@ -678,7 +678,7 @@ class ProactiveDigestStateRecord:
     updated_at: datetime
 
 
-class SupabaseStore:
+class BancoDeDadosLocalStore:
     def __init__(
         self,
         database_path: str,
@@ -7263,7 +7263,7 @@ class SupabaseStore:
             "stale_hours_threshold": 24,
             "pruned_messages_threshold": 1,
             "default_detail_mode": "balanced",
-            "default_target_message_count": min(120, self.message_retention_max_rows),
+            "default_target_message_count": 20,
             "default_lookback_hours": 72,
             "daily_budget_usd": 5.0,
             "max_auto_jobs_per_day": 100,
@@ -7294,8 +7294,8 @@ class SupabaseStore:
             "intensity": "high",
             "quiet_hours_start": "22:00",
             "quiet_hours_end": "08:00",
-            "max_unsolicited_per_day": 6,
-            "min_interval_minutes": 45,
+            "max_unsolicited_per_day": 10,
+            "min_interval_minutes": 25,
             "agenda_enabled": True,
             "followups_enabled": True,
             "projects_enabled": True,
@@ -8226,8 +8226,8 @@ class SupabaseStore:
             intensity=self._normalize_proactive_intensity(self._optional_text(value.get("intensity"))),
             quiet_hours_start=self._normalize_clock_time(self._optional_text(value.get("quiet_hours_start")), fallback="22:00"),
             quiet_hours_end=self._normalize_clock_time(self._optional_text(value.get("quiet_hours_end")), fallback="08:00"),
-            max_unsolicited_per_day=max(1, min(12, self._parse_int(value.get("max_unsolicited_per_day")) or 4)),
-            min_interval_minutes=max(15, min(1440, self._parse_int(value.get("min_interval_minutes")) or 90)),
+            max_unsolicited_per_day=max(1, min(12, self._parse_int(value.get("max_unsolicited_per_day")) or 10)),
+            min_interval_minutes=max(15, min(1440, self._parse_int(value.get("min_interval_minutes")) or 25)),
             agenda_enabled=self._parse_bool(value.get("agenda_enabled")) if self._parse_bool(value.get("agenda_enabled")) is not None else True,
             followups_enabled=self._parse_bool(value.get("followups_enabled")) if self._parse_bool(value.get("followups_enabled")) is not None else True,
             projects_enabled=self._parse_bool(value.get("projects_enabled")) if self._parse_bool(value.get("projects_enabled")) is not None else True,
@@ -8464,7 +8464,7 @@ class SupabaseStore:
             stale_hours_threshold=self._parse_int(value.get("stale_hours_threshold")) or 24,
             pruned_messages_threshold=self._parse_int(value.get("pruned_messages_threshold")) or 1,
             default_detail_mode=self._normalize_detail_mode(self._optional_text(value.get("default_detail_mode")) or "balanced"),
-            default_target_message_count=self._parse_int(value.get("default_target_message_count")) or min(120, self.message_retention_max_rows),
+            default_target_message_count=self._parse_int(value.get("default_target_message_count")) or 20,
             default_lookback_hours=self._parse_int(value.get("default_lookback_hours")) or 72,
             daily_budget_usd=self._parse_float(value.get("daily_budget_usd")) or 5.0,
             max_auto_jobs_per_day=self._parse_int(value.get("max_auto_jobs_per_day")) or 100,

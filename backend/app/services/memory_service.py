@@ -19,7 +19,7 @@ from app.services.deepseek_service import (
     DeepSeekService,
 )
 from app.services.groq_service import GroqChatService
-from app.services.supabase_store import (
+from app.services.banco_de_dados_local_store import (
     AutomationSettingsRecord,
     MemorySnapshotRecord,
     MessageRetentionStateRecord,
@@ -29,7 +29,7 @@ from app.services.supabase_store import (
     ProjectMemoryRecord,
     ProjectMemorySeed,
     StoredMessageRecord,
-    SupabaseStore,
+    BancoDeDadosLocalStore,
     WhatsAppAgentMessageRecord,
 )
 
@@ -262,7 +262,7 @@ class MemoryAnalysisService:
         self,
         *,
         settings: Settings,
-        store: SupabaseStore,
+        store: BancoDeDadosLocalStore,
         deepseek_service: DeepSeekService,
         groq_service: GroqChatService | None = None,
     ) -> None:
@@ -275,17 +275,12 @@ class MemoryAnalysisService:
         persona = self.get_current_persona()
         has_initial_analysis = bool(persona.last_analyzed_at or persona.last_snapshot_id)
         include_groups = self._analysis_includes_groups(has_memory=has_initial_analysis)
-        if has_initial_analysis and persona.last_analyzed_at is not None:
-            pending_new_message_count = self.store.count_selected_messages_after_timestamp(
-                self.settings.default_user_id,
-                after_timestamp=persona.last_analyzed_at,
+        pending_new_message_count = len(
+            self._list_analyzable_pending_messages(
                 include_groups=include_groups,
+                after_timestamp=persona.last_analyzed_at if has_initial_analysis else None,
             )
-        else:
-            pending_new_message_count = self.store.count_pending_messages(
-                self.settings.default_user_id,
-                include_groups=include_groups,
-            )
+        )
         return MemoryStatus(
             has_initial_analysis=has_initial_analysis,
             last_analyzed_at=persona.last_analyzed_at,
@@ -294,6 +289,27 @@ class MemoryAnalysisService:
             incremental_batch_size=self._resolve_incremental_batch_size(),
             incremental_min_messages=self._resolve_incremental_min_messages(),
         )
+
+    def _list_analyzable_pending_messages(
+        self,
+        *,
+        include_groups: bool,
+        after_timestamp: datetime | None,
+    ) -> list[StoredMessageRecord]:
+        candidate_messages = self.store.list_pending_messages(
+            user_id=self.settings.default_user_id,
+            limit=self.settings.message_retention_max_rows,
+            newest_first=False,
+            include_groups=include_groups,
+        )
+        candidate_messages = self._exclude_owner_messages(candidate_messages)
+        if after_timestamp is not None:
+            candidate_messages = [
+                message
+                for message in candidate_messages
+                if message.timestamp > after_timestamp
+            ]
+        return [message for message in candidate_messages if message.message_text.strip()]
 
     def plan_first_analysis(self) -> FixedAnalysisPlan:
         return self._build_fixed_analysis_plan(mode="first_analysis")
@@ -878,7 +894,7 @@ class MemoryAnalysisService:
 
     def _resolve_incremental_batch_size(self) -> int:
         return max(
-            8,
+            20,
             min(
                 self.settings.memory_incremental_batch_size,
                 self.settings.memory_analysis_max_messages,
@@ -887,7 +903,7 @@ class MemoryAnalysisService:
         )
 
     def _resolve_incremental_min_messages(self) -> int:
-        return max(6, min(self.settings.memory_incremental_min_messages, self._resolve_incremental_batch_size()))
+        return max(20, min(self.settings.memory_incremental_min_messages, self._resolve_incremental_batch_size()))
 
     def _resolve_fixed_plan_char_budget(self, mode: Literal["first_analysis", "incremental_batch"]) -> int:
         target = 18000 if mode == "first_analysis" else 9000

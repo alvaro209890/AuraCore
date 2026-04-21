@@ -7,7 +7,7 @@
 - Backend em produção local roda a partir do runtime em `/home/server/.local/share/auracore-runtime/repo/backend`
 - Repositório principal fica em `/media/server/HD Backup/Servidores_NAO_MEXA/AuraCore`
 - Stack atual do repositório:
-  - `backend`: FastAPI + SQLite local com `SupabaseStore` próprio sobre `sqlite3`
+  - `backend`: FastAPI + SQLite local com `BancoDeDadosLocalStore` próprio sobre `sqlite3`
   - `frontend`: Next.js 15 para o dashboard principal autenticado
   - `agent-frontend`: Next.js 15 separado para o dashboard do agente global
   - `whatsapp-gateway`: Express + Baileys para observer e agent
@@ -15,7 +15,7 @@
 - No frontend principal, o `connection-dashboard.tsx` passou a importar abas modulares em `frontend/components/dashboard/tabs/`, mas ainda concentra helpers compartilhados e orquestração de estado
 - As abas `Agenda`, `Automação` e `Proatividade` do frontend principal agora compartilham uma linguagem visual e controles próprios via classes `ops-*` em `frontend/app/globals.css`, mantendo o mesmo tema escuro do restante do dashboard
 - As abas `Automação` e `Proatividade` agora usam painéis operacionais, shells escuros para `input/select/time/number`, botões próprios `ops-hero-button` e seletores segmentados no mesmo kit visual `ops-*`
-- A maior parte da lógica de domínio do backend está concentrada em `backend/app/services/supabase_store.py`, `memory_service.py`, `whatsapp_agent_service.py`, `agenda_guardian_service.py` e `deepseek_service.py`
+- A maior parte da lógica de domínio do backend está concentrada em `backend/app/services/banco_de_dados_local_store.py`, `memory_service.py`, `whatsapp_agent_service.py`, `agenda_guardian_service.py` e `deepseek_service.py`
 
 ## WhatsApp Agent
 
@@ -28,6 +28,7 @@
 - O agente conversacional do WhatsApp é majoritariamente reativo: hoje ele responde mensagens recebidas, usa memória própria por contato e tem proatividade nativa principalmente para agenda (conflitos e lembretes)
 - Já existe base de dados para evoluir proatividade mais rica: `whatsapp_agent_contact_memories`, `important_messages`, `analysis_jobs`, `automation_decisions` e snapshots/projetos da memória geral do usuário
 - Em abril/2026 foi introduzido um subsistema dedicado de proatividade do WhatsApp: `ProactiveAssistantService`, com preferências persistidas, candidatos proativos, log de entregas e digests de manhã/noite
+- A proatividade do WhatsApp agora também compõe a mensagem final com contexto do dono (perfil, tom preferido, sinais recentes e ações implícitas) via `DeepSeekService.generate_proactive_message`, com fallback heurístico local caso o modelo falhe
 - O roteamento inbound do agente global resolve a conta por `observer_owner_phone`; no outbound, `ProactiveAssistantService` e `agenda_guardian_service` usam somente o owner do `observer` da conta atual como alvo lógico
 - Em abril/2026 o outbound proativo passou a preferir o thread mais recente do WhatsApp Agent para definir `chat_jid`/telefone do dono; isso é importante para contatos em formato `@lid` e evita cair num owner genérico do observer quando já existe conversa recente no agente
 - O WhatsApp Agent agora suporta comandos diretos do owner para projetos: criar projeto manual, marcar como concluído, reabrir e pedir um plano curto, inclusive quando a resposta vier em cima de um `project_nudge` recente
@@ -64,6 +65,7 @@
 - A agenda usa uma tabela unica para eventos automáticos e manuais; eventos criados manualmente entram em `agenda` com `message_id` sintético no formato `manual:{uuid}` e participam de conflito/lembrete igual aos demais
 - O `DeepSeekAssistantSearchPlan` do backend agora suporta também `important_message_queries` e `important_messages_limit`, alinhando o fluxo DeepSeek com a infraestrutura já existente de `important_messages`
 - O aprendizado do WhatsApp pode persistir `important_messages` direto do `extract_agent_memory`, usando a mesma rodada do modelo para classificar relevância global sem abrir outro pipeline paralelo
+- Os metadados de aprendizado do WhatsApp agora preservam também `agent_writing_style_hints`; a proatividade usa isso junto do `preferred_tone` para ajustar o jeito do nudge soar mais natural para o dono
 - A proatividade de projetos agora pode enriquecer `project_nudge` com `suggested_actions` geradas pelo DeepSeek, com fallback heurístico local quando o modelo falhar
 - O `ProactiveAssistantService` agora usa `important_messages` para semear followups prioritários, escolhe o melhor candidato devido por score antes de interromper o dono e passou a enriquecer digests com foco de projeto além do radar de agenda/pendências
 - O `agenda_guardian_service` agora consegue calcular slots livres locais para sugerir alternativas em conflitos de agenda

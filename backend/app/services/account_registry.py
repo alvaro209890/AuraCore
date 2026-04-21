@@ -9,7 +9,7 @@ import sqlite3
 import threading
 from uuid import UUID, uuid4
 
-from app.services.supabase_store import SupabaseStore
+from app.services.banco_de_dados_local_store import BancoDeDadosLocalStore
 
 USERNAME_PATTERN = re.compile(r"^[a-z0-9_]{3,32}$")
 
@@ -371,7 +371,7 @@ class AccountRegistry:
             sqlite_dir.mkdir(parents=True, exist_ok=True)
             backups_dir.mkdir(parents=True, exist_ok=True)
             exports_dir.mkdir(parents=True, exist_ok=True)
-            SupabaseStore(
+            BancoDeDadosLocalStore(
                 database_path=str(db_path),
                 default_user_id=app_user_id,
                 message_retention_max_rows=self.message_retention_max_rows,

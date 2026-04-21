@@ -15,7 +15,7 @@ from app.services.memory_job_service import MemoryJobService
 from app.services.memory_service import MemoryAnalysisService
 from app.services.observer_gateway import ObserverGatewayService, WhatsAppAgentGatewayService
 from app.services.proactive_assistant_service import ProactiveAssistantService
-from app.services.supabase_store import SupabaseStore
+from app.services.banco_de_dados_local_store import BancoDeDadosLocalStore
 from app.services.whatsapp_agent_service import WhatsAppAgentService
 
 
@@ -23,7 +23,7 @@ from app.services.whatsapp_agent_service import WhatsAppAgentService
 class ServiceBundle:
     account: AccountRecord
     settings: Settings
-    store: SupabaseStore
+    store: BancoDeDadosLocalStore
     observer_gateway: ObserverGatewayService
     agent_gateway: WhatsAppAgentGatewayService
     deepseek_service: DeepSeekService
@@ -58,7 +58,7 @@ class ServiceBundleCache:
                     "default_user_id": account.app_user_id,
                 }
             )
-            store = SupabaseStore(
+            store = BancoDeDadosLocalStore(
                 database_path=account.db_path,
                 default_user_id=account.app_user_id,
                 message_retention_max_rows=min(

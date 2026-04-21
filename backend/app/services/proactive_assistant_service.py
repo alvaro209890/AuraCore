@@ -12,24 +12,25 @@ from zoneinfo import ZoneInfo
 from app.config import Settings
 from app.services.deepseek_service import DeepSeekService
 from app.services.observer_gateway import ObserverGatewayService, WhatsAppAgentGatewayService
-from app.services.supabase_store import (
+from app.services.banco_de_dados_local_store import (
     ImportantMessageRecord,
     ProjectMemoryRecord,
     ProactiveCandidateRecord,
     ProactiveDeliveryLogRecord,
     ProactivePreferencesRecord,
-    SupabaseStore,
+    BancoDeDadosLocalStore,
+    WhatsAppAgentContactMemoryRecord,
     WhatsAppAgentThreadRecord,
 )
 
 DEFAULT_TIMEZONE = ZoneInfo("America/Sao_Paulo")
 PROACTIVE_LOOP_INTERVAL_SECONDS = 45
 RECENT_REPLY_WINDOW_HOURS = 36
-RECENT_PROJECT_NUDGE_HOURS = 14
+RECENT_PROJECT_NUDGE_HOURS = 8
 RECENT_DIGEST_ACTIVITY_MINUTES = 25
-RECENT_OWNER_ACTIVITY_SUPPRESSION_MINUTES = 12
+RECENT_OWNER_ACTIVITY_SUPPRESSION_MINUTES = 8
 IMPORTANT_MESSAGE_CANDIDATE_HOURS = 96
-PROJECT_STALE_NUDGE_HOURS = 12
+PROJECT_STALE_NUDGE_HOURS = 8
 RECENT_OWNER_THREAD_LOOKBACK_DAYS = 14
 FOLLOWUP_KEYWORDS = ("responder", "mandar", "enviar", "ver", "fazer", "cobrar", "retornar", "ajustar")
 FUTURE_MARKERS = ("amanha", "amanhã", "mais tarde", "depois", "hoje", "semana", "mais tarde", "na volta")
@@ -64,12 +65,21 @@ class ProactiveReplyOutcome:
     candidate: ProactiveCandidateRecord | None = None
 
 
+@dataclass(slots=True)
+class OwnerProactiveContext:
+    memory: WhatsAppAgentContactMemoryRecord | None
+    recent_inbound_lines: list[str]
+    recent_mood_signals: list[str]
+    recent_implied_tasks: list[str]
+    recent_style_hints: list[str]
+
+
 class ProactiveAssistantService:
     def __init__(
         self,
         *,
         settings: Settings,
-        store: SupabaseStore,
+        store: BancoDeDadosLocalStore,
         deepseek_service: DeepSeekService,
         observer_gateway: ObserverGatewayService,
         agent_gateway: WhatsAppAgentGatewayService,
@@ -702,7 +712,11 @@ class ProactiveAssistantService:
         if best_candidate is None:
             return
 
-        message_text = self._render_candidate_message(candidate=best_candidate)
+        message_text = await self._compose_candidate_message(
+            candidate=best_candidate,
+            moment_state=moment_state,
+            now=now,
+        )
         if not message_text:
             return
 
@@ -723,9 +737,9 @@ class ProactiveAssistantService:
             return
 
         next_status = "sent"
-        next_cooldown = now + timedelta(hours=12)
+        next_cooldown = now + timedelta(hours=8)
         if best_candidate.status == "confirmed":
-            next_cooldown = now + timedelta(hours=18)
+            next_cooldown = now + timedelta(hours=12)
         self.store.update_proactive_candidate(
             candidate_id=best_candidate.id,
             status=next_status,
@@ -763,27 +777,27 @@ class ProactiveAssistantService:
         if candidate.due_at is not None and candidate.due_at <= now:
             score += 8
         if candidate.category == "followup" and payload.get("important_source"):
-            score += 14
+            score += 18
         if candidate.category == "project_nudge" and payload.get("recent_signal"):
-            score += 10
+            score += 14
         if candidate.category == "routine":
             score -= 2
         if moment_state == "high_focus":
             score -= 14
         elif moment_state == "available":
-            score += 10
+            score += 12
         elif moment_state == "low_energy":
             if candidate.category == "routine":
-                score += 6
+                score += 8
             if candidate.category == "project_nudge":
                 score -= 2
         elif moment_state == "busy":
             score -= 4
         if prefs.intensity == "high":
             if candidate.category in {"followup", "project_nudge"}:
-                score += 10
+                score += 14
             elif candidate.category == "routine":
-                score += 5
+                score += 8
         elif prefs.intensity == "conservative":
             if candidate.category == "routine":
                 score -= 10
@@ -800,7 +814,7 @@ class ProactiveAssistantService:
         payload = candidate.payload_json if isinstance(candidate.payload_json, dict) else {}
         base = 50
         if prefs.intensity == "high":
-            base -= 10
+            base -= 14
         elif prefs.intensity == "conservative":
             base += 8
         if candidate.category == "routine":
@@ -817,8 +831,68 @@ class ProactiveAssistantService:
             base -= 4
         return max(34, min(70, base))
 
-    def _render_candidate_message(self, *, candidate: ProactiveCandidateRecord) -> str:
+    async def _compose_candidate_message(
+        self,
+        *,
+        candidate: ProactiveCandidateRecord,
+        moment_state: str,
+        now: datetime,
+    ) -> str:
+        owner_context = self._build_owner_proactive_context(now=now)
+        fallback = self._render_candidate_message(
+            candidate=candidate,
+            moment_state=moment_state,
+            owner_context=owner_context,
+        )
+        suggested_actions = self._candidate_suggested_actions(candidate)
+        try:
+            generated = await self.deepseek_service.generate_proactive_message(
+                category=candidate.category,
+                candidate_title=candidate.title,
+                candidate_summary=candidate.summary,
+                candidate_status=candidate.status,
+                moment_state=moment_state,
+                owner_profile_context=self._format_owner_profile_context(owner_context),
+                recent_owner_context=self._format_recent_owner_messages_for_prompt(owner_context),
+                project_context=self._build_candidate_project_context(candidate),
+                suggested_actions=suggested_actions,
+                additional_context=self._build_candidate_additional_context(
+                    candidate=candidate,
+                    moment_state=moment_state,
+                    owner_context=owner_context,
+                ),
+                humor_guidance=self._build_humor_guidance(
+                    candidate=candidate,
+                    moment_state=moment_state,
+                    owner_context=owner_context,
+                ),
+            )
+        except Exception as exc:
+            logger.warning(
+                "proactive_message_generation_failed category=%s candidate_id=%s detail=%s",
+                candidate.category,
+                candidate.id,
+                exc,
+            )
+            return fallback
+
+        normalized = self._sanitize_proactive_message(generated)
+        return normalized or fallback
+
+    def _render_candidate_message(
+        self,
+        *,
+        candidate: ProactiveCandidateRecord,
+        moment_state: str = "available",
+        owner_context: OwnerProactiveContext | None = None,
+    ) -> str:
         payload = candidate.payload_json if isinstance(candidate.payload_json, dict) else {}
+        direct_tone = self._prefer_direct_tone(owner_context)
+        humor_line = self._fallback_humor_line(
+            candidate=candidate,
+            moment_state=moment_state,
+            owner_context=owner_context,
+        )
         if candidate.category == "followup":
             task_text = str(payload.get("task_text") or candidate.title).strip()
             important_reason = str(payload.get("source_reason") or "").strip()
@@ -827,28 +901,54 @@ class ProactiveAssistantService:
             if important_source:
                 intro = important_reason[:140] or task_text[:140]
                 if candidate.status == "confirmed":
+                    if direct_tone:
+                        return (
+                            f"Isso ainda merece radar: {intro[:150]}.\n"
+                            + (f"Sinal recente: {source_excerpt[:110]}.\n" if source_excerpt else "")
+                            + "Se continuar aberto, eu te lembro no melhor momento ou já destrincho o próximo passo."
+                            + (f"\n{humor_line}" if humor_line else "")
+                        )
                     return (
-                        "*Pendência importante em radar*\n"
-                        f"• {intro}.\n"
-                        + (f"• Sinal salvo: {source_excerpt[:110]}.\n" if source_excerpt else "")
-                        + "Quer que eu te cobre isso depois ou destrave agora?"
+                        f"Passei aqui porque isso ainda pede atenção de verdade: {intro[:150]}.\n"
+                        + (f"O sinal mais claro foi: {source_excerpt[:110]}.\n" if source_excerpt else "")
+                        + "Se fizer sentido, eu posso te lembrar no momento certo ou já te devolver isso mastigado no próximo passo."
+                        + (f"\n{humor_line}" if humor_line else "")
+                    )
+                if direct_tone:
+                    return (
+                        f"Tem uma frente importante pedindo atenção: {intro[:150]}.\n"
+                        + (f"Sinal salvo: {source_excerpt[:110]}.\n" if source_excerpt else "")
+                        + "Se quiser, eu transformo isso agora em um próximo passo claro."
+                        + (f"\n{humor_line}" if humor_line else "")
                     )
                 return (
-                    "*Pendência importante em radar*\n"
-                    f"• {intro}.\n"
-                    + (f"• Sinal salvo: {source_excerpt[:110]}.\n" if source_excerpt else "")
-                    + "Quer que eu te organize o próximo passo agora?"
+                    f"Quero te poupar carga mental com uma coisa que vale radar agora: {intro[:150]}.\n"
+                    + (f"O melhor sinal recente foi: {source_excerpt[:110]}.\n" if source_excerpt else "")
+                    + "Se fizer sentido, eu organizo isso em um próximo passo simples em vez de deixar solto."
+                    + (f"\n{humor_line}" if humor_line else "")
                 )
             if candidate.status == "confirmed":
+                if direct_tone:
+                    return (
+                        f"Segue em radar: {task_text[:150]}.\n"
+                        "Quer resolver agora ou prefere que eu só traga isso de volta na hora certa?"
+                        + (f"\n{humor_line}" if humor_line else "")
+                    )
                 return (
-                    "*Pendência em radar*\n"
-                    f"• {task_text[:140]}.\n"
-                    "Vale resolver agora ou quer que eu só te lembre mais tarde?"
+                    f"Deixo isso vivo no radar: {task_text[:150]}.\n"
+                    "Se ajudar, eu posso te lembrar no momento certo ou te ajudar a reduzir isso ao próximo passo."
+                    + (f"\n{humor_line}" if humor_line else "")
+                )
+            if moment_state == "low_energy":
+                return (
+                    f"Sem te sobrecarregar: isso continua aberto -> {task_text[:150]}.\n"
+                    "Se quiser, eu deixo isso em um próximo passo leve e objetivo."
+                    + (f"\n{humor_line}" if humor_line else "")
                 )
             return (
-                "*Pendência em radar*\n"
-                f"• {task_text[:140]}.\n"
-                "Quer que eu te ajude a destravar agora ou só deixe no radar?"
+                f"Tem uma pendência que vale um toque curto agora: {task_text[:150]}.\n"
+                "Se fizer sentido, eu te ajudo a destravar isso em 1 passo só."
+                + (f"\n{humor_line}" if humor_line else "")
             )
         if candidate.category == "project_nudge":
             project_name = str(payload.get("project_name") or candidate.title).strip()
@@ -859,23 +959,299 @@ class ProactiveAssistantService:
                 for item in (payload.get("suggested_actions") or [])
                 if str(item).strip()
             ][:3]
-            lines = ["*Radar de projeto*", f"*{project_name[:100]}*"]
+            lead = (
+                f"Passei aqui com um corte rápido de {project_name[:96]}."
+                if not direct_tone
+                else f"Radar rápido de {project_name[:96]}."
+            )
+            lines = [lead]
             if project_reason:
-                lines.append(f"• Motivo: {project_reason[:100]}")
+                lines.append(f"Motivo: {project_reason[:110]}")
             if next_step:
-                lines.append(f"• Próximo passo: {next_step[:120]}")
+                lines.append(f"Próximo passo mais claro: {next_step[:120]}")
             if suggested_actions:
                 for index, action in enumerate(suggested_actions[:2], start=1):
                     label = "Agora" if index == 1 else "Depois"
-                    lines.append(f"• {label}: {action[:88]}")
-            lines.append('Se quiser, responda com "marque como concluído", "reabra" ou "me dá um plano".')
+                    lines.append(f"{label}: {action[:88]}")
+            if moment_state == "low_energy":
+                lines.append("Se hoje estiver pesado, eu posso só te deixar isso pronto para retomar sem atrito.")
+            else:
+                lines.append('Se quiser, eu já converto isso em um plano curto, ou você pode responder "marque como concluído" / "reabra".')
+            if humor_line:
+                lines.append(humor_line)
             return "\n".join(lines)
         if candidate.category == "routine":
             suggestion = str(payload.get("suggestion") or "Vale reorganizar o próximo bloco com mais leveza.").strip()
-            return f"*Ajuste de ritmo*\n• {candidate.summary[:140]}\n• {suggestion[:140]}"
+            if direct_tone:
+                return (
+                    f"Senti um sinal de carga mais alta agora: {candidate.summary[:140]}.\n"
+                    f"Sugestão enxuta: {suggestion[:140]}"
+                    + (f"\n{humor_line}" if humor_line else "")
+                )
+            return (
+                f"Seu ritmo pareceu mais pesado agora: {candidate.summary[:140]}.\n"
+                f"Em vez de empilhar mais coisa, talvez valha isto: {suggestion[:140]}"
+                + (f"\n{humor_line}" if humor_line else "")
+            )
         if candidate.category == "agenda_followup":
-            return f"*Agenda em radar*\n• {candidate.summary[:180]}\nQuer que eu organize isso agora?"
+            return (
+                f"Tem um ponto de agenda que merece um ajuste curto: {candidate.summary[:180]}.\n"
+                "Se quiser, eu organizo isso agora do jeito mais simples."
+            )
         return candidate.summary[:220]
+
+    def _build_owner_proactive_context(self, *, now: datetime) -> OwnerProactiveContext:
+        owner_phone = self._resolve_owner_phone()
+        if not owner_phone:
+            return OwnerProactiveContext(
+                memory=None,
+                recent_inbound_lines=[],
+                recent_mood_signals=[],
+                recent_implied_tasks=[],
+                recent_style_hints=[],
+            )
+
+        memory = self.store.get_whatsapp_agent_contact_memory(
+            user_id=self.settings.default_user_id,
+            contact_phone=owner_phone,
+        )
+        messages = self.store.list_whatsapp_agent_messages_for_contact(
+            user_id=self.settings.default_user_id,
+            contact_phone=owner_phone,
+            limit=10,
+        )
+        recent_inbound_lines: list[str] = []
+        recent_mood_signals: list[str] = []
+        recent_implied_tasks: list[str] = []
+        recent_style_hints: list[str] = []
+        recent_cutoff = now - timedelta(hours=16)
+
+        for message in messages:
+            if message.direction != "inbound" or message.message_timestamp < recent_cutoff:
+                continue
+            content = self._summarize_text(message.content, 140)
+            if content:
+                recent_inbound_lines.append(content)
+            metadata = message.metadata if isinstance(message.metadata, dict) else {}
+            recent_mood_signals.extend(
+                str(item).strip()
+                for item in (metadata.get("agent_mood_signals") or [])
+                if str(item).strip()
+            )
+            recent_implied_tasks.extend(
+                str(item).strip()
+                for item in (metadata.get("agent_implied_tasks") or [])
+                if str(item).strip()
+            )
+            style_hint = str(metadata.get("agent_writing_style_hints") or "").strip()
+            if style_hint:
+                recent_style_hints.append(style_hint)
+
+        return OwnerProactiveContext(
+            memory=memory,
+            recent_inbound_lines=recent_inbound_lines[-4:],
+            recent_mood_signals=self._dedupe_text_list(recent_mood_signals, limit=4),
+            recent_implied_tasks=self._dedupe_text_list(recent_implied_tasks, limit=5),
+            recent_style_hints=self._dedupe_text_list(recent_style_hints, limit=3),
+        )
+
+    def _format_owner_profile_context(self, owner_context: OwnerProactiveContext) -> str:
+        memory = owner_context.memory
+        if memory is None:
+            return ""
+        parts: list[str] = []
+        if memory.profile_summary:
+            parts.append(f"Resumo pessoal: {memory.profile_summary}")
+        if memory.preferred_tone:
+            parts.append(f"Tom preferido: {memory.preferred_tone}")
+        if memory.preferences:
+            parts.append("Preferencias: " + "; ".join(memory.preferences[:4]))
+        if memory.objectives:
+            parts.append("Objetivos recorrentes: " + "; ".join(memory.objectives[:4]))
+        if memory.constraints:
+            parts.append("Restricoes: " + "; ".join(memory.constraints[:3]))
+        if memory.recurring_instructions:
+            parts.append("Instrucoes recorrentes: " + "; ".join(memory.recurring_instructions[:3]))
+        if owner_context.recent_style_hints:
+            parts.append("Estilo recente de escrita: " + "; ".join(owner_context.recent_style_hints[:2]))
+        return "\n".join(parts).strip()
+
+    def _format_recent_owner_messages_for_prompt(self, owner_context: OwnerProactiveContext) -> str:
+        lines = [f"- {line}" for line in owner_context.recent_inbound_lines if line]
+        if owner_context.recent_mood_signals:
+            lines.append("Sinais de humor recentes: " + "; ".join(owner_context.recent_mood_signals[:3]))
+        if owner_context.recent_implied_tasks:
+            lines.append("Acoes implicitas recentes: " + "; ".join(owner_context.recent_implied_tasks[:3]))
+        return "\n".join(lines).strip()
+
+    def _build_candidate_project_context(self, candidate: ProactiveCandidateRecord) -> str:
+        payload = candidate.payload_json if isinstance(candidate.payload_json, dict) else {}
+        project_key = str(payload.get("project_key") or "").strip()
+        if not project_key:
+            return ""
+        project = next(
+            (
+                item
+                for item in self.store.list_project_memories(self.settings.default_user_id, limit=32)
+                if item.project_key == project_key
+            ),
+            None,
+        )
+        if project is None:
+            return ""
+        return self._build_project_action_context(project)
+
+    def _candidate_suggested_actions(self, candidate: ProactiveCandidateRecord) -> list[str]:
+        payload = candidate.payload_json if isinstance(candidate.payload_json, dict) else {}
+        actions = [
+            str(item).strip()
+            for item in (payload.get("suggested_actions") or [])
+            if str(item).strip()
+        ]
+        if actions:
+            return actions[:3]
+        next_step = str(payload.get("next_step") or "").strip()
+        if next_step:
+            return [next_step[:120]]
+        return []
+
+    def _build_candidate_additional_context(
+        self,
+        *,
+        candidate: ProactiveCandidateRecord,
+        moment_state: str,
+        owner_context: OwnerProactiveContext,
+    ) -> str:
+        payload = candidate.payload_json if isinstance(candidate.payload_json, dict) else {}
+        parts = [f"Momento atual detectado: {moment_state}"]
+        if owner_context.recent_mood_signals:
+            parts.append("Humor recente: " + "; ".join(owner_context.recent_mood_signals[:3]))
+        if owner_context.recent_implied_tasks:
+            parts.append("Acoes que o dono parece estar tentando mover: " + "; ".join(owner_context.recent_implied_tasks[:3]))
+        if candidate.category == "followup" and payload.get("important_source"):
+            parts.append("Esta iniciativa vem de um sinal importante salvo no radar.")
+        if candidate.category == "project_nudge" and payload.get("recent_signal"):
+            parts.append("Ha sinal recente conectando este projeto ao momento atual.")
+        if candidate.status == "confirmed":
+            parts.append("O dono ja demonstrou abertura para esse assunto; pode soar um pouco mais assertivo sem perder delicadeza.")
+        return "\n".join(parts)
+
+    def _build_humor_guidance(
+        self,
+        *,
+        candidate: ProactiveCandidateRecord,
+        moment_state: str,
+        owner_context: OwnerProactiveContext,
+    ) -> str:
+        if not self._humor_allowed(candidate=candidate, moment_state=moment_state, owner_context=owner_context):
+            return "Nao usar humor nesta mensagem."
+        if candidate.category == "project_nudge":
+            return (
+                "Humor permitido em dose homeopatica: um comentario seco e inteligente no final, "
+                "como alivio leve de tensao sobre atrito, backlog ou inercia. Nada teatral."
+            )
+        if candidate.category == "routine":
+            return (
+                "Humor permitido de forma acolhedora: um toque leve que reduza a pressao sem parecer deboche."
+            )
+        return (
+            "Humor opcional e minimo: no maximo uma frase curta no fim, com ironia gentil ou leveza seca."
+        )
+
+    def _prefer_direct_tone(self, owner_context: OwnerProactiveContext | None) -> bool:
+        if owner_context is None:
+            return False
+        memory = owner_context.memory
+        clues: list[str] = list(owner_context.recent_style_hints)
+        if memory is not None and memory.preferred_tone:
+            clues.append(memory.preferred_tone)
+        normalized = " ".join(clues).lower()
+        return any(marker in normalized for marker in ("direto", "curto", "objetivo", "pratico", "prático"))
+
+    def _humor_allowed(
+        self,
+        *,
+        candidate: ProactiveCandidateRecord,
+        moment_state: str,
+        owner_context: OwnerProactiveContext | None,
+    ) -> bool:
+        payload = candidate.payload_json if isinstance(candidate.payload_json, dict) else {}
+        if candidate.category == "agenda_followup":
+            return False
+        if payload.get("important_source"):
+            return False
+        if candidate.priority >= 88 and candidate.category != "project_nudge":
+            return False
+        if moment_state in {"high_focus", "busy"}:
+            return False
+        if owner_context is not None and owner_context.recent_mood_signals:
+            normalized_mood = " ".join(owner_context.recent_mood_signals).lower()
+            if any(marker in normalized_mood for marker in ("frustr", "ansios", "exaust", "sobrecarreg", "pression")):
+                return False
+        return candidate.category in {"project_nudge", "routine", "followup"}
+
+    def _fallback_humor_line(
+        self,
+        *,
+        candidate: ProactiveCandidateRecord,
+        moment_state: str,
+        owner_context: OwnerProactiveContext | None,
+    ) -> str:
+        if not self._humor_allowed(candidate=candidate, moment_state=moment_state, owner_context=owner_context):
+            return ""
+        direct_tone = self._prefer_direct_tone(owner_context)
+        variants: list[str]
+        if candidate.category == "project_nudge":
+            variants = [
+                "Se a inércia estiver bem organizada hoje, eu posso desorganizar ela rapidinho.",
+                "Prometo manter isso abaixo do limite entre progresso real e backlog decorativo.",
+                "A boa notícia é que isso parece mais próximo de andar do que de virar peça de museu.",
+            ]
+        elif candidate.category == "routine":
+            variants = [
+                "Seu cérebro talvez mereça um café e uma trégua diplomática ao mesmo tempo.",
+                "Hoje talvez não seja dia de competir com a própria bateria em modo economia.",
+                "A meta aqui é progresso com dignidade, não heroísmo administrativo.",
+            ]
+        else:
+            variants = [
+                "Antes que isso abra filial fixa na sua cabeça, eu ajudo a fechar em um passo.",
+                "Melhor mexer nisso enquanto ainda é pendência e não patrimônio histórico.",
+                "A ideia é resolver isso antes que vire item de coleção do backlog.",
+            ]
+        index_seed = f"{candidate.id}:{candidate.category}:{moment_state}"
+        index = int(hashlib.sha1(index_seed.encode("utf-8")).hexdigest(), 16) % len(variants)
+        line = variants[index]
+        if direct_tone:
+            return line
+        return line
+
+    def _sanitize_proactive_message(self, value: str) -> str:
+        text = str(value or "").replace("\r", "\n").strip().strip('"').strip("'")
+        lines = [" ".join(line.split()).strip() for line in text.split("\n")]
+        lines = [line for line in lines if line]
+        normalized = "\n".join(lines).strip()
+        if not normalized:
+            return ""
+        if len(normalized) > 520:
+            normalized = normalized[:517].rstrip(" .,;:") + "..."
+        return normalized
+
+    def _dedupe_text_list(self, items: list[str], *, limit: int) -> list[str]:
+        seen: set[str] = set()
+        result: list[str] = []
+        for item in items:
+            normalized = " ".join(str(item).split()).strip()
+            if not normalized:
+                continue
+            key = normalized.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(normalized[:140])
+            if len(result) >= limit:
+                break
+        return result
 
     def _build_candidate_priority_context(self, candidate: ProactiveCandidateRecord) -> str:
         payload = candidate.payload_json if isinstance(candidate.payload_json, dict) else {}
@@ -1049,7 +1425,7 @@ class ProactiveAssistantService:
             refreshable_candidates.append(created_candidate)
             open_candidates.append(created_candidate)
             created += 1
-            if created >= 3:
+            if created >= 4:
                 break
 
     def _build_important_followup_candidate(
@@ -1305,7 +1681,7 @@ class ProactiveAssistantService:
             return (
                 "moment_state_high_focus",
                 "Momento atual sugere foco alto; melhor nao interromper com esse tipo de nudge.",
-                now + timedelta(minutes=90),
+                now + timedelta(minutes=50),
             )
         if moment_state == "busy" and candidate.category == "project_nudge":
             payload = candidate.payload_json if isinstance(candidate.payload_json, dict) else {}
@@ -1313,13 +1689,13 @@ class ProactiveAssistantService:
                 return (
                     "moment_state_busy_project",
                     "Momento atual parece corrido; nudge de projeto sem urgencia concreta foi adiado.",
-                    now + timedelta(minutes=75),
+                    now + timedelta(minutes=40),
                 )
         if moment_state == "busy" and candidate.category == "routine":
             return (
                 "moment_state_busy",
                 "Momento atual parece corrido demais para nudge de rotina.",
-                now + timedelta(minutes=60),
+                now + timedelta(minutes=35),
             )
         return None
 
@@ -1340,7 +1716,7 @@ class ProactiveAssistantService:
         )
         if can_bypass:
             return None
-        delay_minutes = 12 if candidate.category == "followup" else 18
+        delay_minutes = 6 if candidate.category == "followup" else 10
         return (
             "recent_owner_activity",
             "O dono ainda está ativo na conversa agora; melhor esperar um respiro antes de um novo nudge.",
@@ -1359,7 +1735,7 @@ class ProactiveAssistantService:
             return None
         effective_interval = prefs.min_interval_minutes
         if prefs.intensity == "high":
-            effective_interval = max(20, int(round(effective_interval * 0.65)))
+            effective_interval = max(15, int(round(effective_interval * 0.5)))
         elif prefs.intensity == "conservative":
             effective_interval = min(240, int(round(effective_interval * 1.2)))
         if last_sent_delivery.created_at < now - timedelta(minutes=effective_interval):
@@ -1592,26 +1968,26 @@ class ProactiveAssistantService:
         )
         important = self.store.list_important_messages(self.settings.default_user_id, limit=2)
 
-        lines = ["*Bom dia. Radar curto de agora*"]
+        lines = ["Bom dia. Separei um radar curto para te deixar orientado sem pesar o começo do dia."]
         if today_events:
             event_chunks = [
                 f"{event.titulo} às {event.inicio.astimezone(DEFAULT_TIMEZONE).strftime('%H:%M')}"
                 for event in today_events
             ]
-            lines.append("• *Agenda:* " + "; ".join(event_chunks))
+            lines.append("Agenda: " + "; ".join(event_chunks))
         if open_candidates:
             top_candidates = [
                 candidate.title.replace("Pendente sugerida: ", "").strip()
                 for candidate in open_candidates[:2]
             ]
-            lines.append("• *Pendências em radar:* " + "; ".join(top_candidates))
+            lines.append("Em radar: " + "; ".join(top_candidates))
         if important:
-            lines.append("• *Importante recente:* " + "; ".join(item.importance_reason[:80] for item in important[:1]))
+            lines.append("Importante recente: " + "; ".join(item.importance_reason[:80] for item in important[:1]))
         top_project = self._select_project_for_digest()
         if top_project is not None:
             project_name, next_step = top_project
-            lines.append(f"• *Projeto para destravar:* {project_name[:72]}")
-            lines.append(f"  Próximo passo: {next_step[:88]}")
+            lines.append(f"Projeto para destravar: {project_name[:72]}")
+            lines.append(f"Próximo passo mais claro: {next_step[:88]}")
         if len(lines) == 1:
             return "", ""
         signature = self._signature_for(lines)
@@ -1632,16 +2008,16 @@ class ProactiveAssistantService:
             limit=12,
             statuses=["suggested", "confirmed"],
         )
-        lines = ["*Fechamento curto do dia*"]
+        lines = ["Fechando o dia, deixei um resumo curto do que ainda vale manter vivo para amanhã."]
         if open_candidates:
             pending_titles = [
                 candidate.title.replace("Pendente sugerida: ", "").strip()
                 for candidate in open_candidates[:3]
             ]
-            lines.append("• *Ainda em aberto:* " + "; ".join(pending_titles))
+            lines.append("Ainda em aberto: " + "; ".join(pending_titles))
         if tomorrow_events:
             lines.append(
-                "• *Amanhã cedo:* "
+                "Amanhã cedo: "
                 + "; ".join(
                     f"{event.titulo} às {event.inicio.astimezone(DEFAULT_TIMEZONE).strftime('%H:%M')}"
                     for event in tomorrow_events
@@ -1650,8 +2026,8 @@ class ProactiveAssistantService:
         top_project = self._select_project_for_digest()
         if top_project is not None:
             project_name, next_step = top_project
-            lines.append(f"• *Projeto mais vivo agora:* {project_name[:72]}")
-            lines.append(f"  Próximo passo: {next_step[:88]}")
+            lines.append(f"Projeto mais vivo agora: {project_name[:72]}")
+            lines.append(f"Próximo passo mais claro: {next_step[:88]}")
         if len(lines) == 1:
             return "", ""
         signature = self._signature_for(lines)

@@ -376,6 +376,88 @@ class DeepSeekService:
             operation="extract_project_action_hints",
         )
 
+    async def generate_proactive_message(
+        self,
+        *,
+        category: str,
+        candidate_title: str,
+        candidate_summary: str,
+        candidate_status: str,
+        moment_state: str,
+        owner_profile_context: str = "",
+        recent_owner_context: str = "",
+        project_context: str = "",
+        suggested_actions: list[str] | None = None,
+        additional_context: str = "",
+        humor_guidance: str = "",
+    ) -> str:
+        suggested_actions_block = "\n".join(
+            f"- {action.strip()}"
+            for action in (suggested_actions or [])
+            if isinstance(action, str) and action.strip()
+        )
+        user_prompt = (
+            f"Categoria proativa: {category.strip()}\n"
+            f"Estado do nudge: {candidate_status.strip() or 'suggested'}\n"
+            f"Leitura do momento atual do dono: {moment_state.strip() or 'available'}\n\n"
+            "Sinal que motivou a iniciativa:\n"
+            f"{candidate_title.strip() or '(sem titulo)'}\n"
+            f"{candidate_summary.strip() or '(sem resumo adicional)'}\n\n"
+            "Perfil conhecido do dono:\n"
+            f"{owner_profile_context.strip() or '(sem perfil adicional)'}\n\n"
+            "Mensagens recentes do dono:\n"
+            f"{recent_owner_context.strip() or '(sem mensagens recentes)'}\n\n"
+            "Contexto de projeto relacionado:\n"
+            f"{project_context.strip() or '(nao se aplica)'}\n\n"
+            "Acoes sugeridas candidatas:\n"
+            f"{suggested_actions_block or '(nenhuma acao pronta)'}\n\n"
+            "Contexto extra:\n"
+            f"{additional_context.strip() or '(nenhum)'}\n\n"
+            "Diretriz de humor:\n"
+            f"{humor_guidance.strip() or '(sem diretriz extra)'}"
+        )
+        payload = self._build_text_completion_payload(
+            interaction_mode="light_touch",
+            system_prompt=(
+                "Voce escreve mensagens proativas do Orion no WhatsApp. "
+                "Inspiracao comportamental: um assistente pessoal de altissimo nivel, calmo, antecipatorio, "
+                "elegante, preciso e humano. Nao imite personagem, bordao ou teatralidade. "
+                "Soe como uma presenca confiavel que conhece bem a pessoa e aparece no momento certo."
+                "\n\n"
+                "Objetivo: escrever uma unica mensagem proativa curta, util e natural para o dono."
+                "\n\n"
+                "Regras:"
+                "\n- Escreva em portugues do Brasil."
+                "\n- Soe humano, discreto e caloroso; nunca como alerta de sistema, coach ou checklist frio."
+                "\n- Idealmente use 2 a 5 linhas curtas de WhatsApp."
+                "\n- Comece pelo que importa agora; nao use introducao burocratica."
+                "\n- Mostre contexto de forma sutil, como quem acompanha bem a vida da pessoa."
+                "\n- Ofereca no maximo 1 ou 2 proximos passos concretos, sempre leves e acionaveis."
+                "\n- Se o momento indicar cansaco ou correria, reduza a carga e alivie pressao."
+                "\n- Se houver projeto ou pendencia concreta, traduza isso em clareza e alivio mental."
+                "\n- Humor so quando couber e de modo sutil."
+                "\n- Quando houver espaco para humor, prefira um toque seco, inteligente e breve, como um alivio de tensao — nunca como show."
+                "\n- No maximo 1 frase com humor leve na mensagem inteira."
+                "\n- Nao use humor em assunto sensivel, urgente, financeiro, de risco, agenda delicada ou quando a seriedade for a parte mais importante do recado."
+                "\n- Nao use markdown fences."
+                "\n- Evite excesso de bullets; se usar lista, que seja no maximo 2 itens curtos."
+                "\n- Nunca mencione sistema, memoria, prompt, modelo, banco, contexto tecnico ou bastidores."
+                "\n- Nunca faca promessas em nome do dono; ofereca caminho, pergunta ou proximo passo."
+            ),
+            user_prompt=user_prompt,
+            max_tokens=self._adaptive_max_tokens(
+                user_prompt,
+                ceiling_reasoning=360,
+                ceiling_standard=220,
+                floor_reasoning=180,
+                floor_standard=140,
+                chars_per_step=550,
+                step_tokens=35,
+                max_steps=4,
+            ),
+        )
+        return await self._request_text_completion(payload=payload, operation="proactive_message")
+
     async def analyze_memory(
         self,
         *,
