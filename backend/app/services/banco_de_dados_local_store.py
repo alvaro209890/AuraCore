@@ -614,6 +614,8 @@ class ProactivePreferencesRecord:
     user_id: UUID
     enabled: bool
     intensity: str
+    presence_mode: str
+    humor_style: str
     quiet_hours_start: str
     quiet_hours_end: str
     max_unsolicited_per_day: int
@@ -3636,7 +3638,7 @@ class BancoDeDadosLocalStore:
             response = (
                 self.client.table("proactive_preferences")
                 .select(
-                    "user_id,enabled,intensity,quiet_hours_start,quiet_hours_end,max_unsolicited_per_day,"
+                    "user_id,enabled,intensity,presence_mode,humor_style,quiet_hours_start,quiet_hours_end,max_unsolicited_per_day,"
                     "min_interval_minutes,agenda_enabled,followups_enabled,projects_enabled,routine_enabled,"
                     "morning_digest_enabled,night_digest_enabled,morning_digest_time,night_digest_time,updated_at"
                 )
@@ -3653,6 +3655,15 @@ class BancoDeDadosLocalStore:
         if not rows or not isinstance(rows[0], dict):
             return self._default_proactive_preferences(user_id=user_id)
         parsed = self._parse_proactive_preferences(rows[0], fallback_user_id=user_id)
+        if parsed is not None and self._should_read_repair_legacy_proactivity(parsed):
+            return self.update_proactive_preferences(
+                user_id=user_id,
+                intensity="moderate",
+                presence_mode="organic",
+                humor_style="subtle",
+                max_unsolicited_per_day=4,
+                min_interval_minutes=90,
+            )
         return parsed or self._default_proactive_preferences(user_id=user_id)
 
     def update_proactive_preferences(
@@ -3661,6 +3672,8 @@ class BancoDeDadosLocalStore:
         user_id: UUID,
         enabled: bool | None = None,
         intensity: str | None | object = _UNSET,
+        presence_mode: str | None | object = _UNSET,
+        humor_style: str | None | object = _UNSET,
         quiet_hours_start: str | None | object = _UNSET,
         quiet_hours_end: str | None | object = _UNSET,
         max_unsolicited_per_day: int | None = None,
@@ -3684,6 +3697,16 @@ class BancoDeDadosLocalStore:
                 current.intensity
                 if intensity is _UNSET
                 else self._normalize_proactive_intensity(intensity if isinstance(intensity, str) else None)
+            ),
+            "presence_mode": (
+                current.presence_mode
+                if presence_mode is _UNSET
+                else self._normalize_proactive_presence_mode(presence_mode if isinstance(presence_mode, str) else None)
+            ),
+            "humor_style": (
+                current.humor_style
+                if humor_style is _UNSET
+                else self._normalize_proactive_humor_style(humor_style if isinstance(humor_style, str) else None)
             ),
             "quiet_hours_start": (
                 current.quiet_hours_start
@@ -7291,11 +7314,13 @@ class BancoDeDadosLocalStore:
         return {
             "user_id": str(user_id),
             "enabled": True,
-            "intensity": "high",
+            "intensity": "moderate",
+            "presence_mode": "organic",
+            "humor_style": "subtle",
             "quiet_hours_start": "22:00",
             "quiet_hours_end": "08:00",
-            "max_unsolicited_per_day": 10,
-            "min_interval_minutes": 25,
+            "max_unsolicited_per_day": 4,
+            "min_interval_minutes": 90,
             "agenda_enabled": True,
             "followups_enabled": True,
             "projects_enabled": True,
@@ -7742,6 +7767,29 @@ class BancoDeDadosLocalStore:
         if normalized in {"conservative", "conservadora", "conservative_low"}:
             return "conservative"
         return "moderate"
+
+    def _normalize_proactive_presence_mode(self, value: str | None) -> str:
+        normalized = (value or "organic").strip().lower()
+        if normalized in {"balanced", "equilibrada", "equilibrado"}:
+            return "balanced"
+        if normalized in {"active", "ativa", "ativo"}:
+            return "active"
+        return "organic"
+
+    def _normalize_proactive_humor_style(self, value: str | None) -> str:
+        normalized = (value or "subtle").strip().lower()
+        if normalized in {"off", "none", "desligado", "sem_humor"}:
+            return "off"
+        if normalized in {"playful", "mais presente", "playful_light"}:
+            return "playful"
+        return "subtle"
+
+    def _should_read_repair_legacy_proactivity(self, settings: ProactivePreferencesRecord) -> bool:
+        return (
+            settings.intensity == "high"
+            and settings.max_unsolicited_per_day == 10
+            and settings.min_interval_minutes == 25
+        )
 
     def _normalize_proactive_category(self, value: str | None) -> str:
         normalized = (value or "followup").strip().lower()
@@ -8224,10 +8272,12 @@ class BancoDeDadosLocalStore:
             user_id=self._parse_uuid(value.get("user_id")) or fallback_user_id,
             enabled=self._parse_bool(value.get("enabled")) if self._parse_bool(value.get("enabled")) is not None else True,
             intensity=self._normalize_proactive_intensity(self._optional_text(value.get("intensity"))),
+            presence_mode=self._normalize_proactive_presence_mode(self._optional_text(value.get("presence_mode"))),
+            humor_style=self._normalize_proactive_humor_style(self._optional_text(value.get("humor_style"))),
             quiet_hours_start=self._normalize_clock_time(self._optional_text(value.get("quiet_hours_start")), fallback="22:00"),
             quiet_hours_end=self._normalize_clock_time(self._optional_text(value.get("quiet_hours_end")), fallback="08:00"),
-            max_unsolicited_per_day=max(1, min(12, self._parse_int(value.get("max_unsolicited_per_day")) or 10)),
-            min_interval_minutes=max(15, min(1440, self._parse_int(value.get("min_interval_minutes")) or 25)),
+            max_unsolicited_per_day=max(1, min(12, self._parse_int(value.get("max_unsolicited_per_day")) or 4)),
+            min_interval_minutes=max(15, min(1440, self._parse_int(value.get("min_interval_minutes")) or 90)),
             agenda_enabled=self._parse_bool(value.get("agenda_enabled")) if self._parse_bool(value.get("agenda_enabled")) is not None else True,
             followups_enabled=self._parse_bool(value.get("followups_enabled")) if self._parse_bool(value.get("followups_enabled")) is not None else True,
             projects_enabled=self._parse_bool(value.get("projects_enabled")) if self._parse_bool(value.get("projects_enabled")) is not None else True,

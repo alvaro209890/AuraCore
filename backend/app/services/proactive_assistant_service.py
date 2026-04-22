@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
+from difflib import SequenceMatcher
 import hashlib
 import logging
 import re
-from typing import Any
+from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
 
 from app.config import Settings
@@ -27,11 +28,21 @@ DEFAULT_TIMEZONE = ZoneInfo("America/Sao_Paulo")
 PROACTIVE_LOOP_INTERVAL_SECONDS = 45
 RECENT_REPLY_WINDOW_HOURS = 36
 RECENT_PROJECT_NUDGE_HOURS = 8
-RECENT_DIGEST_ACTIVITY_MINUTES = 25
-RECENT_OWNER_ACTIVITY_SUPPRESSION_MINUTES = 8
+RECENT_OWNER_ACTIVITY_SUPPRESSION_MINUTES = 18
 IMPORTANT_MESSAGE_CANDIDATE_HOURS = 96
 PROJECT_STALE_NUDGE_HOURS = 8
 RECENT_OWNER_THREAD_LOOKBACK_DAYS = 14
+UNANSWERED_PROACTIVE_WINDOW_MINUTES = 120
+RECENT_PROACTIVE_EXAMPLES_LIMIT = 5
+RECENT_PROMPT_EXAMPLES_LIMIT = 3
+MESSAGE_SIMILARITY_THRESHOLD = 0.72
+ORGANIC_JITTER_WINDOWS: dict[str, tuple[int, int]] = {
+    "followup": (3, 12),
+    "project_nudge": (8, 25),
+    "routine": (12, 30),
+    "morning_digest": (10, 25),
+    "night_digest": (10, 25),
+}
 FOLLOWUP_KEYWORDS = ("responder", "mandar", "enviar", "ver", "fazer", "cobrar", "retornar", "ajustar")
 FUTURE_MARKERS = ("amanha", "amanhã", "mais tarde", "depois", "hoje", "semana", "mais tarde", "na volta")
 ROUTINE_PATTERNS = (
@@ -72,6 +83,14 @@ class OwnerProactiveContext:
     recent_mood_signals: list[str]
     recent_implied_tasks: list[str]
     recent_style_hints: list[str]
+
+
+@dataclass(slots=True)
+class OwnerVoiceProfile:
+    guidance: str
+    prefers_direct: bool
+    prefers_playful: bool
+    prefers_formal: bool
 
 
 class ProactiveAssistantService:
@@ -513,21 +532,20 @@ class ProactiveAssistantService:
         local_now = now.astimezone(DEFAULT_TIMEZONE)
         if self._is_quiet_time(local_now, prefs):
             return
-        if self._recent_owner_activity(now=now):
-            return
         digest_state = self.store.get_proactive_digest_state(user_id=self.settings.default_user_id)
 
         if prefs.morning_digest_enabled and self._digest_is_due(local_now=local_now, last_sent_at=digest_state.last_morning_digest_at, target_time=prefs.morning_digest_time):
-            text, signature = self._build_morning_digest(now=now)
-            if text and signature != digest_state.last_morning_digest_signature:
-                sent = await self._send_unsolicited_message(
+            digest_payload, signature = self._build_morning_digest(now=now)
+            if digest_payload and signature != digest_state.last_morning_digest_signature:
+                sent = await self._attempt_digest_delivery(
                     category="morning_digest",
-                    message_text=text,
-                    reason_code="scheduled_digest",
-                    reason_text="Resumo curto da manhã.",
-                    score=84,
-                    candidate_id=None,
+                    digest_payload=digest_payload,
+                    signature=signature,
+                    prefs=prefs,
                     now=now,
+                    score=84,
+                    reason_text="Resumo curto da manha.",
+                    scheduled_time_text=prefs.morning_digest_time,
                 )
                 if sent:
                     self.store.update_proactive_digest_state(
@@ -537,16 +555,17 @@ class ProactiveAssistantService:
                     )
 
         if prefs.night_digest_enabled and self._digest_is_due(local_now=local_now, last_sent_at=digest_state.last_night_digest_at, target_time=prefs.night_digest_time):
-            text, signature = self._build_night_digest(now=now)
-            if text and signature != digest_state.last_night_digest_signature:
-                sent = await self._send_unsolicited_message(
+            digest_payload, signature = self._build_night_digest(now=now)
+            if digest_payload and signature != digest_state.last_night_digest_signature:
+                sent = await self._attempt_digest_delivery(
                     category="night_digest",
-                    message_text=text,
-                    reason_code="scheduled_digest",
-                    reason_text="Fechamento curto do dia.",
-                    score=80,
-                    candidate_id=None,
+                    digest_payload=digest_payload,
+                    signature=signature,
+                    prefs=prefs,
                     now=now,
+                    score=80,
+                    reason_text="Fechamento curto do dia.",
+                    scheduled_time_text=prefs.night_digest_time,
                 )
                 if sent:
                     self.store.update_proactive_digest_state(
@@ -622,10 +641,38 @@ class ProactiveAssistantService:
                 )
                 continue
 
+            jitter_suppression = self._organic_jitter_suppression(
+                category=candidate.category,
+                stable_key=candidate.id,
+                due_at=candidate.due_at or now,
+                now=now,
+            )
+            if jitter_suppression is not None:
+                reason_code, reason_text, cooldown_until = jitter_suppression
+                self.store.create_proactive_delivery_log(
+                    user_id=self.settings.default_user_id,
+                    candidate_id=candidate.id,
+                    category=candidate.category,
+                    decision="skipped",
+                    score=0,
+                    reason_code=reason_code,
+                    reason_text=reason_text,
+                    message_text="",
+                    message_id=None,
+                    sent_at=None,
+                )
+                self.store.update_proactive_candidate(
+                    candidate_id=candidate.id,
+                    cooldown_until=cooldown_until,
+                )
+                continue
+
+            can_bypass_soft_holds = self._candidate_can_bypass_soft_holds(candidate)
             recent_activity_suppression = self._recent_owner_activity_suppression(
-                candidate=candidate,
+                category=candidate.category,
                 now=now,
                 recent_owner_inbound=recent_owner_inbound,
+                can_bypass=can_bypass_soft_holds,
             )
             if recent_activity_suppression is not None:
                 reason_code, reason_text, cooldown_until = recent_activity_suppression
@@ -647,11 +694,38 @@ class ProactiveAssistantService:
                 )
                 continue
 
+            unanswered_nudge_suppression = self._unanswered_previous_nudge_suppression(
+                category=candidate.category,
+                now=now,
+                last_sent_delivery=last_sent_delivery,
+                can_bypass=can_bypass_soft_holds,
+            )
+            if unanswered_nudge_suppression is not None:
+                reason_code, reason_text, cooldown_until = unanswered_nudge_suppression
+                self.store.create_proactive_delivery_log(
+                    user_id=self.settings.default_user_id,
+                    candidate_id=candidate.id,
+                    category=candidate.category,
+                    decision="skipped",
+                    score=0,
+                    reason_code=reason_code,
+                    reason_text=reason_text,
+                    message_text="",
+                    message_id=None,
+                    sent_at=None,
+                )
+                self.store.update_proactive_candidate(
+                    candidate_id=candidate.id,
+                    cooldown_until=cooldown_until,
+                )
+                continue
+
             interval_suppression = self._min_interval_suppression(
-                candidate=candidate,
+                category=candidate.category,
                 prefs=prefs,
                 now=now,
                 last_sent_delivery=last_sent_delivery,
+                can_bypass=can_bypass_soft_holds,
             )
             if interval_suppression is not None:
                 reason_code, reason_text, cooldown_until = interval_suppression
@@ -716,23 +790,23 @@ class ProactiveAssistantService:
             candidate=best_candidate,
             moment_state=moment_state,
             now=now,
+            prefs=prefs,
         )
         if not message_text:
             return
 
-        sent = await self._send_unsolicited_message(
-            category=best_candidate.category,
+        sent = await self._deliver_candidate_message(
+            candidate=best_candidate,
             message_text=message_text,
-            reason_code="candidate_due",
-            reason_text=f"{best_candidate.summary or best_candidate.title} [moment={moment_state}]",
+            prefs=prefs,
             score=best_score,
-            candidate_id=best_candidate.id,
+            moment_state=moment_state,
             now=now,
         )
         if not sent:
             self.store.update_proactive_candidate(
                 candidate_id=best_candidate.id,
-                cooldown_until=now + timedelta(minutes=45),
+                cooldown_until=now + timedelta(minutes=90),
             )
             return
 
@@ -803,6 +877,13 @@ class ProactiveAssistantService:
                 score -= 10
             elif candidate.category == "project_nudge":
                 score -= 4
+        if prefs.presence_mode == "organic":
+            if candidate.category == "routine":
+                score -= 4
+        elif prefs.presence_mode == "active":
+            if candidate.category in {"followup", "project_nudge"}:
+                score += 4
+        score -= self._category_repetition_penalty(category=candidate.category, now=now, prefs=prefs)
         return max(0, min(100, score))
 
     def _minimum_candidate_score(
@@ -817,6 +898,10 @@ class ProactiveAssistantService:
             base -= 14
         elif prefs.intensity == "conservative":
             base += 8
+        if prefs.presence_mode == "organic":
+            base += 4
+        elif prefs.presence_mode == "active":
+            base -= 4
         if candidate.category == "routine":
             base += 4
         if candidate.category == "project_nudge" and prefs.intensity == "conservative":
@@ -837,12 +922,20 @@ class ProactiveAssistantService:
         candidate: ProactiveCandidateRecord,
         moment_state: str,
         now: datetime,
+        prefs: ProactivePreferencesRecord,
+        recent_delivery_examples: list[str] | None = None,
+        regeneration_focus: str = "",
     ) -> str:
         owner_context = self._build_owner_proactive_context(now=now)
+        voice_profile = self._build_owner_voice_profile(owner_context)
+        recent_examples = recent_delivery_examples or self._recent_delivery_examples(limit=RECENT_PROACTIVE_EXAMPLES_LIMIT)
         fallback = self._render_candidate_message(
             candidate=candidate,
             moment_state=moment_state,
             owner_context=owner_context,
+            prefs=prefs,
+            voice_profile=voice_profile,
+            recent_delivery_examples=recent_examples,
         )
         suggested_actions = self._candidate_suggested_actions(candidate)
         try:
@@ -854,18 +947,25 @@ class ProactiveAssistantService:
                 moment_state=moment_state,
                 owner_profile_context=self._format_owner_profile_context(owner_context),
                 recent_owner_context=self._format_recent_owner_messages_for_prompt(owner_context),
+                owner_voice_guidance=voice_profile.guidance,
                 project_context=self._build_candidate_project_context(candidate),
                 suggested_actions=suggested_actions,
+                recent_delivery_examples=recent_examples[:RECENT_PROMPT_EXAMPLES_LIMIT],
                 additional_context=self._build_candidate_additional_context(
                     candidate=candidate,
                     moment_state=moment_state,
                     owner_context=owner_context,
+                    prefs=prefs,
+                    voice_profile=voice_profile,
                 ),
                 humor_guidance=self._build_humor_guidance(
                     candidate=candidate,
                     moment_state=moment_state,
                     owner_context=owner_context,
+                    prefs=prefs,
+                    voice_profile=voice_profile,
                 ),
+                regeneration_focus=regeneration_focus,
             )
         except Exception as exc:
             logger.warning(
@@ -885,13 +985,18 @@ class ProactiveAssistantService:
         candidate: ProactiveCandidateRecord,
         moment_state: str = "available",
         owner_context: OwnerProactiveContext | None = None,
+        prefs: ProactivePreferencesRecord,
+        voice_profile: OwnerVoiceProfile | None = None,
+        recent_delivery_examples: list[str] | None = None,
     ) -> str:
         payload = candidate.payload_json if isinstance(candidate.payload_json, dict) else {}
-        direct_tone = self._prefer_direct_tone(owner_context)
+        direct_tone = voice_profile.prefers_direct if voice_profile is not None else self._prefer_direct_tone(owner_context)
         humor_line = self._fallback_humor_line(
             candidate=candidate,
             moment_state=moment_state,
             owner_context=owner_context,
+            prefs=prefs,
+            voice_profile=voice_profile,
         )
         if candidate.category == "followup":
             task_text = str(payload.get("task_text") or candidate.title).strip()
@@ -1121,9 +1226,16 @@ class ProactiveAssistantService:
         candidate: ProactiveCandidateRecord,
         moment_state: str,
         owner_context: OwnerProactiveContext,
+        prefs: ProactivePreferencesRecord,
+        voice_profile: OwnerVoiceProfile,
     ) -> str:
         payload = candidate.payload_json if isinstance(candidate.payload_json, dict) else {}
-        parts = [f"Momento atual detectado: {moment_state}"]
+        parts = [
+            f"Momento atual detectado: {moment_state}",
+            f"Modo de presenca desejado: {prefs.presence_mode}",
+            f"Humor configurado: {prefs.humor_style}",
+            f"Voz desejada: {voice_profile.guidance}",
+        ]
         if owner_context.recent_mood_signals:
             parts.append("Humor recente: " + "; ".join(owner_context.recent_mood_signals[:3]))
         if owner_context.recent_implied_tasks:
@@ -1142,20 +1254,57 @@ class ProactiveAssistantService:
         candidate: ProactiveCandidateRecord,
         moment_state: str,
         owner_context: OwnerProactiveContext,
+        prefs: ProactivePreferencesRecord,
+        voice_profile: OwnerVoiceProfile,
     ) -> str:
-        if not self._humor_allowed(candidate=candidate, moment_state=moment_state, owner_context=owner_context):
+        if not self._humor_allowed(
+            candidate=candidate,
+            moment_state=moment_state,
+            owner_context=owner_context,
+            prefs=prefs,
+            voice_profile=voice_profile,
+        ):
             return "Nao usar humor nesta mensagem."
+        if prefs.humor_style == "playful":
+            return (
+                "Humor permitido com leveza controlada: no maximo uma linha curta no fim, "
+                "com ironia gentil e humana, sem virar personagem nem deboche."
+            )
         if candidate.category == "project_nudge":
             return (
-                "Humor permitido em dose homeopatica: um comentario seco e inteligente no final, "
-                "como alivio leve de tensao sobre atrito, backlog ou inercia. Nada teatral."
+                "Humor permitido em dose homeopatica: no maximo uma linha curta no final, "
+                "seca e inteligente, como alivio leve de tensao sobre atrito, backlog ou inercia. Nada teatral."
             )
         if candidate.category == "routine":
             return (
-                "Humor permitido de forma acolhedora: um toque leve que reduza a pressao sem parecer deboche."
+                "Humor permitido de forma acolhedora: no maximo uma linha curta que reduza a pressao sem parecer deboche."
             )
         return (
-            "Humor opcional e minimo: no maximo uma frase curta no fim, com ironia gentil ou leveza seca."
+            "Humor opcional e minimo: no maximo uma linha curta no fim, com ironia gentil ou leveza seca."
+        )
+
+    def _build_owner_voice_profile(self, owner_context: OwnerProactiveContext) -> OwnerVoiceProfile:
+        prefers_direct = self._prefer_direct_tone(owner_context)
+        prefers_formal = self._owner_prefers_formal_style(owner_context)
+        prefers_playful = self._owner_prefers_playful_style(owner_context)
+        descriptors: list[str] = []
+        if prefers_direct:
+            descriptors.append("soar direto, curto e sem rodeios")
+        else:
+            descriptors.append("soar conversacional, natural e sem cara de painel")
+        if prefers_formal:
+            descriptors.append("manter sobriedade e evitar gracinha")
+        elif prefers_playful:
+            descriptors.append("aceitar leveza curta quando o momento estiver leve")
+        else:
+            descriptors.append("preferir calor humano discreto")
+        if owner_context.recent_style_hints:
+            descriptors.append("seguir o ritmo recente de escrita do dono")
+        return OwnerVoiceProfile(
+            guidance="; ".join(descriptors),
+            prefers_direct=prefers_direct,
+            prefers_playful=prefers_playful,
+            prefers_formal=prefers_formal,
         )
 
     def _prefer_direct_tone(self, owner_context: OwnerProactiveContext | None) -> bool:
@@ -1165,8 +1314,24 @@ class ProactiveAssistantService:
         clues: list[str] = list(owner_context.recent_style_hints)
         if memory is not None and memory.preferred_tone:
             clues.append(memory.preferred_tone)
+        clues.extend(owner_context.recent_inbound_lines[:2])
         normalized = " ".join(clues).lower()
         return any(marker in normalized for marker in ("direto", "curto", "objetivo", "pratico", "prático"))
+
+    def _owner_prefers_formal_style(self, owner_context: OwnerProactiveContext | None) -> bool:
+        if owner_context is None:
+            return False
+        clues: list[str] = list(owner_context.recent_style_hints)
+        if owner_context.memory is not None and owner_context.memory.preferred_tone:
+            clues.append(owner_context.memory.preferred_tone)
+        normalized = " ".join(clues).lower()
+        return any(marker in normalized for marker in ("formal", "sobrio", "sÃ³brio", "profissional", "serio", "sÃ©rio"))
+
+    def _owner_prefers_playful_style(self, owner_context: OwnerProactiveContext | None) -> bool:
+        if owner_context is None:
+            return False
+        normalized = " ".join([*owner_context.recent_style_hints, *owner_context.recent_inbound_lines]).lower()
+        return any(marker in normalized for marker in ("kk", "haha", "rs", "leve", "humor", "brinca", "emoji"))
 
     def _humor_allowed(
         self,
@@ -1174,21 +1339,31 @@ class ProactiveAssistantService:
         candidate: ProactiveCandidateRecord,
         moment_state: str,
         owner_context: OwnerProactiveContext | None,
+        prefs: ProactivePreferencesRecord,
+        voice_profile: OwnerVoiceProfile,
     ) -> bool:
         payload = candidate.payload_json if isinstance(candidate.payload_json, dict) else {}
+        if prefs.humor_style == "off":
+            return False
         if candidate.category == "agenda_followup":
+            return False
+        if candidate.category not in {"project_nudge", "routine", "followup"}:
             return False
         if payload.get("important_source"):
             return False
-        if candidate.priority >= 88 and candidate.category != "project_nudge":
+        if candidate.priority >= 82:
             return False
         if moment_state in {"high_focus", "busy"}:
+            return False
+        if voice_profile.prefers_formal:
             return False
         if owner_context is not None and owner_context.recent_mood_signals:
             normalized_mood = " ".join(owner_context.recent_mood_signals).lower()
             if any(marker in normalized_mood for marker in ("frustr", "ansios", "exaust", "sobrecarreg", "pression")):
                 return False
-        return candidate.category in {"project_nudge", "routine", "followup"}
+        if candidate.category == "followup" and not voice_profile.prefers_playful and prefs.humor_style == "subtle":
+            return False
+        return True
 
     def _fallback_humor_line(
         self,
@@ -1196,35 +1371,49 @@ class ProactiveAssistantService:
         candidate: ProactiveCandidateRecord,
         moment_state: str,
         owner_context: OwnerProactiveContext | None,
+        prefs: ProactivePreferencesRecord,
+        voice_profile: OwnerVoiceProfile | None,
     ) -> str:
-        if not self._humor_allowed(candidate=candidate, moment_state=moment_state, owner_context=owner_context):
+        effective_voice = voice_profile or self._build_owner_voice_profile(
+            owner_context
+            or OwnerProactiveContext(
+                memory=None,
+                recent_inbound_lines=[],
+                recent_mood_signals=[],
+                recent_implied_tasks=[],
+                recent_style_hints=[],
+            )
+        )
+        if not self._humor_allowed(
+            candidate=candidate,
+            moment_state=moment_state,
+            owner_context=owner_context,
+            prefs=prefs,
+            voice_profile=effective_voice,
+        ):
             return ""
-        direct_tone = self._prefer_direct_tone(owner_context)
         variants: list[str]
         if candidate.category == "project_nudge":
             variants = [
-                "Se a inércia estiver bem organizada hoje, eu posso desorganizar ela rapidinho.",
+                "Se a inercia estiver bem instalada hoje, eu posso dar um empurrao civilizado.",
                 "Prometo manter isso abaixo do limite entre progresso real e backlog decorativo.",
-                "A boa notícia é que isso parece mais próximo de andar do que de virar peça de museu.",
+                "Isso ainda parece mais perto de andar do que de virar peca de museu.",
             ]
         elif candidate.category == "routine":
             variants = [
-                "Seu cérebro talvez mereça um café e uma trégua diplomática ao mesmo tempo.",
-                "Hoje talvez não seja dia de competir com a própria bateria em modo economia.",
-                "A meta aqui é progresso com dignidade, não heroísmo administrativo.",
+                "Seu cerebro talvez mereca um cafe e uma tregua diplomatica ao mesmo tempo.",
+                "Hoje talvez nao seja dia de competir com a propria bateria em modo economia.",
+                "A meta aqui e progresso com dignidade, nao heroismo administrativo.",
             ]
         else:
             variants = [
-                "Antes que isso abra filial fixa na sua cabeça, eu ajudo a fechar em um passo.",
-                "Melhor mexer nisso enquanto ainda é pendência e não patrimônio histórico.",
-                "A ideia é resolver isso antes que vire item de coleção do backlog.",
+                "Melhor mexer nisso antes que vire morador fixo do backlog.",
+                "Da para resolver isso antes de virar patrimonio emocional da semana.",
+                "A ideia e fechar isso enquanto ainda cabe num gesto curto.",
             ]
-        index_seed = f"{candidate.id}:{candidate.category}:{moment_state}"
+        index_seed = f"{candidate.id}:{candidate.category}:{moment_state}:{prefs.humor_style}"
         index = int(hashlib.sha1(index_seed.encode("utf-8")).hexdigest(), 16) % len(variants)
-        line = variants[index]
-        if direct_tone:
-            return line
-        return line
+        return variants[index]
 
     def _sanitize_proactive_message(self, value: str) -> str:
         text = str(value or "").replace("\r", "\n").strip().strip('"').strip("'")
@@ -1619,6 +1808,361 @@ class ProactiveAssistantService:
                 return candidate
         return None
 
+    def _candidate_can_bypass_soft_holds(self, candidate: ProactiveCandidateRecord) -> bool:
+        payload = candidate.payload_json if isinstance(candidate.payload_json, dict) else {}
+        return (
+            candidate.status == "confirmed"
+            or bool(payload.get("important_source"))
+            or candidate.priority >= 92
+        )
+
+    def _recent_sent_deliveries(self, *, limit: int = RECENT_PROACTIVE_EXAMPLES_LIMIT) -> list[ProactiveDeliveryLogRecord]:
+        return self.store.list_recent_proactive_deliveries(
+            user_id=self.settings.default_user_id,
+            limit=limit,
+            decisions=["sent"],
+        )
+
+    def _recent_delivery_examples(self, *, limit: int = RECENT_PROACTIVE_EXAMPLES_LIMIT) -> list[str]:
+        examples: list[str] = []
+        for delivery in self._recent_sent_deliveries(limit=limit):
+            text = self._summarize_text(delivery.message_text, 220).strip()
+            if text:
+                examples.append(text)
+        return examples
+
+    def _normalize_message_for_similarity(self, value: str) -> str:
+        normalized = " ".join(str(value or "").lower().split()).strip()
+        normalized = re.sub(r"[^a-z0-9\s]", "", normalized)
+        return normalized
+
+    def _find_similar_recent_delivery(
+        self,
+        *,
+        message_text: str,
+        recent_deliveries: list[ProactiveDeliveryLogRecord],
+    ) -> tuple[ProactiveDeliveryLogRecord | None, float]:
+        target = self._normalize_message_for_similarity(message_text)
+        if not target:
+            return None, 0.0
+        best_delivery: ProactiveDeliveryLogRecord | None = None
+        best_score = 0.0
+        for delivery in recent_deliveries:
+            source = self._normalize_message_for_similarity(delivery.message_text)
+            if not source:
+                continue
+            score = SequenceMatcher(None, target, source).ratio()
+            if score > best_score:
+                best_delivery = delivery
+                best_score = score
+        return best_delivery, best_score
+
+    def _category_repetition_penalty(
+        self,
+        *,
+        category: str,
+        now: datetime,
+        prefs: ProactivePreferencesRecord,
+    ) -> int:
+        base_penalty = 12 if prefs.presence_mode == "organic" else 8 if prefs.presence_mode == "balanced" else 4
+        penalty = 0
+        for index, delivery in enumerate(self._recent_sent_deliveries(limit=3)):
+            if delivery.category != category:
+                continue
+            age_minutes = max(0.0, (now - delivery.created_at).total_seconds() / 60)
+            if age_minutes > 18 * 60:
+                continue
+            penalty += max(2, base_penalty - (index * 2))
+        return penalty
+
+    def _organic_jitter_minutes(self, *, category: str, stable_key: str) -> int:
+        low, high = ORGANIC_JITTER_WINDOWS.get(category, (5, 12))
+        if high <= low:
+            return low
+        digest = hashlib.sha1(f"{self.settings.default_user_id}:{category}:{stable_key}".encode("utf-8")).hexdigest()
+        offset = int(digest[:8], 16) % (high - low + 1)
+        return low + offset
+
+    def _organic_jitter_suppression(
+        self,
+        *,
+        category: str,
+        stable_key: str,
+        due_at: datetime,
+        now: datetime,
+    ) -> tuple[str, str, datetime] | None:
+        jitter_minutes = self._organic_jitter_minutes(category=category, stable_key=stable_key)
+        release_at = due_at + timedelta(minutes=jitter_minutes)
+        if now >= release_at:
+            return None
+        remaining_minutes = max(1, int(((release_at - now).total_seconds() + 59) // 60))
+        return (
+            "organic_jitter_wait",
+            f"Janela organica segurando esse envio por mais cerca de {remaining_minutes} min.",
+            release_at,
+        )
+
+    async def _stabilize_message_variation(
+        self,
+        *,
+        message_text: str,
+        recent_deliveries: list[ProactiveDeliveryLogRecord],
+        regenerate_message: Callable[[str], Awaitable[str]],
+        fallback_message: str,
+    ) -> str | None:
+        _, similarity = self._find_similar_recent_delivery(message_text=message_text, recent_deliveries=recent_deliveries)
+        if similarity <= MESSAGE_SIMILARITY_THRESHOLD:
+            return message_text
+
+        regeneration_focus = "Evite repetir abertura, estrutura ou ritmo de uma mensagem proativa muito recente."
+        regenerated = self._sanitize_proactive_message(await regenerate_message(regeneration_focus))
+        if regenerated:
+            _, regenerated_similarity = self._find_similar_recent_delivery(
+                message_text=regenerated,
+                recent_deliveries=recent_deliveries,
+            )
+            if regenerated_similarity <= MESSAGE_SIMILARITY_THRESHOLD:
+                return regenerated
+
+        fallback = self._sanitize_proactive_message(fallback_message)
+        if fallback:
+            _, fallback_similarity = self._find_similar_recent_delivery(
+                message_text=fallback,
+                recent_deliveries=recent_deliveries,
+            )
+            if fallback_similarity <= MESSAGE_SIMILARITY_THRESHOLD:
+                return fallback
+        return None
+
+    async def _deliver_candidate_message(
+        self,
+        *,
+        candidate: ProactiveCandidateRecord,
+        message_text: str,
+        prefs: ProactivePreferencesRecord,
+        score: int,
+        moment_state: str,
+        now: datetime,
+    ) -> bool:
+        recent_deliveries = self._recent_sent_deliveries()
+        owner_context = self._build_owner_proactive_context(now=now)
+        voice_profile = self._build_owner_voice_profile(owner_context)
+        fallback_message = self._render_candidate_message(
+            candidate=candidate,
+            moment_state=moment_state,
+            owner_context=owner_context,
+            prefs=prefs,
+            voice_profile=voice_profile,
+            recent_delivery_examples=[delivery.message_text for delivery in recent_deliveries],
+        )
+        stabilized = await self._stabilize_message_variation(
+            message_text=message_text,
+            recent_deliveries=recent_deliveries,
+            regenerate_message=lambda regeneration_focus: self._compose_candidate_message(
+                candidate=candidate,
+                moment_state=moment_state,
+                now=now,
+                prefs=prefs,
+                recent_delivery_examples=[delivery.message_text for delivery in recent_deliveries],
+                regeneration_focus=regeneration_focus,
+            ),
+            fallback_message=fallback_message,
+        )
+        if not stabilized:
+            self.store.create_proactive_delivery_log(
+                user_id=self.settings.default_user_id,
+                candidate_id=candidate.id,
+                category=candidate.category,
+                decision="skipped",
+                score=score,
+                reason_code="repeat_pattern_risk",
+                reason_text="Texto proativo ficou parecido demais com envios recentes; melhor nao soar automatico.",
+                message_text="",
+                message_id=None,
+                sent_at=None,
+            )
+            return False
+        return await self._send_unsolicited_message(
+            category=candidate.category,
+            message_text=stabilized,
+            reason_code="candidate_due",
+            reason_text=f"{candidate.summary or candidate.title} [moment={moment_state}]",
+            score=score,
+            candidate_id=candidate.id,
+            now=now,
+        )
+
+    async def _attempt_digest_delivery(
+        self,
+        *,
+        category: str,
+        digest_payload: dict[str, Any],
+        signature: str,
+        prefs: ProactivePreferencesRecord,
+        now: datetime,
+        score: int,
+        reason_text: str,
+        scheduled_time_text: str,
+    ) -> bool:
+        local_now = now.astimezone(DEFAULT_TIMEZONE)
+        scheduled_at = datetime.combine(local_now.date(), self._parse_local_time(scheduled_time_text), tzinfo=DEFAULT_TIMEZONE).astimezone(UTC)
+        jitter_suppression = self._organic_jitter_suppression(
+            category=category,
+            stable_key=f"{category}:{signature}:{local_now.date().isoformat()}",
+            due_at=scheduled_at,
+            now=now,
+        )
+        if jitter_suppression is not None:
+            return False
+        recent_owner_inbound = self._recent_owner_inbound_activity(now=now)
+        recent_activity_suppression = self._recent_owner_activity_suppression(
+            category=category,
+            now=now,
+            recent_owner_inbound=recent_owner_inbound,
+            can_bypass=False,
+        )
+        if recent_activity_suppression is not None:
+            return False
+        last_sent_delivery = self._last_sent_delivery()
+        unanswered_nudge_suppression = self._unanswered_previous_nudge_suppression(
+            category=category,
+            now=now,
+            last_sent_delivery=last_sent_delivery,
+            can_bypass=False,
+        )
+        if unanswered_nudge_suppression is not None:
+            return False
+        interval_suppression = self._min_interval_suppression(
+            category=category,
+            prefs=prefs,
+            now=now,
+            last_sent_delivery=last_sent_delivery,
+            can_bypass=False,
+        )
+        if interval_suppression is not None:
+            return False
+
+        recent_deliveries = self._recent_sent_deliveries()
+        message_text = await self._compose_digest_message(
+            category=category,
+            digest_payload=digest_payload,
+            prefs=prefs,
+            now=now,
+            recent_delivery_examples=[delivery.message_text for delivery in recent_deliveries],
+        )
+        if not message_text:
+            return False
+        fallback_message = self._render_digest_message(category=category, digest_payload=digest_payload)
+        stabilized = await self._stabilize_message_variation(
+            message_text=message_text,
+            recent_deliveries=recent_deliveries,
+            regenerate_message=lambda regeneration_focus: self._compose_digest_message(
+                category=category,
+                digest_payload=digest_payload,
+                prefs=prefs,
+                now=now,
+                recent_delivery_examples=[delivery.message_text for delivery in recent_deliveries],
+                regeneration_focus=regeneration_focus,
+            ),
+            fallback_message=fallback_message,
+        )
+        if not stabilized:
+            self.store.create_proactive_delivery_log(
+                user_id=self.settings.default_user_id,
+                candidate_id=None,
+                category=category,
+                decision="skipped",
+                score=score,
+                reason_code="repeat_pattern_risk",
+                reason_text="Digest ficou parecido demais com envios recentes; melhor segurar para nao soar automatico.",
+                message_text="",
+                message_id=None,
+                sent_at=None,
+            )
+            return False
+        return await self._send_unsolicited_message(
+            category=category,
+            message_text=stabilized,
+            reason_code="scheduled_digest",
+            reason_text=reason_text,
+            score=score,
+            candidate_id=None,
+            now=now,
+        )
+
+    async def _compose_digest_message(
+        self,
+        *,
+        category: str,
+        digest_payload: dict[str, Any],
+        prefs: ProactivePreferencesRecord,
+        now: datetime,
+        recent_delivery_examples: list[str] | None = None,
+        regeneration_focus: str = "",
+    ) -> str:
+        owner_context = self._build_owner_proactive_context(now=now)
+        voice_profile = self._build_owner_voice_profile(owner_context)
+        fallback_message = self._render_digest_message(category=category, digest_payload=digest_payload)
+        facts = [
+            str(item).strip()
+            for item in (digest_payload.get("facts") or [])
+            if str(item).strip()
+        ]
+        try:
+            generated = await self.deepseek_service.generate_proactive_message(
+                category=category,
+                candidate_title=str(digest_payload.get("title") or "Digest curto").strip(),
+                candidate_summary=str(digest_payload.get("summary") or "Resumo curto do radar.").strip(),
+                candidate_status="scheduled",
+                moment_state=self._detect_moment_state(now=now),
+                owner_profile_context=self._format_owner_profile_context(owner_context),
+                recent_owner_context=self._format_recent_owner_messages_for_prompt(owner_context),
+                owner_voice_guidance=voice_profile.guidance,
+                project_context="",
+                suggested_actions=[],
+                recent_delivery_examples=(recent_delivery_examples or [])[:RECENT_PROMPT_EXAMPLES_LIMIT],
+                additional_context="\n".join(
+                    [
+                        f"Modo de presenca desejado: {prefs.presence_mode}",
+                        f"Humor configurado: {prefs.humor_style}",
+                        "Fatos estruturados do digest:",
+                        *[f"- {fact}" for fact in facts[:6]],
+                    ]
+                ),
+                humor_guidance="Nao usar humor se isso deixar o digest com cara de abertura pronta. Priorize calor humano discreto.",
+                regeneration_focus=regeneration_focus,
+            )
+        except Exception as exc:
+            logger.warning("proactive_digest_generation_failed category=%s detail=%s", category, exc)
+            return fallback_message
+        normalized = self._sanitize_proactive_message(generated)
+        return normalized or fallback_message
+
+    def _render_digest_message(self, *, category: str, digest_payload: dict[str, Any]) -> str:
+        facts = [
+            str(item).strip()
+            for item in (digest_payload.get("facts") or [])
+            if str(item).strip()
+        ]
+        opening_variants = {
+            "morning_digest": [
+                "Bom dia. Separei so o essencial para o comeco do dia ficar leve.",
+                "Antes do dia acelerar, deixei um radar curto do que merece ficar vivo.",
+                "Passei aqui com um recorte enxuto para abrir o dia sem peso.",
+            ],
+            "night_digest": [
+                "Fechando o dia, deixei so o que vale continuar vivo amanha.",
+                "Antes de encerrar, ficou este recorte curto do que ainda importa.",
+                "Para nao deixar o dia virar ruido, organizei o essencial de forma enxuta.",
+            ],
+        }
+        variants = opening_variants.get(category, ["Deixei um recorte curto do radar atual."])
+        seed = f"{category}:{digest_payload.get('signature') or digest_payload.get('title') or 'digest'}"
+        index = int(hashlib.sha1(seed.encode("utf-8")).hexdigest(), 16) % len(variants)
+        lines = [variants[index]]
+        lines.extend(facts[:4])
+        return "\n".join(lines)
+
     def _detect_moment_state(self, *, now: datetime) -> str:
         owner_phone = self._resolve_owner_phone()
         local_hour = now.astimezone(DEFAULT_TIMEZONE).hour
@@ -1702,34 +2246,67 @@ class ProactiveAssistantService:
     def _recent_owner_activity_suppression(
         self,
         *,
-        candidate: ProactiveCandidateRecord,
+        category: str,
         now: datetime,
         recent_owner_inbound: bool,
+        can_bypass: bool,
     ) -> tuple[str, str, datetime] | None:
-        if not recent_owner_inbound:
+        if not recent_owner_inbound or can_bypass:
             return None
-        payload = candidate.payload_json if isinstance(candidate.payload_json, dict) else {}
-        can_bypass = (
-            candidate.status == "confirmed"
-            or bool(payload.get("important_source"))
-            or candidate.priority >= 92
-        )
-        if can_bypass:
-            return None
-        delay_minutes = 6 if candidate.category == "followup" else 10
+        delay_minutes = 8 if category == "followup" else 12
         return (
-            "recent_owner_activity",
+            "active_conversation",
             "O dono ainda está ativo na conversa agora; melhor esperar um respiro antes de um novo nudge.",
             now + timedelta(minutes=delay_minutes),
+        )
+
+    def _has_owner_inbound_after_delivery(
+        self,
+        *,
+        delivery: ProactiveDeliveryLogRecord,
+    ) -> bool:
+        owner_phone = self._resolve_owner_phone()
+        if not owner_phone:
+            return False
+        threshold = delivery.sent_at or delivery.created_at
+        messages = self.store.list_whatsapp_agent_messages_for_contact(
+            user_id=self.settings.default_user_id,
+            contact_phone=owner_phone,
+            limit=10,
+        )
+        return any(
+            message.direction == "inbound" and message.message_timestamp > threshold
+            for message in messages
+        )
+
+    def _unanswered_previous_nudge_suppression(
+        self,
+        *,
+        category: str,
+        now: datetime,
+        last_sent_delivery: ProactiveDeliveryLogRecord | None,
+        can_bypass: bool,
+    ) -> tuple[str, str, datetime] | None:
+        if can_bypass or last_sent_delivery is None:
+            return None
+        if last_sent_delivery.created_at < now - timedelta(minutes=UNANSWERED_PROACTIVE_WINDOW_MINUTES):
+            return None
+        if self._has_owner_inbound_after_delivery(delivery=last_sent_delivery):
+            return None
+        return (
+            "unanswered_previous_nudge",
+            "Ainda existe um nudge recente sem resposta do dono; melhor nao empilhar outro agora.",
+            now + timedelta(minutes=30 if category == "followup" else 45),
         )
 
     def _min_interval_suppression(
         self,
         *,
-        candidate: ProactiveCandidateRecord,
+        category: str,
         prefs: ProactivePreferencesRecord,
         now: datetime,
         last_sent_delivery: ProactiveDeliveryLogRecord | None,
+        can_bypass: bool,
     ) -> tuple[str, str, datetime] | None:
         if last_sent_delivery is None:
             return None
@@ -1738,20 +2315,11 @@ class ProactiveAssistantService:
             effective_interval = max(15, int(round(effective_interval * 0.5)))
         elif prefs.intensity == "conservative":
             effective_interval = min(240, int(round(effective_interval * 1.2)))
+        if prefs.presence_mode == "active":
+            effective_interval = max(15, int(round(effective_interval * 0.85)))
         if last_sent_delivery.created_at < now - timedelta(minutes=effective_interval):
             return None
 
-        payload = candidate.payload_json if isinstance(candidate.payload_json, dict) else {}
-        can_bypass = (
-            candidate.status == "confirmed"
-            or bool(payload.get("important_source"))
-            or candidate.priority >= 88
-            or (
-                candidate.category == "project_nudge"
-                and bool(payload.get("recent_signal"))
-                and prefs.intensity != "conservative"
-            )
-        )
         if can_bypass:
             return None
 
@@ -1927,7 +2495,7 @@ class ProactiveAssistantService:
             contact_phone=owner_phone,
             limit=8,
         )
-        threshold = now - timedelta(minutes=RECENT_DIGEST_ACTIVITY_MINUTES)
+        threshold = now - timedelta(minutes=RECENT_OWNER_ACTIVITY_SUPPRESSION_MINUTES)
         return any(message.message_timestamp >= threshold for message in messages)
 
     def _recent_owner_inbound_activity(self, *, now: datetime) -> bool:
@@ -1953,7 +2521,7 @@ class ProactiveAssistantService:
             return True
         return last_sent_at.astimezone(DEFAULT_TIMEZONE).date() < local_now.date()
 
-    def _build_morning_digest(self, *, now: datetime) -> tuple[str, str]:
+    def _build_morning_digest(self, *, now: datetime) -> tuple[dict[str, Any], str]:
         start_of_day = now.astimezone(DEFAULT_TIMEZONE).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(UTC)
         end_of_day = start_of_day + timedelta(days=1)
         today_events = [
@@ -1968,32 +2536,37 @@ class ProactiveAssistantService:
         )
         important = self.store.list_important_messages(self.settings.default_user_id, limit=2)
 
-        lines = ["Bom dia. Separei um radar curto para te deixar orientado sem pesar o começo do dia."]
+        facts: list[str] = []
         if today_events:
             event_chunks = [
                 f"{event.titulo} às {event.inicio.astimezone(DEFAULT_TIMEZONE).strftime('%H:%M')}"
                 for event in today_events
             ]
-            lines.append("Agenda: " + "; ".join(event_chunks))
+            facts.append("Agenda: " + "; ".join(event_chunks))
         if open_candidates:
             top_candidates = [
                 candidate.title.replace("Pendente sugerida: ", "").strip()
                 for candidate in open_candidates[:2]
             ]
-            lines.append("Em radar: " + "; ".join(top_candidates))
+            facts.append("Em radar: " + "; ".join(top_candidates))
         if important:
-            lines.append("Importante recente: " + "; ".join(item.importance_reason[:80] for item in important[:1]))
+            facts.append("Importante recente: " + "; ".join(item.importance_reason[:80] for item in important[:1]))
         top_project = self._select_project_for_digest()
         if top_project is not None:
             project_name, next_step = top_project
-            lines.append(f"Projeto para destravar: {project_name[:72]}")
-            lines.append(f"Próximo passo mais claro: {next_step[:88]}")
-        if len(lines) == 1:
-            return "", ""
-        signature = self._signature_for(lines)
-        return "\n".join(lines), signature
+            facts.append(f"Projeto para destravar: {project_name[:72]}")
+            facts.append(f"Proximo passo mais claro: {next_step[:88]}")
+        if not facts:
+            return {}, ""
+        signature = self._signature_for(facts)
+        return {
+            "title": "Radar da manha",
+            "summary": "Abertura curta do dia com agenda, prioridades e foco.",
+            "facts": facts,
+            "signature": signature,
+        }, signature
 
-    def _build_night_digest(self, *, now: datetime) -> tuple[str, str]:
+    def _build_night_digest(self, *, now: datetime) -> tuple[dict[str, Any], str]:
         tomorrow_start_local = now.astimezone(DEFAULT_TIMEZONE).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
         tomorrow_end_local = tomorrow_start_local + timedelta(days=1)
         tomorrow_start = tomorrow_start_local.astimezone(UTC)
@@ -2008,15 +2581,15 @@ class ProactiveAssistantService:
             limit=12,
             statuses=["suggested", "confirmed"],
         )
-        lines = ["Fechando o dia, deixei um resumo curto do que ainda vale manter vivo para amanhã."]
+        facts: list[str] = []
         if open_candidates:
             pending_titles = [
                 candidate.title.replace("Pendente sugerida: ", "").strip()
                 for candidate in open_candidates[:3]
             ]
-            lines.append("Ainda em aberto: " + "; ".join(pending_titles))
+            facts.append("Ainda em aberto: " + "; ".join(pending_titles))
         if tomorrow_events:
-            lines.append(
+            facts.append(
                 "Amanhã cedo: "
                 + "; ".join(
                     f"{event.titulo} às {event.inicio.astimezone(DEFAULT_TIMEZONE).strftime('%H:%M')}"
@@ -2026,12 +2599,17 @@ class ProactiveAssistantService:
         top_project = self._select_project_for_digest()
         if top_project is not None:
             project_name, next_step = top_project
-            lines.append(f"Projeto mais vivo agora: {project_name[:72]}")
-            lines.append(f"Próximo passo mais claro: {next_step[:88]}")
-        if len(lines) == 1:
-            return "", ""
-        signature = self._signature_for(lines)
-        return "\n".join(lines), signature
+            facts.append(f"Projeto mais vivo agora: {project_name[:72]}")
+            facts.append(f"Proximo passo mais claro: {next_step[:88]}")
+        if not facts:
+            return {}, ""
+        signature = self._signature_for(facts)
+        return {
+            "title": "Fechamento do dia",
+            "summary": "Fechamento curto com pendencias e foco para amanha.",
+            "facts": facts,
+            "signature": signature,
+        }, signature
 
     def _create_or_refresh_candidate(
         self,

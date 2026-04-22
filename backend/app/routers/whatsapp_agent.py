@@ -89,6 +89,8 @@ async def update_proactive_settings(
     settings = proactive_service.update_preferences(
         enabled=payload.enabled,
         intensity=payload.intensity,
+        presence_mode=payload.presence_mode,
+        humor_style=payload.humor_style,
         quiet_hours_start=payload.quiet_hours_start,
         quiet_hours_end=payload.quiet_hours_end,
         max_unsolicited_per_day=payload.max_unsolicited_per_day,
@@ -313,6 +315,8 @@ def _to_proactive_preferences_response(settings) -> ProactivePreferencesResponse
         user_id=str(settings.user_id),
         enabled=settings.enabled,
         intensity=settings.intensity,
+        presence_mode=settings.presence_mode,
+        humor_style=settings.humor_style,
         quiet_hours_start=settings.quiet_hours_start,
         quiet_hours_end=settings.quiet_hours_end,
         max_unsolicited_per_day=settings.max_unsolicited_per_day,

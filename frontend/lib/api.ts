@@ -58,6 +58,8 @@ export type WhatsAppAgentSettings = {
 };
 
 export type ProactiveIntensity = "conservative" | "moderate" | "high";
+export type ProactivePresenceMode = "organic" | "balanced" | "active";
+export type ProactiveHumorStyle = "off" | "subtle" | "playful";
 export type ProactiveCategory =
   | "agenda_followup"
   | "followup"
@@ -78,6 +80,8 @@ export type ProactivePreferences = {
   user_id: string;
   enabled: boolean;
   intensity: ProactiveIntensity;
+  presence_mode: ProactivePresenceMode;
+  humor_style: ProactiveHumorStyle;
   quiet_hours_start: string;
   quiet_hours_end: string;
   max_unsolicited_per_day: number;

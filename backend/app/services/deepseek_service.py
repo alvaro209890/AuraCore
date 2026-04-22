@@ -386,15 +386,23 @@ class DeepSeekService:
         moment_state: str,
         owner_profile_context: str = "",
         recent_owner_context: str = "",
+        owner_voice_guidance: str = "",
         project_context: str = "",
         suggested_actions: list[str] | None = None,
+        recent_delivery_examples: list[str] | None = None,
         additional_context: str = "",
         humor_guidance: str = "",
+        regeneration_focus: str = "",
     ) -> str:
         suggested_actions_block = "\n".join(
             f"- {action.strip()}"
             for action in (suggested_actions or [])
             if isinstance(action, str) and action.strip()
+        )
+        recent_delivery_block = "\n".join(
+            f"- {example.strip()}"
+            for example in (recent_delivery_examples or [])
+            if isinstance(example, str) and example.strip()
         )
         user_prompt = (
             f"Categoria proativa: {category.strip()}\n"
@@ -405,16 +413,22 @@ class DeepSeekService:
             f"{candidate_summary.strip() or '(sem resumo adicional)'}\n\n"
             "Perfil conhecido do dono:\n"
             f"{owner_profile_context.strip() or '(sem perfil adicional)'}\n\n"
+            "Jeito de falar que mais combina com o dono agora:\n"
+            f"{owner_voice_guidance.strip() or '(sem diretriz adicional de voz)'}\n\n"
             "Mensagens recentes do dono:\n"
             f"{recent_owner_context.strip() or '(sem mensagens recentes)'}\n\n"
             "Contexto de projeto relacionado:\n"
             f"{project_context.strip() or '(nao se aplica)'}\n\n"
             "Acoes sugeridas candidatas:\n"
             f"{suggested_actions_block or '(nenhuma acao pronta)'}\n\n"
+            "Mensagens proativas recentes para nao repetir estrutura nem abertura:\n"
+            f"{recent_delivery_block or '(sem exemplos recentes)'}\n\n"
             "Contexto extra:\n"
             f"{additional_context.strip() or '(nenhum)'}\n\n"
             "Diretriz de humor:\n"
-            f"{humor_guidance.strip() or '(sem diretriz extra)'}"
+            f"{humor_guidance.strip() or '(sem diretriz extra)'}\n\n"
+            "Ponto de regeneracao:\n"
+            f"{regeneration_focus.strip() or '(primeira tentativa)'}"
         )
         payload = self._build_text_completion_payload(
             interaction_mode="light_touch",
@@ -431,6 +445,7 @@ class DeepSeekService:
                 "\n- Soe humano, discreto e caloroso; nunca como alerta de sistema, coach ou checklist frio."
                 "\n- Idealmente use 2 a 5 linhas curtas de WhatsApp."
                 "\n- Comece pelo que importa agora; nao use introducao burocratica."
+                "\n- Evite aberturas formulaicas repetidas como 'bom dia', 'fechando o dia', 'passei aqui' ou 'radar rapido' quando isso ja apareceu nos exemplos recentes."
                 "\n- Mostre contexto de forma sutil, como quem acompanha bem a vida da pessoa."
                 "\n- Ofereca no maximo 1 ou 2 proximos passos concretos, sempre leves e acionaveis."
                 "\n- Se o momento indicar cansaco ou correria, reduza a carga e alivie pressao."
@@ -440,7 +455,8 @@ class DeepSeekService:
                 "\n- No maximo 1 frase com humor leve na mensagem inteira."
                 "\n- Nao use humor em assunto sensivel, urgente, financeiro, de risco, agenda delicada ou quando a seriedade for a parte mais importante do recado."
                 "\n- Nao use markdown fences."
-                "\n- Evite excesso de bullets; se usar lista, que seja no maximo 2 itens curtos."
+                "\n- Evite excesso de bullets, rotulos e cabecalhos; se usar lista, que seja no maximo 2 itens curtos."
+                "\n- Se houver exemplos recentes, troque a primeira linha, o ritmo e a estrutura para nao soar como template."
                 "\n- Nunca mencione sistema, memoria, prompt, modelo, banco, contexto tecnico ou bastidores."
                 "\n- Nunca faca promessas em nome do dono; ofereca caminho, pergunta ou proximo passo."
             ),

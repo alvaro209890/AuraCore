@@ -188,6 +188,16 @@ class SQLiteClient:
                 "last_material_update_at",
                 "ALTER TABLE project_memories ADD COLUMN last_material_update_at TEXT",
             ),
+            (
+                "proactive_preferences",
+                "presence_mode",
+                "ALTER TABLE proactive_preferences ADD COLUMN presence_mode TEXT NOT NULL DEFAULT 'organic'",
+            ),
+            (
+                "proactive_preferences",
+                "humor_style",
+                "ALTER TABLE proactive_preferences ADD COLUMN humor_style TEXT NOT NULL DEFAULT 'subtle'",
+            ),
         ]
         with self._lock:
             for table_name, column_name, alter_sql in migrations:

@@ -97,6 +97,58 @@ const INTENSITY_OPTIONS: Array<{
   },
 ];
 
+const PRESENCE_OPTIONS: Array<{
+  value: ProactivePreferences['presence_mode'];
+  title: string;
+  description: string;
+  tone: Tone;
+}> = [
+  {
+    value: 'organic',
+    title: 'Organica',
+    description: 'Mais seletiva, com mais respiro e menos cara de automacao.',
+    tone: 'emerald',
+  },
+  {
+    value: 'balanced',
+    title: 'Equilibrada',
+    description: 'Mantem iniciativa, mas sem exagerar na presenca.',
+    tone: 'indigo',
+  },
+  {
+    value: 'active',
+    title: 'Ativa',
+    description: 'Mais presente e permissiva quando houver boa oportunidade.',
+    tone: 'amber',
+  },
+];
+
+const HUMOR_OPTIONS: Array<{
+  value: ProactivePreferences['humor_style'];
+  title: string;
+  description: string;
+  tone: Tone;
+}> = [
+  {
+    value: 'off',
+    title: 'Desligado',
+    description: 'Sem humor; foco total em sobriedade e naturalidade.',
+    tone: 'emerald',
+  },
+  {
+    value: 'subtle',
+    title: 'Sutil',
+    description: 'Humor curto, raro e seco, so quando o contexto permitir.',
+    tone: 'indigo',
+  },
+  {
+    value: 'playful',
+    title: 'Mais presente',
+    description: 'Mais leveza, ainda sem virar personagem.',
+    tone: 'amber',
+  },
+];
+
 function SettingField({
   label,
   hint,
@@ -259,6 +311,8 @@ export default function ProactivityTab({
     user_id: proactiveSettings?.user_id ?? '',
     enabled: proactiveSettings?.enabled ?? false,
     intensity: proactiveSettings?.intensity ?? 'moderate',
+    presence_mode: proactiveSettings?.presence_mode ?? 'organic',
+    humor_style: proactiveSettings?.humor_style ?? 'subtle',
     quiet_hours_start: proactiveSettings?.quiet_hours_start ?? '22:00',
     quiet_hours_end: proactiveSettings?.quiet_hours_end ?? '08:00',
     max_unsolicited_per_day: proactiveSettings?.max_unsolicited_per_day ?? 4,
@@ -295,6 +349,19 @@ export default function ProactivityTab({
       ? `${effectiveSettings.max_unsolicited_per_day} iniciativas com pausa mínima de ${effectiveSettings.min_interval_minutes} min`
       : 'Sem iniciativas espontâneas liberadas';
 
+  const presenceLabel =
+    effectiveSettings.presence_mode === 'organic'
+      ? 'Organica'
+      : effectiveSettings.presence_mode === 'balanced'
+        ? 'Equilibrada'
+        : 'Ativa';
+  const humorLabel =
+    effectiveSettings.humor_style === 'off'
+      ? 'Desligado'
+      : effectiveSettings.humor_style === 'subtle'
+        ? 'Sutil'
+        : 'Mais presente';
+
   const patchDraft = (patch: Partial<ProactivePreferences>): void => {
     onDraftChange((previous: any) => ({
       ...(proactiveSettings ?? {}),
@@ -311,10 +378,10 @@ export default function ProactivityTab({
             <Sparkles size={14} />
             Radar proativo
           </div>
-          <h3>Mensagens espontâneas com presença calibrada, janela de silêncio real e categorias bem separadas.</h3>
+          <h3>Mensagens espontaneas com presenca calibrada, humor sob controle e timing menos mecanico.</h3>
           <p>
-            A configuração abaixo deixa explícito quando o Orion pode iniciar conversa, quanto espaço ele ocupa ao
-            longo do dia e quais rituais automáticos entram no radar.
+            A configuracao abaixo deixa explicito quando o Orion pode iniciar conversa, qual assinatura humana ele deve
+            ter e quanto espaco ele ocupa ao longo do dia sem parecer uma esteira de disparos.
           </p>
           <div className="ops-hero-actions">
             <button
@@ -345,9 +412,19 @@ export default function ProactivityTab({
             <small>{`Intensidade ${effectiveSettings.intensity}`}</small>
           </div>
           <div className="projects-hero-metric">
-            <span>Silêncio</span>
+            <span>Humanizacao</span>
+            <strong>{presenceLabel}</strong>
+            <small>{`Humor ${humorLabel}`}</small>
+          </div>
+          <div className="projects-hero-metric">
+            <span>Cadencia</span>
+            <strong>{`${effectiveSettings.max_unsolicited_per_day}/dia`}</strong>
+            <small>{`${effectiveSettings.min_interval_minutes} min de respiro minimo`}</small>
+          </div>
+          <div className="projects-hero-metric">
+            <span>Silencio</span>
             <strong>{quietWindowSummary}</strong>
-            <small>{`${effectiveSettings.quiet_hours_start} → ${effectiveSettings.quiet_hours_end}`}</small>
+            <small>{`${effectiveSettings.quiet_hours_start} -> ${effectiveSettings.quiet_hours_end}`}</small>
           </div>
           <div className="projects-hero-metric">
             <span>Fila viva</span>
@@ -359,9 +436,9 @@ export default function ProactivityTab({
             </small>
           </div>
           <div className="projects-hero-metric">
-            <span>Última entrega</span>
+            <span>Ultima entrega</span>
             <strong>{lastDelivery ? getProactiveDecisionLabel(lastDelivery.decision) : 'Sem envio'}</strong>
-            <small>{lastDelivery ? formatShortDateTime(lastDelivery.created_at) : 'Sem histórico recente'}</small>
+            <small>{lastDelivery ? formatShortDateTime(lastDelivery.created_at) : 'Sem historico recente'}</small>
           </div>
         </div>
       </div>
@@ -430,6 +507,63 @@ export default function ProactivityTab({
                 <span>Cadência atual</span>
                 <strong>{effectiveSettings.max_unsolicited_per_day}/dia</strong>
               </div>
+            </div>
+          </ControlPanel>
+
+          <ControlPanel
+            description="Ajusta como o Orion aparece: mais organico no timing e com humor bem calibrado."
+            eyebrow="Humanizacao"
+            icon={<MessageSquare size={18} />}
+            title="Presenca e humor"
+            tone="amber"
+          >
+            <SettingField
+              hint="Controla o quanto o motor parece organico ou mais ativo no jeito de aparecer."
+              label="Modo de presenca"
+            >
+              <div className="ops-pill-grid">
+                {PRESENCE_OPTIONS.map((option) => {
+                  const isActive = effectiveSettings.presence_mode === option.value;
+                  return (
+                    <button
+                      key={option.value}
+                      className={`ops-pill-button${isActive ? ` ops-pill-button-active ops-pill-button-active-${option.tone}` : ''}`}
+                      onClick={() => patchDraft({ presence_mode: option.value })}
+                      type="button"
+                    >
+                      <strong>{option.title}</strong>
+                      <span>{option.description}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </SettingField>
+
+            <SettingField
+              hint="Controla se o humor fica desligado, sutil ou um pouco mais presente."
+              label="Humor"
+            >
+              <div className="ops-pill-grid">
+                {HUMOR_OPTIONS.map((option) => {
+                  const isActive = effectiveSettings.humor_style === option.value;
+                  return (
+                    <button
+                      key={option.value}
+                      className={`ops-pill-button${isActive ? ` ops-pill-button-active ops-pill-button-active-${option.tone}` : ''}`}
+                      onClick={() => patchDraft({ humor_style: option.value })}
+                      type="button"
+                    >
+                      <strong>{option.title}</strong>
+                      <span>{option.description}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </SettingField>
+
+            <div className="ops-inline-note">
+              <strong>{`${presenceLabel} + ${humorLabel}`}</strong>
+              <span>Esses dois controles definem a assinatura humana sem expor as heuristicas internas do motor.</span>
             </div>
           </ControlPanel>
 

@@ -91,6 +91,8 @@ CREATE TABLE IF NOT EXISTS proactive_preferences (
   user_id TEXT PRIMARY KEY,
   enabled INTEGER NOT NULL DEFAULT 1,
   intensity TEXT NOT NULL DEFAULT 'moderate',
+  presence_mode TEXT NOT NULL DEFAULT 'organic',
+  humor_style TEXT NOT NULL DEFAULT 'subtle',
   quiet_hours_start TEXT NOT NULL DEFAULT '22:00',
   quiet_hours_end TEXT NOT NULL DEFAULT '08:00',
   max_unsolicited_per_day INTEGER NOT NULL DEFAULT 4,

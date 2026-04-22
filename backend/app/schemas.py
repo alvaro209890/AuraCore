@@ -87,6 +87,8 @@ class ProactivePreferencesResponse(BaseModel):
     user_id: str
     enabled: bool
     intensity: Literal["conservative", "moderate", "high"]
+    presence_mode: Literal["organic", "balanced", "active"]
+    humor_style: Literal["off", "subtle", "playful"]
     quiet_hours_start: str
     quiet_hours_end: str
     max_unsolicited_per_day: int = Field(ge=1, le=12)
@@ -105,6 +107,8 @@ class ProactivePreferencesResponse(BaseModel):
 class UpdateProactivePreferencesRequest(BaseModel):
     enabled: bool | None = None
     intensity: Literal["conservative", "moderate", "high"] | None = None
+    presence_mode: Literal["organic", "balanced", "active"] | None = None
+    humor_style: Literal["off", "subtle", "playful"] | None = None
     quiet_hours_start: str | None = Field(default=None, pattern=r"^\d{1,2}:\d{2}$")
     quiet_hours_end: str | None = Field(default=None, pattern=r"^\d{1,2}:\d{2}$")
     max_unsolicited_per_day: int | None = Field(default=None, ge=1, le=12)
