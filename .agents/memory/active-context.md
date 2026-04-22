@@ -273,6 +273,10 @@
   - `npm run build` em `frontend`: ok
 - Diagnóstico reafirmado por código:
   - respostas conversacionais do WhatsApp continuam usando Groq via `AssistantReplyService -> GroqChatService` com `WHATSAPP_AGENT_GROQ_MODEL`
+- Publicacao desta rodada:
+  - frontend principal publicado no Firebase Hosting target `app`
+  - URL: `https://auracore-82bf2.web.app`
+  - commit enviado para `origin/main`: `b3a60cc` (`fix dashboard card rendering`)
 
 - Melhorias na proatividade do WhatsApp aplicadas em `proactive_assistant_service`
 - Ajustes principais:
