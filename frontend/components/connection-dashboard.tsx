@@ -3511,61 +3511,112 @@ export function ConnectionDashboard({
 
 export function MemorySignalCard({ label, value, meta, tone }: { label: string; value: string; meta?: string; tone?: string }) {
   return (
-    <div className={`p-4 rounded-xl border border-zinc-200 bg-white shadow-sm flex flex-col gap-1`}>
-      <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider">{label}</span>
-      <span className="text-xl font-semibold text-zinc-900">{value}</span>
-      {meta && <span className="text-xs text-zinc-400">{meta}</span>}
+    <div className={`memory-signal-card${tone ? ` memory-signal-card-${tone}` : ""}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+      {meta ? <p>{meta}</p> : null}
     </div>
   );
 }
 
 export function ModernStatCard({ label, value, meta, tone, icon: Icon }: { label: string; value: string; meta?: string; tone?: string; icon?: any }) {
   return (
-    <div className={`p-4 rounded-xl border border-zinc-200 bg-white shadow-sm flex flex-col gap-2 relative overflow-hidden`}>
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-medium text-zinc-600">{label}</span>
-        {Icon && <Icon className="w-4 h-4 text-zinc-400" />}
+    <div className={`modern-stat-card modern-stat-${tone ?? "zinc"}`}>
+      <div className="modern-stat-top">
+        <span>{label}</span>
+        {Icon ? <Icon size={16} /> : null}
       </div>
-      <span className="text-2xl font-bold text-zinc-900">{value}</span>
-      {meta && <span className="text-xs text-zinc-500">{meta}</span>}
+      <strong>{value}</strong>
+      {meta ? <small>{meta}</small> : null}
     </div>
   );
 }
 
 export function ProjectInfoBlock({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex flex-col gap-1 mb-3">
-      <span className="text-xs font-medium text-zinc-500">{label}</span>
-      <span className="text-sm text-zinc-800">{value}</span>
+    <div className="project-info-block">
+      <span>{label}</span>
+      <strong>{value}</strong>
     </div>
   );
 }
 
 export function AutomationNumberField({ label, description, value, onChange }: { label: string; description: string; value: number; onChange: (v: number) => void }) {
   return (
-    <div className="flex flex-col gap-1 mb-4">
-      <label className="text-sm font-medium text-zinc-700">{label}</label>
-      <input type="number" value={value} onChange={e => onChange(Number(e.target.value))} className="border border-zinc-300 rounded-md p-2 text-sm w-full max-w-[200px]" />
-      <span className="text-xs text-zinc-500">{description}</span>
+    <div className="automation-number-field automation-control-block">
+      <label>{label}</label>
+      <input type="number" value={value} onChange={(event) => onChange(Number(event.target.value))} />
+      <span>{description}</span>
     </div>
   );
 }
 
 
-export function StatusLine({ label, value, tone }: any) {
-  return <div className="flex justify-between items-center text-sm py-2 border-b border-zinc-100 last:border-0"><span className="text-zinc-500">{label}</span><span className={`font-medium`}>{value}</span></div>;
+export function StatusLine({ label, value, tone }: { label: string; value: string; tone?: string }) {
+  return (
+    <div className="status-line">
+      <span>{label}</span>
+      <strong className={`status-line-value status-line-value-${tone ?? "zinc"}`}>{value}</strong>
+    </div>
+  );
 }
-export function InlineError({ title, message }: any) {
-  return <div className="bg-red-50 text-red-600 p-4 rounded-lg text-sm border border-red-200 mt-4 flex flex-col gap-1"><strong>{title}</strong><p>{message}</p></div>;
+export function InlineError({ title, message }: { title: string; message: string }) {
+  return (
+    <div className="inline-error-modern">
+      <div>
+        <strong>{title}</strong>
+        <p>{message}</p>
+      </div>
+    </div>
+  );
 }
-export function SignalBlock({ label, value, tone, meta }: any) {
-  return <div className="flex flex-col gap-1 p-4 bg-white border border-zinc-200 rounded-xl shadow-sm"><span className="text-xs font-medium text-zinc-500 uppercase tracking-wider">{label}</span><span className={`text-xl font-bold`}>{value}</span>{meta && <span className="text-xs text-zinc-400 mt-1">{meta}</span>}</div>;
+export function SignalBlock({
+  title,
+  lines,
+  emptyLabel,
+  subtle,
+}: {
+  title: string;
+  lines: string[];
+  emptyLabel: string;
+  subtle?: boolean;
+}) {
+  return (
+    <div className={subtle ? "signal-block signal-block-subtle" : "signal-block"}>
+      <span>{title}</span>
+      {lines.length > 0 ? (
+        <ul>
+          {lines.map((line, index) => (
+            <li key={`${title}-${index}`}>{line}</li>
+          ))}
+        </ul>
+      ) : (
+        <p>{emptyLabel}</p>
+      )}
+    </div>
+  );
 }
-export function ManualInfoCard({ title, text, icon: Icon, tone }: any) {
-  return <div className="p-5 bg-white border border-zinc-200 rounded-xl shadow-sm flex flex-col gap-3">{Icon && <Icon className={`w-5 h-5 text-zinc-400`} />}<h3 className="font-semibold text-zinc-900">{title}</h3><p className="text-sm text-zinc-600 leading-relaxed">{text}</p></div>;
+export function ManualInfoCard({ title, text, icon: Icon, tone }: { title: string; text: string; icon?: any; tone?: string }) {
+  return (
+    <div className={`manual-info-card manual-info-card-${tone ?? "indigo"}`}>
+      <div className="manual-info-card-icon">{Icon ? <Icon size={20} /> : null}</div>
+      <div className="manual-info-card-content">
+        <strong>{title}</strong>
+        <p>{text}</p>
+      </div>
+    </div>
+  );
 }
-export function ManualStep({ title, text, icon: Icon, tone }: any) {
-  return <div className="p-4 bg-white border border-zinc-200 rounded-xl shadow-sm flex gap-4"><div className={`p-2 bg-zinc-50 border border-zinc-100 rounded-lg h-fit`}>{Icon && <Icon className={`w-5 h-5 text-zinc-500`} />}</div><div className="flex flex-col gap-1"><h3 className="font-semibold text-zinc-900">{title}</h3><p className="text-sm text-zinc-600 leading-relaxed">{text}</p></div></div>;
+export function ManualStep({ title, text, icon: Icon, tone }: { title: string; text: string; icon?: any; tone?: string }) {
+  return (
+    <div className={`manual-step manual-step-${tone ?? "indigo"}`}>
+      <div className="manual-step-indicator">{Icon ? <Icon size={20} /> : null}</div>
+      <div className="manual-step-content">
+        <strong>{title}</strong>
+        <p>{text}</p>
+      </div>
+    </div>
+  );
 }
 
 export type { MemoryActivity };

@@ -241,18 +241,16 @@ export default function RelationsTab({
                     <div className="relation-card-copy" style={{ flex: 1 }}>
                       <input
                         type="text"
-                        className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
+                        className="ac-input relation-edit-input"
                         value={editName}
                         onChange={(e) => setEditName(e.target.value)}
                         placeholder="Nome do contato"
-                        style={{ marginBottom: "0.25rem", padding: "0.25rem 0.5rem" }}
                       />
                       <div className="relation-card-meta">
                         <select
-                          className="flex h-9 w-full rounded-md border border-zinc-200 bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
+                          className="ac-input relation-edit-select"
                           value={editType}
                           onChange={(e) => setEditType(e.target.value)}
-                          style={{ width: "auto", padding: "0.25rem 0.5rem", fontSize: "0.75rem" }}
                         >
                           <option value="partner">Parceiro(a)</option>
                           <option value="family">Família</option>

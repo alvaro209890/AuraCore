@@ -642,6 +642,58 @@ textarea {
   color: rgba(139, 155, 180, 0.8);
 }
 
+/* Minimal utility compatibility for legacy tab markup without Tailwind. */
+.bg-white {
+  background:
+    radial-gradient(circle at top right, rgba(59, 130, 246, 0.12), transparent 34%),
+    linear-gradient(180deg, rgba(12, 20, 34, 0.92), rgba(8, 14, 26, 0.86));
+}
+
+.bg-red-50 {
+  background: rgba(127, 29, 29, 0.14);
+}
+
+.text-red-600 {
+  color: #fecaca;
+}
+
+.border {
+  border-style: solid;
+  border-width: 1px;
+}
+
+.border-zinc-200 {
+  border-color: rgba(59, 130, 246, 0.16);
+}
+
+.border-red-200 {
+  border-color: rgba(127, 29, 29, 0.4);
+}
+
+.rounded-lg {
+  border-radius: 16px;
+}
+
+.rounded-xl {
+  border-radius: 24px;
+}
+
+.p-4 {
+  padding: 16px;
+}
+
+.p-6 {
+  padding: 24px;
+}
+
+.mb-4 {
+  margin-bottom: 16px;
+}
+
+.shadow-sm {
+  box-shadow: 0 20px 44px rgba(2, 6, 23, 0.24);
+}
+
 .groups-banner {
   display: flex;
   flex-wrap: wrap;
@@ -1224,6 +1276,11 @@ textarea {
   background: linear-gradient(135deg, rgba(245, 158, 11, 0.15), rgba(10, 14, 24, 0.6));
 }
 .modern-stat-amber:hover { border-color: rgba(245, 158, 11, 0.4); }
+
+.modern-stat-zinc {
+  background: linear-gradient(135deg, rgba(148, 163, 184, 0.12), rgba(10, 14, 24, 0.6));
+}
+.modern-stat-zinc:hover { border-color: rgba(148, 163, 184, 0.3); }
 
 .overview-grid,
 .observer-grid-modern,
@@ -4705,6 +4762,18 @@ textarea {
   font-size: 1.05rem;
 }
 
+.relation-edit-input {
+  margin-bottom: 6px;
+}
+
+.relation-edit-select {
+  width: auto;
+  min-width: 170px;
+  padding-top: 8px;
+  padding-bottom: 8px;
+  font-size: 0.78rem;
+}
+
 .relation-card-meta {
   display: flex;
   flex-wrap: wrap;
@@ -5411,6 +5480,30 @@ textarea {
     linear-gradient(180deg, rgba(28, 15, 18, 0.88), rgba(18, 10, 14, 0.82));
 }
 
+.danger-box {
+  display: grid;
+  gap: 12px;
+  margin-top: 20px;
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px solid rgba(127, 29, 29, 0.35);
+  background: linear-gradient(180deg, rgba(69, 10, 10, 0.16), rgba(20, 9, 16, 0.76));
+}
+
+.danger-box h4 {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #fecaca;
+}
+
+.danger-box p {
+  margin: 0;
+  color: rgba(254, 226, 226, 0.78);
+  line-height: 1.6;
+}
+
 .activity-maintenance-copy {
   display: grid;
   gap: 8px;
@@ -5920,6 +6013,45 @@ textarea {
   line-height: 1.55;
 }
 
+.status-line-list {
+  display: grid;
+  gap: 10px;
+}
+
+.status-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid rgba(59, 130, 246, 0.12);
+}
+
+.status-line:last-child {
+  border-bottom: 0;
+}
+
+.status-line strong {
+  text-align: right;
+  line-height: 1.4;
+}
+
+.status-line-value-emerald {
+  color: #86efac;
+}
+
+.status-line-value-amber {
+  color: #fde68a;
+}
+
+.status-line-value-indigo {
+  color: #bfdbfe;
+}
+
+.status-line-value-zinc {
+  color: #e2e8f0;
+}
+
 .ac-icon-button,
 .ac-primary-button,
 .ac-secondary-button,
@@ -5986,6 +6118,11 @@ textarea {
   color: #fecdd3;
   background: rgba(24, 24, 27, 0.92);
   border: 1px solid rgba(127, 29, 29, 0.44);
+}
+
+.danger-box-button {
+  width: auto;
+  align-self: flex-start;
 }
 
 .ac-primary-button:disabled,

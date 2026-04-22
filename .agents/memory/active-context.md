@@ -259,6 +259,21 @@
 
 ## Atualização 2026-04-20 3
 
+## Atualização 2026-04-22
+
+- Revisao de frontend confirmou que vários bugs visuais vinham de componentes compartilhados renderizando classes utilitarias sem Tailwind real
+- Correcoes aplicadas no frontend principal:
+  - `connection-dashboard.tsx` voltou a usar as classes proprietarias ja existentes para `ModernStatCard`, `MemorySignalCard`, `SignalBlock`, `StatusLine`, `ManualInfoCard`, `ManualStep` e `ProjectInfoBlock`
+  - `frontend/app/globals.css` ganhou uma camada minima de compatibilidade para cards genericos legados (`bg-white`, `border`, `rounded-*`, `p-*`, `shadow-sm`, erros vermelhos)
+  - `RelationsTab`, `ObserverTab` e `ActivityTab` deixaram de depender de utilitarios crus para campos/botoes criticos
+- Sintoma que motivou a rodada:
+  - textos de cards concatenados como `Projetos visíveis 8Resultado do filtro atual`
+  - cards genéricos e caixas de erro sem superficie/padding confiáveis em varias abas
+- Validacao local concluida:
+  - `npm run build` em `frontend`: ok
+- Diagnóstico reafirmado por código:
+  - respostas conversacionais do WhatsApp continuam usando Groq via `AssistantReplyService -> GroqChatService` com `WHATSAPP_AGENT_GROQ_MODEL`
+
 - Melhorias na proatividade do WhatsApp aplicadas em `proactive_assistant_service`
 - Ajustes principais:
   - novos nudges proativos agora são segurados quando o dono mandou inbound muito recentemente, evitando interrupção no meio de conversa ativa

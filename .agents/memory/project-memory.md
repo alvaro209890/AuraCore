@@ -15,6 +15,8 @@
 - No frontend principal, o `connection-dashboard.tsx` passou a importar abas modulares em `frontend/components/dashboard/tabs/`, mas ainda concentra helpers compartilhados e orquestração de estado
 - As abas `Agenda`, `Automação` e `Proatividade` do frontend principal agora compartilham uma linguagem visual e controles próprios via classes `ops-*` em `frontend/app/globals.css`, mantendo o mesmo tema escuro do restante do dashboard
 - As abas `Automação` e `Proatividade` agora usam painéis operacionais, shells escuros para `input/select/time/number`, botões próprios `ops-hero-button` e seletores segmentados no mesmo kit visual `ops-*`
+- O frontend principal nao usa Tailwind; quando surgirem classes utilitarias estilo `bg-white`, `rounded-xl`, `p-6` ou similares, elas so funcionam se houver CSS proprio cobrindo isso em `frontend/app/globals.css`
+- Os helpers compartilhados do dashboard (`ModernStatCard`, `MemorySignalCard`, `SignalBlock`, `StatusLine`, `ManualInfoCard`, `ManualStep`, `ProjectInfoBlock`) dependem das classes dedicadas já definidas em `frontend/app/globals.css`; se voltarem a usar utilitarios crus, cards e textos podem quebrar em varias abas
 - A maior parte da lógica de domínio do backend está concentrada em `backend/app/services/banco_de_dados_local_store.py`, `memory_service.py`, `whatsapp_agent_service.py`, `agenda_guardian_service.py` e `deepseek_service.py`
 
 ## WhatsApp Agent
